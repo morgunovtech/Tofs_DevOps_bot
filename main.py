@@ -37,16 +37,20 @@ async def on_startup(bot: Bot):
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
 
-    await bot.send_message(
-        chat_id=config.admin_chat_id,
-        text=(
-            f"🤖 Бот запущен!\n"
-            f"Отслеживаю {len(config.sites)} сайт(ов):\n"
-            + "\n".join(f"  • {url}" for url in config.get_site_urls())
-            + f"\n\nПроверка каждые {config.check_interval_minutes} мин.\n"
-            f"Отчёты в {config.morning_report_hour}:00 и {config.evening_report_hour}:00 ({config.timezone})"
-        ),
-    )
+    # Try to notify admin — may fail if admin hasn't started the bot yet
+    try:
+        await bot.send_message(
+            chat_id=config.admin_chat_id,
+            text=(
+                f"🤖 Бот запущен!\n"
+                f"Отслеживаю {len(config.sites)} сайт(ов):\n"
+                + "\n".join(f"  • {url}" for url in config.get_site_urls())
+                + f"\n\nПроверка каждые {config.check_interval_minutes} мин.\n"
+                f"Отчёты в {config.morning_report_hour}:00 и {config.evening_report_hour}:00 ({config.timezone})"
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"Could not send startup message to admin (send /start to the bot first): {e}")
 
 
 async def main():
