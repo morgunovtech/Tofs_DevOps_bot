@@ -1,140 +1,209 @@
 import logging
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import (
+    Message, CallbackQuery,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.filters import Command, CommandStart
 
 from config import config
-from monitors.availability import check_availability, check_all
-from monitors.ssl_checker import check_ssl, check_all_ssl
-from monitors.domain_checker import check_domain, check_all_domains
-from monitors.links_checker import check_links
+from monitors.availability import check_all
+from monitors.ssl_checker import check_all_ssl
+from monitors.domain_checker import check_all_domains
+from monitors.links_checker import check_all_links
+from monitors.availability import check_availability
+from monitors.ssl_checker import check_ssl
+from monitors.domain_checker import check_domain
 from db.database import get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site
 from reports.formatter import (
-    format_status_report, format_ssl_alert, format_domain_alert,
-    format_links_report, format_uptime,
+    format_status_report, format_links_report, format_uptime,
 )
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-def is_admin(message: Message) -> bool:
-    return str(message.chat.id) == config.admin_chat_id
+# ── Keyboards ────────────────────────────────────────────────────────────────
 
+def main_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚀 Полная проверка", callback_data="run_full_check"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Статус сайтов",  callback_data="menu_status"),
+            InlineKeyboardButton(text="🔒 SSL",            callback_data="menu_ssl"),
+        ],
+        [
+            InlineKeyboardButton(text="🌐 Домены",         callback_data="menu_domains"),
+            InlineKeyboardButton(text="🔗 Ссылки",         callback_data="menu_links"),
+        ],
+        [
+            InlineKeyboardButton(text="📈 Uptime",         callback_data="menu_uptime"),
+            InlineKeyboardButton(text="⚠️ Инциденты",      callback_data="menu_incidents"),
+        ],
+        [
+            InlineKeyboardButton(text="🌍 Проверить сайт", callback_data="menu_check_site"),
+        ],
+    ])
+
+
+def back_button() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]
+    ])
+
+
+def sites_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
+    """Keyboard with a button per site."""
+    buttons = []
+    for url in config.get_site_urls():
+        label = url.replace("https://", "")
+        buttons.append([InlineKeyboardButton(text=f"🔍 {label}", callback_data=f"{action_prefix}:{url}")])
+    buttons.append([InlineKeyboardButton(text="← Назад", callback_data="menu_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def is_admin(user_id: int) -> bool:
+    return str(user_id) == config.admin_chat_id
+
+
+async def send_main_menu(target, text: str = "Выбери действие:"):
+    """Send main menu — works for both Message and CallbackQuery."""
+    if isinstance(target, CallbackQuery):
+        await target.message.edit_text(text, reply_markup=main_menu())
+    else:
+        await target.answer(text, reply_markup=main_menu())
+
+
+# ── /start and /help ─────────────────────────────────────────────────────────
 
 @router.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.answer(
-        "👋 Привет! Я DevOps-бот для мониторинга сайтов.\n\n"
-        "Команды:\n"
-        "/status — статус всех сайтов\n"
-        "/check <url> — проверить конкретный сайт\n"
-        "/sites — список сайтов\n"
-        "/ssl — статус SSL-сертификатов\n"
-        "/domains — статус доменов\n"
-        "/links <url> — проверка ссылок на сайте\n"
-        "/uptime — статистика доступности\n"
-        "/help — эта справка"
-    )
-
-
 @router.message(Command("help"))
-async def cmd_help(message: Message):
-    await cmd_start(message)
-
-
-@router.message(Command("status"))
-async def cmd_status(message: Message):
-    if not is_admin(message):
+async def cmd_start(message: Message):
+    if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
+    await send_main_menu(message, "👋 Привет! Я DevOps-бот для мониторинга сайтов.\n\nВыбери действие:")
 
-    await message.answer("🔄 Проверяю сайты...")
+
+# ── /menu ─────────────────────────────────────────────────────────────────────
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+    await send_main_menu(message)
+
+
+# ── Back to main menu ────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_main")
+async def cb_main_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await send_main_menu(call)
+
+
+# ── 🚀 Full real-time check ───────────────────────────────────────────────────
+
+@router.callback_query(F.data == "run_full_check")
+async def cb_full_check(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+
+    urls = config.get_site_urls()
+
+    # Step 1 — availability
+    await call.message.edit_text(
+        "🚀 Запускаю полную проверку...\n\n"
+        "⏳ [1/4] Проверяю доступность сайтов...",
+        reply_markup=None
+    )
+    availability = await check_all(urls)
+
+    # Step 2 — SSL
+    await call.message.edit_text(
+        "🚀 Полная проверка...\n\n"
+        "✅ [1/4] Доступность — готово\n"
+        "⏳ [2/4] Проверяю SSL-сертификаты...",
+    )
+    ssl_results = await check_all_ssl(urls)
+
+    # Step 3 — domains
+    await call.message.edit_text(
+        "🚀 Полная проверка...\n\n"
+        "✅ [1/4] Доступность — готово\n"
+        "✅ [2/4] SSL — готово\n"
+        "⏳ [3/4] Проверяю домены...",
+    )
+    domain_results = await check_all_domains(urls)
+
+    # Step 4 — links
+    await call.message.edit_text(
+        "🚀 Полная проверка...\n\n"
+        "✅ [1/4] Доступность — готово\n"
+        "✅ [2/4] SSL — готово\n"
+        "✅ [3/4] Домены — готово\n"
+        "⏳ [4/4] Проверяю ссылки на страницах...",
+    )
+    links_results = await check_all_links(urls)
+
+    # Compose full report
+    incidents = await get_active_incidents()
+    report = format_status_report(
+        availability=availability,
+        incidents=incidents,
+        ssl_results=ssl_results,
+        domain_results=domain_results,
+        report_type="status",
+    )
+
+    # Append links summary
+    broken_total = sum(len(r.get("broken_links", [])) for r in links_results)
+    if broken_total:
+        report += f"\n\n⚠️ Битых ссылок: {broken_total} шт. — нажми «🔗 Ссылки» для деталей"
+    else:
+        report += f"\n\n✅ Все ссылки в норме"
+
+    await call.message.edit_text(report, reply_markup=back_button())
+
+
+# ── 📊 Status ─────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_status")
+async def cb_status(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text("⏳ Проверяю доступность...")
 
     urls = config.get_site_urls()
     availability = await check_all(urls)
     incidents = await get_active_incidents()
-
     report = format_status_report(availability, incidents)
-    await message.answer(report)
+
+    await call.message.edit_text(report, reply_markup=back_button())
 
 
-@router.message(Command("check"))
-async def cmd_check(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
+# ── 🔒 SSL ────────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_ssl")
+async def cb_ssl(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
+    await call.answer()
+    await call.message.edit_text("⏳ Проверяю SSL-сертификаты...")
 
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Использование: /check <url>\nПример: /check s.morgunov.tech")
-        return
-
-    url = args[1].strip()
-    if not url.startswith("http"):
-        url = f"https://{url}"
-
-    await message.answer(f"🔄 Проверяю {url}...")
-
-    result = await check_availability(url)
-    ssl_result = await check_ssl(url)
-    domain_result = await check_domain(url)
-
-    lines = []
-    # Availability
-    icon = "✅" if result["status"] == "ok" else "🔴"
-    lines.append(f"{icon} Доступность: {result.get('status_code', 'N/A')} ({result.get('response_time_ms', 'N/A')}ms)")
-    if result.get("error"):
-        lines.append(f"   ⚠️ {result['error']}")
-
-    # SSL
-    if ssl_result.get("ssl_info"):
-        days = ssl_result["ssl_info"]["days_left"]
-        ssl_icon = "🔒" if days > 14 else ("⚠️" if days > 3 else "🔴")
-        lines.append(f"{ssl_icon} SSL: {days} дн. до истечения")
-        lines.append(f"   Издатель: {ssl_result['ssl_info']['issuer']}")
-    elif ssl_result.get("error"):
-        lines.append(f"🔴 SSL: {ssl_result['error']}")
-
-    # Domain
-    if domain_result.get("domain_info") and domain_result["domain_info"]["days_left"] is not None:
-        days = domain_result["domain_info"]["days_left"]
-        dom_icon = "🌐" if days > 30 else ("⚠️" if days > 7 else "🔴")
-        lines.append(f"{dom_icon} Домен: {days} дн. до истечения")
-        lines.append(f"   Регистратор: {domain_result['domain_info']['registrar']}")
-    elif domain_result.get("error"):
-        lines.append(f"⚠️ Домен: {domain_result['error']}")
-
-    await message.answer(f"📋 Проверка {url}\n\n" + "\n".join(lines))
-
-
-@router.message(Command("sites"))
-async def cmd_sites(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
-        return
-
-    sites = await get_all_sites()
-    if not sites:
-        # Initialize sites from config
-        for url in config.get_site_urls():
-            await get_or_create_site(url)
-        sites = await get_all_sites()
-
-    lines = ["📋 Отслеживаемые сайты:\n"]
-    for s in sites:
-        lines.append(f"  • {s['url']}")
-
-    await message.answer("\n".join(lines))
-
-
-@router.message(Command("ssl"))
-async def cmd_ssl(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
-        return
-
-    await message.answer("🔄 Проверяю SSL-сертификаты...")
     urls = config.get_site_urls()
     results = await check_all_ssl(urls)
 
@@ -145,22 +214,24 @@ async def cmd_ssl(message: Message):
             days = info["days_left"]
             icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
             lines.append(f"{icon} {r['url']}")
-            lines.append(f"   Осталось: {days} дн.")
+            lines.append(f"   Осталось: {days} дн. (до {info['not_after'][:10]})")
             lines.append(f"   Издатель: {info['issuer']}")
-            lines.append(f"   Истекает: {info['not_after'][:10]}")
         else:
             lines.append(f"🔴 {r['url']}: {r.get('error', 'N/A')}")
 
-    await message.answer("\n".join(lines))
+    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
 
 
-@router.message(Command("domains"))
-async def cmd_domains(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
+# ── 🌐 Domains ────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_domains")
+async def cb_domains(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
+    await call.answer()
+    await call.message.edit_text("⏳ Проверяю домены через WHOIS...")
 
-    await message.answer("🔄 Проверяю домены...")
     urls = config.get_site_urls()
     results = await check_all_domains(urls)
 
@@ -170,60 +241,178 @@ async def cmd_domains(message: Message):
         if info and info["days_left"] is not None:
             days = info["days_left"]
             icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
+            exp = info["expiration_date"][:10] if info["expiration_date"] else "N/A"
             lines.append(f"{icon} {r['domain']}")
-            lines.append(f"   Осталось: {days} дн.")
+            lines.append(f"   Осталось: {days} дн. (до {exp})")
             lines.append(f"   Регистратор: {info['registrar']}")
-            lines.append(f"   Истекает: {info['expiration_date'][:10]}")
-            if info["name_servers"]:
-                lines.append(f"   NS: {', '.join(info['name_servers'][:3])}")
         else:
             lines.append(f"⚠️ {r.get('domain', r['url'])}: {r.get('error', 'N/A')}")
 
-    await message.answer("\n".join(lines))
+    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
 
 
-@router.message(Command("links"))
-async def cmd_links(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
+# ── 🔗 Links ──────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_links")
+async def cb_links_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
+    await call.answer()
+    await call.message.edit_text(
+        "🔗 Выбери сайт для проверки ссылок:",
+        reply_markup=sites_keyboard("check_links")
+    )
 
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("Использование: /links <url>\nПример: /links https://s.morgunov.tech")
+
+@router.callback_query(F.data.startswith("check_links:"))
+async def cb_check_links(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
+    await call.answer()
 
-    url = args[1].strip()
-    if not url.startswith("http"):
-        url = f"https://{url}"
+    url = call.data.split(":", 1)[1]
+    await call.message.edit_text(f"⏳ Сканирую все ссылки на {url}...\n(это может занять ~30 сек)")
 
-    await message.answer(f"🔄 Проверяю ссылки на {url}...")
+    from monitors.links_checker import check_links
     result = await check_links(url)
 
     if result.get("broken_links"):
-        await message.answer(format_links_report(result))
+        text = format_links_report(result)
     else:
-        await message.answer(f"✅ Все {result['total_links']} ссылок на {url} работают")
+        text = f"✅ Все {result['total_links']} ссылок на {url} работают корректно"
+
+    await call.message.edit_text(text, reply_markup=back_button())
 
 
-@router.message(Command("uptime"))
-async def cmd_uptime(message: Message):
-    if not is_admin(message):
-        await message.answer("⛔ Доступ только для администратора.")
+# ── 📈 Uptime ─────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_uptime")
+async def cb_uptime(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
+    await call.answer()
 
     sites = await get_all_sites()
     if not sites:
-        await message.answer("Нет отслеживаемых сайтов.")
+        await call.message.edit_text("Нет данных — бот только запустился, подожди несколько минут.", reply_markup=back_button())
         return
 
     lines = ["📈 Uptime за 24 часа:\n"]
     for s in sites:
         stats = await get_uptime_stats(s["id"], hours=24)
+        if stats["total_checks"] == 0:
+            lines.append(f"⏳ {s['url']} — нет данных")
+            continue
         icon = "✅" if stats["uptime_pct"] >= 99 else ("⚠️" if stats["uptime_pct"] >= 95 else "🔴")
         lines.append(
-            f"{icon} {s['url']}: {stats['uptime_pct']}% "
-            f"(avg {stats['avg_response_ms']}ms, {stats['total_checks']} checks)"
+            f"{icon} {s['url']}\n"
+            f"   Доступность: {stats['uptime_pct']}%\n"
+            f"   Среднее время ответа: {stats['avg_response_ms']}ms\n"
+            f"   Всего проверок: {stats['total_checks']}"
         )
 
-    await message.answer("\n".join(lines))
+    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
+
+
+# ── ⚠️ Incidents ──────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_incidents")
+async def cb_incidents(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+
+    incidents = await get_active_incidents()
+    if not incidents:
+        text = "✅ Активных инцидентов нет — всё работает нормально!"
+    else:
+        lines = [f"⚠️ Активные инциденты ({len(incidents)}):\n"]
+        for inc in incidents:
+            sev_icon = "🔴" if inc["severity"] == "critical" else "⚠️"
+            lines.append(
+                f"{sev_icon} {inc['url']}\n"
+                f"   Тип: {inc['check_type']}\n"
+                f"   Проблема: {inc['message']}\n"
+                f"   С: {inc['created_at'][:16]}"
+            )
+        text = "\n".join(lines)
+
+    await call.message.edit_text(text, reply_markup=back_button())
+
+
+# ── 🌍 Check single site ──────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_check_site")
+async def cb_check_site_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(
+        "🌍 Выбери сайт для детальной проверки:",
+        reply_markup=sites_keyboard("check_site")
+    )
+
+
+@router.callback_query(F.data.startswith("check_site:"))
+async def cb_check_single_site(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+
+    url = call.data.split(":", 1)[1]
+
+    # Real-time progress
+    await call.message.edit_text(f"⏳ [1/3] Проверяю доступность {url}...")
+    avail = await check_availability(url)
+
+    await call.message.edit_text(
+        f"✅ [1/3] Доступность — готово\n"
+        f"⏳ [2/3] Проверяю SSL..."
+    )
+    ssl_r = await check_ssl(url)
+
+    await call.message.edit_text(
+        f"✅ [1/3] Доступность — готово\n"
+        f"✅ [2/3] SSL — готово\n"
+        f"⏳ [3/3] Проверяю домен..."
+    )
+    dom_r = await check_domain(url)
+
+    # Build result
+    lines = [f"📋 Детальная проверка\n{url}\n"]
+
+    # Availability
+    icon = "✅" if avail["status"] == "ok" else "🔴"
+    code = avail.get("status_code", "N/A")
+    ms = avail.get("response_time_ms", "N/A")
+    lines.append(f"{icon} Доступность: HTTP {code} ({ms}ms)")
+    if avail.get("error"):
+        lines.append(f"   ↳ {avail['error']}")
+
+    # SSL
+    if ssl_r.get("ssl_info"):
+        days = ssl_r["ssl_info"]["days_left"]
+        ssl_icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
+        lines.append(f"{ssl_icon} SSL: {days} дн. до истечения")
+        lines.append(f"   ↳ Издатель: {ssl_r['ssl_info']['issuer']}")
+        lines.append(f"   ↳ Истекает: {ssl_r['ssl_info']['not_after'][:10]}")
+    else:
+        lines.append(f"🔴 SSL: {ssl_r.get('error', 'N/A')}")
+
+    # Domain
+    if dom_r.get("domain_info") and dom_r["domain_info"]["days_left"] is not None:
+        days = dom_r["domain_info"]["days_left"]
+        dom_icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
+        exp = dom_r["domain_info"]["expiration_date"][:10] if dom_r["domain_info"]["expiration_date"] else "N/A"
+        lines.append(f"{dom_icon} Домен: {days} дн. (до {exp})")
+        lines.append(f"   ↳ Регистратор: {dom_r['domain_info']['registrar']}")
+    else:
+        lines.append(f"⚠️ Домен: {dom_r.get('error', 'N/A')}")
+
+    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
