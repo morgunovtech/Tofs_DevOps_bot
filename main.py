@@ -10,6 +10,7 @@ import os
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from config import config
 from db.database import init_db, get_or_create_site
@@ -36,8 +37,19 @@ async def on_startup(bot: Bot):
 
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
+
+    # Register commands so they show up in Telegram's "/" popup.
+    await bot.set_my_commands([
+        BotCommand(command="menu",   description="Главное меню"),
+        BotCommand(command="status", description="Быстрый статус сайтов"),
+        BotCommand(command="sites",  description="Список сайтов"),
+        BotCommand(command="mute",   description="Заглушить алерты (напр. /mute 8h)"),
+        BotCommand(command="unmute", description="Снять заглушку"),
+        BotCommand(command="help",   description="О боте"),
+    ])
+    # Make the chat's menu button open that command list directly.
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
     # Intentionally no startup ping — silence is the default.
-    # Use /menu to interact, /status to verify the bot is alive.
 
 
 async def main():

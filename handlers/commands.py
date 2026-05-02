@@ -5,6 +5,7 @@ from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
 )
 from aiogram.filters import Command, CommandStart
 
@@ -61,6 +62,18 @@ def back_button() -> InlineKeyboardMarkup:
     ])
 
 
+def persistent_keyboard() -> ReplyKeyboardMarkup:
+    """Always-visible bottom keyboard so the menu is one tap away."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📱 Меню"), KeyboardButton(text="📊 Статус")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Тапни «📱 Меню» или введи команду",
+    )
+
+
 def sites_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
     """Keyboard with a button per site."""
     buttons = []
@@ -93,7 +106,32 @@ async def cmd_start(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
-    await send_main_menu(message, "👋 Привет! Я DevOps-бот для мониторинга сайтов.\n\nВыбери действие:")
+    # Install persistent reply keyboard once — stays visible at the bottom.
+    await message.answer(
+        "👋 Привет! Я DevOps-бот для мониторинга сайтов.\n"
+        "Кнопка «📱 Меню» внизу всегда под рукой.",
+        reply_markup=persistent_keyboard(),
+    )
+    await send_main_menu(
+        message,
+        "Главное меню:",
+    )
+
+
+# ── Reply-keyboard taps ──────────────────────────────────────────────────────
+
+@router.message(F.text == "📱 Меню")
+async def reply_menu(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await send_main_menu(message)
+
+
+@router.message(F.text == "📊 Статус")
+async def reply_status(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await cmd_status(message)
 
 
 # ── /menu ─────────────────────────────────────────────────────────────────────
