@@ -48,9 +48,22 @@ SKIP_HOSTS = {
     "facebook.net", "connect.facebook.net",
 }
 
+# URL path prefixes to skip — infrastructure not owned by the site author.
+# /cdn-cgi/ is Cloudflare's internal namespace: email obfuscation, bot
+# challenges, RUM, etc. These intentionally 404 on direct requests
+# (e.g. /cdn-cgi/l/email-protection only works via Cloudflare's JS) and
+# can't be "fixed" by the site owner anyway.
+SKIP_PATH_PREFIXES = (
+    "/cdn-cgi/",
+)
+
 
 def _host(url: str) -> str:
     return (urlparse(url).hostname or "").lower()
+
+
+def _path(url: str) -> str:
+    return urlparse(url).path or ""
 
 
 def _is_internal(link: str, base_url: str) -> bool:
@@ -86,9 +99,12 @@ async def _check_link(session: aiohttp.ClientSession, url: str) -> dict:
       4. 4xx codes that mean "bot blocked" (401/403/405/429/503) are not failures.
     """
     host = _host(url)
+    path = _path(url)
     if host in SKIP_HOSTS:
         return {"url": url, "status_code": None, "ok": True, "skipped": True}
     if host in ALWAYS_OK_HOSTS:
+        return {"url": url, "status_code": None, "ok": True, "skipped": True}
+    if any(path.startswith(p) for p in SKIP_PATH_PREFIXES):
         return {"url": url, "status_code": None, "ok": True, "skipped": True}
 
     headers = {**DEFAULT_HEADERS, "Range": "bytes=0-0"}

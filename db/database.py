@@ -171,6 +171,27 @@ async def resolve_incident(site_id: int, check_type: str) -> bool:
         await db.close()
 
 
+async def resolve_all_incidents() -> int:
+    """Mark every open incident as resolved. Returns how many were closed.
+
+    Useful after a deploy that changed alerting heuristics — lets the user
+    clear stale incidents created by old code.
+    """
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+               WHERE resolved = 0"""
+        )
+        await db.commit()
+        # Also reset the alert ladder so SSL/domain warnings re-arm cleanly.
+        await db.execute("DELETE FROM alert_state")
+        await db.commit()
+        return cursor.rowcount
+    finally:
+        await db.close()
+
+
 async def get_active_incidents() -> list[dict]:
     db = await get_db()
     try:

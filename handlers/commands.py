@@ -18,7 +18,7 @@ from monitors.ssl_checker import check_ssl
 from monitors.domain_checker import check_domain
 from db.database import (
     get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
-    get_state, set_state,
+    get_state, set_state, resolve_all_incidents,
 )
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
@@ -503,6 +503,7 @@ async def cb_incidents(call: CallbackQuery):
     incidents = await get_active_incidents()
     if not incidents:
         text = "✅ Активных инцидентов нет — всё работает нормально!"
+        kb = back_button()
     else:
         lines = [f"⚠️ Активные инциденты ({len(incidents)}):\n"]
         for inc in incidents:
@@ -514,8 +515,29 @@ async def cb_incidents(call: CallbackQuery):
                 f"   С: {inc['created_at'][:16]}"
             )
         text = "\n".join(lines)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="🗑 Сбросить все (если устарели)",
+                callback_data="incidents_clear",
+            )],
+            [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
+        ])
 
-    await call.message.edit_text(text, reply_markup=back_button())
+    await call.message.edit_text(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "incidents_clear")
+async def cb_incidents_clear(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    n = await resolve_all_incidents()
+    await call.message.edit_text(
+        f"🗑 Сброшено инцидентов: {n}\n"
+        f"При следующей проверке те, что реальны, откроются заново.",
+        reply_markup=back_button(),
+    )
 
 
 # ── 🌍 Check single site ──────────────────────────────────────────────────────
