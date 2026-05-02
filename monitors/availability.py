@@ -4,11 +4,23 @@ import logging
 
 import aiohttp
 
-from db.database import get_or_create_site, save_check, save_incident, resolve_incident
+from db.database import (
+    get_or_create_site, save_check, save_incident, resolve_incident,
+    get_recent_check_statuses,
+)
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+# Number of consecutive failures required before we open an incident.
+# A single transient flap should not page the user.
+CONSECUTIVE_FAILURE_THRESHOLD = 2
+
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 DevOpsBot/1.0"
+)
 
 
 async def check_availability(url: str) -> dict:
@@ -20,11 +32,15 @@ async def check_availability(url: str) -> dict:
         "status_code": None,
         "response_time_ms": None,
         "error": None,
+        "incident_new": False,
+        "recovered": False,
     }
 
     start = time.monotonic()
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+        async with aiohttp.ClientSession(
+            timeout=TIMEOUT, headers={"User-Agent": USER_AGENT},
+        ) as session:
             async with session.get(url, ssl=True, allow_redirects=True) as resp:
                 result["status_code"] = resp.status
                 result["response_time_ms"] = int((time.monotonic() - start) * 1000)
@@ -54,11 +70,20 @@ async def check_availability(url: str) -> dict:
     )
 
     if result["status"] == "error":
-        await save_incident(
-            site_id, "availability",
-            f"Site down: {result['error']}",
-            severity="critical"
+        # Only open an incident after N consecutive failures — single flaps
+        # are normal on the public internet.
+        recent = await get_recent_check_statuses(
+            site_id, "availability", limit=CONSECUTIVE_FAILURE_THRESHOLD,
         )
+        if len(recent) >= CONSECUTIVE_FAILURE_THRESHOLD and all(
+            s == "error" for s in recent
+        ):
+            _, is_new = await save_incident(
+                site_id, "availability",
+                f"Site down: {result['error']}",
+                severity="critical",
+            )
+            result["incident_new"] = is_new
     else:
         resolved = await resolve_incident(site_id, "availability")
         if resolved:

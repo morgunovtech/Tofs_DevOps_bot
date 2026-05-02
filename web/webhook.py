@@ -10,6 +10,7 @@ Body JSON: {
 }
 """
 
+import hmac
 import json
 import logging
 import os
@@ -25,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 
 async def handle_feedback(request: web.Request) -> web.Response:
-    # Validate secret
+    # Validate secret with constant-time comparison
     secret = request.headers.get("X-Webhook-Secret", "")
-    if secret != config.webhook_secret:
+    if not hmac.compare_digest(secret, config.webhook_secret):
         logger.warning(f"Feedback: invalid secret from {request.remote}")
         return web.Response(status=403, text="Forbidden")
 

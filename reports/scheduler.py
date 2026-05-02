@@ -12,9 +12,12 @@ from monitors.availability import check_all
 from monitors.ssl_checker import check_all_ssl
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
-from db.database import get_active_incidents
+from db.database import (
+    get_active_incidents, get_state,
+    get_or_create_site, save_incident, resolve_incident,
+)
 from reports.formatter import (
-    format_status_report,
+    format_compact_status_report,
     format_availability_alert,
     format_recovery_alert,
     format_ssl_alert,
@@ -25,94 +28,168 @@ from reports.formatter import (
 logger = logging.getLogger(__name__)
 
 
-async def send_to_admin(bot: Bot, text: str):
-    """Send a message to the admin chat."""
+# ── Mute ─────────────────────────────────────────────────────────────────────
+
+async def is_muted() -> bool:
+    """True if the user has silenced non-critical alerts."""
+    until = await get_state("mute_until")
+    if not until:
+        return False
+    try:
+        deadline = datetime.fromisoformat(until)
+    except ValueError:
+        return False
+    return datetime.utcnow() < deadline
+
+
+async def send_to_admin(bot: Bot, text: str, force: bool = False):
+    """Send a message to the admin chat. Honors mute unless `force=True`."""
+    if not force and await is_muted():
+        logger.info("Skipping alert (muted): %s", text[:60])
+        return
     try:
         await bot.send_message(chat_id=config.admin_chat_id, text=text)
     except Exception as e:
         logger.error(f"Failed to send message to admin: {e}")
 
 
+# ── Alert handlers ───────────────────────────────────────────────────────────
+
+# In-memory tracker for "slow response" — N consecutive checks > threshold.
+SLOW_RESPONSE_MS = 3000
+SLOW_RESPONSE_STREAK = 3
+_slow_streak: dict[str, int] = {}
+
+
 async def run_availability_checks(bot: Bot):
-    """Run availability checks and send alerts if something is wrong."""
+    """Run availability checks. Alert only on state transitions."""
     urls = config.get_site_urls()
     results = await check_all(urls)
 
     for r in results:
-        if r.get("error") and r["status"] == "error":
+        if r.get("incident_new"):
             msg = format_availability_alert(r)
             if msg:
-                await send_to_admin(bot, msg)
+                await send_to_admin(bot, msg, force=True)
         elif r.get("recovered"):
-            msg = format_recovery_alert(r)
-            await send_to_admin(bot, msg)
+            await send_to_admin(bot, format_recovery_alert(r), force=True)
+
+        # Slow-response detection: the site is up, but consistently slow.
+        # Open a "performance" incident only after a streak of slow responses.
+        if r.get("status") == "ok":
+            ms = r.get("response_time_ms") or 0
+            url = r["url"]
+            if ms >= SLOW_RESPONSE_MS:
+                _slow_streak[url] = _slow_streak.get(url, 0) + 1
+                if _slow_streak[url] == SLOW_RESPONSE_STREAK:
+                    site_id = await get_or_create_site(url)
+                    _, is_new = await save_incident(
+                        site_id, "performance",
+                        f"Slow responses: ~{ms}ms",
+                        severity="warning",
+                    )
+                    if is_new:
+                        await send_to_admin(
+                            bot,
+                            f"🐢 {url} отвечает медленно — "
+                            f"{ms}ms ({SLOW_RESPONSE_STREAK} проверки подряд)",
+                        )
+            else:
+                if _slow_streak.get(url):
+                    _slow_streak[url] = 0
+                    site_id = await get_or_create_site(url)
+                    if await resolve_incident(site_id, "performance"):
+                        await send_to_admin(
+                            bot,
+                            f"✅ {url} — скорость восстановилась ({ms}ms)",
+                        )
 
 
 async def run_ssl_checks(bot: Bot):
-    """Run SSL checks and alert on issues."""
+    """SSL alert ladder: notify only when crossing a new threshold."""
     urls = config.get_site_urls()
     results = await check_all_ssl(urls)
 
     for r in results:
-        if r["status"] in ("error", "critical", "warning"):
+        if r.get("incident_new"):
             msg = format_ssl_alert(r)
             if msg:
                 await send_to_admin(bot, msg)
+        elif r.get("recovered"):
+            await send_to_admin(
+                bot,
+                f"✅ SSL: {r['url']} — сертификат обновлён, всё в порядке",
+            )
 
 
 async def run_domain_checks(bot: Bot):
-    """Run domain expiry checks and alert on issues."""
+    """Domain alert ladder."""
     urls = config.get_site_urls()
     results = await check_all_domains(urls)
 
     for r in results:
-        if r["status"] in ("error", "critical", "warning") and r.get("error"):
+        if r.get("incident_new"):
             msg = format_domain_alert(r)
             if msg:
                 await send_to_admin(bot, msg)
+        elif r.get("recovered"):
+            await send_to_admin(
+                bot,
+                f"✅ Домен {r.get('domain', r['url'])} — продлён, всё в порядке",
+            )
 
 
 async def run_links_checks(bot: Bot):
-    """Run broken links checks and alert."""
+    """Broken-links alerts: only when a new internal-broken-links incident opens."""
     urls = config.get_site_urls()
     results = await check_all_links(urls)
 
     for r in results:
-        if r.get("broken_links"):
+        if r.get("incident_new"):
             msg = format_links_report(r)
             if msg:
                 await send_to_admin(bot, msg)
+        elif r.get("recovered"):
+            await send_to_admin(
+                bot,
+                f"✅ Ссылки на {r['url']} — все внутренние ссылки снова работают",
+            )
 
+
+# ── Daily reports ────────────────────────────────────────────────────────────
 
 async def send_morning_report(bot: Bot):
-    """Send a comprehensive morning status report."""
-    await send_to_admin(bot, "⏳ Формирую утренний отчёт...")
-
+    """Compact morning status report."""
     urls = config.get_site_urls()
     availability = await check_all(urls)
     ssl_results = await check_all_ssl(urls)
     domain_results = await check_all_domains(urls)
     incidents = await get_active_incidents()
 
-    report = format_status_report(
+    report = format_compact_status_report(
         availability=availability,
         incidents=incidents,
         ssl_results=ssl_results,
         domain_results=domain_results,
         report_type="morning",
     )
+    # Daily report is informational — it should respect mute.
     await send_to_admin(bot, report)
 
 
 async def send_evening_report(bot: Bot):
-    """Send a comprehensive evening status report."""
+    """Evening report — only if there's something interesting."""
+    incidents = await get_active_incidents()
+    if not incidents:
+        logger.info("Evening report skipped: no active incidents.")
+        return
+
     urls = config.get_site_urls()
     availability = await check_all(urls)
     ssl_results = await check_all_ssl(urls)
     domain_results = await check_all_domains(urls)
-    incidents = await get_active_incidents()
 
-    report = format_status_report(
+    report = format_compact_status_report(
         availability=availability,
         incidents=incidents,
         ssl_results=ssl_results,
@@ -122,12 +199,13 @@ async def send_evening_report(bot: Bot):
     await send_to_admin(bot, report)
 
 
+# ── Setup ────────────────────────────────────────────────────────────────────
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Configure and return the APScheduler instance."""
     tz = pytz.timezone(config.timezone)
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    # Availability checks every N minutes (default: 5)
     scheduler.add_job(
         run_availability_checks,
         trigger=IntervalTrigger(minutes=config.check_interval_minutes),
@@ -138,7 +216,7 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         misfire_grace_time=60,
     )
 
-    # SSL + domain checks once a day at 08:00
+    # SSL + domain once a day — alert ladder prevents repeat noise.
     scheduler.add_job(
         run_ssl_checks,
         trigger=CronTrigger(hour=8, minute=0, timezone=tz),
@@ -156,7 +234,6 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         max_instances=1,
     )
 
-    # Links check every N hours (default: 6)
     scheduler.add_job(
         run_links_checks,
         trigger=IntervalTrigger(hours=config.links_check_interval_hours),
@@ -167,7 +244,6 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         misfire_grace_time=300,
     )
 
-    # Morning report
     scheduler.add_job(
         send_morning_report,
         trigger=CronTrigger(hour=config.morning_report_hour, minute=0, timezone=tz),
@@ -177,7 +253,6 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
         max_instances=1,
     )
 
-    # Evening report
     scheduler.add_job(
         send_evening_report,
         trigger=CronTrigger(hour=config.evening_report_hour, minute=0, timezone=tz),

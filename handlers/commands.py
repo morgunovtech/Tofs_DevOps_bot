@@ -1,8 +1,10 @@
 import logging
+from datetime import datetime, timedelta
+
 from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery,
-    InlineKeyboardMarkup, InlineKeyboardButton
+    InlineKeyboardMarkup, InlineKeyboardButton,
 )
 from aiogram.filters import Command, CommandStart
 
@@ -14,9 +16,13 @@ from monitors.links_checker import check_all_links
 from monitors.availability import check_availability
 from monitors.ssl_checker import check_ssl
 from monitors.domain_checker import check_domain
-from db.database import get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site
+from db.database import (
+    get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
+    get_state, set_state,
+)
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
+    format_compact_status_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -44,6 +50,7 @@ def main_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🌍 Проверить сайт", callback_data="menu_check_site"),
+            InlineKeyboardButton(text="🔕 Тишина",          callback_data="menu_mute"),
         ],
     ])
 
@@ -97,6 +104,158 @@ async def cmd_menu(message: Message):
         await message.answer("⛔ Доступ только для администратора.")
         return
     await send_main_menu(message)
+
+
+# ── /status — quick one-line summary ─────────────────────────────────────────
+
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+    await message.answer("⏳ Проверяю...")
+    urls = config.get_site_urls()
+    availability = await check_all(urls)
+    incidents = await get_active_incidents()
+    text = format_compact_status_report(
+        availability=availability, incidents=incidents,
+    )
+    await message.answer(text, reply_markup=back_button())
+
+
+# ── /sites — list configured sites ───────────────────────────────────────────
+
+@router.message(Command("sites"))
+async def cmd_sites(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+    urls = config.get_site_urls()
+    if not urls:
+        await message.answer("Сайты не настроены — задай SITES в .env")
+        return
+    text = "🌍 Отслеживаю:\n" + "\n".join(f"  • {u}" for u in urls)
+    await message.answer(text)
+
+
+# ── /mute и /unmute ──────────────────────────────────────────────────────────
+
+def _parse_duration(arg: str) -> timedelta | None:
+    """Parse '1h', '8h', '30m', '1d' → timedelta. Default unit: minutes."""
+    if not arg:
+        return None
+    arg = arg.strip().lower()
+    unit_map = {"m": 60, "h": 3600, "d": 86400}
+    if arg[-1] in unit_map:
+        try:
+            num = int(arg[:-1])
+        except ValueError:
+            return None
+        return timedelta(seconds=num * unit_map[arg[-1]])
+    try:
+        return timedelta(minutes=int(arg))
+    except ValueError:
+        return None
+
+
+@router.message(Command("mute"))
+async def cmd_mute(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1] if len(parts) > 1 else "8h"
+    duration = _parse_duration(arg)
+    if not duration:
+        await message.answer(
+            "Использование: /mute &lt;время&gt;\n"
+            "Примеры: /mute 1h, /mute 8h, /mute 30m, /mute 1d\n"
+            "По умолчанию: 8h"
+        )
+        return
+    deadline = datetime.utcnow() + duration
+    await set_state("mute_until", deadline.isoformat())
+    local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
+    await message.answer(
+        f"🔕 Алерты приглушены до {local_until}.\n"
+        f"Критические алерты (сайт лежит) всё равно придут.\n"
+        f"Снять: /unmute"
+    )
+
+
+@router.message(Command("unmute"))
+async def cmd_unmute(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Доступ только для администратора.")
+        return
+    await set_state("mute_until", None)
+    await message.answer("🔔 Алерты снова включены.")
+
+
+# ── 🔕 Mute via inline menu ──────────────────────────────────────────────────
+
+def _mute_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1 час",  callback_data="mute:1h"),
+            InlineKeyboardButton(text="4 часа", callback_data="mute:4h"),
+            InlineKeyboardButton(text="8 часов", callback_data="mute:8h"),
+        ],
+        [
+            InlineKeyboardButton(text="1 день", callback_data="mute:1d"),
+            InlineKeyboardButton(text="🔔 Снять тишину", callback_data="mute:off"),
+        ],
+        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
+    ])
+
+
+@router.callback_query(F.data == "menu_mute")
+async def cb_mute_menu(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    until_iso = await get_state("mute_until")
+    status = ""
+    if until_iso:
+        try:
+            deadline = datetime.fromisoformat(until_iso)
+            if deadline > datetime.utcnow():
+                local = (datetime.now() + (deadline - datetime.utcnow())).strftime("%d.%m %H:%M")
+                status = f"🔕 Сейчас приглушено до {local}\n\n"
+        except ValueError:
+            pass
+    await call.message.edit_text(
+        f"{status}На сколько приглушить алерты?\n"
+        f"(критические — «сайт лежит» — всё равно придут)",
+        reply_markup=_mute_menu(),
+    )
+
+
+@router.callback_query(F.data.startswith("mute:"))
+async def cb_mute_pick(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    arg = call.data.split(":", 1)[1]
+    if arg == "off":
+        await set_state("mute_until", None)
+        await call.message.edit_text("🔔 Алерты снова включены.", reply_markup=back_button())
+        return
+    duration = _parse_duration(arg)
+    if not duration:
+        await call.message.edit_text("Не понял длительность.", reply_markup=back_button())
+        return
+    deadline = datetime.utcnow() + duration
+    await set_state("mute_until", deadline.isoformat())
+    local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
+    await call.message.edit_text(
+        f"🔕 Алерты приглушены до {local_until}.\n"
+        f"Критические алерты всё равно придут.\n"
+        f"Снять: /unmute",
+        reply_markup=back_button(),
+    )
 
 
 # ── Back to main menu ────────────────────────────────────────────────────────
@@ -166,12 +325,21 @@ async def cb_full_check(call: CallbackQuery):
         report_type="status",
     )
 
-    # Append links summary
-    broken_total = sum(len(r.get("broken_links", [])) for r in links_results)
-    if broken_total:
-        report += f"\n\n⚠️ Битых ссылок: {broken_total} шт. — нажми «🔗 Ссылки» для деталей"
+    # Append links summary (internal-only is what matters)
+    internal_broken = sum(len(r.get("broken_internal", [])) for r in links_results)
+    external_broken = sum(len(r.get("broken_external", [])) for r in links_results)
+    if internal_broken:
+        report += (
+            f"\n\n⚠️ Битых внутренних ссылок: {internal_broken} шт. "
+            "— нажми «🔗 Ссылки» для деталей"
+        )
+    elif external_broken:
+        report += (
+            f"\n\n✅ Внутренние ссылки в норме "
+            f"(внешних недоступных: {external_broken}, не критично)"
+        )
     else:
-        report += f"\n\n✅ Все ссылки в норме"
+        report += "\n\n✅ Все ссылки в норме"
 
     await call.message.edit_text(report, reply_markup=back_button())
 
@@ -278,10 +446,16 @@ async def cb_check_links(call: CallbackQuery):
     from monitors.links_checker import check_links
     result = await check_links(url)
 
-    if result.get("broken_links"):
+    if result.get("broken_internal"):
         text = format_links_report(result)
     else:
-        text = f"✅ Все {result['total_links']} ссылок на {url} работают корректно"
+        ext = len(result.get("broken_external") or [])
+        text = (
+            f"✅ Все внутренние ссылки на {url} работают "
+            f"({result['total_links']} проверено)"
+        )
+        if ext:
+            text += f"\nℹ️ Внешних ресурсов недоступно: {ext} — обычно не критично"
 
     await call.message.edit_text(text, reply_markup=back_button())
 

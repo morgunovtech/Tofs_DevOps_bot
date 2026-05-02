@@ -5,9 +5,16 @@ from urllib.parse import urlparse
 
 import whois
 
-from db.database import get_or_create_site, save_check, save_incident, resolve_incident
+from db.database import (
+    get_or_create_site, save_check, save_incident, resolve_incident,
+    get_last_alert_threshold, set_last_alert_threshold,
+)
 
 logger = logging.getLogger(__name__)
+
+# Domain expiry warnings should start earlier than SSL — registrars are slower.
+# Sorted ascending so _current_threshold picks the smallest band days_left fits in.
+DOMAIN_THRESHOLDS = [0, 1, 3, 7, 14, 30]
 
 
 def _get_domain_info(domain: str) -> dict:
@@ -42,11 +49,17 @@ def _get_domain_info(domain: str) -> dict:
     }
 
 
+def _current_threshold(days_left: int) -> int | None:
+    for t in DOMAIN_THRESHOLDS:
+        if days_left <= t:
+            return t
+    return None
+
+
 async def check_domain(url: str) -> dict:
     """Check domain registration expiry."""
     parsed = urlparse(url)
     hostname = parsed.hostname
-    # Extract registrable domain (e.g. morgunov.tech from s.morgunov.tech)
     parts = hostname.split(".")
     if len(parts) > 2:
         domain = ".".join(parts[-2:])
@@ -61,6 +74,9 @@ async def check_domain(url: str) -> dict:
         "status": "ok",
         "error": None,
         "domain_info": None,
+        "incident_new": False,
+        "recovered": False,
+        "threshold_crossed": None,
     }
 
     try:
@@ -89,26 +105,57 @@ async def check_domain(url: str) -> dict:
         result["status"] = "warning"
         result["error"] = f"WHOIS lookup failed: {e}"
 
+    if result["domain_info"]:
+        details = result["error"] or (
+            f"OK, {result['domain_info']['days_left']} days left"
+        )
+    else:
+        details = result["error"]
+
     await save_check(
         site_id=site_id,
         check_type="domain",
         status=result["status"],
-        details=result["error"] or f"OK, {result['domain_info']['days_left']} days left" if result["domain_info"] else None,
+        details=details,
     )
 
+    # WHOIS failures are flaky — don't manage incidents based on them, just log.
+    if result["status"] == "warning" and result["error"] and result["error"].startswith("WHOIS"):
+        return result
+
+    last_threshold = await get_last_alert_threshold(site_id, "domain")
+
     if result["status"] in ("error", "critical", "warning") and result["error"]:
-        await save_incident(
-            site_id, "domain", result["error"],
-            severity="critical" if result["status"] in ("error", "critical") else "warning"
-        )
+        days = result["domain_info"]["days_left"] if result["domain_info"] else -999
+        if days is None:
+            return result
+        current = _current_threshold(days)
+
+        if last_threshold is None or (current is not None and current < last_threshold):
+            await save_incident(
+                site_id, "domain", result["error"],
+                severity="critical" if result["status"] in ("error", "critical") else "warning",
+            )
+            result["incident_new"] = True
+            result["threshold_crossed"] = current
+            await set_last_alert_threshold(site_id, "domain", current)
+        else:
+            await save_incident(
+                site_id, "domain", result["error"],
+                severity="critical" if result["status"] in ("error", "critical") else "warning",
+            )
     else:
-        await resolve_incident(site_id, "domain")
+        resolved = await resolve_incident(site_id, "domain")
+        if resolved:
+            result["recovered"] = True
+        if last_threshold is not None:
+            await set_last_alert_threshold(site_id, "domain", None)
 
     return result
 
 
 async def check_all_domains(urls: list[str]) -> list[dict]:
-    # Deduplicate by registrable domain to avoid multiple WHOIS queries
+    # Deduplicate by registrable domain to avoid multiple WHOIS queries.
     seen_domains = set()
     unique_urls = []
     for url in urls:

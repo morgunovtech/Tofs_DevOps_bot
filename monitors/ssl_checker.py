@@ -5,9 +5,16 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from db.database import get_or_create_site, save_check, save_incident, resolve_incident
+from db.database import (
+    get_or_create_site, save_check, save_incident, resolve_incident,
+    get_last_alert_threshold, set_last_alert_threshold,
+)
 
 logger = logging.getLogger(__name__)
+
+# Alert ladder for SSL — we notify once per threshold crossing, not daily.
+# Sorted ascending so _current_threshold picks the smallest band days_left fits in.
+SSL_THRESHOLDS = [0, 1, 3, 7, 14]
 
 
 def _get_ssl_info(hostname: str, port: int = 443) -> dict:
@@ -37,6 +44,14 @@ def _get_ssl_info(hostname: str, port: int = 443) -> dict:
     }
 
 
+def _current_threshold(days_left: int) -> int | None:
+    """Return the lowest threshold days_left has crossed, or None if all clear."""
+    for t in SSL_THRESHOLDS:
+        if days_left <= t:
+            return t
+    return None
+
+
 async def check_ssl(url: str) -> dict:
     """Check SSL certificate for a URL."""
     parsed = urlparse(url)
@@ -49,6 +64,9 @@ async def check_ssl(url: str) -> dict:
         "status": "ok",
         "error": None,
         "ssl_info": None,
+        "incident_new": False,
+        "recovered": False,
+        "threshold_crossed": None,
     }
 
     try:
@@ -74,20 +92,50 @@ async def check_ssl(url: str) -> dict:
         result["status"] = "error"
         result["error"] = f"SSL check failed: {e}"
 
+    if result["ssl_info"]:
+        details = result["error"] or f"OK, {result['ssl_info']['days_left']} days left"
+    else:
+        details = result["error"]
+
     await save_check(
         site_id=site_id,
         check_type="ssl",
         status=result["status"],
-        details=result["error"] or f"OK, {result['ssl_info']['days_left']} days left" if result["ssl_info"] else None,
+        details=details,
     )
 
+    # Alert ladder: only fire when we cross to a new (lower) threshold,
+    # not every daily check.
+    last_threshold = await get_last_alert_threshold(site_id, "ssl")
+
     if result["status"] in ("error", "critical", "warning"):
-        await save_incident(
-            site_id, "ssl", result["error"],
-            severity="critical" if result["status"] in ("error", "critical") else "warning"
-        )
+        days = result["ssl_info"]["days_left"] if result["ssl_info"] else -999
+        current = _current_threshold(days) if result["ssl_info"] else 0
+
+        # Re-alert only when threshold dropped (e.g. from 14 → 7 → 3 → expired)
+        if last_threshold is None or (current is not None and current < last_threshold):
+            _, is_new = await save_incident(
+                site_id, "ssl", result["error"],
+                severity="critical" if result["status"] in ("error", "critical") else "warning",
+            )
+            # If incident was already open from a prior threshold, force "new"
+            # so the scheduler sends an updated alert for the worse threshold.
+            result["incident_new"] = True
+            result["threshold_crossed"] = current
+            await set_last_alert_threshold(site_id, "ssl", current)
+        else:
+            # Same threshold or better — keep incident open silently.
+            await save_incident(
+                site_id, "ssl", result["error"],
+                severity="critical" if result["status"] in ("error", "critical") else "warning",
+            )
     else:
-        await resolve_incident(site_id, "ssl")
+        # All clear — close incident, reset ladder, fire recovery alert if needed.
+        resolved = await resolve_incident(site_id, "ssl")
+        if resolved:
+            result["recovered"] = True
+        if last_threshold is not None:
+            await set_last_alert_threshold(site_id, "ssl", None)
 
     return result
 

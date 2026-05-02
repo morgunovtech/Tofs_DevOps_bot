@@ -1,14 +1,21 @@
-import aiosqlite
 import os
-from datetime import datetime
+import aiosqlite
 
-DB_PATH = "data/bot.db"
+from config import config
+
+
+def _db_path() -> str:
+    return config.db_path
 
 
 async def get_db() -> aiosqlite.Connection:
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    db = await aiosqlite.connect(DB_PATH)
+    path = _db_path()
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    db = await aiosqlite.connect(path)
     db.row_factory = aiosqlite.Row
+    # Make concurrent reads + single-writer cleanly tolerated.
+    await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA busy_timeout=5000")
     return db
 
 
@@ -58,6 +65,23 @@ async def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- Tracks the last alert-ladder threshold we notified for SSL/domain
+            -- so we don't ping daily about the same "expires in 14 days" warning.
+            CREATE TABLE IF NOT EXISTS alert_state (
+                site_id INTEGER NOT NULL,
+                check_type TEXT NOT NULL,
+                last_threshold INTEGER,
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (site_id, check_type)
+            );
+
+            -- Generic key/value store for bot state (mute deadline, etc.)
+            CREATE TABLE IF NOT EXISTS bot_state (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_checks_site_type
                 ON checks(site_id, check_type, checked_at);
             CREATE INDEX IF NOT EXISTS idx_incidents_active
@@ -77,7 +101,7 @@ async def get_or_create_site(url: str, name: str | None = None) -> int:
             return row[0]
         cursor = await db.execute(
             "INSERT INTO sites (url, name) VALUES (?, ?)",
-            (url, name or url)
+            (url, name or url),
         )
         await db.commit()
         return cursor.lastrowid
@@ -92,9 +116,10 @@ async def save_check(site_id: int, check_type: str, status: str,
     db = await get_db()
     try:
         await db.execute(
-            """INSERT INTO checks (site_id, check_type, status, response_time_ms, status_code, details)
+            """INSERT INTO checks (site_id, check_type, status,
+                                   response_time_ms, status_code, details)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (site_id, check_type, status, response_time_ms, status_code, details)
+            (site_id, check_type, status, response_time_ms, status_code, details),
         )
         await db.commit()
     finally:
@@ -102,23 +127,32 @@ async def save_check(site_id: int, check_type: str, status: str,
 
 
 async def save_incident(site_id: int, check_type: str, message: str,
-                        severity: str = "warning") -> int:
+                        severity: str = "warning") -> tuple[int, bool]:
+    """Insert or reuse an open incident. Returns (incident_id, is_new).
+
+    `is_new=True` means this is the first time we've seen this problem since the
+    last resolution — callers use it to fire alerts only on state change.
+    """
     db = await get_db()
     try:
+        # Single transaction so two concurrent writers can't both insert.
+        await db.execute("BEGIN IMMEDIATE")
         cursor = await db.execute(
             """SELECT id FROM incidents
                WHERE site_id = ? AND check_type = ? AND resolved = 0""",
-            (site_id, check_type)
+            (site_id, check_type),
         )
         existing = await cursor.fetchone()
         if existing:
-            return existing[0]
+            await db.commit()
+            return existing[0], False
         cursor = await db.execute(
-            "INSERT INTO incidents (site_id, check_type, message, severity) VALUES (?, ?, ?, ?)",
-            (site_id, check_type, message, severity)
+            """INSERT INTO incidents (site_id, check_type, message, severity)
+               VALUES (?, ?, ?, ?)""",
+            (site_id, check_type, message, severity),
         )
         await db.commit()
-        return cursor.lastrowid
+        return cursor.lastrowid, True
     finally:
         await db.close()
 
@@ -129,7 +163,7 @@ async def resolve_incident(site_id: int, check_type: str) -> bool:
         cursor = await db.execute(
             """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
                WHERE site_id = ? AND check_type = ? AND resolved = 0""",
-            (site_id, check_type)
+            (site_id, check_type),
         )
         await db.commit()
         return cursor.rowcount > 0
@@ -161,7 +195,7 @@ async def get_latest_checks(site_id: int | None = None) -> list[dict]:
                    JOIN sites s ON c.site_id = s.id
                    WHERE c.site_id = ?
                    ORDER BY c.checked_at DESC LIMIT 20""",
-                (site_id,)
+                (site_id,),
             )
         else:
             cursor = await db.execute(
@@ -176,6 +210,23 @@ async def get_latest_checks(site_id: int | None = None) -> list[dict]:
             )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_recent_check_statuses(site_id: int, check_type: str,
+                                    limit: int = 5) -> list[str]:
+    """Return the most recent N check statuses for a site/type, newest first."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """SELECT status FROM checks
+               WHERE site_id = ? AND check_type = ?
+               ORDER BY id DESC LIMIT ?""",
+            (site_id, check_type, limit),
+        )
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
     finally:
         await db.close()
 
@@ -197,9 +248,10 @@ async def save_feedback(site_url: str, page_url: str, message: str,
     db = await get_db()
     try:
         cursor = await db.execute(
-            """INSERT INTO feedback (site_url, page_url, message, user_agent, ip_address)
+            """INSERT INTO feedback (site_url, page_url, message,
+                                     user_agent, ip_address)
                VALUES (?, ?, ?, ?, ?)""",
-            (site_url, page_url, message, user_agent, ip_address)
+            (site_url, page_url, message, user_agent, ip_address),
         )
         await db.commit()
         return cursor.lastrowid
@@ -218,7 +270,7 @@ async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
                FROM checks
                WHERE site_id = ? AND check_type = 'availability'
                  AND checked_at >= datetime('now', ?)""",
-            (site_id, f"-{hours} hours")
+            (site_id, f"-{hours} hours"),
         )
         row = await cursor.fetchone()
         total = row[0] or 0
@@ -227,7 +279,72 @@ async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
             "total_checks": total,
             "ok_checks": ok,
             "uptime_pct": round(ok / total * 100, 2) if total > 0 else 0,
-            "avg_response_ms": round(row[2]) if row[2] else 0
+            "avg_response_ms": round(row[2]) if row[2] else 0,
         }
+    finally:
+        await db.close()
+
+
+# ── Alert ladder state ───────────────────────────────────────────────────────
+
+async def get_last_alert_threshold(site_id: int, check_type: str) -> int | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT last_threshold FROM alert_state WHERE site_id = ? AND check_type = ?",
+            (site_id, check_type),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        await db.close()
+
+
+async def set_last_alert_threshold(site_id: int, check_type: str,
+                                   threshold: int | None):
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO alert_state (site_id, check_type, last_threshold, updated_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(site_id, check_type) DO UPDATE SET
+                 last_threshold = excluded.last_threshold,
+                 updated_at = datetime('now')""",
+            (site_id, check_type, threshold),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# ── bot_state KV ─────────────────────────────────────────────────────────────
+
+async def get_state(key: str) -> str | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT value FROM bot_state WHERE key = ?", (key,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        await db.close()
+
+
+async def set_state(key: str, value: str | None):
+    db = await get_db()
+    try:
+        if value is None:
+            await db.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+        else:
+            await db.execute(
+                """INSERT INTO bot_state (key, value, updated_at)
+                   VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET
+                     value = excluded.value,
+                     updated_at = datetime('now')""",
+                (key, value),
+            )
+        await db.commit()
     finally:
         await db.close()
