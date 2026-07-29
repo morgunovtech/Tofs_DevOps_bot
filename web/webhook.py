@@ -24,7 +24,7 @@ from aiohttp import web
 from aiogram import Bot
 
 from config import config
-from db.database import save_feedback
+from db.database import save_feedback, heartbeat_ping, get_state, set_state
 from reports.formatter import format_feedback
 
 logger = logging.getLogger(__name__)
@@ -150,6 +150,30 @@ async def handle_feedback(request: web.Request) -> web.Response:
     return _response(201, json_body={"ok": True, "id": feedback_id})
 
 
+async def handle_heartbeat(request: web.Request) -> web.Response:
+    """Dead-man switch ping: external jobs (backup cron etc.) hit
+    GET /api/heartbeat/<secret>/<job> when they finish successfully.
+    The token lives in the path, healthchecks.io-style, so a plain
+    `curl <url>` at the end of a cron line is the whole integration."""
+    token = request.match_info.get("token", "")
+    job = request.match_info.get("job", "")[:64]
+    if not hmac.compare_digest(token, config.heartbeat_secret):
+        return web.Response(status=403, text="Forbidden")
+    if not job:
+        return web.Response(status=400, text="job name required")
+
+    await heartbeat_ping(job)
+
+    # If we had alerted that this job went silent — announce recovery.
+    if await get_state(f"hb_alerted:{job}"):
+        await set_state(f"hb_alerted:{job}", None)
+        from reports.scheduler import send_to_admin
+        await send_to_admin(
+            request.app["bot"], f"💚 Heartbeat «{job}» снова подаёт сигналы"
+        )
+    return web.Response(text="ok")
+
+
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
@@ -174,6 +198,8 @@ def create_app(bot: Bot) -> web.Application:
     app["bot"] = bot
     app.router.add_post("/api/feedback", handle_feedback)
     app.router.add_options("/api/feedback", handle_feedback_options)
+    app.router.add_get("/api/heartbeat/{token}/{job}", handle_heartbeat)
+    app.router.add_post("/api/heartbeat/{token}/{job}", handle_heartbeat)
     app.router.add_get("/feedback-widget.js", handle_widget)
     app.router.add_get("/health", handle_health)
     return app

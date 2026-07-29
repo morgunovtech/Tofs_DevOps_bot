@@ -1,6 +1,10 @@
 import html
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
+
+import pytz
+
+from config import config
 
 
 def _esc(value) -> str:
@@ -53,7 +57,8 @@ def format_compact_status_report(availability: list[dict],
                                  incidents: list[dict],
                                  ssl_results: list[dict] | None = None,
                                  domain_results: list[dict] | None = None,
-                                 report_type: str = "status") -> str:
+                                 report_type: str = "status",
+                                 extras: list[str] | None = None) -> str:
     """One concise message: header + one line per site + incidents (if any)."""
     now = datetime.now().strftime("%d.%m %H:%M")
     if report_type == "morning":
@@ -111,6 +116,10 @@ def format_compact_status_report(availability: list[dict],
         lines.append("")
         lines.append("Всё работает 👌")
 
+    if extras:
+        lines.append("")
+        lines.extend(extras)
+
     return "\n".join(lines)
 
 
@@ -132,12 +141,62 @@ def format_availability_alert(result: dict) -> str:
     )
 
 
+def _parse_sqlite_utc(value: str) -> datetime | None:
+    """Parse sqlite's datetime('now') format ('YYYY-MM-DD HH:MM:SS', UTC)."""
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def incident_duration_line(incident: dict | None) -> str | None:
+    """'лежал 12 мин (14:03–14:15)' — one line summarising the outage window
+    in the user's local timezone. None when the data isn't parseable."""
+    if not incident:
+        return None
+    started = _parse_sqlite_utc(incident.get("created_at", ""))
+    if not started:
+        return None
+    ended = datetime.now(timezone.utc)
+    minutes = max(1, round((ended - started).total_seconds() / 60))
+    tz = pytz.timezone(config.timezone)
+    fmt = "%H:%M" if minutes < 24 * 60 else "%d.%m %H:%M"
+    window = (f"{started.astimezone(tz).strftime(fmt)}–"
+              f"{ended.astimezone(tz).strftime(fmt)}")
+    if minutes < 60:
+        dur = f"{minutes} мин"
+    else:
+        dur = f"{minutes // 60} ч {minutes % 60} мин"
+    return f"Длительность: {dur} ({window})"
+
+
 def format_recovery_alert(result: dict) -> str:
-    return (
-        f"✅ САЙТ ВОССТАНОВЛЕН\n"
-        f"{_esc(result['url'])}\n"
+    lines = [
+        f"✅ САЙТ ВОССТАНОВЛЕН",
+        f"{_esc(result['url'])}",
         f"Код: {_esc(result.get('status_code', 'N/A'))}\n"
-        f"Время ответа: {_esc(result.get('response_time_ms', 'N/A'))}ms"
+        f"Время ответа: {_esc(result.get('response_time_ms', 'N/A'))}ms",
+    ]
+    # Post-incident summary: how long it was down and what the problem was.
+    incident = result.get("resolved_incident")
+    duration = incident_duration_line(incident)
+    if duration:
+        lines.append(duration)
+    if incident and incident.get("message"):
+        lines.append(f"Причина: {_esc(incident['message'])}")
+    return "\n".join(lines)
+
+
+def format_dns_change(change: dict) -> str:
+    icon = "🚨" if change.get("critical") else "⚠️"
+    header = ("DNS: СМЕНИЛИСЬ NS-ЗАПИСИ (проверь, не угнали ли домен!)"
+              if change.get("critical") else "DNS-запись изменилась")
+    return (
+        f"{icon} {header}\n"
+        f"{_esc(change['rtype'])} {_esc(change['host'])}\n"
+        f"Было: {_esc(change['old'])}\n"
+        f"Стало: {_esc(change['new'])}"
     )
 
 

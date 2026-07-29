@@ -1,7 +1,10 @@
 import logging
+import os
 from datetime import datetime, timezone
 
+import aiohttp
 from aiogram import Bot
+from aiogram.types import FSInputFile
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -12,9 +15,17 @@ from monitors.availability import check_all
 from monitors.ssl_checker import check_all_ssl
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
+from monitors.dns_checker import check_all_dns
+from monitors.deep_checker import check_all_deep
+from monitors.host_checker import check_disk, watch_containers
+from services.actions import (
+    alert_actions_keyboard, deploy_hook_for, trigger_redeploy,
+)
 from db.database import (
-    get_active_incidents, get_state,
+    get_active_incidents, get_state, set_state,
     get_or_create_site, save_incident, resolve_incident,
+    get_heartbeats, get_all_sites, get_uptime_stats,
+    queue_notification, pop_notifications, rollup_old_checks, backup_db,
 )
 from reports.formatter import (
     format_compact_status_report,
@@ -23,12 +34,29 @@ from reports.formatter import (
     format_ssl_alert,
     format_domain_alert,
     format_links_report,
+    format_dns_change,
+    incident_duration_line,
+    _parse_sqlite_utc,
+    _short_host,
 )
+from reports.weekly import build_weekly_report
 
 logger = logging.getLogger(__name__)
 
+# Set when the scheduler starts; used as the grace reference for heartbeat
+# jobs that have never pinged.
+_started_at: datetime | None = None
 
-# ── Mute ─────────────────────────────────────────────────────────────────────
+TG_MESSAGE_LIMIT = 4096
+
+
+def _clip(text: str, limit: int = TG_MESSAGE_LIMIT - 100) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n… (обрезано)"
+
+
+# ── Mute / quiet hours ───────────────────────────────────────────────────────
 
 async def is_muted() -> bool:
     """True if the user has silenced non-critical alerts."""
@@ -45,15 +73,56 @@ async def is_muted() -> bool:
     return datetime.now(timezone.utc) < deadline
 
 
-async def send_to_admin(bot: Bot, text: str, force: bool = False):
-    """Send a message to the admin chat. Honors mute unless `force=True`."""
-    if not force and await is_muted():
-        logger.info("Skipping alert (muted): %s", text[:60])
-        return
+def in_quiet_hours(hour: int | None = None) -> bool:
+    """True during configured quiet hours (local time). Non-critical alerts
+    are queued instead of sent, and flushed as a digest in the morning."""
+    qh = config.quiet_hours
+    if not qh:
+        return False
+    if hour is None:
+        hour = datetime.now(pytz.timezone(config.timezone)).hour
+    start, end = qh
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+async def send_to_admin(bot: Bot, text: str, force: bool = False,
+                        reply_markup=None):
+    """Send a message to the admin chat.
+
+    force=True — critical: bypasses both mute and quiet hours.
+    Otherwise: dropped while muted, queued during quiet hours.
+    """
+    if not force:
+        if await is_muted():
+            logger.info("Skipping alert (muted): %s", text[:60])
+            return
+        if in_quiet_hours():
+            await queue_notification(text)
+            logger.info("Queued alert (quiet hours): %s", text[:60])
+            return
     try:
-        await bot.send_message(chat_id=config.admin_chat_id, text=text)
+        await bot.send_message(chat_id=config.admin_chat_id, text=text,
+                               reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Failed to send message to admin: {e}")
+
+
+async def flush_quiet_queue(bot: Bot):
+    """Deliver notifications accumulated during quiet hours as one digest."""
+    if in_quiet_hours() or await is_muted():
+        return
+    texts = await pop_notifications()
+    if not texts:
+        return
+    digest = "🌙 Накопилось за тихие часы:\n\n" + "\n\n".join(
+        f"— {t}" for t in texts
+    )
+    try:
+        await bot.send_message(chat_id=config.admin_chat_id, text=_clip(digest))
+    except Exception as e:
+        logger.error(f"Failed to flush quiet queue: {e}")
 
 
 # ── Alert handlers ───────────────────────────────────────────────────────────
@@ -73,7 +142,37 @@ async def run_availability_checks(bot: Bot):
         if r.get("incident_new"):
             msg = format_availability_alert(r)
             if msg:
-                await send_to_admin(bot, msg, force=True)
+                if r.get("external_ok") is False:
+                    msg += "\n🌐 Подтверждено извне: сайт недоступен и со второй точки"
+                elif config.second_opinion:
+                    msg += "\n❓ Перепроверить со второй точки не удалось"
+                # Auto-remediation for Cloudflare Pages: fire the deploy hook
+                # once per new incident, report what happened in the alert.
+                if config.auto_redeploy and deploy_hook_for(r["url"]):
+                    note = await trigger_redeploy(r["url"])
+                    msg += f"\n\n🤖 Автодействие: {note}"
+                await send_to_admin(bot, msg, force=True,
+                                    reply_markup=alert_actions_keyboard(r["url"]))
+        elif r.get("external_ok") is True:
+            # Down from the bot's network but fine externally — likely a
+            # local network problem; mention it at most once per 6 hours.
+            key = f"extok:{r['url']}"
+            last = await get_state(key)
+            stale = True
+            if last:
+                try:
+                    stale = (datetime.now(timezone.utc)
+                             - datetime.fromisoformat(last)).total_seconds() > 6 * 3600
+                except ValueError:
+                    pass
+            if stale:
+                await set_state(key, datetime.now(timezone.utc).isoformat())
+                await send_to_admin(
+                    bot,
+                    f"🤔 {r['url']} не открывается с сервера бота, но извне "
+                    f"доступен. Похоже на сетевую проблему на моей стороне — "
+                    f"инцидент не открываю.",
+                )
         elif r.get("recovered"):
             await send_to_admin(bot, format_recovery_alert(r), force=True)
 
@@ -119,11 +218,21 @@ async def run_ssl_checks(bot: Bot):
         if r.get("incident_new"):
             msg = format_ssl_alert(r)
             if msg:
+                if r.get("renewal_note"):
+                    msg += f"\n🔁 {r['renewal_note']}"
                 await send_to_admin(bot, msg)
         elif r.get("recovered"):
             await send_to_admin(
                 bot,
                 f"✅ SSL: {r['url']} — сертификат обновлён, всё в порядке",
+            )
+        elif r.get("renewed"):
+            # Renewal happened silently before any alert threshold — good news,
+            # confirms auto-renewal works.
+            await send_to_admin(
+                bot,
+                f"🔁 SSL: {r['url']} — сертификат автоматически обновлён "
+                f"({r['ssl_info']['days_left']} дн. запаса)",
             )
 
 
@@ -161,10 +270,309 @@ async def run_links_checks(bot: Bot):
             )
 
 
+async def run_dns_checks(bot: Bot):
+    """Alert when DNS answers change; NS changes are critical."""
+    changes = await check_all_dns(config.get_site_urls())
+    for change in changes:
+        await send_to_admin(bot, format_dns_change(change),
+                            force=change.get("critical", False))
+
+
+async def run_deep_checks(bot: Bot):
+    """Sitemap 5xx probe: pages beyond the homepage."""
+    results = await check_all_deep(config.get_site_urls())
+    for r in results:
+        if r.get("incident_new"):
+            errors = "\n".join(
+                f"  • {e['url']} — HTTP {e['status_code']}"
+                for e in r["errors"][:5]
+            )
+            await send_to_admin(
+                bot,
+                f"🕳 {r['url']}: 5xx на {len(r['errors'])} из "
+                f"{r['sampled']} проверенных страниц:\n{errors}",
+                reply_markup=alert_actions_keyboard(r["url"]),
+            )
+        elif r.get("recovered"):
+            await send_to_admin(
+                bot, f"✅ {r['url']} — страницы из sitemap снова отвечают без 5xx",
+            )
+
+
+# ── Dead-man switch ──────────────────────────────────────────────────────────
+
+def _fmt_ago(minutes: float) -> str:
+    if minutes < 60:
+        return f"{round(minutes)} мин"
+    if minutes < 48 * 60:
+        return f"{round(minutes / 60)} ч"
+    return f"{round(minutes / 1440)} дн"
+
+
+async def run_heartbeat_watch(bot: Bot):
+    """Alert when an expected job (backup, cron) hasn't pinged in time."""
+    jobs = config.heartbeat_jobs
+    if not jobs:
+        return
+    beats = await get_heartbeats()
+    now = datetime.now(timezone.utc)
+
+    for job, interval_min in jobs.items():
+        row = beats.get(job)
+        overdue = False
+        detail = ""
+        if row and row.get("last_ping"):
+            last = _parse_sqlite_utc(row["last_ping"])
+            if last:
+                silence_min = (now - last).total_seconds() / 60
+                # 25% slack so a slightly late cron doesn't page.
+                overdue = silence_min > interval_min * 1.25
+                detail = f"последний сигнал: {_fmt_ago(silence_min)} назад"
+        else:
+            # Never pinged at all — give one full interval from bot start
+            # before deciding the job is dead.
+            if _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
+                overdue = True
+                detail = "ни одного сигнала с момента запуска бота"
+
+        alerted = await get_state(f"hb_alerted:{job}")
+        if overdue and not alerted:
+            await set_state(f"hb_alerted:{job}", now.isoformat())
+            await send_to_admin(
+                bot,
+                f"💔 Heartbeat «{job}» молчит ({detail}; "
+                f"ожидание: каждые {_fmt_ago(interval_min)}).\n"
+                f"Проверь, отработал ли он.",
+            )
+        elif not overdue and alerted:
+            # Ping endpoint announces recovery; this just clears a stale flag
+            # (e.g. config interval was increased).
+            await set_state(f"hb_alerted:{job}", None)
+
+
+# ── Bot-host monitoring ──────────────────────────────────────────────────────
+
+async def run_host_checks(bot: Bot):
+    """Disk usage on the bot's host; auto-cleanup via docker prune."""
+    result = await check_disk()
+    if result["over_threshold"]:
+        already = await get_state("disk_alerted")
+        cleaned = result["cleaned_bytes"]
+        if cleaned:
+            gb = cleaned / 1e9
+            msg = (f"💾 Диск был заполнен на {result['pct']}% — почистил docker "
+                   f"(−{gb:.1f} GB), сейчас {result['pct_after']}%")
+            if result["pct_after"] < config.disk_alert_pct:
+                await set_state("disk_alerted", None)
+                await send_to_admin(bot, msg)
+                return
+        if not already:
+            await set_state("disk_alerted", "1")
+            await send_to_admin(
+                bot,
+                f"💾 Диск на сервере бота заполнен на {result['pct']}% "
+                f"({result['used_gb']}/{result['total_gb']} GB) — надо разобраться",
+                force=result["pct"] >= 95,
+            )
+    else:
+        if await get_state("disk_alerted"):
+            await set_state("disk_alerted", None)
+            await send_to_admin(
+                bot, f"💾 Диск в норме: {result['pct']}%",
+            )
+
+
+async def run_container_watch(bot: Bot):
+    """Auto-restart configured containers that died or went unhealthy."""
+    events = await watch_containers()
+    for e in events:
+        if e["restarted"] and e["ok_after"]:
+            await send_to_admin(
+                bot,
+                f"🔄 Контейнер «{e['name']}» был {e['problem']} — "
+                f"перезапустил, работает.",
+            )
+        else:
+            await send_to_admin(
+                bot,
+                f"🔴 Контейнер «{e['name']}» {e['problem']}, "
+                + ("перезапустил, но он всё ещё нездоров."
+                   if e["restarted"] else "перезапустить не удалось.")
+                + " Нужно смотреть руками.",
+                force=True,
+            )
+
+
+# ── Escalation ───────────────────────────────────────────────────────────────
+
+async def run_escalation_watch(bot: Bot):
+    """Re-alert about unresolved critical incidents every N minutes —
+    bypasses mute: a site that is still down must not be forgotten."""
+    repeat_min = config.escalation_repeat_min
+    if not repeat_min:
+        return
+    now = datetime.now(timezone.utc)
+    for inc in await get_active_incidents():
+        if inc["severity"] != "critical":
+            continue
+        created = _parse_sqlite_utc(inc["created_at"])
+        if not created:
+            continue
+        age_min = (now - created).total_seconds() / 60
+        if age_min < repeat_min:
+            continue
+        last = await get_state(f"escalated:{inc['id']}")
+        if last:
+            try:
+                if (now - datetime.fromisoformat(last)).total_seconds() / 60 < repeat_min:
+                    continue
+            except ValueError:
+                pass
+        await set_state(f"escalated:{inc['id']}", now.isoformat())
+        await send_to_admin(
+            bot,
+            f"⏰ ВСЁ ЕЩЁ НЕ РЕШЕНО (уже {_fmt_ago(age_min)})\n"
+            f"{_short_host(inc['url'])} [{inc['check_type']}]: {inc['message']}",
+            force=True,
+            reply_markup=alert_actions_keyboard(inc["url"]),
+        )
+
+
+# ── Self-maintenance ─────────────────────────────────────────────────────────
+
+async def run_self_heartbeat(bot: Bot):
+    """Ping the external watchdog (healthchecks.io etc.) — who watches the
+    watchman. If the bot dies, the external service alerts instead."""
+    if not config.self_heartbeat_url:
+        return
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as s:
+            await s.get(config.self_heartbeat_url)
+    except Exception as e:
+        logger.warning(f"Self-heartbeat ping failed: {e}")
+
+
+async def run_retention(bot: Bot):
+    """Roll old raw checks up into daily aggregates so the DB stays small."""
+    try:
+        aggregated, _ = await rollup_old_checks(config.retention_days)
+        if aggregated:
+            logger.info(f"Retention: rolled up {aggregated} old check rows")
+    except Exception as e:
+        logger.error(f"Retention job failed: {e}")
+
+
+def _backups_dir() -> str:
+    return os.path.join(os.path.dirname(config.db_path) or ".", "backups")
+
+
+async def run_db_backup(bot: Bot):
+    """Nightly local DB backup with rotation."""
+    try:
+        os.makedirs(_backups_dir(), exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+        path = os.path.join(_backups_dir(), f"bot-{stamp}.db")
+        await backup_db(path)
+        # Rotate: keep the newest N.
+        files = sorted(
+            f for f in os.listdir(_backups_dir())
+            if f.startswith("bot-") and f.endswith(".db")
+        )
+        for old in files[:-config.db_backup_keep]:
+            os.remove(os.path.join(_backups_dir(), old))
+        logger.info(f"DB backup written: {path}")
+    except Exception as e:
+        logger.error(f"DB backup failed: {e}")
+        await send_to_admin(bot, f"⚠️ Не удалось сделать бэкап базы бота: {e}")
+
+
+async def send_db_backup_to_telegram(bot: Bot):
+    """Weekly: push the freshest backup into the admin chat — Telegram keeps
+    the file, which makes it an off-host copy with zero extra infrastructure."""
+    try:
+        files = sorted(
+            f for f in os.listdir(_backups_dir())
+            if f.startswith("bot-") and f.endswith(".db")
+        ) if os.path.isdir(_backups_dir()) else []
+        if not files:
+            await run_db_backup(bot)
+            files = sorted(os.listdir(_backups_dir()))
+        latest = os.path.join(_backups_dir(), files[-1])
+        await bot.send_document(
+            chat_id=config.admin_chat_id,
+            document=FSInputFile(latest),
+            caption="🗄 Еженедельная копия базы бота",
+            disable_notification=True,
+        )
+    except Exception as e:
+        logger.error(f"Sending DB backup to Telegram failed: {e}")
+
+
 # ── Daily reports ────────────────────────────────────────────────────────────
 
+async def _morning_extras(ssl_results: list[dict],
+                          domain_results: list[dict]) -> list[str]:
+    """Extra one-liners for the morning digest: weekly uptime, upcoming
+    expirations, heartbeat and disk status."""
+    extras: list[str] = []
+
+    # Uptime over the last 7 days, one compact line.
+    sites = await get_all_sites()
+    chips = []
+    for s in sites:
+        stats = await get_uptime_stats(s["id"], hours=168)
+        if stats["total_checks"]:
+            chips.append(f"{_short_host(s['url'])} {stats['uptime_pct']}%")
+    if chips:
+        extras.append("📈 Uptime 7д: " + " · ".join(chips))
+
+    # Upcoming expirations worth knowing about ahead of time.
+    expiring = []
+    for r in ssl_results or []:
+        info = r.get("ssl_info")
+        if info and info["days_left"] <= 14:
+            expiring.append(f"SSL {_short_host(r['url'])} — {info['days_left']}д")
+    for r in domain_results or []:
+        info = r.get("domain_info")
+        if info and info.get("days_left") is not None and info["days_left"] <= 60:
+            expiring.append(f"домен {r.get('domain', '')} — {info['days_left']}д")
+    if expiring:
+        extras.append("🔜 Истекает скоро: " + "; ".join(expiring))
+
+    # Dead-man switch status.
+    if config.heartbeat_jobs:
+        beats = await get_heartbeats()
+        now = datetime.now(timezone.utc)
+        hb_chips = []
+        for job, interval_min in config.heartbeat_jobs.items():
+            row = beats.get(job)
+            last = _parse_sqlite_utc(row["last_ping"]) if row and row.get("last_ping") else None
+            if last:
+                ago_min = (now - last).total_seconds() / 60
+                icon = "✅" if ago_min <= interval_min * 1.25 else "💔"
+                hb_chips.append(f"{job} {icon} {_fmt_ago(ago_min)} назад")
+            else:
+                hb_chips.append(f"{job} ❓ нет сигналов")
+        extras.append("💓 " + " · ".join(hb_chips))
+
+    # Disk on the bot host.
+    try:
+        disk = await check_disk(auto_cleanup=False)
+        icon = "✅" if not disk["over_threshold"] else "⚠️"
+        extras.append(
+            f"💾 Диск: {icon} {disk['pct']}% "
+            f"({disk['used_gb']}/{disk['total_gb']} GB)"
+        )
+    except Exception as e:
+        logger.warning(f"Disk stat for morning report failed: {e}")
+
+    return extras
+
+
 async def send_morning_report(bot: Bot):
-    """Compact morning status report."""
+    """Compact morning status report — the daily 10-second health digest."""
     urls = config.get_site_urls()
     availability = await check_all(urls)
     ssl_results = await check_all_ssl(urls)
@@ -177,9 +585,10 @@ async def send_morning_report(bot: Bot):
         ssl_results=ssl_results,
         domain_results=domain_results,
         report_type="morning",
+        extras=await _morning_extras(ssl_results, domain_results),
     )
     # Daily report is informational — it should respect mute.
-    await send_to_admin(bot, report)
+    await send_to_admin(bot, _clip(report))
 
 
 async def send_evening_report(bot: Bot):
@@ -201,70 +610,84 @@ async def send_evening_report(bot: Bot):
         domain_results=domain_results,
         report_type="evening",
     )
-    await send_to_admin(bot, report)
+    await send_to_admin(bot, _clip(report))
+
+
+async def send_weekly_report(bot: Bot):
+    """Sunday: weekly digest + response-time chart + off-host DB copy."""
+    try:
+        text, chart = await build_weekly_report()
+        await send_to_admin(bot, _clip(text))
+        if chart:
+            try:
+                await bot.send_photo(
+                    chat_id=config.admin_chat_id,
+                    photo=FSInputFile(chart),
+                    disable_notification=True,
+                )
+            except Exception as e:
+                logger.error(f"Sending weekly chart failed: {e}")
+    except Exception as e:
+        logger.error(f"Weekly report failed: {e}")
+    await send_db_backup_to_telegram(bot)
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Configure and return the APScheduler instance."""
+    global _started_at
+    _started_at = datetime.now(timezone.utc)
+
     tz = pytz.timezone(config.timezone)
     scheduler = AsyncIOScheduler(timezone=tz)
 
-    scheduler.add_job(
-        run_availability_checks,
-        trigger=IntervalTrigger(minutes=config.check_interval_minutes),
-        args=[bot],
-        id="availability_checks",
-        replace_existing=True,
-        max_instances=1,
-        misfire_grace_time=60,
-    )
+    def job(fn, trigger, job_id, **kwargs):
+        scheduler.add_job(
+            fn, trigger=trigger, args=[bot], id=job_id,
+            replace_existing=True, max_instances=1, **kwargs,
+        )
+
+    job(run_availability_checks,
+        IntervalTrigger(minutes=config.check_interval_minutes),
+        "availability_checks", misfire_grace_time=60)
 
     # SSL + domain once a day — alert ladder prevents repeat noise.
-    scheduler.add_job(
-        run_ssl_checks,
-        trigger=CronTrigger(hour=8, minute=0, timezone=tz),
-        args=[bot],
-        id="ssl_checks",
-        replace_existing=True,
-        max_instances=1,
-    )
-    scheduler.add_job(
-        run_domain_checks,
-        trigger=CronTrigger(hour=8, minute=5, timezone=tz),
-        args=[bot],
-        id="domain_checks",
-        replace_existing=True,
-        max_instances=1,
-    )
+    job(run_ssl_checks, CronTrigger(hour=8, minute=0, timezone=tz), "ssl_checks")
+    job(run_domain_checks, CronTrigger(hour=8, minute=5, timezone=tz), "domain_checks")
 
-    scheduler.add_job(
-        run_links_checks,
-        trigger=IntervalTrigger(hours=config.links_check_interval_hours),
-        args=[bot],
-        id="links_checks",
-        replace_existing=True,
-        max_instances=1,
-        misfire_grace_time=300,
-    )
+    job(run_links_checks,
+        IntervalTrigger(hours=config.links_check_interval_hours),
+        "links_checks", misfire_grace_time=300)
 
-    scheduler.add_job(
-        send_morning_report,
-        trigger=CronTrigger(hour=config.morning_report_hour, minute=0, timezone=tz),
-        args=[bot],
-        id="morning_report",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # DNS + deep 5xx probe hourly (offset so they don't pile up).
+    job(run_dns_checks, CronTrigger(minute=20, timezone=tz), "dns_checks",
+        misfire_grace_time=300)
+    job(run_deep_checks, CronTrigger(minute=40, timezone=tz), "deep_checks",
+        misfire_grace_time=300)
 
-    scheduler.add_job(
-        send_evening_report,
-        trigger=CronTrigger(hour=config.evening_report_hour, minute=0, timezone=tz),
-        args=[bot],
-        id="evening_report",
-        replace_existing=True,
-        max_instances=1,
-    )
+    # Watchers.
+    job(run_heartbeat_watch, IntervalTrigger(minutes=10), "heartbeat_watch")
+    job(run_host_checks, IntervalTrigger(minutes=30), "host_checks")
+    job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
+    job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
+    job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
+    job(flush_quiet_queue, IntervalTrigger(minutes=10), "quiet_flush")
+
+    # Nightly maintenance.
+    job(run_retention, CronTrigger(hour=3, minute=30, timezone=tz), "retention")
+    job(run_db_backup, CronTrigger(hour=3, minute=45, timezone=tz), "db_backup")
+
+    # Reports.
+    job(send_morning_report,
+        CronTrigger(hour=config.morning_report_hour, minute=0, timezone=tz),
+        "morning_report")
+    job(send_evening_report,
+        CronTrigger(hour=config.evening_report_hour, minute=0, timezone=tz),
+        "evening_report")
+    job(send_weekly_report,
+        CronTrigger(day_of_week="sun", hour=config.weekly_report_hour,
+                    minute=0, timezone=tz),
+        "weekly_report")
 
     return scheduler

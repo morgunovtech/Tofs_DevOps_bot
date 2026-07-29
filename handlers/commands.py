@@ -25,6 +25,7 @@ from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
     format_compact_status_report,
 )
+from services.actions import trigger_redeploy, purge_cf_cache
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -351,6 +352,46 @@ async def cb_mute_pick(call: CallbackQuery):
         f"Снять: /unmute",
         reply_markup=back_button(),
     )
+
+
+# ── One-tap actions attached to alerts ───────────────────────────────────────
+# callback_data: "act:<action>:<site index>". These arrive on alert messages,
+# so results go out as replies — the alert text itself stays intact and the
+# buttons remain usable.
+
+@router.callback_query(F.data.startswith("act:"))
+async def cb_alert_action(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+
+    parts = call.data.split(":", 2)
+    if len(parts) != 3:
+        await call.answer("Не понял действие", show_alert=True)
+        return
+    _, action, idx = parts
+    url = _site_from_cb(idx)
+    if not url:
+        await call.answer("Сайт не найден — список сайтов изменился", show_alert=True)
+        return
+
+    if action == "recheck":
+        await call.answer("Проверяю…")
+        avail = await check_availability(url)
+        if avail["status"] == "ok":
+            text = (f"🔍 {url} — доступен: HTTP {avail.get('status_code')} "
+                    f"({avail.get('response_time_ms')}ms)")
+        else:
+            text = f"🔍 {url} — всё ещё недоступен: {avail.get('error', 'N/A')}"
+        await call.message.answer(text)
+    elif action == "redeploy":
+        await call.answer("Запускаю передеплой…")
+        await call.message.answer(await trigger_redeploy(url))
+    elif action == "purge":
+        await call.answer("Сбрасываю кэш…")
+        await call.message.answer(await purge_cf_cache(url))
+    else:
+        await call.answer("Неизвестное действие", show_alert=True)
 
 
 # ── Back to main menu ────────────────────────────────────────────────────────

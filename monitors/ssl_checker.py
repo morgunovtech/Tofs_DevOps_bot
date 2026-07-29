@@ -5,9 +5,11 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+from config import config
 from db.database import (
     get_or_create_site, save_check, save_incident, resolve_incident,
     get_last_alert_threshold, set_last_alert_threshold,
+    get_state, set_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,11 @@ async def check_ssl(url: str) -> dict:
         "incident_new": False,
         "recovered": False,
         "threshold_crossed": None,
+        # True the first check after the cert was replaced (serial changed).
+        "renewed": False,
+        # Set when expiry is close AND the serial hasn't changed — i.e.
+        # auto-renewal (Cloudflare/certbot) appears to be failing.
+        "renewal_note": None,
     }
 
     try:
@@ -74,7 +81,21 @@ async def check_ssl(url: str) -> dict:
         ssl_info = await loop.run_in_executor(None, _get_ssl_info, hostname)
         result["ssl_info"] = ssl_info
 
+        # Renewal watch: track the cert serial between checks.
+        serial = ssl_info.get("serial_number") or ""
+        prev_serial = await get_state(f"ssl_serial:{site_id}")
+        if serial:
+            if prev_serial and prev_serial != serial:
+                result["renewed"] = True
+            await set_state(f"ssl_serial:{site_id}", serial)
+
         days_left = ssl_info["days_left"]
+        if (0 <= days_left <= config.ssl_renew_warn_days
+                and prev_serial == serial):
+            result["renewal_note"] = (
+                f"Автопродление, похоже, не сработало: до истечения "
+                f"{days_left} дн., а сертификат не менялся."
+            )
         if days_left < 0:
             result["status"] = "error"
             result["error"] = f"SSL expired {abs(days_left)} days ago"

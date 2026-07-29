@@ -4,10 +4,12 @@ import logging
 
 import aiohttp
 
+from config import config
 from db.database import (
     get_or_create_site, save_check, save_incident, resolve_incident,
     get_recent_check_statuses,
 )
+from monitors.second_opinion import second_opinion_up
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,12 @@ async def check_availability(url: str) -> dict:
         "response_time_ms": None,
         "error": None,
         "incident_new": False,
+        "incident_id": None,
         "recovered": False,
+        "resolved_incident": None,
+        # Second-opinion verdict: True = up externally, False = confirmed
+        # down, None = not checked / verdict service unreachable.
+        "external_ok": None,
     }
 
     start = time.monotonic()
@@ -78,16 +85,28 @@ async def check_availability(url: str) -> dict:
         if len(recent) >= CONSECUTIVE_FAILURE_THRESHOLD and all(
             s == "error" for s in recent
         ):
-            _, is_new = await save_incident(
-                site_id, "availability",
-                f"Site down: {result['error']}",
-                severity="critical",
-            )
-            result["incident_new"] = is_new
+            # Second opinion from external nodes before paging: if the site
+            # is reachable from outside, the problem is on our side of the
+            # network — don't open a "site down" incident for it.
+            if config.second_opinion:
+                result["external_ok"] = await second_opinion_up(url)
+            if result["external_ok"] is True:
+                logger.warning(
+                    f"{url}: down from here but UP externally — skipping incident"
+                )
+            else:
+                incident_id, is_new = await save_incident(
+                    site_id, "availability",
+                    f"Site down: {result['error']}",
+                    severity="critical",
+                )
+                result["incident_new"] = is_new
+                result["incident_id"] = incident_id
     else:
         resolved = await resolve_incident(site_id, "availability")
         if resolved:
             result["recovered"] = True
+            result["resolved_incident"] = resolved
 
     return result
 

@@ -100,6 +100,42 @@ async def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             );
 
+            -- Dead-man switch: external jobs (backups, crons) ping the bot;
+            -- silence longer than the configured interval raises an alert.
+            CREATE TABLE IF NOT EXISTS heartbeats (
+                job TEXT PRIMARY KEY,
+                last_ping TEXT,
+                ping_count INTEGER DEFAULT 0
+            );
+
+            -- Last known DNS answers per host/record type; used to detect
+            -- unexpected changes (misconfig, hijack).
+            CREATE TABLE IF NOT EXISTS dns_state (
+                host TEXT NOT NULL,
+                rtype TEXT NOT NULL,
+                value TEXT,
+                updated_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (host, rtype)
+            );
+
+            -- Daily rollups of old raw checks (retention).
+            CREATE TABLE IF NOT EXISTS checks_daily (
+                site_id INTEGER NOT NULL,
+                check_type TEXT NOT NULL,
+                day TEXT NOT NULL,
+                total INTEGER DEFAULT 0,
+                ok INTEGER DEFAULT 0,
+                sum_ms REAL DEFAULT 0,
+                PRIMARY KEY (site_id, check_type, day)
+            );
+
+            -- Non-critical notifications held back during quiet hours.
+            CREATE TABLE IF NOT EXISTS pending_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
             CREATE INDEX IF NOT EXISTS idx_checks_site_type
                 ON checks(site_id, check_type, checked_at);
             CREATE INDEX IF NOT EXISTS idx_incidents_active
@@ -165,16 +201,30 @@ async def save_incident(site_id: int, check_type: str, message: str,
         return cursor.lastrowid, True
 
 
-async def resolve_incident(site_id: int, check_type: str) -> bool:
+async def resolve_incident(site_id: int, check_type: str) -> dict | None:
+    """Resolve the open incident for site/type.
+
+    Returns the incident row (as it was, incl. created_at) so callers can
+    build a post-incident summary with duration — or None if nothing was open.
+    Truthy exactly when something was resolved, so boolean uses still work.
+    """
     db = await get_db()
     async with _write_lock:
         cursor = await db.execute(
-            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+            """SELECT * FROM incidents
                WHERE site_id = ? AND check_type = ? AND resolved = 0""",
             (site_id, check_type),
         )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await db.execute(
+            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+               WHERE id = ?""",
+            (row["id"],),
+        )
         await db.commit()
-        return cursor.rowcount > 0
+        return dict(row)
 
 
 async def resolve_all_incidents() -> int:
@@ -346,3 +396,166 @@ async def set_state(key: str, value: str | None):
                 (key, value),
             )
         await db.commit()
+
+
+# ── Heartbeats (dead-man switch) ─────────────────────────────────────────────
+
+async def heartbeat_ping(job: str):
+    db = await get_db()
+    async with _write_lock:
+        await db.execute(
+            """INSERT INTO heartbeats (job, last_ping, ping_count)
+               VALUES (?, datetime('now'), 1)
+               ON CONFLICT(job) DO UPDATE SET
+                 last_ping = datetime('now'),
+                 ping_count = ping_count + 1""",
+            (job,),
+        )
+        await db.commit()
+
+
+async def get_heartbeats() -> dict[str, dict]:
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM heartbeats")
+    rows = await cursor.fetchall()
+    return {r["job"]: dict(r) for r in rows}
+
+
+# ── DNS snapshots ────────────────────────────────────────────────────────────
+
+async def get_dns_state(host: str, rtype: str) -> str | None:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT value FROM dns_state WHERE host = ? AND rtype = ?",
+        (host, rtype),
+    )
+    row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def set_dns_state(host: str, rtype: str, value: str):
+    db = await get_db()
+    async with _write_lock:
+        await db.execute(
+            """INSERT INTO dns_state (host, rtype, value, updated_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(host, rtype) DO UPDATE SET
+                 value = excluded.value,
+                 updated_at = datetime('now')""",
+            (host, rtype, value),
+        )
+        await db.commit()
+
+
+# ── Quiet-hours notification queue ───────────────────────────────────────────
+
+async def queue_notification(text: str):
+    db = await get_db()
+    async with _write_lock:
+        await db.execute(
+            "INSERT INTO pending_notifications (text) VALUES (?)", (text,)
+        )
+        await db.commit()
+
+
+async def pop_notifications() -> list[str]:
+    """Fetch and clear all queued notifications (oldest first)."""
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute(
+            "SELECT id, text FROM pending_notifications ORDER BY id"
+        )
+        rows = await cursor.fetchall()
+        if rows:
+            await db.execute("DELETE FROM pending_notifications")
+            await db.commit()
+        return [r["text"] for r in rows]
+
+
+# ── Retention ────────────────────────────────────────────────────────────────
+
+async def rollup_old_checks(retention_days: int) -> tuple[int, int]:
+    """Aggregate raw checks older than N days into checks_daily, then delete
+    them. Returns (rows_aggregated, rows_deleted)."""
+    db = await get_db()
+    cutoff = f"-{retention_days} days"
+    async with _write_lock:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM checks WHERE checked_at < datetime('now', ?)",
+            (cutoff,),
+        )
+        to_delete = (await cursor.fetchone())[0]
+        if not to_delete:
+            return 0, 0
+        await db.execute(
+            """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
+               SELECT site_id, check_type, date(checked_at),
+                      COUNT(*),
+                      SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END),
+                      COALESCE(SUM(response_time_ms), 0)
+               FROM checks
+               WHERE checked_at < datetime('now', ?)
+               GROUP BY site_id, check_type, date(checked_at)
+               ON CONFLICT(site_id, check_type, day) DO UPDATE SET
+                 total = total + excluded.total,
+                 ok = ok + excluded.ok,
+                 sum_ms = sum_ms + excluded.sum_ms""",
+            (cutoff,),
+        )
+        await db.execute(
+            "DELETE FROM checks WHERE checked_at < datetime('now', ?)", (cutoff,)
+        )
+        # Escalation markers for long-resolved incidents are dead weight.
+        await db.execute(
+            """DELETE FROM bot_state WHERE key LIKE 'escalated:%'
+               AND key NOT IN (
+                   SELECT 'escalated:' || id FROM incidents WHERE resolved = 0
+               )"""
+        )
+        await db.commit()
+        return to_delete, to_delete
+
+
+# ── Weekly stats ─────────────────────────────────────────────────────────────
+
+async def get_daily_availability(site_id: int, days: int = 7) -> list[dict]:
+    """Per-day availability stats for the last N days (raw checks only —
+    retention keeps far more than a week of raw data)."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT date(checked_at) AS day,
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) AS ok,
+                  AVG(response_time_ms) AS avg_ms
+           FROM checks
+           WHERE site_id = ? AND check_type = 'availability'
+             AND checked_at >= datetime('now', ?)
+           GROUP BY date(checked_at) ORDER BY day""",
+        (site_id, f"-{days} days"),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_incidents_since(days: int = 7) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT i.*, s.url FROM incidents i
+           JOIN sites s ON i.site_id = s.id
+           WHERE i.created_at >= datetime('now', ?)
+           ORDER BY i.created_at""",
+        (f"-{days} days",),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Backup ───────────────────────────────────────────────────────────────────
+
+async def backup_db(dest_path: str):
+    """Write a compact, consistent copy of the DB via VACUUM INTO."""
+    db = await get_db()
+    async with _write_lock:
+        if os.path.exists(dest_path):
+            os.remove(dest_path)
+        await db.execute("VACUUM INTO ?", (dest_path,))

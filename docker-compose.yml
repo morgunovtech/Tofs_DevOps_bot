@@ -6,6 +6,11 @@ services:
     env_file: .env
     volumes:
       - bot_data:/app/data
+      # Uncomment to enable container auto-restart and disk auto-cleanup on
+      # this host (AUTORESTART_CONTAINERS / AUTO_CLEANUP in .env).
+      # NOTE: the docker socket is root-equivalent access to the host —
+      # enable only on a single-purpose server you fully control.
+      # - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8080:8080"   # webhook endpoint (feedback from sites)
     environment:
