@@ -114,9 +114,13 @@ class Config:
     weekly_report_hour: int = int(os.getenv("WEEKLY_REPORT_HOUR", "11"))
 
     # ── Page screenshots ─────────────────────────────────────────────────────
-    # URL template of a rendering service returning an image; {url} is the page.
+    # URL template of a rendering service; {url} is the page. Default is
+    # microlink.io (keyless, ~50 req/day). waitForTimeout gives JS entry
+    # animations time to finish — without it, animated pages render blank.
     screenshot_template: str = os.getenv(
-        "SCREENSHOT_TEMPLATE", "https://image.thum.io/get/width/1024/{url}")
+        "SCREENSHOT_TEMPLATE",
+        "https://api.microlink.io/?url={url}&screenshot=true&meta=false"
+        "&waitForTimeout=3500")
 
     # ── Self-maintenance ─────────────────────────────────────────────────────
     retention_days: int = int(os.getenv("RETENTION_DAYS", "30"))
