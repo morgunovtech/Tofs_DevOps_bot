@@ -26,6 +26,22 @@ def fmt_date(iso: str) -> str:
         return iso or "N/A"
 
 
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list) -> str:
+    """Unicode sparkline for response-time trends: ▂▃▂▁▅▂. Empty string
+    when there isn't enough data to say anything."""
+    vals = [v for v in values if v is not None]
+    if len(vals) < 3:
+        return ""
+    lo, hi = min(vals), max(vals)
+    if hi <= lo:
+        return SPARK_CHARS[1] * len(vals)
+    return "".join(
+        SPARK_CHARS[min(7, int((v - lo) / (hi - lo) * 7 + 0.5))] for v in vals)
+
+
 def now_local() -> datetime:
     """Current time in the configured timezone — the container itself runs
     in UTC, so naive datetime.now() would show server time to the user."""

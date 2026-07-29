@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -26,12 +27,13 @@ from db.database import (
     get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
     get_state, set_state, resolve_all_incidents, get_last_check,
     get_active_site_urls, get_site, activate_or_create_site, deactivate_site,
-    resolve_incident_by_id, get_heartbeats,
+    resolve_incident_by_id, get_heartbeats, get_recent_response_times,
 )
 from services import settings
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
     format_compact_status_report, now_local, fmt_date, _short_host, _esc,
+    sparkline,
 )
 from services.actions import trigger_redeploy, purge_cf_cache
 from services.screenshots import fetch_screenshot
@@ -98,6 +100,9 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     header = f"{site_chip} · {inc_chip} · {mute_chip}"
     if paused_count:
         header += f" · ⏸ на паузе: {paused_count}"
+    from reports.scheduler import in_quiet_hours
+    if in_quiet_hours():
+        header += " · 🌙 тихие часы"
 
     inc_label = (f"⚠️ Инциденты ({len(incidents)})" if incidents
                  else "⚠️ Инциденты")
@@ -227,6 +232,25 @@ def _clip(text: str, limit: int = TG_MESSAGE_LIMIT - 100) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n… (обрезано)"
+
+
+async def _with_running_bar(message: Message, base_text: str, coro,
+                            tick: float = 4.0):
+    """Await a long coroutine while a runner segment (▰▱▱ → ▱▰▱ → ▱▱▰)
+    metronomes on the status message, so 30-second operations don't look
+    frozen. Edits are throttled to one per `tick` seconds."""
+    task = asyncio.ensure_future(coro)
+    frames = ("▰▱▱", "▱▰▱", "▱▱▰", "▱▰▱")
+    i = 0
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=tick)
+        except asyncio.TimeoutError:
+            i += 1
+            try:
+                await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
+            except TelegramBadRequest:
+                pass
 
 
 async def send_main_menu(target):
@@ -519,6 +543,11 @@ async def cb_alert_action(call: CallbackQuery):
         await call.message.answer(text)
     elif action == "shot":
         await call.answer("Делаю скрин… (~15 сек)")
+        # Native "sending a photo…" status in the chat header while we wait.
+        try:
+            await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
+        except Exception:
+            pass
         image = await fetch_screenshot(url)
         if image:
             await call.message.answer_photo(
@@ -753,10 +782,11 @@ async def cb_check_links(call: CallbackQuery):
         )
         return
     url = site["url"]
-    await call.message.edit_text(f"⏳ Сканирую все ссылки на {url}...\n(это может занять ~30 сек)")
+    base = f"Сканирую все ссылки на {url}…\n(это может занять ~30 сек)"
+    await call.message.edit_text(f"▰▱▱ {base}")
 
     from monitors.links_checker import check_links
-    result = await check_links(url)
+    result = await _with_running_bar(call.message, base, check_links(url))
 
     if result.get("broken_internal"):
         text = format_links_report(result)
@@ -793,10 +823,12 @@ async def cb_uptime(call: CallbackQuery):
             lines.append(f"⏳ {s['url']} — нет данных")
             continue
         icon = "✅" if stats["uptime_pct"] >= 99 else ("⚠️" if stats["uptime_pct"] >= 95 else "🔴")
+        spark = sparkline(await get_recent_response_times(s["id"]))
         lines.append(
             f"{icon} {s['url']}\n"
             f"   Доступность: {stats['uptime_pct']}%\n"
-            f"   Среднее время ответа: {stats['avg_response_ms']}ms\n"
+            f"   Среднее время ответа: {stats['avg_response_ms']}ms"
+            + (f"  {spark}" if spark else "") + "\n"
             f"   Всего проверок: {stats['total_checks']}"
         )
 
@@ -873,15 +905,15 @@ async def cb_seo(call: CallbackQuery):
             "Сайтов пока нет — сначала добавь хотя бы один.",
             reply_markup=back_button())
         return
-    await call.message.edit_text(
-        "🔍 Гоняю SEO/GEO-аудит по всем сайтам…\n"
-        "(robots, sitemap, мета, noindex, AI-боты, контент без JS — ~30 сек)"
-    )
+    base = ("Гоняю SEO/GEO-аудит по всем сайтам…\n"
+            "(robots, sitemap, мета, noindex, AI-боты, контент без JS — ~30 сек)")
+    await call.message.edit_text(f"▰▱▱ {base}")
 
     from monitors.seo_checker import check_all_seo
     from services import gsc, yandex_webmaster
 
-    results = await check_all_seo(await get_active_site_urls())
+    results = await _with_running_bar(
+        call.message, base, check_all_seo(await get_active_site_urls()))
 
     # Live index status (only when tokens are configured).
     gsc_status: dict[str, str] = {}

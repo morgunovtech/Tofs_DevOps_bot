@@ -632,3 +632,18 @@ async def resolve_incident_by_id(incident_id: int) -> bool:
                WHERE id = ? AND resolved = 0""", (incident_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+async def get_recent_response_times(site_id: int, limit: int = 12) -> list[int]:
+    """Last N successful availability response times, oldest first —
+    feeds the sparkline in the Uptime screen."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT response_time_ms FROM checks
+           WHERE site_id = ? AND check_type = 'availability'
+             AND status = 'ok' AND response_time_ms IS NOT NULL
+           ORDER BY id DESC LIMIT ?""",
+        (site_id, limit),
+    )
+    rows = await cursor.fetchall()
+    return [r[0] for r in reversed(rows)]

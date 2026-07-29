@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from config import config
 from db.database import get_all_sites, get_daily_availability, get_incidents_since
-from reports.formatter import _short_host
+from reports.formatter import _short_host, sparkline
 from services import gsc, yandex_webmaster
 
 logger = logging.getLogger(__name__)
@@ -96,12 +96,21 @@ def render_chart(series: dict[str, list[dict]], path: str) -> bool:
         ms = [round(r["avg_ms"] or 0) for r in rows]
         ax.plot(days, ms, marker="o", linewidth=2, label=host,
                 color=palette[i % len(palette)])
-    ax.set_title("Среднее время ответа за неделю, ms")
-    ax.set_ylabel("ms")
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="upper left", fontsize=9)
+    ax.set_title("Среднее время ответа за неделю, ms",
+                 fontsize=11, color="#333333")
+    ax.set_ylabel("ms", color="#666666", fontsize=9)
+    ax.grid(True, alpha=0.25, linewidth=0.6)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    for spine in ("left", "bottom"):
+        ax.spines[spine].set_color("#999999")
+    ax.tick_params(colors="#666666", labelsize=8)
+    ax.legend(loc="upper left", fontsize=9, frameon=False)
     fig.autofmt_xdate()
     fig.tight_layout()
+    # Signature for those who look closely.
+    fig.text(0.995, 0.012, "TofsDevOps", ha="right", va="bottom",
+             fontsize=8, color="#C1573B", alpha=0.45)
     fig.savefig(path)
     plt.close(fig)
     return True
@@ -125,7 +134,9 @@ async def build_weekly_report() -> tuple[str, str | None]:
                 sum((r["avg_ms"] or 0) * r["total"] for r in rows) / total
             )
             icon = "✅" if uptime >= 99.9 else ("⚠️" if uptime >= 99 else "🔴")
-            lines.append(f"{icon} {host} — uptime {uptime}%, ~{avg_ms}ms")
+            spark = sparkline([r["avg_ms"] for r in rows])
+            lines.append(f"{icon} {host} — uptime {uptime}%, ~{avg_ms}ms"
+                         + (f"  {spark}" if spark else ""))
         else:
             lines.append(f"⏳ {host} — нет данных")
 

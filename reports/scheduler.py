@@ -112,8 +112,11 @@ async def send_to_admin(bot: Bot, text: str, force: bool = False,
             logger.info("Queued alert (quiet hours): %s", text[:60])
             return
     try:
+        # The philosophy, made literal: informational messages arrive
+        # silently and wait to be read; only critical ones make a sound.
         await bot.send_message(chat_id=config.admin_chat_id, text=text,
-                               reply_markup=reply_markup)
+                               reply_markup=reply_markup,
+                               disable_notification=not force)
     except Exception as e:
         logger.error(f"Failed to send message to admin: {e}")
 
@@ -129,7 +132,8 @@ async def flush_quiet_queue(bot: Bot):
         f"— {t}" for t in texts
     )
     try:
-        await bot.send_message(chat_id=config.admin_chat_id, text=_clip(digest))
+        await bot.send_message(chat_id=config.admin_chat_id, text=_clip(digest),
+                               disable_notification=True)
     except Exception as e:
         logger.error(f"Failed to flush quiet queue: {e}")
 
