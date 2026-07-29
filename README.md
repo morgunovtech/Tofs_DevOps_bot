@@ -2,7 +2,7 @@
 
 > Monitors your sites, fixes what it can, checks that search engines **and AI agents** can see you — and stays silent while everything is fine.
 
-🇷🇺 [Читать по-русски](README.ru.md)
+🇷🇺 [Читать по-русски](README.ru.md) · [Зачем это вам (RU)](docs/WHY.md) · [Full feature list (RU)](docs/FEATURES.md)
 
 Built around one principle: **minimal involvement**. You shouldn't babysit your infrastructure — the bot tells you when something needs attention, tries to fix it first, and proves everything is OK with one short digest a day.
 
