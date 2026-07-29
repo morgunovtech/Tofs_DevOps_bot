@@ -9,6 +9,11 @@ load_dotenv()
 class Config:
     bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     admin_chat_id: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
+    # Personal user id for admin checks. Falls back to admin_chat_id, which
+    # only works while the admin chat is a private chat (user id == chat id).
+    admin_user_id: str = os.getenv("TELEGRAM_ADMIN_USER_ID", "")
+    # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
+    trust_proxy: bool = os.getenv("TRUST_PROXY", "0").lower() in ("1", "true", "yes")
     sites: list[str] = field(default_factory=lambda: [
         s.strip() for s in os.getenv("SITES", "").split(",") if s.strip()
     ])

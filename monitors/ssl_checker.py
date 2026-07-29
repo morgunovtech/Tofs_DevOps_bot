@@ -88,6 +88,17 @@ async def check_ssl(url: str) -> dict:
             result["status"] = "warning"
             result["error"] = f"SSL expires in {days_left} days"
 
+    except ssl.SSLCertVerificationError as e:
+        # An expired/invalid cert fails the handshake before we can read its
+        # dates (so the days_left<0 branch above never fires for expired
+        # certs) — produce a human-readable message here instead of the raw
+        # SSLCertVerificationError repr.
+        reason = e.verify_message or str(e)
+        result["status"] = "error"
+        if "expired" in reason.lower():
+            result["error"] = "SSL certificate has expired"
+        else:
+            result["error"] = f"SSL certificate invalid: {reason}"
     except Exception as e:
         result["status"] = "error"
         result["error"] = f"SSL check failed: {e}"

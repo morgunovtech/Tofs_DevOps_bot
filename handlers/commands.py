@@ -1,9 +1,9 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Router, F
 from aiogram.types import (
-    Message, CallbackQuery,
+    Message, CallbackQuery, ErrorEvent,
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
 )
@@ -75,19 +75,46 @@ def persistent_keyboard() -> ReplyKeyboardMarkup:
 
 
 def sites_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
-    """Keyboard with a button per site."""
+    """Keyboard with a button per site.
+
+    callback_data carries the site's index into config.get_site_urls(), not
+    the URL itself — Telegram caps callback_data at 64 bytes and a long
+    domain would make the whole keyboard fail to send.
+    """
     buttons = []
-    for url in config.get_site_urls():
+    for i, url in enumerate(config.get_site_urls()):
         label = url.replace("https://", "")
-        buttons.append([InlineKeyboardButton(text=f"🔍 {label}", callback_data=f"{action_prefix}:{url}")])
+        buttons.append([InlineKeyboardButton(text=f"🔍 {label}", callback_data=f"{action_prefix}:{i}")])
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _site_from_cb(arg: str) -> str | None:
+    """Resolve a sites_keyboard callback index back to a URL."""
+    try:
+        i = int(arg)
+    except ValueError:
+        return None
+    urls = config.get_site_urls()
+    return urls[i] if 0 <= i < len(urls) else None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def is_admin(user_id: int) -> bool:
-    return str(user_id) == config.admin_chat_id
+    # admin_chat_id fallback only works for private chats (user id == chat id);
+    # set TELEGRAM_ADMIN_USER_ID if the admin chat is a group/channel.
+    return str(user_id) == (config.admin_user_id or config.admin_chat_id)
+
+
+TG_MESSAGE_LIMIT = 4096
+
+
+def _clip(text: str, limit: int = TG_MESSAGE_LIMIT - 100) -> str:
+    """Keep a message under Telegram's 4096-char limit instead of failing."""
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n… (обрезано)"
 
 
 async def send_main_menu(target, text: str = "Выбери действие:"):
@@ -96,6 +123,32 @@ async def send_main_menu(target, text: str = "Выбери действие:"):
         await target.message.edit_text(text, reply_markup=main_menu())
     else:
         await target.answer(text, reply_markup=main_menu())
+
+
+# ── Error handler ────────────────────────────────────────────────────────────
+
+@router.errors()
+async def on_handler_error(event: ErrorEvent):
+    """Catch-all so a failed check (WHOIS timeout etc.) doesn't leave the
+    menu stuck on a '⏳ ...' message with no keyboard and no way back."""
+    logger.exception("Handler error: %s", event.exception)
+    update = event.update
+    try:
+        if update.callback_query and update.callback_query.message:
+            await update.callback_query.message.edit_text(
+                "❌ Что-то пошло не так во время проверки.\n"
+                "Попробуй ещё раз чуть позже.",
+                reply_markup=back_button(),
+            )
+        elif update.message:
+            await update.message.answer(
+                "❌ Что-то пошло не так. Попробуй ещё раз чуть позже."
+            )
+    except Exception:
+        # e.g. "message is not modified" or the message is too old to edit —
+        # nothing sensible left to do beyond the log line above.
+        pass
+    return True
 
 
 # ── /start and /help ─────────────────────────────────────────────────────────
@@ -211,7 +264,7 @@ async def cmd_mute(message: Message):
             "По умолчанию: 8h"
         )
         return
-    deadline = datetime.utcnow() + duration
+    deadline = datetime.now(timezone.utc) + duration
     await set_state("mute_until", deadline.isoformat())
     local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
     await message.answer(
@@ -258,8 +311,12 @@ async def cb_mute_menu(call: CallbackQuery):
     if until_iso:
         try:
             deadline = datetime.fromisoformat(until_iso)
-            if deadline > datetime.utcnow():
-                local = (datetime.now() + (deadline - datetime.utcnow())).strftime("%d.%m %H:%M")
+            if deadline.tzinfo is None:
+                # Legacy value written by the old naive-utcnow code — it was UTC.
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if deadline > now_utc:
+                local = (datetime.now() + (deadline - now_utc)).strftime("%d.%m %H:%M")
                 status = f"🔕 Сейчас приглушено до {local}\n\n"
         except ValueError:
             pass
@@ -285,7 +342,7 @@ async def cb_mute_pick(call: CallbackQuery):
     if not duration:
         await call.message.edit_text("Не понял длительность.", reply_markup=back_button())
         return
-    deadline = datetime.utcnow() + duration
+    deadline = datetime.now(timezone.utc) + duration
     await set_state("mute_until", deadline.isoformat())
     local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
     await call.message.edit_text(
@@ -379,7 +436,7 @@ async def cb_full_check(call: CallbackQuery):
     else:
         report += "\n\n✅ Все ссылки в норме"
 
-    await call.message.edit_text(report, reply_markup=back_button())
+    await call.message.edit_text(_clip(report), reply_markup=back_button())
 
 
 # ── 📊 Status ─────────────────────────────────────────────────────────────────
@@ -397,7 +454,7 @@ async def cb_status(call: CallbackQuery):
     incidents = await get_active_incidents()
     report = format_status_report(availability, incidents)
 
-    await call.message.edit_text(report, reply_markup=back_button())
+    await call.message.edit_text(_clip(report), reply_markup=back_button())
 
 
 # ── 🔒 SSL ────────────────────────────────────────────────────────────────────
@@ -425,7 +482,7 @@ async def cb_ssl(call: CallbackQuery):
         else:
             lines.append(f"🔴 {r['url']}: {r.get('error', 'N/A')}")
 
-    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
 
 # ── 🌐 Domains ────────────────────────────────────────────────────────────────
@@ -454,7 +511,7 @@ async def cb_domains(call: CallbackQuery):
         else:
             lines.append(f"⚠️ {r.get('domain', r['url'])}: {r.get('error', 'N/A')}")
 
-    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
 
 # ── 🔗 Links ──────────────────────────────────────────────────────────────────
@@ -478,7 +535,13 @@ async def cb_check_links(call: CallbackQuery):
         return
     await call.answer()
 
-    url = call.data.split(":", 1)[1]
+    url = _site_from_cb(call.data.split(":", 1)[1])
+    if not url:
+        await call.message.edit_text(
+            "Сайт не найден — список сайтов изменился. Открой меню заново.",
+            reply_markup=back_button(),
+        )
+        return
     await call.message.edit_text(f"⏳ Сканирую все ссылки на {url}...\n(это может занять ~30 сек)")
 
     from monitors.links_checker import check_links
@@ -495,7 +558,7 @@ async def cb_check_links(call: CallbackQuery):
         if ext:
             text += f"\nℹ️ Внешних ресурсов недоступно: {ext} — обычно не критично"
 
-    await call.message.edit_text(text, reply_markup=back_button())
+    await call.message.edit_text(_clip(text), reply_markup=back_button())
 
 
 # ── 📈 Uptime ─────────────────────────────────────────────────────────────────
@@ -526,7 +589,7 @@ async def cb_uptime(call: CallbackQuery):
             f"   Всего проверок: {stats['total_checks']}"
         )
 
-    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
 
 # ── ⚠️ Incidents ──────────────────────────────────────────────────────────────
@@ -552,7 +615,7 @@ async def cb_incidents(call: CallbackQuery):
                 f"   Проблема: {inc['message']}\n"
                 f"   С: {inc['created_at'][:16]}"
             )
-        text = "\n".join(lines)
+        text = _clip("\n".join(lines))
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="🗑 Сбросить все (если устарели)",
@@ -599,7 +662,13 @@ async def cb_check_single_site(call: CallbackQuery):
         return
     await call.answer()
 
-    url = call.data.split(":", 1)[1]
+    url = _site_from_cb(call.data.split(":", 1)[1])
+    if not url:
+        await call.message.edit_text(
+            "Сайт не найден — список сайтов изменился. Открой меню заново.",
+            reply_markup=back_button(),
+        )
+        return
 
     # Real-time progress
     await call.message.edit_text(f"⏳ [1/3] Проверяю доступность {url}...")
@@ -649,4 +718,4 @@ async def cb_check_single_site(call: CallbackQuery):
     else:
         lines.append(f"⚠️ Домен: {dom_r.get('error', 'N/A')}")
 
-    await call.message.edit_text("\n".join(lines), reply_markup=back_button())
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())

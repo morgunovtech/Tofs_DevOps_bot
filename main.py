@@ -13,7 +13,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, MenuButtonCommands
 
 from config import config
-from db.database import init_db, get_or_create_site
+from db.database import init_db, get_or_create_site, close_db
 from handlers.commands import router as commands_router
 from reports.scheduler import setup_scheduler
 from web.webhook import start_web_server
@@ -26,15 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 async def on_startup(bot: Bot):
-    """Actions to perform on startup."""
-    logger.info("Initialising database...")
-    await init_db()
-
-    logger.info("Registering configured sites...")
-    for url in config.get_site_urls():
-        await get_or_create_site(url)
-        logger.info(f"  Registered: {url}")
-
+    """Telegram-side startup actions (DB is already initialised in main)."""
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
 
@@ -65,6 +57,16 @@ async def main():
     dp = Dispatcher()
     dp.include_router(commands_router)
 
+    # DB must be ready before the webhook server or any scheduled job can
+    # touch it — a feedback POST or an early cron firing would hit missing
+    # tables otherwise.
+    logger.info("Initialising database...")
+    await init_db()
+    logger.info("Registering configured sites...")
+    for url in config.get_site_urls():
+        await get_or_create_site(url)
+        logger.info(f"  Registered: {url}")
+
     # Start webhook server (for receiving feedback from sites)
     web_runner = await start_web_server(bot)
 
@@ -84,6 +86,7 @@ async def main():
         scheduler.shutdown(wait=False)
         await web_runner.cleanup()
         await bot.session.close()
+        await close_db()
 
 
 if __name__ == "__main__":

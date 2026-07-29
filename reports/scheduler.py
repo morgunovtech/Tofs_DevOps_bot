@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -39,7 +39,10 @@ async def is_muted() -> bool:
         deadline = datetime.fromisoformat(until)
     except ValueError:
         return False
-    return datetime.utcnow() < deadline
+    if deadline.tzinfo is None:
+        # Legacy value written by the old naive-utcnow code — it was UTC.
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) < deadline
 
 
 async def send_to_admin(bot: Bot, text: str, force: bool = False):
@@ -95,14 +98,16 @@ async def run_availability_checks(bot: Bot):
                             f"{ms}ms ({SLOW_RESPONSE_STREAK} проверки подряд)",
                         )
             else:
-                if _slow_streak.get(url):
-                    _slow_streak[url] = 0
-                    site_id = await get_or_create_site(url)
-                    if await resolve_incident(site_id, "performance"):
-                        await send_to_admin(
-                            bot,
-                            f"✅ {url} — скорость восстановилась ({ms}ms)",
-                        )
+                _slow_streak[url] = 0
+                # Resolve unconditionally, not only when an in-memory streak
+                # exists: after a restart the streak dict is empty while a
+                # "performance" incident may still be open in the DB.
+                site_id = await get_or_create_site(url)
+                if await resolve_incident(site_id, "performance"):
+                    await send_to_admin(
+                        bot,
+                        f"✅ {url} — скорость восстановилась ({ms}ms)",
+                    )
 
 
 async def run_ssl_checks(bot: Bot):

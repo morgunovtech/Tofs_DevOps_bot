@@ -67,7 +67,12 @@ def _path(url: str) -> str:
 
 
 def _is_internal(link: str, base_url: str) -> bool:
-    """Same registrable domain as the base site."""
+    """Same registrable domain as the base site.
+
+    NOTE: naive "last two labels" heuristic — correct for domains like
+    morgunov.tech, wrong for multi-part public suffixes (example.co.uk would
+    match any *.co.uk). Switch to tldextract if such sites are ever added.
+    """
     base_host = _host(base_url)
     link_host = _host(link)
     if not base_host or not link_host:
@@ -89,7 +94,8 @@ async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str | None:
     return None
 
 
-async def _check_link(session: aiohttp.ClientSession, url: str) -> dict:
+async def _check_link(session: aiohttp.ClientSession, url: str,
+                      base_url: str) -> dict:
     """Check if a single link is accessible.
 
     Strategy:
@@ -97,6 +103,10 @@ async def _check_link(session: aiohttp.ClientSession, url: str) -> dict:
       2. Try GET with Range: bytes=0-0 (cheap, but real GET behaviour).
       3. On timeout/5xx, retry once with a small backoff.
       4. 4xx codes that mean "bot blocked" (401/403/405/429/503) are not failures.
+
+    TLS: internal links are verified strictly — a broken cert on our own
+    domain IS a problem we want to catch. External hosts often have odd TLS
+    setups we can't fix, so there we only care about reachability.
     """
     host = _host(url)
     path = _path(url)
@@ -108,11 +118,13 @@ async def _check_link(session: aiohttp.ClientSession, url: str) -> dict:
         return {"url": url, "status_code": None, "ok": True, "skipped": True}
 
     headers = {**DEFAULT_HEADERS, "Range": "bytes=0-0"}
+    ssl_arg = True if _is_internal(url, base_url) else False
 
     async def _attempt() -> dict:
         try:
             async with session.get(
                 url, timeout=TIMEOUT, allow_redirects=True, headers=headers,
+                ssl=ssl_arg,
             ) as resp:
                 status = resp.status
                 ok = status < 400 or status in BENIGN_STATUS_CODES
@@ -184,7 +196,10 @@ async def check_links(url: str) -> dict:
         "recovered": False,
     }
 
-    connector = aiohttp.TCPConnector(limit=20, ssl=False)
+    # Certificate verification stays ON by default (used for the page fetch
+    # and internal links); _check_link relaxes it per-request for external
+    # hosts only.
+    connector = aiohttp.TCPConnector(limit=20)
     async with aiohttp.ClientSession(connector=connector) as session:
         html = await _fetch_page(session, url)
         if not html:
@@ -200,7 +215,7 @@ async def check_links(url: str) -> dict:
 
         async def check_with_sem(link):
             async with sem:
-                return await _check_link(session, link)
+                return await _check_link(session, link, url)
 
         checks = await asyncio.gather(*[check_with_sem(l) for l in links])
 

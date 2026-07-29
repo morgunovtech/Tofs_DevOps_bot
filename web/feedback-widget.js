@@ -11,6 +11,10 @@
  *     };
  *   </script>
  *   <script src="https://YOUR_SERVER:8080/feedback-widget.js"></script>
+ *
+ * NOTE: the "secret" is visible to every site visitor (view-source), so it is
+ * a spam filter, not authentication. The server treats the endpoint as public
+ * and enforces rate limits + size caps on its side.
  */
 
 (function () {
@@ -203,6 +207,8 @@
         status.textContent = '✅ Спасибо! Сообщение отправлено.';
         status.className = 'ok';
         setTimeout(closeModal, 1800);
+      } else if (res.status === 429) {
+        throw new Error('слишком много сообщений, попробуйте через минуту');
       } else {
         throw new Error(`HTTP ${res.status}`);
       }
