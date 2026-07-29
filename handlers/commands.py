@@ -289,8 +289,10 @@ async def cmd_start(message: Message):
         return
     # Install persistent reply keyboard once — stays visible at the bottom.
     await message.answer(
-        "👋 Привет! Я DevOps-бот для мониторинга сайтов.\n"
-        "Кнопка «📱 Меню» внизу всегда под рукой.",
+        "👋 Привет! Я TofsDevOps — личный девопс твоих сайтов.\n"
+        "Кнопка «📱 Меню» внизу всегда под рукой.\n\n"
+        "Назван в честь Тофса — ирландского терьера, который принимает "
+        "аптайм близко к сердцу.",
         reply_markup=persistent_keyboard(),
     )
     await send_main_menu(message)
@@ -584,36 +586,33 @@ async def cb_full_check(call: CallbackQuery):
 
     # Step 1 — availability
     await call.message.edit_text(
-        "🚀 Запускаю полную проверку...\n\n"
-        "⏳ [1/4] Проверяю доступность сайтов...",
+        "🚀 Полная проверка\n\n"
+        "▱▱▱▱ Проверяю доступность сайтов...",
         reply_markup=None
     )
     availability = await check_all(urls)
 
     # Step 2 — SSL
     await call.message.edit_text(
-        "🚀 Полная проверка...\n\n"
-        "✅ [1/4] Доступность — готово\n"
-        "⏳ [2/4] Проверяю SSL-сертификаты...",
+        "🚀 Полная проверка\n\n"
+        "▰▱▱▱ Доступность — готово\n"
+        "Проверяю SSL-сертификаты...",
     )
     ssl_results = await check_all_ssl(urls)
 
     # Step 3 — domains
     await call.message.edit_text(
-        "🚀 Полная проверка...\n\n"
-        "✅ [1/4] Доступность — готово\n"
-        "✅ [2/4] SSL — готово\n"
-        "⏳ [3/4] Проверяю домены...",
+        "🚀 Полная проверка\n\n"
+        "▰▰▱▱ SSL — готово\n"
+        "Проверяю домены...",
     )
     domain_results = await check_all_domains(urls)
 
     # Step 4 — links
     await call.message.edit_text(
-        "🚀 Полная проверка...\n\n"
-        "✅ [1/4] Доступность — готово\n"
-        "✅ [2/4] SSL — готово\n"
-        "✅ [3/4] Домены — готово\n"
-        "⏳ [4/4] Проверяю ссылки на страницах...",
+        "🚀 Полная проверка\n\n"
+        "▰▰▰▱ Домены — готово\n"
+        "Проверяю ссылки на страницах...",
     )
     links_results = await check_all_links(urls)
 
@@ -974,19 +973,18 @@ async def cb_check_single_site(call: CallbackQuery):
     url = site["url"]
 
     # Real-time progress
-    await call.message.edit_text(f"⏳ [1/3] Проверяю доступность {url}...")
+    await call.message.edit_text(f"▱▱▱ Проверяю доступность {url}...")
     avail = await check_availability(url)
 
     await call.message.edit_text(
-        f"✅ [1/3] Доступность — готово\n"
-        f"⏳ [2/3] Проверяю SSL..."
+        f"▰▱▱ Доступность — готово\n"
+        f"Проверяю SSL..."
     )
     ssl_r = await check_ssl(url)
 
     await call.message.edit_text(
-        f"✅ [1/3] Доступность — готово\n"
-        f"✅ [2/3] SSL — готово\n"
-        f"⏳ [3/3] Проверяю домен..."
+        f"▰▰▱ SSL — готово\n"
+        f"Проверяю домен..."
     )
     dom_r = await check_domain(url)
 

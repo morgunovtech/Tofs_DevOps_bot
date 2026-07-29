@@ -1,7 +1,7 @@
 services:
   bot:
     build: .
-    container_name: devops_bot
+    container_name: tofs_devops
     restart: always
     env_file: .env
     volumes:

@@ -87,12 +87,15 @@ def render_chart(series: dict[str, list[dict]], path: str) -> bool:
     if not has_data:
         return False
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=110)
-    for host, rows in series.items():
+    # Terrier-wheaten first — the one accent color of the project.
+    palette = ["#C1573B", "#37698A", "#8F7E4F", "#6B6B6B"]
+    for i, (host, rows) in enumerate(series.items()):
         if not rows:
             continue
         days = [r["day"][5:] for r in rows]  # MM-DD
         ms = [round(r["avg_ms"] or 0) for r in rows]
-        ax.plot(days, ms, marker="o", linewidth=2, label=host)
+        ax.plot(days, ms, marker="o", linewidth=2, label=host,
+                color=palette[i % len(palette)])
     ax.set_title("Среднее время ответа за неделю, ms")
     ax.set_ylabel("ms")
     ax.grid(True, alpha=0.3)

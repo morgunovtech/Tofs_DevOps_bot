@@ -1,4 +1,4 @@
-# DevOps Bot — your personal DevOps in Telegram
+# TofsDevOps — your personal DevOps in Telegram
 
 > Monitors your sites, fixes what it can, checks that search engines **and AI agents** can see you — and stays silent while everything is fine.
 
@@ -142,6 +142,8 @@ A note on the feedback widget's security model: the widget's "secret" ships to e
 ## Status
 
 Personal project, built for my own sites and shared as-is: no SLA, no roadmap promises. Issues and PRs are welcome — especially new monitors and smarter auto-remediation.
+
+Named after Tofs — an Irish Terrier who takes uptime personally.
 
 Built in pair with [Claude](https://claude.com/claude-code).
 
