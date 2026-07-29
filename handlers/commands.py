@@ -23,7 +23,7 @@ from db.database import (
 )
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
-    format_compact_status_report, now_local, fmt_date, _short_host,
+    format_compact_status_report, now_local, fmt_date, _short_host, _esc,
 )
 from services.actions import trigger_redeploy, purge_cf_cache
 from services.screenshots import fetch_screenshot
@@ -386,7 +386,7 @@ async def cb_alert_action(call: CallbackQuery):
             text = (f"🔍 {url} — доступен: HTTP {avail.get('status_code')} "
                     f"({avail.get('response_time_ms')}ms)")
         else:
-            text = f"🔍 {url} — всё ещё недоступен: {avail.get('error', 'N/A')}"
+            text = f"🔍 {url} — всё ещё недоступен: {_esc(avail.get('error', 'N/A'))}"
         await call.message.answer(text)
     elif action == "shot":
         await call.answer("Делаю скрин… (~15 сек)")
@@ -538,7 +538,7 @@ async def cb_ssl(call: CallbackQuery):
             lines.append(f"   Осталось: {days} дн. (до {fmt_date(info['not_after'])})")
             lines.append(f"   Издатель: {info['issuer']}")
         else:
-            lines.append(f"🔴 {_short_host(r['url'])}: {r.get('error', 'N/A')}")
+            lines.append(f"🔴 {_short_host(r['url'])}: {_esc(r.get('error', 'N/A'))}")
 
     await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
@@ -567,7 +567,7 @@ async def cb_domains(call: CallbackQuery):
             lines.append(f"   Осталось: {days} дн. (до {exp})")
             lines.append(f"   Регистратор: {info['registrar']}")
         else:
-            lines.append(f"⚠️ {r.get('domain', r['url'])}: {r.get('error', 'N/A')}")
+            lines.append(f"⚠️ {r.get('domain', r['url'])}: {_esc(r.get('error', 'N/A'))}")
 
     await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
@@ -668,9 +668,9 @@ async def cb_incidents(call: CallbackQuery):
         for inc in incidents:
             sev_icon = "🔴" if inc["severity"] == "critical" else "⚠️"
             lines.append(
-                f"{sev_icon} {inc['url']}\n"
-                f"   Тип: {inc['check_type']}\n"
-                f"   Проблема: {inc['message']}\n"
+                f"{sev_icon} {_esc(inc['url'])}\n"
+                f"   Тип: {_esc(inc['check_type'])}\n"
+                f"   Проблема: {_esc(inc['message'])}\n"
                 f"   С: {inc['created_at'][:16]}"
             )
         text = _clip("\n".join(lines))
@@ -729,6 +729,15 @@ async def cb_seo(call: CallbackQuery):
     if yandex_webmaster.available():
         yx_status = await yandex_webmaster.get_summaries() or {}
 
+    text = build_seo_report(results, gsc_status, yx_status)
+    await call.message.edit_text(_clip(text), reply_markup=back_button())
+
+
+def build_seo_report(results: list[dict], gsc_status: dict[str, str],
+                     yx_status: dict[str, dict]) -> str:
+    """Assemble the on-demand audit message (pure — unit-tested for Telegram
+    HTML safety: problem texts mention raw tags like «нет <title>» and must
+    arrive escaped, or parse mode rejects the whole message)."""
     lines = ["🔍 SEO/GEO-аудит:\n"]
     for r in results:
         host = r["url"].replace("https://", "")
@@ -742,13 +751,13 @@ async def cb_seo(call: CallbackQuery):
                          f"проблем: {len(problems)}")
             for p in problems[:6]:
                 sev = "🔴" if p["severity"] == "critical" else "⚠️"
-                lines.append(f"   {sev} {p['message']}")
+                lines.append(f"   {sev} {_esc(p['message'])}")
             if len(problems) > 6:
                 lines.append(f"   … и ещё {len(problems) - 6}")
         if r.get("no_js_chars") is not None:
             lines.append(f"   📄 Текст без JS: {r['no_js_chars']} символов")
         if r["url"] in gsc_status:
-            lines.append(f"   📇 Google: {gsc_status[r['url']]}")
+            lines.append(f"   📇 Google: {_esc(gsc_status[r['url']])}")
         yx = yx_status.get(host)
         if yx:
             chunk = []
@@ -761,10 +770,9 @@ async def cb_seo(call: CallbackQuery):
             if chunk:
                 lines.append(f"   📇 Яндекс: " + ", ".join(chunk))
         for note in (r.get("infos") or [])[:3]:
-            lines.append(f"   ℹ️ {note}")
+            lines.append(f"   ℹ️ {_esc(note)}")
         lines.append("")
-
-    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
+    return "\n".join(lines)
 
 
 # ── 🌍 Check single site ──────────────────────────────────────────────────────
@@ -822,7 +830,7 @@ async def cb_check_single_site(call: CallbackQuery):
     ms = avail.get("response_time_ms", "N/A")
     lines.append(f"{icon} Доступность: HTTP {code} ({ms}ms)")
     if avail.get("error"):
-        lines.append(f"   ↳ {avail['error']}")
+        lines.append(f"   ↳ {_esc(avail['error'])}")
 
     # SSL
     if ssl_r.get("ssl_info"):
@@ -832,7 +840,7 @@ async def cb_check_single_site(call: CallbackQuery):
         lines.append(f"   ↳ Издатель: {ssl_r['ssl_info']['issuer']}")
         lines.append(f"   ↳ Истекает: {fmt_date(ssl_r['ssl_info']['not_after'])}")
     else:
-        lines.append(f"🔴 SSL: {ssl_r.get('error', 'N/A')}")
+        lines.append(f"🔴 SSL: {_esc(ssl_r.get('error', 'N/A'))}")
 
     # Domain
     if dom_r.get("domain_info") and dom_r["domain_info"]["days_left"] is not None:
@@ -842,7 +850,7 @@ async def cb_check_single_site(call: CallbackQuery):
         lines.append(f"{dom_icon} Домен: {days} дн. (до {exp})")
         lines.append(f"   ↳ Регистратор: {dom_r['domain_info']['registrar']}")
     else:
-        lines.append(f"⚠️ Домен: {dom_r.get('error', 'N/A')}")
+        lines.append(f"⚠️ Домен: {_esc(dom_r.get('error', 'N/A'))}")
 
     idx = call.data.split(":", 1)[1]
     kb = InlineKeyboardMarkup(inline_keyboard=[
