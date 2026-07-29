@@ -83,6 +83,13 @@ class Config:
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
     deep_check_sample: int = int(os.getenv("DEEP_CHECK_SAMPLE", "10"))
 
+    # ── SEO/GEO monitor ──────────────────────────────────────────────────────
+    # Pages per site to inspect (homepage + sitemap sample).
+    seo_pages_sample: int = int(os.getenv("SEO_PAGES_SAMPLE", "5"))
+    # Below this many no-JS text chars on the homepage, AI crawlers are
+    # effectively looking at a blank page.
+    seo_min_text_chars: int = int(os.getenv("SEO_MIN_TEXT_CHARS", "400"))
+
     # ── Cloudflare Pages actions ─────────────────────────────────────────────
     # Deploy hooks per host: "s.morgunov.tech=https://api.cloudflare.com/...".
     deploy_hooks: dict[str, str] = field(default_factory=lambda: _map("DEPLOY_HOOKS"))

@@ -52,6 +52,9 @@ def main_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="⚠️ Инциденты",      callback_data="menu_incidents"),
         ],
         [
+            InlineKeyboardButton(text="🔍 SEO/GEO-аудит",  callback_data="menu_seo"),
+        ],
+        [
             InlineKeyboardButton(text="🌍 Проверить сайт", callback_data="menu_check_site"),
             InlineKeyboardButton(text="🔕 Тишина",          callback_data="menu_mute"),
         ],
@@ -694,6 +697,47 @@ async def cb_incidents_clear(call: CallbackQuery):
         f"При следующей проверке те, что реальны, откроются заново.",
         reply_markup=back_button(),
     )
+
+
+# ── 🔍 SEO/GEO audit ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_seo")
+async def cb_seo(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(
+        "🔍 Гоняю SEO/GEO-аудит по всем сайтам…\n"
+        "(robots, sitemap, мета, noindex, AI-боты, контент без JS — ~30 сек)"
+    )
+
+    from monitors.seo_checker import check_all_seo
+    results = await check_all_seo(config.get_site_urls())
+
+    lines = ["🔍 SEO/GEO-аудит:\n"]
+    for r in results:
+        host = r["url"].replace("https://", "")
+        problems = r["problems"]
+        if not problems:
+            lines.append(f"✅ {host} — всё чисто "
+                         f"({r['pages_checked']} страниц)")
+        else:
+            has_critical = any(p["severity"] == "critical" for p in problems)
+            lines.append(f"{'🔴' if has_critical else '⚠️'} {host} — "
+                         f"проблем: {len(problems)}")
+            for p in problems[:6]:
+                sev = "🔴" if p["severity"] == "critical" else "⚠️"
+                lines.append(f"   {sev} {p['message']}")
+            if len(problems) > 6:
+                lines.append(f"   … и ещё {len(problems) - 6}")
+        if r.get("no_js_chars") is not None:
+            lines.append(f"   📄 Текст без JS: {r['no_js_chars']} символов")
+        for note in (r.get("infos") or [])[:3]:
+            lines.append(f"   ℹ️ {note}")
+        lines.append("")
+
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
 
 # ── 🌍 Check single site ──────────────────────────────────────────────────────

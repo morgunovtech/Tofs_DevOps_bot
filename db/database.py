@@ -559,3 +559,15 @@ async def backup_db(dest_path: str):
         if os.path.exists(dest_path):
             os.remove(dest_path)
         await db.execute("VACUUM INTO ?", (dest_path,))
+
+
+async def get_last_check(site_id: int, check_type: str) -> dict | None:
+    """Most recent check row of the given type for a site."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT * FROM checks WHERE site_id = ? AND check_type = ?
+           ORDER BY id DESC LIMIT 1""",
+        (site_id, check_type),
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None

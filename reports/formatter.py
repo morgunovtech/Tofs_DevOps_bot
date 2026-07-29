@@ -285,3 +285,19 @@ def format_uptime(url: str, stats: dict) -> str:
         f"Проверок: {stats['total_checks']}\n"
         f"Среднее время ответа: {stats['avg_response_ms']}ms"
     )
+
+
+def format_seo_alert(result: dict) -> str:
+    problems = result.get("problems") or []
+    if not problems:
+        return ""
+    has_critical = any(p["severity"] == "critical" for p in problems)
+    icon = "🔴" if has_critical else "⚠️"
+    lines = [f"{icon} SEO/GEO: {_esc(_short_host(result['url']))} — "
+             f"проблем: {len(problems)}"]
+    for p in problems[:8]:
+        sev = "🔴" if p["severity"] == "critical" else "⚠️"
+        lines.append(f"  {sev} {_esc(p['message'])}")
+    if len(problems) > 8:
+        lines.append(f"  … и ещё {len(problems) - 8}")
+    return "\n".join(lines)

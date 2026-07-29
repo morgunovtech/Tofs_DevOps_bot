@@ -18,13 +18,14 @@ from monitors.links_checker import check_all_links
 from monitors.dns_checker import check_all_dns
 from monitors.deep_checker import check_all_deep
 from monitors.host_checker import check_disk, watch_containers
+from monitors.seo_checker import check_all_seo
 from services.actions import (
     alert_actions_keyboard, deploy_hook_for, trigger_redeploy,
 )
 from db.database import (
     get_active_incidents, get_state, set_state,
     get_or_create_site, save_incident, resolve_incident,
-    get_heartbeats, get_all_sites, get_uptime_stats,
+    get_heartbeats, get_all_sites, get_uptime_stats, get_last_check,
     queue_notification, pop_notifications, rollup_old_checks, backup_db,
 )
 from reports.formatter import (
@@ -35,6 +36,7 @@ from reports.formatter import (
     format_domain_alert,
     format_links_report,
     format_dns_change,
+    format_seo_alert,
     incident_duration_line,
     _parse_sqlite_utc,
     _short_host,
@@ -299,6 +301,24 @@ async def run_deep_checks(bot: Bot):
             )
 
 
+async def run_seo_checks(bot: Bot):
+    """Daily SEO/GEO audit: alert on state change, critical bypasses mute
+    (noindex or a search-bot block means the site is disappearing from
+    indexes right now)."""
+    results = await check_all_seo(config.get_site_urls())
+    for r in results:
+        if r.get("incident_new"):
+            msg = format_seo_alert(r)
+            if msg:
+                has_critical = any(
+                    p["severity"] == "critical" for p in r["problems"])
+                await send_to_admin(bot, _clip(msg), force=has_critical)
+        elif r.get("recovered"):
+            await send_to_admin(
+                bot, f"✅ SEO: {r['url']} — все проблемы устранены",
+            )
+
+
 # ── Dead-man switch ──────────────────────────────────────────────────────────
 
 def _fmt_ago(minutes: float) -> str:
@@ -557,6 +577,23 @@ async def _morning_extras(ssl_results: list[dict],
                 hb_chips.append(f"{job} ❓ нет сигналов")
         extras.append("💓 " + " · ".join(hb_chips))
 
+    # SEO/GEO status from the last daily audit (runs at 07:30, before this).
+    seo_chips = []
+    seo_ok = True
+    for s in sites:
+        last = await get_last_check(s["id"], "seo")
+        if not last:
+            continue
+        if last["status"] == "ok":
+            seo_chips.append(f"{_short_host(s['url'])} ✅")
+        else:
+            seo_ok = False
+            icon = "🔴" if last["status"] == "critical" else "⚠️"
+            seo_chips.append(f"{_short_host(s['url'])} {icon}")
+    if seo_chips:
+        extras.append("🔍 SEO: " + ("✅ все сайты" if seo_ok
+                                    else " · ".join(seo_chips)))
+
     # Disk on the bot host.
     try:
         disk = await check_disk(auto_cleanup=False)
@@ -655,6 +692,11 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     # SSL + domain once a day — alert ladder prevents repeat noise.
     job(run_ssl_checks, CronTrigger(hour=8, minute=0, timezone=tz), "ssl_checks")
     job(run_domain_checks, CronTrigger(hour=8, minute=5, timezone=tz), "domain_checks")
+
+    # SEO/GEO audit daily at 07:30 — before the morning report, so the
+    # digest shows fresh results.
+    job(run_seo_checks, CronTrigger(hour=7, minute=30, timezone=tz), "seo_checks",
+        misfire_grace_time=600)
 
     job(run_links_checks,
         IntervalTrigger(hours=config.links_check_interval_hours),
