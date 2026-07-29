@@ -92,14 +92,14 @@ https://example.com
 git clone https://github.com/morgunovtech/devops-bot.git
 cd devops-bot
 cp .env.example .env
-# Заполни три обязательных значения:
-#   TELEGRAM_BOT_TOKEN  — от @BotFather
-#   TELEGRAM_ADMIN_CHAT_ID — твой user id (спроси у @userinfobot)
-#   SITES — домены для мониторинга через запятую
+# Заполни ОДНО значение: TELEGRAM_BOT_TOKEN (от @BotFather)
 docker compose up -d --build
 ```
 
-Отправь боту `/start`. Остальное работает из коробки; опциональные интеграции включаются по мере добавления ключей в `.env` (всё задокументировано в [.env.example](.env.example)):
+Отправь боту `/start` — первый пользователь становится админом, и бот сам
+проведёт через добавление первого сайта. Сайты, время отчётов, тихие часы и
+heartbeat-джобы управляются из чата; `.env` нужен только для опциональных
+интеграций ниже (задокументированы в [.env.example](.env.example)):
 
 | Что включается | Переменные |
 |---|---|

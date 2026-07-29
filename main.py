@@ -13,9 +13,11 @@ from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, MenuButtonCommands
 
 from config import config
-from db.database import init_db, get_or_create_site, close_db
+from db.database import init_db, get_or_create_site, close_db, \
+    count_sites_total, get_state
 from handlers.commands import router as commands_router
 from reports.scheduler import setup_scheduler
+from services import settings
 from web.webhook import start_web_server
 
 logging.basicConfig(
@@ -47,8 +49,6 @@ async def on_startup(bot: Bot):
 async def main():
     if not config.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
-    if not config.admin_chat_id:
-        raise RuntimeError("TELEGRAM_ADMIN_CHAT_ID is not set in .env")
 
     bot = Bot(
         token=config.bot_token,
@@ -67,10 +67,27 @@ async def main():
     # tables otherwise.
     logger.info("Initialising database...")
     await init_db()
-    logger.info("Registering configured sites...")
-    for url in config.get_site_urls():
-        await get_or_create_site(url)
-        logger.info(f"  Registered: {url}")
+    await settings.load()
+
+    # Admin can be claimed via /start (first user wins) — restore it from
+    # the DB when the env var is empty.
+    if not config.admin_chat_id:
+        saved = await get_state("admin_chat_id")
+        if saved:
+            config.admin_chat_id = saved
+            config.admin_user_id = await get_state("admin_user_id") or saved
+            logger.info("Admin restored from DB.")
+        else:
+            logger.warning(
+                "No admin configured — the first user to /start becomes admin.")
+
+    # The DB is the source of truth for sites; env SITES only seeds an
+    # empty database on the very first run (so UI removals survive restarts).
+    if await count_sites_total() == 0 and config.get_site_urls():
+        logger.info("First run: seeding sites from .env...")
+        for url in config.get_site_urls():
+            await get_or_create_site(url)
+            logger.info(f"  Registered: {url}")
 
     # Start webhook server (for receiving feedback from sites)
     web_runner = await start_web_server(bot)

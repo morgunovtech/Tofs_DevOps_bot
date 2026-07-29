@@ -571,3 +571,64 @@ async def get_last_check(site_id: int, check_type: str) -> dict | None:
     )
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+# ── Site management (DB is the source of truth; env SITES is a first-run seed) ─
+
+async def count_sites_total() -> int:
+    """All site rows, active or not — used to decide whether to seed from env."""
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM sites")
+    return (await cursor.fetchone())[0]
+
+
+async def get_active_site_urls() -> list[str]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT url FROM sites WHERE active = 1 ORDER BY id"
+    )
+    rows = await cursor.fetchall()
+    return [r[0] for r in rows]
+
+
+async def get_site(site_id: int) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM sites WHERE id = ?", (site_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def activate_or_create_site(url: str) -> int:
+    """Add a site from the UI (or re-activate a previously removed one)."""
+    site_id = await get_or_create_site(url)
+    db = await get_db()
+    async with _write_lock:
+        await db.execute(
+            "UPDATE sites SET active = 1 WHERE id = ?", (site_id,))
+        await db.commit()
+    return site_id
+
+
+async def deactivate_site(site_id: int) -> bool:
+    """Soft-remove: checks/incidents history stays, monitoring stops."""
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute(
+            "UPDATE sites SET active = 0 WHERE id = ? AND active = 1",
+            (site_id,))
+        # Close its open incidents so they don't haunt the incidents list.
+        await db.execute(
+            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+               WHERE site_id = ? AND resolved = 0""", (site_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def resolve_incident_by_id(incident_id: int) -> bool:
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute(
+            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+               WHERE id = ? AND resolved = 0""", (incident_id,))
+        await db.commit()
+        return cursor.rowcount > 0

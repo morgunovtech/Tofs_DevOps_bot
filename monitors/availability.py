@@ -30,6 +30,7 @@ async def check_availability(url: str) -> dict:
     site_id = await get_or_create_site(url)
     result = {
         "url": url,
+        "site_id": site_id,
         "status": "ok",
         "status_code": None,
         "response_time_ms": None,

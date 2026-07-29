@@ -23,10 +23,12 @@ from services import gsc, yandex_webmaster
 from services.actions import (
     alert_actions_keyboard, deploy_hook_for, trigger_redeploy,
 )
+from services import settings
 from db.database import (
     get_active_incidents, get_state, set_state,
     get_or_create_site, save_incident, resolve_incident,
     get_heartbeats, get_all_sites, get_uptime_stats, get_last_check,
+    get_active_site_urls,
     queue_notification, pop_notifications, rollup_old_checks, backup_db,
 )
 from reports.formatter import (
@@ -79,7 +81,7 @@ async def is_muted() -> bool:
 def in_quiet_hours(hour: int | None = None) -> bool:
     """True during configured quiet hours (local time). Non-critical alerts
     are queued instead of sent, and flushed as a digest in the morning."""
-    qh = config.quiet_hours
+    qh = settings.quiet_hours()
     if not qh:
         return False
     if hour is None:
@@ -138,10 +140,13 @@ _slow_streak: dict[str, int] = {}
 
 async def run_availability_checks(bot: Bot):
     """Run availability checks. Alert only on state transitions."""
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all(urls)
 
     for r in results:
+        # Maintenance pause: checks/incidents continue, alerts stay silent.
+        if r.get("site_id") and await settings.is_paused(r["site_id"]):
+            continue
         if r.get("incident_new"):
             msg = format_availability_alert(r)
             if msg:
@@ -155,7 +160,7 @@ async def run_availability_checks(bot: Bot):
                     note = await trigger_redeploy(r["url"])
                     msg += f"\n\n🤖 Автодействие: {note}"
                 await send_to_admin(bot, msg, force=True,
-                                    reply_markup=alert_actions_keyboard(r["url"]))
+                                    reply_markup=await alert_actions_keyboard(r["url"]))
         elif r.get("external_ok") is True:
             # Down from the bot's network but fine externally — likely a
             # local network problem; mention it at most once per 6 hours.
@@ -214,7 +219,7 @@ async def run_availability_checks(bot: Bot):
 
 async def run_ssl_checks(bot: Bot):
     """SSL alert ladder: notify only when crossing a new threshold."""
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all_ssl(urls)
 
     for r in results:
@@ -241,7 +246,7 @@ async def run_ssl_checks(bot: Bot):
 
 async def run_domain_checks(bot: Bot):
     """Domain alert ladder."""
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all_domains(urls)
 
     for r in results:
@@ -258,10 +263,13 @@ async def run_domain_checks(bot: Bot):
 
 async def run_links_checks(bot: Bot):
     """Broken-links alerts: only when a new internal-broken-links incident opens."""
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all_links(urls)
 
     for r in results:
+        site_id = await get_or_create_site(r["url"])
+        if await settings.is_paused(site_id):
+            continue
         if r.get("incident_new"):
             msg = format_links_report(r)
             if msg:
@@ -275,7 +283,7 @@ async def run_links_checks(bot: Bot):
 
 async def run_dns_checks(bot: Bot):
     """Alert when DNS answers change; NS changes are critical."""
-    changes = await check_all_dns(config.get_site_urls())
+    changes = await check_all_dns(await get_active_site_urls())
     for change in changes:
         await send_to_admin(bot, format_dns_change(change),
                             force=change.get("critical", False))
@@ -283,8 +291,11 @@ async def run_dns_checks(bot: Bot):
 
 async def run_deep_checks(bot: Bot):
     """Sitemap 5xx probe: pages beyond the homepage."""
-    results = await check_all_deep(config.get_site_urls())
+    results = await check_all_deep(await get_active_site_urls())
     for r in results:
+        site_id = await get_or_create_site(r["url"])
+        if await settings.is_paused(site_id):
+            continue
         if r.get("incident_new"):
             errors = "\n".join(
                 f"  • {e['url']} — HTTP {e['status_code']}"
@@ -294,7 +305,7 @@ async def run_deep_checks(bot: Bot):
                 bot,
                 f"🕳 {r['url']}: 5xx на {len(r['errors'])} из "
                 f"{r['sampled']} проверенных страниц:\n{errors}",
-                reply_markup=alert_actions_keyboard(r["url"]),
+                reply_markup=await alert_actions_keyboard(r["url"]),
             )
         elif r.get("recovered"):
             await send_to_admin(
@@ -306,7 +317,7 @@ async def run_seo_checks(bot: Bot):
     """Daily SEO/GEO audit: alert on state change, critical bypasses mute
     (noindex or a search-bot block means the site is disappearing from
     indexes right now)."""
-    results = await check_all_seo(config.get_site_urls())
+    results = await check_all_seo(await get_active_site_urls())
     for r in results:
         if r.get("incident_new"):
             msg = format_seo_alert(r)
@@ -329,7 +340,7 @@ async def run_index_checks(bot: Bot):
     """
     # Google: is each homepage still in the index?
     if gsc.available():
-        for url in config.get_site_urls():
+        for url in await get_active_site_urls():
             info = await gsc.inspect_url(url.rstrip("/") + "/")
             if not info:
                 continue
@@ -388,7 +399,7 @@ def _fmt_ago(minutes: float) -> str:
 
 async def run_heartbeat_watch(bot: Bot):
     """Alert when an expected job (backup, cron) hasn't pinged in time."""
-    jobs = config.heartbeat_jobs
+    jobs = settings.heartbeat_jobs()
     if not jobs:
         return
     beats = await get_heartbeats()
@@ -492,6 +503,8 @@ async def run_escalation_watch(bot: Bot):
     for inc in await get_active_incidents():
         if inc["severity"] != "critical":
             continue
+        if await settings.is_paused(inc["site_id"]):
+            continue
         created = _parse_sqlite_utc(inc["created_at"])
         if not created:
             continue
@@ -511,7 +524,7 @@ async def run_escalation_watch(bot: Bot):
             f"⏰ ВСЁ ЕЩЁ НЕ РЕШЕНО (уже {_fmt_ago(age_min)})\n"
             f"{_short_host(inc['url'])} [{inc['check_type']}]: {inc['message']}",
             force=True,
-            reply_markup=alert_actions_keyboard(inc["url"]),
+            reply_markup=await alert_actions_keyboard(inc["url"]),
         )
 
 
@@ -619,11 +632,11 @@ async def _morning_extras(ssl_results: list[dict],
         extras.append("🔜 Истекает скоро: " + "; ".join(expiring))
 
     # Dead-man switch status.
-    if config.heartbeat_jobs:
+    if settings.heartbeat_jobs():
         beats = await get_heartbeats()
         now = datetime.now(timezone.utc)
         hb_chips = []
-        for job, interval_min in config.heartbeat_jobs.items():
+        for job, interval_min in settings.heartbeat_jobs().items():
             row = beats.get(job)
             last = _parse_sqlite_utc(row["last_ping"]) if row and row.get("last_ping") else None
             if last:
@@ -667,7 +680,7 @@ async def _morning_extras(ssl_results: list[dict],
 
 async def send_morning_report(bot: Bot):
     """Compact morning status report — the daily 10-second health digest."""
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     availability = await check_all(urls)
     ssl_results = await check_all_ssl(urls)
     domain_results = await check_all_domains(urls)
@@ -691,8 +704,11 @@ async def send_evening_report(bot: Bot):
     if not incidents:
         logger.info("Evening report skipped: no active incidents.")
         return
+    if settings.evening_hour() is None:
+        logger.info("Evening report disabled in settings.")
+        return
 
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     availability = await check_all(urls)
     ssl_results = await check_all_ssl(urls)
     domain_results = await check_all_domains(urls)
@@ -728,13 +744,32 @@ async def send_weekly_report(bot: Bot):
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
+_scheduler: AsyncIOScheduler | None = None
+
+
+def reschedule_report_jobs():
+    """Apply UI-changed report hours to the running scheduler on the fly."""
+    if _scheduler is None:
+        return
+    tz = pytz.timezone(config.timezone)
+    _scheduler.reschedule_job(
+        "morning_report",
+        trigger=CronTrigger(hour=settings.morning_hour(), minute=0, timezone=tz))
+    evening = settings.evening_hour()
+    if evening is not None:
+        _scheduler.reschedule_job(
+            "evening_report",
+            trigger=CronTrigger(hour=evening, minute=0, timezone=tz))
+
+
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     """Configure and return the APScheduler instance."""
-    global _started_at
+    global _started_at, _scheduler
     _started_at = datetime.now(timezone.utc)
 
     tz = pytz.timezone(config.timezone)
     scheduler = AsyncIOScheduler(timezone=tz)
+    _scheduler = scheduler
 
     def job(fn, trigger, job_id, **kwargs):
         scheduler.add_job(
@@ -782,10 +817,11 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
 
     # Reports.
     job(send_morning_report,
-        CronTrigger(hour=config.morning_report_hour, minute=0, timezone=tz),
+        CronTrigger(hour=settings.morning_hour(), minute=0, timezone=tz),
         "morning_report")
     job(send_evening_report,
-        CronTrigger(hour=config.evening_report_hour, minute=0, timezone=tz),
+        CronTrigger(hour=settings.evening_hour() or config.evening_report_hour,
+                    minute=0, timezone=tz),
         "evening_report")
     job(send_weekly_report,
         CronTrigger(day_of_week="sun", hour=config.weekly_report_hour,

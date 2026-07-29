@@ -92,14 +92,14 @@ Requirements: Docker + a Telegram bot token from [@BotFather](https://t.me/BotFa
 git clone https://github.com/morgunovtech/devops-bot.git
 cd devops-bot
 cp .env.example .env
-# Fill in the three required values:
-#   TELEGRAM_BOT_TOKEN  — from @BotFather
-#   TELEGRAM_ADMIN_CHAT_ID — your user id (ask @userinfobot)
-#   SITES — comma-separated domains to monitor
+# Fill in ONE value: TELEGRAM_BOT_TOKEN (from @BotFather)
 docker compose up -d --build
 ```
 
-Send `/start` to your bot. Everything else works out of the box; the optional integrations below light up as you add credentials to `.env` (all documented in [.env.example](.env.example)):
+Send `/start` to your bot — the first user becomes the admin, and the bot
+walks you through adding your first site. Sites, report hours, quiet hours
+and heartbeat jobs are all managed from the chat; `.env` is only needed for
+the optional integrations below (documented in [.env.example](.env.example)):
 
 | Unlocks | Variables |
 |---|---|

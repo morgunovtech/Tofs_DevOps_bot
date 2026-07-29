@@ -9,6 +9,8 @@ from aiogram.types import (
 )
 from aiogram.filters import Command, CommandStart
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import config
 from monitors.availability import check_all
@@ -18,10 +20,15 @@ from monitors.links_checker import check_all_links
 from monitors.availability import check_availability
 from monitors.ssl_checker import check_ssl
 from monitors.domain_checker import check_domain
+from urllib.parse import urlparse
+
 from db.database import (
     get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
     get_state, set_state, resolve_all_incidents, get_last_check,
+    get_active_site_urls, get_site, activate_or_create_site, deactivate_site,
+    resolve_incident_by_id, get_heartbeats,
 )
+from services import settings
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
     format_compact_status_report, now_local, fmt_date, _short_host, _esc,
@@ -60,8 +67,19 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     mute-until time). All data comes from the DB — opening the menu must be
     instant, no network checks here."""
     sites = await get_all_sites()
+    if not sites:
+        # Empty state: guide to the first site instead of a hollow dashboard.
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Добавить первый сайт", callback_data="site_add")],
+            [InlineKeyboardButton(text="📋 Ещё", callback_data="menu_more")],
+        ])
+        return ("👋 Сайтов пока нет. Добавь первый — и я начну проверять "
+                "его каждые 5 минут.", kb)
     ok = total = 0
+    paused_count = 0
     for s in sites:
+        if await settings.is_paused(s["id"]):
+            paused_count += 1
         last = await get_last_check(s["id"], "availability")
         if last:
             total += 1
@@ -78,6 +96,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                 else "инцидентов нет")
     mute_chip = f"🔕 тихо до {mute_until}" if mute_until else "🔔 алерты вкл"
     header = f"{site_chip} · {inc_chip} · {mute_chip}"
+    if paused_count:
+        header += f" · ⏸ на паузе: {paused_count}"
 
     inc_label = (f"⚠️ Инциденты ({len(incidents)})" if incidents
                  else "⚠️ Инциденты")
@@ -116,6 +136,14 @@ def more_menu() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔗 Ссылки", callback_data="menu_links"),
             InlineKeyboardButton(text="📈 Uptime", callback_data="menu_uptime"),
         ],
+        [
+            InlineKeyboardButton(text="⚙️ Настройки",  callback_data="menu_settings"),
+            InlineKeyboardButton(text="💓 Heartbeats", callback_data="menu_hb"),
+        ],
+        [
+            InlineKeyboardButton(text="🩺 Диагностика", callback_data="menu_diag"),
+            InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert"),
+        ],
         [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
     ])
 
@@ -138,29 +166,49 @@ def persistent_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def sites_keyboard(action_prefix: str) -> InlineKeyboardMarkup:
-    """Keyboard with a button per site.
+async def sites_keyboard(action_prefix: str,
+                         manage: bool = False) -> InlineKeyboardMarkup:
+    """Keyboard with a button per active site (from the DB).
 
-    callback_data carries the site's index into config.get_site_urls(), not
-    the URL itself — Telegram caps callback_data at 64 bytes and a long
-    domain would make the whole keyboard fail to send.
+    callback_data carries the site's DB id — stable across list edits and
+    well under Telegram's 64-byte callback_data limit. `manage=True` adds
+    the add/remove controls (used on the "Сайт детально" screen).
     """
+    sites = await get_all_sites()
     buttons = []
-    for i, url in enumerate(config.get_site_urls()):
-        label = url.replace("https://", "")
-        buttons.append([InlineKeyboardButton(text=f"🔍 {label}", callback_data=f"{action_prefix}:{i}")])
+    for site in sites:
+        label = site["url"].replace("https://", "")
+        buttons.append([InlineKeyboardButton(
+            text=f"🔍 {label}", callback_data=f"{action_prefix}:{site['id']}")])
+    if manage:
+        row = [InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")]
+        if sites:
+            row.append(InlineKeyboardButton(text="🗑 Удалить", callback_data="site_del"))
+        buttons.append(row)
     buttons.append([InlineKeyboardButton(text="← Назад", callback_data="menu_main")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def _site_from_cb(arg: str) -> str | None:
-    """Resolve a sites_keyboard callback index back to a URL."""
-    try:
-        i = int(arg)
-    except ValueError:
+async def _site_by_cb(arg: str) -> dict | None:
+    """Resolve a callback site id back to an active site row."""
+    if not arg.isdigit():
         return None
-    urls = config.get_site_urls()
-    return urls[i] if 0 <= i < len(urls) else None
+    site = await get_site(int(arg))
+    return site if site and site["active"] else None
+
+
+class AddSiteForm(StatesGroup):
+    url = State()
+
+
+class AddHeartbeatForm(StatesGroup):
+    name = State()
+
+
+def _cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]
+    ])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -226,6 +274,16 @@ async def on_handler_error(event: ErrorEvent):
 @router.message(CommandStart())
 @router.message(Command("help"))
 async def cmd_start(message: Message):
+    # First-run: no admin configured anywhere — the first /start claims it.
+    if not config.admin_chat_id:
+        config.admin_chat_id = str(message.chat.id)
+        config.admin_user_id = str(message.from_user.id)
+        await set_state("admin_chat_id", config.admin_chat_id)
+        await set_state("admin_user_id", config.admin_user_id)
+        await message.answer(
+            "🔑 Ты стал администратором этого бота — все отчёты и алерты "
+            "будут приходить сюда."
+        )
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
@@ -272,7 +330,7 @@ async def cmd_status(message: Message):
         await message.answer("⛔ Доступ только для администратора.")
         return
     await message.answer("⏳ Проверяю...")
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     text = format_compact_status_report(
@@ -288,9 +346,9 @@ async def cmd_sites(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     if not urls:
-        await message.answer("Сайты не настроены — задай SITES в .env")
+        await message.answer("Сайтов пока нет — добавь через 📱 Меню → «🌍 Сайт детально».")
         return
     text = "🌍 Отслеживаю:\n" + "\n".join(f"  • {u}" for u in urls)
     await message.answer(text)
@@ -435,11 +493,12 @@ async def cb_alert_action(call: CallbackQuery):
     if len(parts) != 3:
         await call.answer("Не понял действие", show_alert=True)
         return
-    _, action, idx = parts
-    url = _site_from_cb(idx)
-    if not url:
-        await call.answer("Сайт не найден — список сайтов изменился", show_alert=True)
+    _, action, sid = parts
+    site = await _site_by_cb(sid)
+    if not site:
+        await call.answer("Сайт не найден или убран из мониторинга", show_alert=True)
         return
+    url = site["url"]
 
     if action == "recheck":
         await call.answer("Проверяю…")
@@ -506,7 +565,7 @@ async def cb_full_check(call: CallbackQuery):
         return
     await call.answer()
 
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
 
     # Step 1 — availability
     await call.message.edit_text(
@@ -582,7 +641,7 @@ async def cb_status(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text("⏳ Проверяю доступность...")
 
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     report = format_status_report(availability, incidents)
@@ -600,7 +659,7 @@ async def cb_ssl(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text("⏳ Проверяю SSL-сертификаты...")
 
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all_ssl(urls)
 
     lines = ["🔒 SSL-сертификаты:\n"]
@@ -628,7 +687,7 @@ async def cb_domains(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text("⏳ Проверяю домены через WHOIS...")
 
-    urls = config.get_site_urls()
+    urls = await get_active_site_urls()
     results = await check_all_domains(urls)
 
     lines = ["🌐 Домены:\n"]
@@ -657,7 +716,7 @@ async def cb_links_menu(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text(
         "🔗 Выбери сайт для проверки ссылок:",
-        reply_markup=sites_keyboard("check_links")
+        reply_markup=await sites_keyboard("check_links")
     )
 
 
@@ -668,13 +727,14 @@ async def cb_check_links(call: CallbackQuery):
         return
     await call.answer()
 
-    url = _site_from_cb(call.data.split(":", 1)[1])
-    if not url:
+    site = await _site_by_cb(call.data.split(":", 1)[1])
+    if not site:
         await call.message.edit_text(
             "Сайт не найден — список сайтов изменился. Открой меню заново.",
             reply_markup=back_button(),
         )
         return
+    url = site["url"]
     await call.message.edit_text(f"⏳ Сканирую все ссылки на {url}...\n(это может занять ~30 сек)")
 
     from monitors.links_checker import check_links
@@ -733,7 +793,10 @@ async def cb_incidents(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
+    await _render_incidents(call)
 
+
+async def _render_incidents(call: CallbackQuery):
     incidents = await get_active_incidents()
     if not incidents:
         text = "✅ Активных инцидентов нет — всё работает нормально!"
@@ -749,13 +812,18 @@ async def cb_incidents(call: CallbackQuery):
                 f"   С: {inc['created_at'][:16]}"
             )
         text = _clip("\n".join(lines))
-        kb = InlineKeyboardMarkup(inline_keyboard=[
+        rows = [
             [InlineKeyboardButton(
-                text="🗑 Сбросить все (если устарели)",
-                callback_data="incidents_clear",
-            )],
-            [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
-        ])
+                text=f"✓ Закрыть: {_short_host(inc['url'])} [{inc['check_type']}]",
+                callback_data=f"inc_close:{inc['id']}")]
+            for inc in incidents[:6]
+        ]
+        rows.append([InlineKeyboardButton(
+            text="🗑 Сбросить все (если устарели)",
+            callback_data="incidents_clear",
+        )])
+        rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
 
     await call.message.edit_text(text, reply_markup=kb)
 
@@ -790,12 +858,12 @@ async def cb_seo(call: CallbackQuery):
     from monitors.seo_checker import check_all_seo
     from services import gsc, yandex_webmaster
 
-    results = await check_all_seo(config.get_site_urls())
+    results = await check_all_seo(await get_active_site_urls())
 
     # Live index status (only when tokens are configured).
     gsc_status: dict[str, str] = {}
     if gsc.available():
-        for u in config.get_site_urls():
+        for u in await get_active_site_urls():
             info = await gsc.inspect_url(u.rstrip("/") + "/")
             if info:
                 gsc_status[u] = ("в индексе ✅" if info["verdict"] == "PASS"
@@ -859,8 +927,9 @@ async def cb_check_site_menu(call: CallbackQuery):
         return
     await call.answer()
     await call.message.edit_text(
-        "🌍 Выбери сайт для детальной проверки:",
-        reply_markup=sites_keyboard("check_site")
+        "🌍 Сайты в мониторинге — выбери для детальной проверки,\n"
+        "или управляй списком:",
+        reply_markup=await sites_keyboard("check_site", manage=True)
     )
 
 
@@ -871,13 +940,14 @@ async def cb_check_single_site(call: CallbackQuery):
         return
     await call.answer()
 
-    url = _site_from_cb(call.data.split(":", 1)[1])
-    if not url:
+    site = await _site_by_cb(call.data.split(":", 1)[1])
+    if not site:
         await call.message.edit_text(
             "Сайт не найден — список сайтов изменился. Открой меню заново.",
             reply_markup=back_button(),
         )
         return
+    url = site["url"]
 
     # Real-time progress
     await call.message.edit_text(f"⏳ [1/3] Проверяю доступность {url}...")
@@ -927,9 +997,481 @@ async def cb_check_single_site(call: CallbackQuery):
     else:
         lines.append(f"⚠️ Домен: {_esc(dom_r.get('error', 'N/A'))}")
 
-    idx = call.data.split(":", 1)[1]
+    sid = site["id"]
+    paused = await settings.paused_until(sid)
+    if paused:
+        pause_row = [InlineKeyboardButton(
+            text="▶️ Снять паузу", callback_data=f"pause:{sid}:off")]
+        lines.append("\n⏸ Сайт на паузе — алерты по нему молчат.")
+    else:
+        pause_row = [
+            InlineKeyboardButton(text="⏸ Пауза 1ч", callback_data=f"pause:{sid}:60"),
+            InlineKeyboardButton(text="⏸ До утра", callback_data=f"pause:{sid}:morning"),
+        ]
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{idx}")],
+        [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{sid}")],
+        pause_row,
         [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
     ])
     await call.message.edit_text(_clip("\n".join(lines)), reply_markup=kb)
+
+
+# ── ➕ / 🗑 Site management ────────────────────────────────────────────────────
+
+MAX_SITES = 20
+
+
+@router.callback_query(F.data == "site_add")
+async def cb_site_add(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    if len(await get_all_sites()) >= MAX_SITES:
+        await call.message.edit_text(
+            f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга.",
+            reply_markup=back_button())
+        return
+    await state.set_state(AddSiteForm.url)
+    await call.message.edit_text(
+        "➕ Пришли домен или URL сайта (например, example.com):",
+        reply_markup=_cancel_kb(),
+    )
+
+
+@router.message(AddSiteForm.url)
+async def msg_site_add(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip().lower()
+    if not raw.startswith("http"):
+        raw = "https://" + raw
+    host = urlparse(raw).hostname or ""
+    if not host or "." not in host or " " in raw:
+        await message.answer(
+            "Не похоже на домен. Пришли что-то вроде example.com",
+            reply_markup=_cancel_kb())
+        return
+    await state.clear()
+    url = f"https://{host}"
+
+    site_id = await activate_or_create_site(url)
+    status = await message.answer(f"⏳ Добавил {host} — делаю первую проверку...")
+
+    # Instant feedback: the user sees the site working (or not) right away.
+    avail = await check_availability(url)
+    ssl_r = await check_ssl(url)
+    lines = [f"✅ {host} в мониторинге (проверка каждые "
+             f"{config.check_interval_minutes} мин)\n"]
+    if avail["status"] == "ok":
+        lines.append(f"✅ Доступность: HTTP {avail.get('status_code')} "
+                     f"({avail.get('response_time_ms')}ms)")
+    else:
+        lines.append(f"🔴 Доступность: {_esc(avail.get('error', 'N/A'))} — "
+                     f"я уже слежу, сообщу о восстановлении")
+    if ssl_r.get("ssl_info"):
+        lines.append(f"🔒 SSL: {ssl_r['ssl_info']['days_left']} дн. до истечения")
+    else:
+        lines.append(f"⚠️ SSL: {_esc(ssl_r.get('error', 'N/A'))}")
+    lines.append("\nDNS-эталон и SEO-аудит сниму в ближайшие часы автоматически.")
+    await status.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
+
+
+@router.callback_query(F.data == "site_del")
+async def cb_site_del(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(
+        "🗑 Какой сайт убрать из мониторинга?\n"
+        "(история проверок сохранится)",
+        reply_markup=await sites_keyboard("delsite"),
+    )
+
+
+@router.callback_query(F.data.startswith("delsite:"))
+async def cb_site_del_confirm(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    site = await _site_by_cb(call.data.split(":", 1)[1])
+    if not site:
+        await call.message.edit_text("Сайт не найден.", reply_markup=back_button())
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, убрать",
+                              callback_data=f"delok:{site['id']}")],
+        [InlineKeyboardButton(text="← Отмена", callback_data="menu_check_site")],
+    ])
+    await call.message.edit_text(
+        f"Убрать {_esc(_short_host(site['url']))} из мониторинга?\n"
+        f"Открытые инциденты по нему закроются, история останется.",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("delok:"))
+async def cb_site_del_do(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    site = await _site_by_cb(call.data.split(":", 1)[1])
+    if site and await deactivate_site(site["id"]):
+        await call.message.edit_text(
+            f"🗑 {_esc(_short_host(site['url']))} убран из мониторинга.",
+            reply_markup=back_button())
+    else:
+        await call.message.edit_text("Сайт уже убран.", reply_markup=back_button())
+
+
+@router.callback_query(F.data == "fsm_cancel")
+async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
+    await call.answer("Отменено")
+    await state.clear()
+    await send_main_menu(call)
+
+
+# ── ⏸ Site pause (maintenance mode) ──────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("pause:"))
+async def cb_pause(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 3 or not parts[1].isdigit():
+        await call.answer("Не понял", show_alert=True)
+        return
+    site_id, arg = int(parts[1]), parts[2]
+    site = await get_site(site_id)
+    if not site:
+        await call.answer("Сайт не найден", show_alert=True)
+        return
+    host = _short_host(site["url"])
+
+    if arg == "off":
+        await settings.pause_site(site_id, None)
+        await call.answer("Пауза снята")
+        await call.message.answer(f"▶️ {host} — алерты снова включены.")
+        return
+    if arg == "morning":
+        # Until the next morning report, in the user's timezone.
+        now_l = now_local()
+        target = now_l.replace(hour=settings.morning_hour(), minute=0,
+                               second=0, microsecond=0)
+        if target <= now_l:
+            target += timedelta(days=1)
+        minutes = max(1, int((target - now_l).total_seconds() / 60))
+    else:
+        minutes = int(arg) if arg.isdigit() else 60
+    await settings.pause_site(site_id, minutes)
+    await call.answer("Пауза включена")
+    await call.message.answer(
+        f"⏸ {host} — алерты на паузе на {minutes // 60}ч {minutes % 60}м "
+        f"(проверки продолжаются). Снять: «🌍 Сайт детально» → сайт."
+    )
+
+
+# ── ⚙️ Settings ───────────────────────────────────────────────────────────────
+
+def _settings_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}")
+         for h in (7, 8, 9, 10)],
+        [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}")
+         for h in (20, 21, 22)]
+        + [InlineKeyboardButton(text="🌙 выкл", callback_data="set_e:off")],
+        [
+            InlineKeyboardButton(text="🔕 23–8",  callback_data="set_q:23-8"),
+            InlineKeyboardButton(text="🔕 0–7",   callback_data="set_q:0-7"),
+            InlineKeyboardButton(text="🔕 выкл",  callback_data="set_q:off"),
+        ],
+        [InlineKeyboardButton(text="← Назад", callback_data="menu_more")],
+    ])
+
+
+def _settings_text() -> str:
+    evening = settings.evening_hour()
+    quiet = settings.quiet_hours()
+    return (
+        "⚙️ Настройки\n\n"
+        f"🌅 Утренний отчёт: {settings.morning_hour()}:00\n"
+        f"🌙 Вечерний отчёт: {'выключен' if evening is None else f'{evening}:00 (только при инцидентах)'}\n"
+        f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'}\n\n"
+        "Тапни, чтобы изменить:"
+    )
+
+
+@router.callback_query(F.data == "menu_settings")
+async def cb_settings(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(_settings_text(), reply_markup=_settings_kb())
+
+
+@router.callback_query(F.data.startswith("set_"))
+async def cb_settings_pick(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    kind, _, value = call.data.partition(":")
+    if kind == "set_m" and value.isdigit():
+        await settings.set_morning_hour(int(value))
+    elif kind == "set_e":
+        await settings.set_evening_hour(None if value == "off" else int(value))
+    elif kind == "set_q":
+        await settings.set_quiet_hours(None if value == "off" else value)
+    else:
+        await call.answer("Не понял", show_alert=True)
+        return
+    # Apply new report hours to the running scheduler immediately.
+    from reports.scheduler import reschedule_report_jobs
+    reschedule_report_jobs()
+    await call.answer("Сохранено ✅")
+    try:
+        await call.message.edit_text(_settings_text(), reply_markup=_settings_kb())
+    except TelegramBadRequest:
+        pass  # same value re-picked — nothing changed
+
+
+# ── 💓 Heartbeats management ─────────────────────────────────────────────────
+
+_HB_INTERVALS = [("1 час", 60), ("6 часов", 360), ("сутки", 1440), ("неделя", 10080)]
+
+
+async def _hb_text() -> str:
+    from reports.formatter import _parse_sqlite_utc
+    from reports.scheduler import _fmt_ago
+    jobs = settings.heartbeat_jobs()
+    if not jobs:
+        return ("💓 Dead-man switch: джобы (бэкапы, кроны) пингуют бота, "
+                "а он замечает, когда они замолкают.\n\nПока ни одной джобы.")
+    beats = await get_heartbeats()
+    now = datetime.now(timezone.utc)
+    lines = ["💓 Heartbeats:\n"]
+    for job, interval in jobs.items():
+        row = beats.get(job)
+        last = _parse_sqlite_utc(row["last_ping"]) if row and row.get("last_ping") else None
+        if last:
+            ago = (now - last).total_seconds() / 60
+            icon = "✅" if ago <= interval * 1.25 else "💔"
+            state_txt = f"{_fmt_ago(ago)} назад"
+        else:
+            icon, state_txt = "❓", "ещё не пинговал"
+        src = "" if job in settings.ui_heartbeat_jobs() else " (из .env)"
+        lines.append(f"{icon} {job} — {state_txt}, ожидание каждые "
+                     f"{_fmt_ago(interval)}{src}")
+    first = next(iter(jobs))
+    lines.append(
+        f"\nПинг из крона (пример для «{first}»):\n"
+        f"<code>curl -fsS {_esc(settings.heartbeat_url(first))}</code>"
+    )
+    if not config.public_base_url:
+        lines.append("\n⚠️ Задай PUBLIC_BASE_URL в .env, чтобы ссылка выше "
+                     "была готова к вставке.")
+    return "\n".join(lines)
+
+
+async def _hb_kb() -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="➕ Добавить джобу", callback_data="hb_add")]]
+    ui_jobs = settings.ui_heartbeat_jobs()
+    for name in list(ui_jobs)[:8]:
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {name}", callback_data=f"hb_del:{name}")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="menu_more")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "menu_hb")
+async def cb_hb(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(
+        _clip(await _hb_text()), reply_markup=await _hb_kb())
+
+
+@router.callback_query(F.data == "hb_add")
+async def cb_hb_add(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(AddHeartbeatForm.name)
+    await call.message.edit_text(
+        "💓 Название джобы латиницей (например, backup или certs-sync):",
+        reply_markup=_cancel_kb(),
+    )
+
+
+@router.message(AddHeartbeatForm.name)
+async def msg_hb_name(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    name = (message.text or "").strip().lower()
+    if not name or len(name) > 20 or not all(
+            c.isalnum() or c in "-_" for c in name):
+        await message.answer(
+            "Только латиница/цифры/дефис, до 20 символов. Попробуй ещё раз:",
+            reply_markup=_cancel_kb())
+        return
+    await state.update_data(hb_name=name)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}")
+         for label, mins in _HB_INTERVALS[:2]],
+        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}")
+         for label, mins in _HB_INTERVALS[2:]],
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")],
+    ])
+    await message.answer(
+        f"Как часто «{_esc(name)}» должна подавать сигнал?", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("hbint:"))
+async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    data = await state.get_data()
+    name = data.get("hb_name")
+    await state.clear()
+    if not name:
+        await call.answer("Начни заново: 💓 Heartbeats → ➕", show_alert=True)
+        return
+    interval = int(call.data.split(":", 1)[1])
+    await settings.add_heartbeat_job(name, interval)
+    await call.answer("Добавлено ✅")
+    await call.message.edit_text(
+        f"💓 «{_esc(name)}» добавлена. Вставь в конец крон-строки:\n\n"
+        f"<code>&& curl -fsS {_esc(settings.heartbeat_url(name))}</code>\n\n"
+        f"Если сигналов не будет дольше ожидания — сообщу.",
+        reply_markup=back_button(),
+    )
+
+
+@router.callback_query(F.data.startswith("hb_del:"))
+async def cb_hb_del(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    name = call.data.split(":", 1)[1]
+    removed = await settings.remove_heartbeat_job(name)
+    await call.answer("Удалено" if removed else "Не нашёл (из .env — убери там)")
+    try:
+        await call.message.edit_text(
+            _clip(await _hb_text()), reply_markup=await _hb_kb())
+    except TelegramBadRequest:
+        pass
+
+
+# ── 🩺 Diagnostics ───────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_diag")
+async def cb_diag(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text("🩺 Проверяю сам себя...")
+
+    import aiohttp
+    from services import gsc, yandex_webmaster, docker_api
+
+    lines = ["🩺 Диагностика:\n"]
+
+    me = await call.bot.get_me()
+    lines.append(f"✅ Telegram: @{me.username}")
+
+    try:
+        await set_state("diag_ping", now_local().isoformat())
+        lines.append("✅ База данных: пишется")
+    except Exception as e:
+        lines.append(f"⛔ База данных: {_esc(e)}")
+
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)) as s:
+            async with s.get(
+                    f"http://127.0.0.1:{config.webhook_port}/health") as resp:
+                lines.append("✅ Веб-сервер (feedback/heartbeat): отвечает"
+                             if resp.status == 200 else
+                             f"⚠️ Веб-сервер: HTTP {resp.status}")
+    except Exception:
+        lines.append("⛔ Веб-сервер: не отвечает на localhost")
+
+    lines.append("✅ PUBLIC_BASE_URL задан" if config.public_base_url
+                 else "⚠️ PUBLIC_BASE_URL не задан — heartbeat-ссылки будут с плейсхолдером")
+
+    sites = await get_all_sites()
+    lines.append(f"✅ Сайтов в мониторинге: {len(sites)}" if sites
+                 else "⚠️ Сайтов нет — добавь через «🌍 Сайт детально»")
+
+    if docker_api.docker_available():
+        containers = await docker_api.list_containers()
+        lines.append(f"✅ Docker socket: доступен ({len(containers or [])} контейнеров)"
+                     if containers is not None else "⚠️ Docker socket: есть, но API не отвечает")
+    else:
+        lines.append("ℹ️ Docker socket не смонтирован (автоперезапуск/очистка выключены)")
+
+    if gsc.available():
+        from datetime import date, timedelta as td
+        d = (date.today() - td(days=3)).isoformat()
+        probe = await gsc.search_totals(d, d)
+        lines.append("✅ Google Search Console: токен работает" if probe is not None
+                     else "⛔ Google Search Console: настроен, но API не отвечает (см. логи)")
+    else:
+        lines.append("ℹ️ Google Search Console не настроен")
+
+    if yandex_webmaster.available():
+        probe = await yandex_webmaster.get_summaries()
+        lines.append(f"✅ Яндекс.Вебмастер: токен работает ({len(probe)} хостов)"
+                     if probe is not None else
+                     "⛔ Яндекс.Вебмастер: настроен, но API не отвечает (см. логи)")
+    else:
+        lines.append("ℹ️ Яндекс.Вебмастер не настроен")
+
+    host = urlparse(config.screenshot_template).hostname or "?"
+    lines.append(f"ℹ️ Скриншоты: {host}")
+    lines.append(f"ℹ️ Вторая точка проверки: "
+                 f"{'вкл' if config.second_opinion else 'выкл'}")
+
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
+
+
+# ── 🔔 Test alert ────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_testalert")
+async def cb_test_alert(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer("Отправляю тестовый алерт…")
+    await call.bot.send_message(
+        chat_id=config.admin_chat_id,
+        text=("🚨 ТЕСТОВЫЙ АЛЕРТ\n"
+              "Так выглядит критическое уведомление — оно пробивает mute и "
+              "тихие часы.\n\n"
+              "Если ты это видишь — доставка работает. ✅"),
+    )
+
+
+# ── ✓ Close a single incident ────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("inc_close:"))
+async def cb_incident_close(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    arg = call.data.split(":", 1)[1]
+    if arg.isdigit() and await resolve_incident_by_id(int(arg)):
+        await call.answer("Закрыт ✅")
+    else:
+        await call.answer("Уже закрыт")
+    # Re-render the incidents screen with the fresh list.
+    await _render_incidents(call)

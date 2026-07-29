@@ -13,6 +13,7 @@ import aiohttp
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import config
+from db.database import get_or_create_site
 
 logger = logging.getLogger(__name__)
 
@@ -27,23 +28,20 @@ def deploy_hook_for(url: str) -> str | None:
     return config.deploy_hooks.get(_host(url))
 
 
-def alert_actions_keyboard(url: str) -> InlineKeyboardMarkup | None:
+async def alert_actions_keyboard(url: str) -> InlineKeyboardMarkup:
     """Action buttons attached to availability alerts. Site is addressed by
-    its index in config (callback_data has a 64-byte limit)."""
-    urls = config.get_site_urls()
-    try:
-        idx = urls.index(url)
-    except ValueError:
-        return None
+    its DB id — stable across site list edits and short enough for the
+    64-byte callback_data limit."""
+    site_id = await get_or_create_site(url)
     rows = [[
-        InlineKeyboardButton(text="🔍 Перепроверить", callback_data=f"act:recheck:{idx}"),
-        InlineKeyboardButton(text="📸 Скрин", callback_data=f"act:shot:{idx}"),
+        InlineKeyboardButton(text="🔍 Перепроверить", callback_data=f"act:recheck:{site_id}"),
+        InlineKeyboardButton(text="📸 Скрин", callback_data=f"act:shot:{site_id}"),
     ]]
     extra = []
     if deploy_hook_for(url):
-        extra.append(InlineKeyboardButton(text="🚀 Передеплой", callback_data=f"act:redeploy:{idx}"))
+        extra.append(InlineKeyboardButton(text="🚀 Передеплой", callback_data=f"act:redeploy:{site_id}"))
     if config.cf_api_token and config.cf_zone_id:
-        extra.append(InlineKeyboardButton(text="🧹 Сброс кэша CF", callback_data=f"act:purge:{idx}"))
+        extra.append(InlineKeyboardButton(text="🧹 Сброс кэша CF", callback_data=f"act:purge:{site_id}"))
     if extra:
         rows.append(extra)
     return InlineKeyboardMarkup(inline_keyboard=rows)

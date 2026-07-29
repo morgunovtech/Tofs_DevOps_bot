@@ -69,6 +69,9 @@ class Config:
     webhook_port: int = int(os.getenv("WEBHOOK_PORT", "8080"))
     webhook_secret: str = os.getenv("WEBHOOK_SECRET", "change_me")
     db_path: str = os.getenv("DB_PATH", "data/bot.db")
+    # Public address of the webhook server (https://bot.example.com or
+    # http://1.2.3.4:8080) — used to render ready-to-paste heartbeat URLs.
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
     # ── Dead-man switch (heartbeats) ─────────────────────────────────────────
     # Expected jobs: "backup:1440" = job "backup" must ping at least every
