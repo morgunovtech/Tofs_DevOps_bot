@@ -246,6 +246,11 @@ async def _with_running_bar(message: Message, base_text: str, coro,
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=tick)
         except asyncio.TimeoutError:
+            # A TimeoutError can also come from INSIDE the finished task —
+            # re-raise it instead of treating it as an animation tick,
+            # or this loop would spin hot editing the message forever.
+            if task.done():
+                return task.result()
             i += 1
             try:
                 await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
@@ -362,7 +367,7 @@ async def cmd_status(message: Message):
     if not urls:
         await message.answer("Сайтов пока нет — добавь через 📱 Меню → «🌍 Сайт детально».")
         return
-    await message.answer("⏳ Проверяю...")
+    await message.answer("▱▱▱ Проверяю...")
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     text = format_compact_status_report(
@@ -688,7 +693,7 @@ async def cb_status(call: CallbackQuery):
             "Сайтов пока нет — сначала добавь хотя бы один.",
             reply_markup=back_button())
         return
-    await call.message.edit_text("⏳ Проверяю доступность...")
+    await call.message.edit_text("▱▱▱ Проверяю доступность...")
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     report = format_status_report(availability, incidents)
@@ -704,7 +709,7 @@ async def cb_ssl(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
-    await call.message.edit_text("⏳ Проверяю SSL-сертификаты...")
+    await call.message.edit_text("▱▱▱ Проверяю SSL-сертификаты...")
 
     urls = await get_active_site_urls()
     results = await check_all_ssl(urls)
@@ -732,7 +737,7 @@ async def cb_domains(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
-    await call.message.edit_text("⏳ Проверяю домены через WHOIS...")
+    await call.message.edit_text("▱▱▱ Проверяю домены через WHOIS...")
 
     urls = await get_active_site_urls()
     results = await check_all_domains(urls)
@@ -1110,7 +1115,7 @@ async def msg_site_add(message: Message, state: FSMContext):
     url = f"https://{host}"
 
     site_id = await activate_or_create_site(url)
-    status = await message.answer(f"⏳ Добавил {host} — делаю первую проверку...")
+    status = await message.answer(f"▱▱▱ Добавил {host} — делаю первую проверку...")
 
     # Instant feedback: the user sees the site working (or not) right away.
     avail = await check_availability(url)
@@ -1432,7 +1437,7 @@ async def cb_diag(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
-    await call.message.edit_text("🩺 Проверяю сам себя...")
+    await call.message.edit_text("▱▱▱ Проверяю сам себя...")
 
     import aiohttp
     from services import gsc, yandex_webmaster, docker_api

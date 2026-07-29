@@ -52,6 +52,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 - **Morning digest** — one message: per-site status, 7-day uptime, upcoming SSL/domain expirations, heartbeat status, disk, SEO summary. Reads in 10 seconds.
 - **Weekly report** (Sundays) — uptime, incidents, a response-time chart, Google/Yandex search metrics week-over-week.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
+- **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
 - **Escalation** — an unresolved critical incident re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable.
 - **Post-incident summaries** — recovery messages include duration and cause: *"✅ Recovered · down 12 min (14:03–14:15) · cause: HTTP 502"*.
 
@@ -71,7 +72,7 @@ A tiny embeddable JS widget ("Report a problem" button) for your sites — messa
 ✅ example.com — 96ms
 ✅ app.example.com — 137ms
 
-Всё работает 👌
+Всё спокойно 🐕
 
 📈 Uptime 7д: example.com 100% · app.example.com 99.98%
 💓 backup ✅ 7ч назад

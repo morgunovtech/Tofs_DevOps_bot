@@ -31,7 +31,7 @@ async def on_startup(bot: Bot):
     """Telegram-side startup actions (DB is already initialised in main)."""
     me = await bot.get_me()
     logger.info(f"Bot started: @{me.username}")
-    logger.info("TofsDevOps on duty 🐾")
+    logger.info("TofsDevOps on duty 🐕")
 
     # Register commands so they show up in Telegram's "/" popup.
     await bot.set_my_commands([

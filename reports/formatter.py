@@ -144,7 +144,7 @@ def format_compact_status_report(availability: list[dict],
             lines.append(f"  … и ещё {len(incidents) - 5}")
     elif not any_problem:
         lines.append("")
-        lines.append("Всё спокойно 🐾")
+        lines.append("Всё спокойно 🐕")
 
     if extras:
         lines.append("")
