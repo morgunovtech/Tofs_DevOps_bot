@@ -15,6 +15,7 @@ real protection is the per-IP/global rate limit and strict size caps below.
 """
 
 import hmac
+import html
 import logging
 import os
 import time
@@ -67,6 +68,12 @@ def _rate_limited(ip: str) -> bool:
     now = time.monotonic()
     cutoff = now - RATE_WINDOW_SEC
 
+    # Bound the per-IP dict: evict entries whose window is fully expired.
+    if len(_ip_hits) > 512:
+        for stale_ip in [k for k, v in _ip_hits.items()
+                         if not v or v[-1] < cutoff]:
+            del _ip_hits[stale_ip]
+
     while _global_hits and _global_hits[0] < cutoff:
         _global_hits.popleft()
     hits = _ip_hits[ip]
@@ -105,9 +112,10 @@ async def handle_feedback(request: web.Request) -> web.Response:
         logger.warning(f"Feedback: rate limit hit from {ip_address}")
         return _response(429, text="Too Many Requests")
 
-    # Constant-time comparison; see the security note in the module docstring.
+    # Constant-time comparison on BYTES: compare_digest raises TypeError on
+    # non-ASCII str input, which would turn a bad header into a 500.
     secret = request.headers.get("X-Webhook-Secret", "")
-    if not hmac.compare_digest(secret, config.webhook_secret):
+    if not hmac.compare_digest(secret.encode(), config.webhook_secret.encode()):
         logger.warning(f"Feedback: invalid secret from {ip_address}")
         return _response(403, text="Forbidden")
 
@@ -139,7 +147,9 @@ async def handle_feedback(request: web.Request) -> web.Response:
     # Telegram's 4096-char limit and silently drop the forward.
     bot: Bot = request.app["bot"]
     tg_message = format_feedback(site_url, page_url, message)
-    tg_message += f"\n\n🆔 ID: #{feedback_id}\n🌍 IP: {ip_address}"
+    # ip_address can be attacker-shaped when TRUST_PROXY parses X-Forwarded-For.
+    tg_message += (f"\n\n🆔 ID: #{feedback_id}"
+                   f"\n🌍 IP: {html.escape(ip_address, quote=False)}")
     if len(tg_message) > TG_SAFE_LEN:
         tg_message = tg_message[:TG_SAFE_LEN] + "\n… (обрезано)"
     try:
@@ -157,7 +167,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
     `curl <url>` at the end of a cron line is the whole integration."""
     token = request.match_info.get("token", "")
     job = request.match_info.get("job", "")[:64]
-    if not hmac.compare_digest(token, config.heartbeat_secret):
+    if not hmac.compare_digest(token.encode(), config.heartbeat_secret.encode()):
         return web.Response(status=403, text="Forbidden")
     if not job:
         return web.Response(status=400, text="job name required")

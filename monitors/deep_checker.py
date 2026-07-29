@@ -8,6 +8,7 @@ sitemap are skipped silently.
 """
 
 import asyncio
+import html
 import logging
 import re
 from urllib.parse import urlparse
@@ -31,6 +32,8 @@ _LOC_RE = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.IGNORECASE | re.DOTALL)
 
 def _pick_sample(urls: list[str], n: int) -> list[str]:
     """Up to n URLs spread evenly across the list (deterministic)."""
+    if n <= 0:
+        return []
     if len(urls) <= n:
         return urls
     step = len(urls) / n
@@ -51,7 +54,8 @@ async def _sitemap_urls(session: aiohttp.ClientSession, base_url: str) -> list[s
     text = await _fetch_text(session, base_url.rstrip("/") + "/sitemap.xml")
     if not text:
         return []
-    locs = _LOC_RE.findall(text)
+    # <loc> values are XML-escaped: &amp; must become & before probing.
+    locs = [html.unescape(l) for l in _LOC_RE.findall(text)]
     # A sitemap index points at nested sitemaps — follow one level.
     if locs and all(l.rstrip("/").endswith(".xml") for l in locs[:3]):
         nested: list[str] = []
@@ -84,6 +88,10 @@ async def check_deep(url: str) -> dict:
         pages = await _sitemap_urls(session, url)
         if not pages:
             result["skipped"] = True
+            # A previously opened deep incident must not stay open forever
+            # just because the sitemap disappeared — close it here.
+            if await resolve_incident(site_id, "deep"):
+                result["recovered"] = True
             return result
 
         sample = _pick_sample(pages, config.deep_check_sample)
@@ -122,9 +130,11 @@ async def check_deep(url: str) -> dict:
         )
         result["incident_new"] = is_new
     else:
+        n_err = len(result["errors"])
         await save_check(
             site_id, "deep", "ok",
-            details=f"{result['sampled']} pages sampled, no 5xx",
+            details=(f"{result['sampled']} pages sampled, "
+                     + (f"{n_err} 5xx (below threshold)" if n_err else "no 5xx")),
         )
         if await resolve_incident(site_id, "deep"):
             result["recovered"] = True

@@ -25,8 +25,14 @@ USER_AGENT = (
 )
 
 
-async def check_availability(url: str) -> dict:
-    """Check if a site is available. Returns status dict."""
+async def check_availability(url: str, manage: bool = True) -> dict:
+    """Check if a site is available. Returns status dict.
+
+    manage=False — read-only mode for interactive checks and reports:
+    the check row is still saved (feeds uptime/sparklines), but incidents
+    and state transitions are NOT touched, so a menu tap can never consume
+    an alert that the scheduled monitor should fire.
+    """
     site_id = await get_or_create_site(url)
     result = {
         "url": url,
@@ -77,6 +83,9 @@ async def check_availability(url: str) -> dict:
         details=result["error"],
     )
 
+    if not manage:
+        return result
+
     if result["status"] == "error":
         # Only open an incident after N consecutive failures — single flaps
         # are normal on the public internet.
@@ -112,7 +121,7 @@ async def check_availability(url: str) -> dict:
     return result
 
 
-async def check_all(urls: list[str]) -> list[dict]:
+async def check_all(urls: list[str], manage: bool = True) -> list[dict]:
     """Check availability for all URLs concurrently."""
-    tasks = [check_availability(url) for url in urls]
+    tasks = [check_availability(url, manage=manage) for url in urls]
     return await asyncio.gather(*tasks, return_exceptions=False)

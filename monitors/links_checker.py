@@ -171,8 +171,8 @@ def _extract_links(html: str, base_url: str) -> list[str]:
     return list(links)
 
 
-async def check_links(url: str) -> dict:
-    """Check all links on a page.
+async def check_links(url: str, manage: bool = True) -> dict:
+    """Check all links on a page. manage=False = read-only (no incidents).
 
     Returns:
         {
@@ -253,6 +253,9 @@ async def check_links(url: str) -> dict:
     )
     await save_check(site_id, "links", result["status"], details=details)
 
+    if not manage:
+        return result
+
     # Only treat broken INTERNAL links as an incident — external is just noise.
     if broken_internal:
         _, is_new = await save_incident(
@@ -268,6 +271,6 @@ async def check_links(url: str) -> dict:
     return result
 
 
-async def check_all_links(urls: list[str]) -> list[dict]:
-    tasks = [check_links(url) for url in urls]
+async def check_all_links(urls: list[str], manage: bool = True) -> list[dict]:
+    tasks = [check_links(url, manage=manage) for url in urls]
     return await asyncio.gather(*tasks, return_exceptions=False)

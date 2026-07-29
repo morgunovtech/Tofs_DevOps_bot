@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = aiohttp.ClientTimeout(total=60)  # rendering can be slow
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # Direct-image providers return a spinner/placeholder while the real render
-# happens in the background. Placeholders are animated GIFs (thum.io) or
-# near-empty stubs; a small PNG can be a perfectly legitimate render of a
-# minimal page, so size alone must not disqualify an image.
+# happens in the background. GIFs are always placeholders (real renders are
+# PNG/JPEG); anything under ~2KB is treated as an error stub — a real page
+# render below that size has not been observed in practice.
 PLACEHOLDER_MAX_BYTES = 2 * 1024
 RETRIES = 4
 RETRY_DELAY_SEC = 8
@@ -42,12 +42,16 @@ async def _read_image(resp: aiohttp.ClientResponse) -> bytes | None:
         return None
     if resp.content_length and resp.content_length > MAX_IMAGE_BYTES:
         return None
-    # NB: resp.read(), not resp.content.read(n) — the latter returns only
-    # the first available chunk (~8KB) and silently truncates the image.
-    data = await resp.read()
-    if not data or len(data) > MAX_IMAGE_BYTES:
-        return None
-    return data
+    # Stream with a hard cap: without Content-Length a hostile/broken
+    # provider could otherwise feed us an unbounded body.
+    chunks, total = [], 0
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        total += len(chunk)
+        if total > MAX_IMAGE_BYTES:
+            return None
+        chunks.append(chunk)
+    data = b"".join(chunks)
+    return data or None
 
 
 async def _fetch_once(session: aiohttp.ClientSession, api: str) -> bytes | None:

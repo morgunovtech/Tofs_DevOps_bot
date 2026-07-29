@@ -59,7 +59,9 @@ async def _check_record(host: str, rtype: str) -> dict | None:
         return None
     if previous == current:
         return None
-    await set_dns_state(host, rtype, current)
+    # NB: the baseline is NOT updated here — the scheduler commits it only
+    # after the change alert is actually delivered/queued, so a failed send
+    # cannot swallow a DNS change forever.
     return {
         "host": host,
         "rtype": rtype,

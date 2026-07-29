@@ -44,17 +44,25 @@ async def second_opinion_up(url: str) -> bool | None:
                         continue
                     results = await resp.json()
                 verdicts = []
+                pending = 0
                 for node_result in results.values():
                     if node_result is None:
-                        continue  # node still working
+                        pending += 1  # node still working
+                        continue
                     # Success shape: [[1, 0.12, "OK", "200", "1.2.3.4"]]
                     try:
                         first = node_result[0]
                         verdicts.append(bool(first and first[0] == 1))
                     except (TypeError, IndexError, KeyError):
                         continue
-                if verdicts:
-                    return any(verdicts)
+                # One reachable node is enough to call the site UP; but
+                # "confirmed down" needs ALL nodes to have reported — a
+                # single early failure while others are pending proves
+                # nothing.
+                if any(verdicts):
+                    return True
+                if verdicts and not pending:
+                    return False
             return None
     except Exception as e:
         logger.warning(f"Second opinion for {url} failed: {e}")

@@ -6,6 +6,7 @@ the meaningful actions are: re-run the check, trigger a Pages deploy hook
 (rebuild + redeploy), and purge the Cloudflare cache.
 """
 
+import html
 import logging
 from urllib.parse import urlparse
 
@@ -61,7 +62,7 @@ async def trigger_redeploy(url: str) -> str:
                 return f"❌ Deploy hook ответил HTTP {resp.status}"
     except Exception as e:
         logger.warning(f"Deploy hook for {url} failed: {e}")
-        return f"❌ Не удалось дёрнуть deploy hook: {e}"
+        return f"❌ Не удалось дёрнуть deploy hook: {html.escape(str(e), quote=False)}"
 
 
 async def purge_cf_cache(url: str) -> str:
@@ -81,7 +82,8 @@ async def purge_cf_cache(url: str) -> str:
                 if data.get("success"):
                     return "🧹 Кэш Cloudflare сброшен по всей зоне"
                 errs = data.get("errors") or [{"message": f"HTTP {resp.status}"}]
-                return f"❌ Cloudflare: {errs[0].get('message', 'ошибка')}"
+                return ("❌ Cloudflare: "
+                        + html.escape(str(errs[0].get("message", "ошибка")), quote=False))
     except Exception as e:
         logger.warning(f"CF cache purge failed: {e}")
-        return f"❌ Не удалось сбросить кэш: {e}"
+        return f"❌ Не удалось сбросить кэш: {html.escape(str(e), quote=False)}"

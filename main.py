@@ -98,10 +98,10 @@ async def main():
     scheduler.start()
     logger.info("Scheduler started.")
 
-    # Startup actions
-    await on_startup(bot)
-
     try:
+        # Inside try: a transient Telegram outage during get_me() must still
+        # run the cleanup path (web server, scheduler, DB) below.
+        await on_startup(bot)
         logger.info("Starting polling...")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:

@@ -93,12 +93,22 @@ async def watch_containers() -> list[dict]:
         if restarted:
             import asyncio
             await asyncio.sleep(10)
-            refreshed = await docker_api.list_containers() or []
-            for rc in refreshed:
-                if rc["name"] == name:
-                    ok_after = (rc["state"] == "running"
-                                and "unhealthy" not in rc["status"].lower())
-                    break
+            for attempt in range(2):
+                found = None
+                for rc in await docker_api.list_containers() or []:
+                    if rc["name"] == name:
+                        found = rc
+                        break
+                status_l = (found["status"].lower() if found else "")
+                # "health: starting" is neither healthy nor failed — give the
+                # healthcheck one more window before judging.
+                if found and "starting" in status_l and attempt == 0:
+                    await asyncio.sleep(10)
+                    continue
+                ok_after = bool(found and found["state"] == "running"
+                                and "unhealthy" not in status_l
+                                and "starting" not in status_l)
+                break
         events.append({
             "name": name,
             "problem": problem,

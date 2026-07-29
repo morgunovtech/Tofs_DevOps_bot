@@ -54,8 +54,9 @@ def _current_threshold(days_left: int) -> int | None:
     return None
 
 
-async def check_ssl(url: str) -> dict:
-    """Check SSL certificate for a URL."""
+async def check_ssl(url: str, manage: bool = True) -> dict:
+    """Check SSL certificate for a URL. manage=False = read-only (no ladder,
+    no incidents, no serial tracking) for interactive checks/reports."""
     parsed = urlparse(url)
     hostname = parsed.hostname
     site_id = await get_or_create_site(url)
@@ -81,13 +82,16 @@ async def check_ssl(url: str) -> dict:
         ssl_info = await loop.run_in_executor(None, _get_ssl_info, hostname)
         result["ssl_info"] = ssl_info
 
-        # Renewal watch: track the cert serial between checks.
+        # Renewal watch: track the cert serial between checks. Read-only
+        # checks must not update the serial — that would consume the
+        # "renewed" transition before the scheduled job sees it.
         serial = ssl_info.get("serial_number") or ""
         prev_serial = await get_state(f"ssl_serial:{site_id}")
         if serial:
             if prev_serial and prev_serial != serial:
                 result["renewed"] = True
-            await set_state(f"ssl_serial:{site_id}", serial)
+            if manage:
+                await set_state(f"ssl_serial:{site_id}", serial)
 
         days_left = ssl_info["days_left"]
         if (0 <= days_left <= config.ssl_renew_warn_days
@@ -121,8 +125,12 @@ async def check_ssl(url: str) -> dict:
         else:
             result["error"] = f"SSL certificate invalid: {reason}"
     except Exception as e:
+        # Network-level failure (timeout, refused, DNS) — NOT a certificate
+        # problem. Must not touch the ladder: pinning last_threshold at 0
+        # here would silently suppress all future expiry alerts.
         result["status"] = "error"
         result["error"] = f"SSL check failed: {e}"
+        result["transient"] = True
 
     if result["ssl_info"]:
         details = result["error"] or f"OK, {result['ssl_info']['days_left']} days left"
@@ -135,6 +143,9 @@ async def check_ssl(url: str) -> dict:
         status=result["status"],
         details=details,
     )
+
+    if not manage or result.get("transient"):
+        return result
 
     # Alert ladder: only fire when we cross to a new (lower) threshold,
     # not every daily check.
@@ -172,6 +183,6 @@ async def check_ssl(url: str) -> dict:
     return result
 
 
-async def check_all_ssl(urls: list[str]) -> list[dict]:
-    tasks = [check_ssl(url) for url in urls]
+async def check_all_ssl(urls: list[str], manage: bool = True) -> list[dict]:
+    tasks = [check_ssl(url, manage=manage) for url in urls]
     return await asyncio.gather(*tasks, return_exceptions=False)

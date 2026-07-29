@@ -26,6 +26,24 @@ def fmt_date(iso: str) -> str:
         return iso or "N/A"
 
 
+def plural(n: int, one: str, few: str, many: str) -> str:
+    """Russian numeral agreement: 1 символ, 2 символа, 5 символов."""
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+def fmt_local(sqlite_utc: str) -> str:
+    """sqlite datetime('now') string (UTC) → 'ДД.ММ ЧЧ:ММ' in the user's tz."""
+    dt = _parse_sqlite_utc(sqlite_utc)
+    if not dt:
+        return (sqlite_utc or "")[:16]
+    return dt.astimezone(pytz.timezone(config.timezone)).strftime("%d.%m %H:%M")
+
+
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 
@@ -165,9 +183,9 @@ def format_availability_alert(result: dict) -> str:
     return (
         f"🚨 САЙТ НЕДОСТУПЕН\n"
         f"{_esc(result['url'])}\n"
-        f"Ошибка: {_esc(result.get('error', 'Unknown'))}\n"
-        f"Код: {_esc(result.get('status_code', 'N/A'))}\n"
-        f"Время ответа: {_esc(result.get('response_time_ms', 'N/A'))}ms"
+        f"Ошибка: {_esc(result.get('error') or 'Unknown')}\n"
+        f"Код: {_esc(result.get('status_code') or '—')}\n"
+        f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms"
     )
 
 
@@ -205,8 +223,8 @@ def format_recovery_alert(result: dict) -> str:
     lines = [
         f"✅ САЙТ ВОССТАНОВЛЕН",
         f"{_esc(result['url'])}",
-        f"Код: {_esc(result.get('status_code', 'N/A'))}\n"
-        f"Время ответа: {_esc(result.get('response_time_ms', 'N/A'))}ms",
+        f"Код: {_esc(result.get('status_code') or '—')}\n"
+        f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms",
     ]
     # Post-incident summary: how long it was down and what the problem was.
     incident = result.get("resolved_incident")
@@ -278,7 +296,7 @@ def format_links_report(result: dict) -> str:
     elif external:
         lines.append("")
         lines.append(
-            f"ℹ️ Также {len(external)} внешних ресурса недоступны "
+            f"ℹ️ Также недоступно внешних ресурсов: {len(external)} "
             "(чужие домены — обычно не критично)"
         )
 

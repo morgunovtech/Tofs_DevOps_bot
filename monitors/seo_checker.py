@@ -32,6 +32,7 @@ from db.database import (
     get_or_create_site, save_check, save_incident, resolve_incident,
 )
 from monitors.deep_checker import _sitemap_urls, _pick_sample
+from reports.formatter import plural
 
 logger = logging.getLogger(__name__)
 
@@ -168,13 +169,19 @@ async def _fetch(session: aiohttp.ClientSession, url: str,
             headers={"User-Agent": ua},
         ) as resp:
             body = await resp.text(errors="replace")
-            return resp.status, body, dict(resp.headers)
+            # Join duplicate headers (e.g. two X-Robots-Tag lines) instead of
+            # letting dict() silently keep only the last one — a noindex in
+            # the first of two headers must not be missed.
+            headers = {k: ", ".join(resp.headers.getall(k))
+                       for k in set(resp.headers.keys())}
+            return resp.status, body, headers
     except Exception as e:
         logger.debug(f"seo: fetch {url} failed: {e}")
         return None, "", {}
 
 
-async def check_seo(url: str) -> dict:
+async def check_seo(url: str, manage: bool = True) -> dict:
+    """manage=False = read-only audit (menu button): no incidents touched."""
     site_id = await get_or_create_site(url)
     base = url.rstrip("/")
     host = urlparse(url).hostname or ""
@@ -193,6 +200,18 @@ async def check_seo(url: str) -> dict:
     infos: list[str] = result["infos"]
 
     async with aiohttp.ClientSession() as session:
+        # Reachability probe first: if the site is unreachable right now,
+        # every check below would produce false findings («sitemap.xml не
+        # найден» etc.) and open a bogus SEO incident. Availability problems
+        # are the availability monitor's job — bail out as transient.
+        probe_status, _, _ = await _fetch(session, base + "/")
+        if probe_status is None:
+            result["status"] = "error"
+            result["transient"] = True
+            await save_check(site_id, "seo", "error",
+                             details="site unreachable, audit skipped")
+            return result
+
         # robots.txt
         status, robots_text, _ = await _fetch(session, f"{base}/robots.txt")
         if status == 200:
@@ -225,7 +244,8 @@ async def check_seo(url: str) -> dict:
                 if text_len < config.seo_min_text_chars:
                     problems.append(_problem(
                         "warning",
-                        f"без JavaScript на главной всего {text_len} символов "
+                        f"без JavaScript на главной всего {text_len} "
+                        f"{plural(text_len, 'символ', 'символа', 'символов')} "
                         f"текста — AI-краулеры и часть скрейперов видят почти "
                         f"пустую страницу"))
 
@@ -267,16 +287,21 @@ async def check_seo(url: str) -> dict:
     if problems:
         result["status"] = "critical" if has_critical else "warning"
 
-    summary = (f"{len(problems)} проблем: "
+    n = len(problems)
+    summary = (f"{n} {plural(n, 'проблема', 'проблемы', 'проблем')}: "
                + "; ".join(p["message"] for p in problems[:3])
                if problems else
-               f"OK, {result['pages_checked']} страниц проверено")
+               f"OK, проверено страниц: {result['pages_checked']}")
     await save_check(site_id, "seo", result["status"], details=summary[:500])
+
+    if not manage:
+        return result
 
     if problems:
         _, is_new = await save_incident(
             site_id, "seo",
-            f"SEO: {len(problems)} проблем(ы), напр.: {problems[0]['message']}"[:300],
+            (f"SEO: {n} {plural(n, 'проблема', 'проблемы', 'проблем')}, "
+             f"напр.: {problems[0]['message']}")[:300],
             severity="critical" if has_critical else "warning",
         )
         result["incident_new"] = is_new
@@ -287,5 +312,5 @@ async def check_seo(url: str) -> dict:
     return result
 
 
-async def check_all_seo(urls: list[str]) -> list[dict]:
-    return await asyncio.gather(*[check_seo(u) for u in urls])
+async def check_all_seo(urls: list[str], manage: bool = True) -> list[dict]:
+    return await asyncio.gather(*[check_seo(u, manage=manage) for u in urls])

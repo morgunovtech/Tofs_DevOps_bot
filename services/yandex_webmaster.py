@@ -70,6 +70,9 @@ async def get_summaries() -> dict[str, dict] | None:
                 if summary is None:
                     continue
                 problems = summary.get("site_problems") or {}
+                # API v4 shape: {"FATAL": 1, "POSSIBLE_PROBLEM": 3, ...} —
+                # KEYS are severities, VALUES are counts. Filtering by value
+                # (the old bug) meant alerting could never fire.
                 out[host] = {
                     "sqi": summary.get("sqi"),
                     "searchable_pages": summary.get("searchable_pages_count"),
@@ -77,7 +80,7 @@ async def get_summaries() -> dict[str, dict] | None:
                     "problems": problems,
                     "alert_problems": {
                         k: v for k, v in problems.items()
-                        if str(v).upper() in ALERT_SEVERITIES
+                        if str(k).upper() in ALERT_SEVERITIES and v
                     },
                 }
             return out

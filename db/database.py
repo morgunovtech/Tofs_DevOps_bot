@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -458,18 +459,34 @@ async def queue_notification(text: str):
         await db.commit()
 
 
-async def pop_notifications() -> list[str]:
-    """Fetch and clear all queued notifications (oldest first)."""
+async def peek_notifications() -> list[dict]:
+    """Queued notifications (oldest first) WITHOUT removing them — delete
+    explicitly after a successful send, or a failed send loses the digest."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id, text FROM pending_notifications ORDER BY id"
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def delete_notifications(ids: list[int]):
+    if not ids:
+        return
     db = await get_db()
     async with _write_lock:
-        cursor = await db.execute(
-            "SELECT id, text FROM pending_notifications ORDER BY id"
+        await db.executemany(
+            "DELETE FROM pending_notifications WHERE id = ?",
+            [(i,) for i in ids],
         )
-        rows = await cursor.fetchall()
-        if rows:
-            await db.execute("DELETE FROM pending_notifications")
-            await db.commit()
-        return [r["text"] for r in rows]
+        await db.commit()
+
+
+async def pop_notifications() -> list[str]:
+    """Compatibility helper: peek + delete in one step."""
+    rows = await peek_notifications()
+    await delete_notifications([r["id"] for r in rows])
+    return [r["text"] for r in rows]
 
 
 # ── Retention ────────────────────────────────────────────────────────────────
@@ -478,11 +495,14 @@ async def rollup_old_checks(retention_days: int) -> tuple[int, int]:
     """Aggregate raw checks older than N days into checks_daily, then delete
     them. Returns (rows_aggregated, rows_deleted)."""
     db = await get_db()
-    cutoff = f"-{retention_days} days"
+    # One FIXED cutoff for all three statements: re-evaluating datetime('now')
+    # per statement lets boundary-second rows slip between the aggregate and
+    # the delete — deleted without ever being aggregated.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)
+              ).strftime("%Y-%m-%d %H:%M:%S")
     async with _write_lock:
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM checks WHERE checked_at < datetime('now', ?)",
-            (cutoff,),
+            "SELECT COUNT(*) FROM checks WHERE checked_at < ?", (cutoff,),
         )
         to_delete = (await cursor.fetchone())[0]
         if not to_delete:
@@ -494,7 +514,7 @@ async def rollup_old_checks(retention_days: int) -> tuple[int, int]:
                       SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END),
                       COALESCE(SUM(response_time_ms), 0)
                FROM checks
-               WHERE checked_at < datetime('now', ?)
+               WHERE checked_at < ?
                GROUP BY site_id, check_type, date(checked_at)
                ON CONFLICT(site_id, check_type, day) DO UPDATE SET
                  total = total + excluded.total,
@@ -502,9 +522,7 @@ async def rollup_old_checks(retention_days: int) -> tuple[int, int]:
                  sum_ms = sum_ms + excluded.sum_ms""",
             (cutoff,),
         )
-        await db.execute(
-            "DELETE FROM checks WHERE checked_at < datetime('now', ?)", (cutoff,)
-        )
+        await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
         # Escalation markers for long-resolved incidents are dead weight.
         await db.execute(
             """DELETE FROM bot_state WHERE key LIKE 'escalated:%'

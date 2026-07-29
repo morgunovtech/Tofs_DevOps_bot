@@ -29,7 +29,8 @@ from db.database import (
     get_or_create_site, save_incident, resolve_incident,
     get_heartbeats, get_all_sites, get_uptime_stats, get_last_check,
     get_active_site_urls,
-    queue_notification, pop_notifications, rollup_old_checks, backup_db,
+    queue_notification, peek_notifications, delete_notifications,
+    rollup_old_checks, backup_db, set_dns_state,
 )
 from reports.formatter import (
     format_compact_status_report,
@@ -43,6 +44,8 @@ from reports.formatter import (
     incident_duration_line,
     _parse_sqlite_utc,
     _short_host,
+    _esc,
+    plural,
 )
 from reports.weekly import build_weekly_report
 
@@ -93,49 +96,62 @@ def in_quiet_hours(hour: int | None = None) -> bool:
 
 
 async def send_to_admin(bot: Bot, text: str, force: bool = False,
-                        reply_markup=None):
+                        reply_markup=None, quiet_ok: bool = False) -> bool:
     """Send a message to the admin chat.
 
-    force=True — critical: bypasses both mute and quiet hours.
-    Otherwise: dropped while muted, queued during quiet hours.
+    force=True — critical: bypasses mute and quiet hours, rings.
+    Otherwise the message is DEFERRED (never dropped): while muted or during
+    quiet hours it goes to the pending queue and arrives later as a digest.
+    quiet_ok=True lets a message through quiet hours (the morning report IS
+    the digest) while still deferring under an explicit mute.
+
+    Returns True when the message was delivered or queued — callers that set
+    one-shot "already alerted" flags must only do so on True.
     """
     if not config.admin_chat_id:
         # Nobody has claimed the bot via /start yet — nowhere to deliver.
         logger.warning("No admin yet, dropping message: %s", text[:60])
-        return
+        return False
     if not force:
         if await is_muted():
-            logger.info("Skipping alert (muted): %s", text[:60])
-            return
-        if in_quiet_hours():
+            await queue_notification(text)
+            logger.info("Queued alert (muted): %s", text[:60])
+            return True
+        if in_quiet_hours() and not quiet_ok:
             await queue_notification(text)
             logger.info("Queued alert (quiet hours): %s", text[:60])
-            return
+            return True
     try:
         # The philosophy, made literal: informational messages arrive
         # silently and wait to be read; only critical ones make a sound.
         await bot.send_message(chat_id=config.admin_chat_id, text=text,
                                reply_markup=reply_markup,
                                disable_notification=not force)
+        return True
     except Exception as e:
         logger.error(f"Failed to send message to admin: {e}")
+        return False
 
 
 async def flush_quiet_queue(bot: Bot):
-    """Deliver notifications accumulated during quiet hours as one digest."""
-    if in_quiet_hours() or await is_muted():
+    """Deliver notifications deferred by quiet hours or mute as one digest.
+    Rows are deleted only AFTER a successful send — a Telegram hiccup must
+    not cost the user their queued alerts."""
+    if in_quiet_hours() or await is_muted() or not config.admin_chat_id:
         return
-    texts = await pop_notifications()
-    if not texts:
+    rows = await peek_notifications()
+    if not rows:
         return
-    digest = "🌙 Накопилось за тихие часы:\n\n" + "\n\n".join(
-        f"— {t}" for t in texts
+    digest = "🌙 Накопилось, пока было тихо:\n\n" + "\n\n".join(
+        f"— {r['text']}" for r in rows
     )
     try:
         await bot.send_message(chat_id=config.admin_chat_id, text=_clip(digest),
                                disable_notification=True)
     except Exception as e:
         logger.error(f"Failed to flush quiet queue: {e}")
+        return
+    await delete_notifications([r["id"] for r in rows])
 
 
 # ── Alert handlers ───────────────────────────────────────────────────────────
@@ -152,10 +168,13 @@ async def run_availability_checks(bot: Bot):
     results = await check_all(urls)
 
     for r in results:
-        # Maintenance pause: checks/incidents continue, alerts stay silent.
-        if r.get("site_id") and await settings.is_paused(r["site_id"]):
-            continue
-        if r.get("incident_new"):
+        # Maintenance pause: checks, incidents AND slow-streak bookkeeping
+        # continue below — only the outgoing messages are muted, so state
+        # doesn't drift while a site is paused.
+        paused = bool(r.get("site_id")) and await settings.is_paused(r["site_id"])
+        if paused:
+            pass
+        elif r.get("incident_new"):
             msg = format_availability_alert(r)
             if msg:
                 if r.get("external_ok") is False:
@@ -182,13 +201,14 @@ async def run_availability_checks(bot: Bot):
                 except ValueError:
                     pass
             if stale:
-                await set_state(key, datetime.now(timezone.utc).isoformat())
-                await send_to_admin(
+                sent = await send_to_admin(
                     bot,
                     f"🤔 {r['url']} не открывается с сервера бота, но извне "
                     f"доступен. Похоже на сетевую проблему на моей стороне — "
                     f"инцидент не открываю.",
                 )
+                if sent:
+                    await set_state(key, datetime.now(timezone.utc).isoformat())
         elif r.get("recovered"):
             await send_to_admin(bot, format_recovery_alert(r), force=True)
 
@@ -206,11 +226,12 @@ async def run_availability_checks(bot: Bot):
                         f"Slow responses: ~{ms}ms",
                         severity="warning",
                     )
-                    if is_new:
+                    if is_new and not paused:
                         await send_to_admin(
                             bot,
-                            f"🐢 {url} отвечает медленно — "
-                            f"{ms}ms ({SLOW_RESPONSE_STREAK} проверки подряд)",
+                            f"🐢 {url} отвечает медленно — {ms}ms "
+                            f"({SLOW_RESPONSE_STREAK} "
+                            f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд)",
                         )
             else:
                 _slow_streak[url] = 0
@@ -218,7 +239,7 @@ async def run_availability_checks(bot: Bot):
                 # exists: after a restart the streak dict is empty while a
                 # "performance" incident may still be open in the DB.
                 site_id = await get_or_create_site(url)
-                if await resolve_incident(site_id, "performance"):
+                if await resolve_incident(site_id, "performance") and not paused:
                     await send_to_admin(
                         bot,
                         f"✅ {url} — скорость восстановилась ({ms}ms)",
@@ -290,11 +311,16 @@ async def run_links_checks(bot: Bot):
 
 
 async def run_dns_checks(bot: Bot):
-    """Alert when DNS answers change; NS changes are critical."""
+    """Alert when DNS answers change; NS changes are critical.
+
+    The new baseline is committed only after the alert is delivered or
+    queued — otherwise a failed send would swallow the change forever."""
     changes = await check_all_dns(await get_active_site_urls())
     for change in changes:
-        await send_to_admin(bot, format_dns_change(change),
-                            force=change.get("critical", False))
+        sent = await send_to_admin(bot, format_dns_change(change),
+                                   force=change.get("critical", False))
+        if sent:
+            await set_dns_state(change["host"], change["rtype"], change["new"])
 
 
 async def run_deep_checks(bot: Bot):
@@ -306,12 +332,12 @@ async def run_deep_checks(bot: Bot):
             continue
         if r.get("incident_new"):
             errors = "\n".join(
-                f"  • {e['url']} — HTTP {e['status_code']}"
+                f"  • {_esc(e['url'])} — HTTP {e['status_code']}"
                 for e in r["errors"][:5]
             )
             await send_to_admin(
                 bot,
-                f"🕳 {r['url']}: 5xx на {len(r['errors'])} из "
+                f"🕳 {_esc(r['url'])}: 5xx на {len(r['errors'])} из "
                 f"{r['sampled']} проверенных страниц:\n{errors}",
                 reply_markup=await alert_actions_keyboard(r["url"]),
             )
@@ -357,20 +383,25 @@ async def run_index_checks(bot: Bot):
             current = f"{info['verdict']}|{info['coverage']}"
             if prev == current:
                 continue
-            await set_state(key, current)
+            prev_verdict = (prev or "").split("|", 1)[0]
+            sent = True
             if info["verdict"] == "PASS":
-                if prev:  # was bad, now indexed again
-                    await send_to_admin(
+                # Recovery only on a real verdict transition — a coverage
+                # string change while staying PASS is not "снова в индексе".
+                if prev and prev_verdict != "PASS":
+                    sent = await send_to_admin(
                         bot, f"✅ Google: {url} снова в индексе "
-                             f"({info['coverage']})")
-            else:
-                await send_to_admin(
+                             f"({_esc(info['coverage'])})")
+            elif prev_verdict != info["verdict"]:
+                sent = await send_to_admin(
                     bot,
                     f"🔴 Google: {url} НЕ в индексе!\n"
-                    f"Статус: {info['coverage']}\n"
+                    f"Статус: {_esc(info['coverage'])}\n"
                     f"Проверь в Search Console.",
                     force=True,
                 )
+            if sent:
+                await set_state(key, current)
 
     # Yandex: new FATAL/CRITICAL site problems?
     if yandex_webmaster.available():
@@ -381,18 +412,21 @@ async def run_index_checks(bot: Bot):
             current = ",".join(sorted(s["alert_problems"]))
             if current == prev:
                 continue
-            await set_state(key, current)
+            sent = True
             if current:
                 plist = "\n".join(
-                    f"  • {k} ({v})" for k, v in s["alert_problems"].items())
-                await send_to_admin(
+                    f"  • {_esc(k)}: {_esc(v)}"
+                    for k, v in s["alert_problems"].items())
+                sent = await send_to_admin(
                     bot,
-                    f"🔴 Яндекс.Вебмастер: проблемы на {host}:\n{plist}",
+                    f"🔴 Яндекс.Вебмастер: проблемы на {_esc(host)}:\n{plist}",
                     force="FATAL" in current.upper(),
                 )
             elif prev:
-                await send_to_admin(
-                    bot, f"✅ Яндекс.Вебмастер: {host} — проблемы устранены")
+                sent = await send_to_admin(
+                    bot, f"✅ Яндекс.Вебмастер: {_esc(host)} — проблемы устранены")
+            if sent:
+                await set_state(key, current)
 
 
 # ── Dead-man switch ──────────────────────────────────────────────────────────
@@ -433,13 +467,14 @@ async def run_heartbeat_watch(bot: Bot):
 
         alerted = await get_state(f"hb_alerted:{job}")
         if overdue and not alerted:
-            await set_state(f"hb_alerted:{job}", now.isoformat())
-            await send_to_admin(
+            sent = await send_to_admin(
                 bot,
-                f"💔 Heartbeat «{job}» молчит ({detail}; "
+                f"💔 Heartbeat «{_esc(job)}» молчит ({detail}; "
                 f"ожидание: каждые {_fmt_ago(interval_min)}).\n"
                 f"Проверь, отработал ли он.",
             )
+            if sent:
+                await set_state(f"hb_alerted:{job}", now.isoformat())
         elif not overdue and alerted:
             # Ping endpoint announces recovery; this just clears a stale flag
             # (e.g. config interval was increased).
@@ -463,13 +498,14 @@ async def run_host_checks(bot: Bot):
                 await send_to_admin(bot, msg)
                 return
         if not already:
-            await set_state("disk_alerted", "1")
-            await send_to_admin(
+            sent = await send_to_admin(
                 bot,
                 f"💾 Диск на сервере бота заполнен на {result['pct']}% "
                 f"({result['used_gb']}/{result['total_gb']} GB) — надо разобраться",
                 force=result["pct"] >= 95,
             )
+            if sent:
+                await set_state("disk_alerted", "1")
     else:
         if await get_state("disk_alerted"):
             await set_state("disk_alerted", None)
@@ -502,14 +538,20 @@ async def run_container_watch(bot: Bot):
 # ── Escalation ───────────────────────────────────────────────────────────────
 
 async def run_escalation_watch(bot: Bot):
-    """Re-alert about unresolved critical incidents every N minutes —
-    bypasses mute: a site that is still down must not be forgotten."""
+    """Re-alert about an unresolved DOWN site every N minutes — bypasses
+    mute: a dead site must not be forgettable.
+
+    Deliberately limited to availability incidents: an expired SSL or a
+    Yandex FATAL is critical too, but force-paging every 30 minutes about
+    something that takes hours to fix would train the user to ignore
+    alerts. Those fire once via their own monitors and stay visible in
+    «⚠️ Инциденты»."""
     repeat_min = config.escalation_repeat_min
     if not repeat_min:
         return
     now = datetime.now(timezone.utc)
     for inc in await get_active_incidents():
-        if inc["severity"] != "critical":
+        if inc["severity"] != "critical" or inc["check_type"] != "availability":
             continue
         if await settings.is_paused(inc["site_id"]):
             continue
@@ -530,7 +572,8 @@ async def run_escalation_watch(bot: Bot):
         await send_to_admin(
             bot,
             f"⏰ ВСЁ ЕЩЁ НЕ РЕШЕНО (уже {_fmt_ago(age_min)})\n"
-            f"{_short_host(inc['url'])} [{inc['check_type']}]: {inc['message']}",
+            f"{_esc(_short_host(inc['url']))} [{_esc(inc['check_type'])}]: "
+            f"{_esc(inc['message'])}",
             force=True,
             reply_markup=await alert_actions_keyboard(inc["url"]),
         )
@@ -578,8 +621,9 @@ async def run_db_backup(bot: Bot):
             f for f in os.listdir(_backups_dir())
             if f.startswith("bot-") and f.endswith(".db")
         )
-        for old in files[:-config.db_backup_keep]:
-            os.remove(os.path.join(_backups_dir(), old))
+        keep = max(1, config.db_backup_keep)
+        for stale in files[:-keep]:
+            os.remove(os.path.join(_backups_dir(), stale))
         logger.info(f"DB backup written: {path}")
     except Exception as e:
         logger.error(f"DB backup failed: {e}")
@@ -596,7 +640,12 @@ async def send_db_backup_to_telegram(bot: Bot):
         ) if os.path.isdir(_backups_dir()) else []
         if not files:
             await run_db_backup(bot)
-            files = sorted(os.listdir(_backups_dir()))
+            files = sorted(
+                f for f in os.listdir(_backups_dir())
+                if f.startswith("bot-") and f.endswith(".db")
+            )
+        if not files:
+            return
         latest = os.path.join(_backups_dir(), files[-1])
         await bot.send_document(
             chat_id=config.admin_chat_id,
@@ -689,9 +738,11 @@ async def _morning_extras(ssl_results: list[dict],
 async def send_morning_report(bot: Bot):
     """Compact morning status report — the daily 10-second health digest."""
     urls = await get_active_site_urls()
-    availability = await check_all(urls)
-    ssl_results = await check_all_ssl(urls)
-    domain_results = await check_all_domains(urls)
+    # manage=False: a report is a read-only observer — it must never consume
+    # incident transitions that belong to the scheduled monitors.
+    availability = await check_all(urls, manage=False)
+    ssl_results = await check_all_ssl(urls, manage=False)
+    domain_results = await check_all_domains(urls, manage=False)
     incidents = await get_active_incidents()
 
     report = format_compact_status_report(
@@ -702,8 +753,9 @@ async def send_morning_report(bot: Bot):
         report_type="morning",
         extras=await _morning_extras(ssl_results, domain_results),
     )
-    # Daily report is informational — it should respect mute.
-    await send_to_admin(bot, _clip(report))
+    # The morning report IS the daily digest — it must arrive even when its
+    # hour falls inside quiet hours (still deferred by an explicit mute).
+    await send_to_admin(bot, _clip(report), quiet_ok=True)
 
 
 async def send_evening_report(bot: Bot):
@@ -717,9 +769,9 @@ async def send_evening_report(bot: Bot):
         return
 
     urls = await get_active_site_urls()
-    availability = await check_all(urls)
-    ssl_results = await check_all_ssl(urls)
-    domain_results = await check_all_domains(urls)
+    availability = await check_all(urls, manage=False)
+    ssl_results = await check_all_ssl(urls, manage=False)
+    domain_results = await check_all_domains(urls, manage=False)
 
     report = format_compact_status_report(
         availability=availability,

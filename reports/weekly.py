@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from config import config
 from db.database import get_all_sites, get_daily_availability, get_incidents_since
-from reports.formatter import _short_host, sparkline
+from reports.formatter import _short_host, sparkline, plural
 from services import gsc, yandex_webmaster
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _pct_change(cur: int, prev: int) -> str:
     if prev <= 0:
-        return "new" if cur else "0"
+        return "с нуля" if cur else "0"
     delta = round((cur - prev) / prev * 100)
     return f"+{delta}%" if delta >= 0 else f"{delta}%"
 
@@ -48,9 +48,10 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
                 continue
             prev = prev or {"clicks": 0, "impressions": 0}
             g_lines.append(
-                f"  {_short_host(url)}: {cur['clicks']} кликов "
+                f"  {_short_host(url)}: "
+                f"{cur['clicks']} {plural(cur['clicks'], 'клик', 'клика', 'кликов')} "
                 f"({_pct_change(cur['clicks'], prev['clicks'])}), "
-                f"{cur['impressions']} показов "
+                f"{cur['impressions']} {plural(cur['impressions'], 'показ', 'показа', 'показов')} "
                 f"({_pct_change(cur['impressions'], prev['impressions'])})"
             )
         if g_lines:

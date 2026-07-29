@@ -10,7 +10,7 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 
 ### 📡 Monitoring
 - **Availability** every 5 minutes — with a twist: before paging you, it re-checks from external nodes (check-host.net). If the site is up for the rest of the world, it won't cry wolf.
-- **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working.
+- **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 → 0 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working.
 - **Domain expiry** via WHOIS, with its own alert ladder.
 - **DNS changes** — snapshots A/AAAA/CNAME/NS/MX records hourly; a changed NS record (that's what a hijack looks like) is a critical alert.
 - **Broken links** — crawls your pages, separates *your* broken links (actionable) from dead external ones (noise).
@@ -53,7 +53,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 - **Weekly report** (Sundays) — uptime, incidents, a response-time chart, Google/Yandex search metrics week-over-week.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
 - **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
-- **Escalation** — an unresolved critical incident re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable.
+- **Escalation** — a site that is still down re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable (deliberately availability-only: half-hourly pages about an expiring cert would train you to ignore alerts).
 - **Post-incident summaries** — recovery messages include duration and cause: *"✅ Recovered · down 12 min (14:03–14:15) · cause: HTTP 502"*.
 
 ### 🧹 It maintains itself

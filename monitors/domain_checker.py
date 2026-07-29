@@ -56,10 +56,17 @@ def _current_threshold(days_left: int) -> int | None:
     return None
 
 
-async def check_domain(url: str) -> dict:
-    """Check domain registration expiry."""
+async def check_domain(url: str, manage: bool = True) -> dict:
+    """Check domain registration expiry. manage=False = read-only."""
     parsed = urlparse(url)
     hostname = parsed.hostname
+    if not hostname:
+        # A malformed URL must not crash the whole gathered domain job
+        # (and the morning report with it).
+        return {"url": url, "domain": url, "status": "warning",
+                "error": "Некорректный URL", "domain_info": None,
+                "incident_new": False, "recovered": False,
+                "threshold_crossed": None}
     # NOTE: naive "last two labels" registrable-domain heuristic — correct for
     # domains like example.com, wrong for multi-part public suffixes
     # (example.co.uk → co.uk). Switch to tldextract if such sites are added.
@@ -122,7 +129,13 @@ async def check_domain(url: str) -> dict:
         details=details,
     )
 
+    if not manage:
+        return result
+
     # WHOIS failures are flaky — don't manage incidents based on them, just log.
+    # NB: the days_left=None path below also returns without touching
+    # incidents — deliberately: auto-closing a real expiry incident because
+    # WHOIS went flaky would be worse than leaving it open.
     if result["status"] == "warning" and result["error"] and result["error"].startswith("WHOIS"):
         return result
 
@@ -157,17 +170,19 @@ async def check_domain(url: str) -> dict:
     return result
 
 
-async def check_all_domains(urls: list[str]) -> list[dict]:
+async def check_all_domains(urls: list[str], manage: bool = True) -> list[dict]:
     # Deduplicate by registrable domain to avoid multiple WHOIS queries.
     seen_domains = set()
     unique_urls = []
     for url in urls:
-        parsed = urlparse(url)
-        parts = parsed.hostname.split(".")
-        domain = ".".join(parts[-2:]) if len(parts) > 2 else parsed.hostname
+        hostname = urlparse(url).hostname
+        if not hostname:
+            continue
+        parts = hostname.split(".")
+        domain = ".".join(parts[-2:]) if len(parts) > 2 else hostname
         if domain not in seen_domains:
             seen_domains.add(domain)
             unique_urls.append(url)
 
-    tasks = [check_domain(url) for url in unique_urls]
+    tasks = [check_domain(url, manage=manage) for url in unique_urls]
     return await asyncio.gather(*tasks, return_exceptions=False)
