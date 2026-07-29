@@ -100,8 +100,8 @@ Requirements: Docker + a Telegram bot token from [@BotFather](https://t.me/BotFa
 Not a terminal person? There's a [step-by-step guide in plain language (RU)](docs/SETUP.md).
 
 ```bash
-git clone https://github.com/morgunovtech/devops-bot.git
-cd devops-bot
+git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
+cd Tofs_DevOps_bot
 cp .env.example .env
 # Fill in ONE value: TELEGRAM_BOT_TOKEN (from @BotFather)
 docker compose up -d --build

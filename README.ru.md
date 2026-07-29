@@ -100,8 +100,8 @@ https://example.com
 Не дружишь с терминалом — есть [пошаговая инструкция простым языком](docs/SETUP.md).
 
 ```bash
-git clone https://github.com/morgunovtech/devops-bot.git
-cd devops-bot
+git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
+cd Tofs_DevOps_bot
 cp .env.example .env
 # Заполни ОДНО значение: TELEGRAM_BOT_TOKEN (от @BotFather)
 docker compose up -d --build

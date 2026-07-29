@@ -71,11 +71,11 @@ docker --version
 Вставляй команды по одной:
 
 ```bash
-git clone https://github.com/morgunovtech/devops-bot.git
+git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
 ```
 
 ```bash
-cd devops-bot
+cd Tofs_DevOps_bot
 ```
 
 ```bash
@@ -183,7 +183,7 @@ SELF_HEARTBEAT_URL=https://hc-ping.com/твой-код
 Когда выйдет новая версия:
 
 ```bash
-cd devops-bot && git pull && docker compose up -d --build
+cd Tofs_DevOps_bot && git pull && docker compose up -d --build
 ```
 
 Все твои сайты и настройки сохранятся — они живут в базе данных, а не в коде.
