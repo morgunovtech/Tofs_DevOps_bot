@@ -18,6 +18,12 @@ def _short_host(url: str) -> str:
     return urlparse(url).hostname or url
 
 
+def now_local() -> datetime:
+    """Current time in the configured timezone — the container itself runs
+    in UTC, so naive datetime.now() would show server time to the user."""
+    return datetime.now(pytz.timezone(config.timezone))
+
+
 # ── One-line per site (compact) ──────────────────────────────────────────────
 
 def _avail_chip(r: dict) -> str:
@@ -60,7 +66,7 @@ def format_compact_status_report(availability: list[dict],
                                  report_type: str = "status",
                                  extras: list[str] | None = None) -> str:
     """One concise message: header + one line per site + incidents (if any)."""
-    now = datetime.now().strftime("%d.%m %H:%M")
+    now = now_local().strftime("%d.%m %H:%M")
     if report_type == "morning":
         header = f"🌅 Доброе утро · {now}"
     elif report_type == "evening":

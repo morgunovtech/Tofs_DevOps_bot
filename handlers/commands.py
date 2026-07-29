@@ -23,7 +23,7 @@ from db.database import (
 )
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
-    format_compact_status_report,
+    format_compact_status_report, now_local,
 )
 from services.actions import trigger_redeploy, purge_cf_cache
 
@@ -267,7 +267,7 @@ async def cmd_mute(message: Message):
         return
     deadline = datetime.now(timezone.utc) + duration
     await set_state("mute_until", deadline.isoformat())
-    local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
+    local_until = (now_local() + duration).strftime("%d.%m %H:%M")
     await message.answer(
         f"🔕 Алерты приглушены до {local_until}.\n"
         f"Критические алерты (сайт лежит) всё равно придут.\n"
@@ -317,7 +317,7 @@ async def cb_mute_menu(call: CallbackQuery):
                 deadline = deadline.replace(tzinfo=timezone.utc)
             now_utc = datetime.now(timezone.utc)
             if deadline > now_utc:
-                local = (datetime.now() + (deadline - now_utc)).strftime("%d.%m %H:%M")
+                local = (now_local() + (deadline - now_utc)).strftime("%d.%m %H:%M")
                 status = f"🔕 Сейчас приглушено до {local}\n\n"
         except ValueError:
             pass
@@ -345,7 +345,7 @@ async def cb_mute_pick(call: CallbackQuery):
         return
     deadline = datetime.now(timezone.utc) + duration
     await set_state("mute_until", deadline.isoformat())
-    local_until = (datetime.now() + duration).strftime("%d.%m %H:%M")
+    local_until = (now_local() + duration).strftime("%d.%m %H:%M")
     await call.message.edit_text(
         f"🔕 Алерты приглушены до {local_until}.\n"
         f"Критические алерты всё равно придут.\n"
