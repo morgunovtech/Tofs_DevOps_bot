@@ -83,6 +83,14 @@ class Config:
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
     deep_check_sample: int = int(os.getenv("DEEP_CHECK_SAMPLE", "10"))
 
+    # ── Index status APIs (optional) ─────────────────────────────────────────
+    # Google Search Console: service-account JSON key + property name
+    # (domain property "sc-domain:example.com" covers all subdomains).
+    gsc_service_account_file: str = os.getenv("GSC_SERVICE_ACCOUNT_FILE", "")
+    gsc_property: str = os.getenv("GSC_PROPERTY", "")
+    # Yandex.Webmaster: OAuth token with webmaster:read scope.
+    yandex_webmaster_token: str = os.getenv("YANDEX_WEBMASTER_TOKEN", "")
+
     # ── SEO/GEO monitor ──────────────────────────────────────────────────────
     # Pages per site to inspect (homepage + sitemap sample).
     seo_pages_sample: int = int(os.getenv("SEO_PAGES_SAMPLE", "5"))

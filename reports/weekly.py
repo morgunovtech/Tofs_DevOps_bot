@@ -5,6 +5,7 @@ sent every Sunday.
 
 import logging
 import os
+from datetime import date, timedelta
 
 import matplotlib
 matplotlib.use("Agg")  # headless — must be set before pyplot import
@@ -13,8 +14,67 @@ import matplotlib.pyplot as plt
 from config import config
 from db.database import get_all_sites, get_daily_availability, get_incidents_since
 from reports.formatter import _short_host
+from services import gsc, yandex_webmaster
 
 logger = logging.getLogger(__name__)
+
+
+def _pct_change(cur: int, prev: int) -> str:
+    if prev <= 0:
+        return "new" if cur else "0"
+    delta = round((cur - prev) / prev * 100)
+    return f"+{delta}%" if delta >= 0 else f"{delta}%"
+
+
+async def search_metrics_lines(site_urls: list[str]) -> list[str]:
+    """Weekly search-visibility lines from GSC + Yandex.Webmaster.
+    Empty list when neither integration is configured."""
+    lines: list[str] = []
+
+    if gsc.available():
+        # GSC data lags ~2 days; compare the freshest full week with the
+        # week before it.
+        end = date.today() - timedelta(days=2)
+        start = end - timedelta(days=6)
+        prev_end = start - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=6)
+        g_lines = []
+        for url in site_urls:
+            cur = await gsc.search_totals(
+                start.isoformat(), end.isoformat(), page_prefix=url)
+            prev = await gsc.search_totals(
+                prev_start.isoformat(), prev_end.isoformat(), page_prefix=url)
+            if cur is None:
+                continue
+            prev = prev or {"clicks": 0, "impressions": 0}
+            g_lines.append(
+                f"  {_short_host(url)}: {cur['clicks']} кликов "
+                f"({_pct_change(cur['clicks'], prev['clicks'])}), "
+                f"{cur['impressions']} показов "
+                f"({_pct_change(cur['impressions'], prev['impressions'])})"
+            )
+        if g_lines:
+            lines.append("🔎 Google (неделя к неделе):")
+            lines.extend(g_lines)
+
+    if yandex_webmaster.available():
+        summaries = await yandex_webmaster.get_summaries()
+        y_lines = []
+        for host, s in (summaries or {}).items():
+            chunks = []
+            if s.get("searchable_pages") is not None:
+                chunks.append(f"{s['searchable_pages']} стр. в поиске")
+            if s.get("sqi") is not None:
+                chunks.append(f"ИКС {s['sqi']}")
+            if s["alert_problems"]:
+                chunks.append(f"⚠️ проблем: {len(s['alert_problems'])}")
+            if chunks:
+                y_lines.append(f"  {host}: " + ", ".join(chunks))
+        if y_lines:
+            lines.append("🔎 Яндекс:")
+            lines.extend(y_lines)
+
+    return lines
 
 
 def chart_path() -> str:
@@ -65,6 +125,14 @@ async def build_weekly_report() -> tuple[str, str | None]:
             lines.append(f"{icon} {host} — uptime {uptime}%, ~{avg_ms}ms")
         else:
             lines.append(f"⏳ {host} — нет данных")
+
+    try:
+        search_lines = await search_metrics_lines([s["url"] for s in sites])
+        if search_lines:
+            lines.append("")
+            lines.extend(search_lines)
+    except Exception as e:
+        logger.error(f"Search metrics for weekly report failed: {e}")
 
     incidents = await get_incidents_since(days=7)
     if incidents:

@@ -19,6 +19,7 @@ from monitors.dns_checker import check_all_dns
 from monitors.deep_checker import check_all_deep
 from monitors.host_checker import check_disk, watch_containers
 from monitors.seo_checker import check_all_seo
+from services import gsc, yandex_webmaster
 from services.actions import (
     alert_actions_keyboard, deploy_hook_for, trigger_redeploy,
 )
@@ -317,6 +318,62 @@ async def run_seo_checks(bot: Bot):
             await send_to_admin(
                 bot, f"✅ SEO: {r['url']} — все проблемы устранены",
             )
+
+
+async def run_index_checks(bot: Bot):
+    """Daily indexing watch via GSC / Yandex.Webmaster (when tokens are set).
+
+    Silent while everything is fine; alerts only when the state changes:
+    the homepage drops out of Google's index, or Yandex reports new
+    FATAL/CRITICAL site problems.
+    """
+    # Google: is each homepage still in the index?
+    if gsc.available():
+        for url in config.get_site_urls():
+            info = await gsc.inspect_url(url.rstrip("/") + "/")
+            if not info:
+                continue
+            key = f"gsc_idx:{_short_host(url)}"
+            prev = await get_state(key)
+            current = f"{info['verdict']}|{info['coverage']}"
+            if prev == current:
+                continue
+            await set_state(key, current)
+            if info["verdict"] == "PASS":
+                if prev:  # was bad, now indexed again
+                    await send_to_admin(
+                        bot, f"✅ Google: {url} снова в индексе "
+                             f"({info['coverage']})")
+            else:
+                await send_to_admin(
+                    bot,
+                    f"🔴 Google: {url} НЕ в индексе!\n"
+                    f"Статус: {info['coverage']}\n"
+                    f"Проверь в Search Console.",
+                    force=True,
+                )
+
+    # Yandex: new FATAL/CRITICAL site problems?
+    if yandex_webmaster.available():
+        summaries = await yandex_webmaster.get_summaries()
+        for host, s in (summaries or {}).items():
+            key = f"yx_problems:{host}"
+            prev = await get_state(key) or ""
+            current = ",".join(sorted(s["alert_problems"]))
+            if current == prev:
+                continue
+            await set_state(key, current)
+            if current:
+                plist = "\n".join(
+                    f"  • {k} ({v})" for k, v in s["alert_problems"].items())
+                await send_to_admin(
+                    bot,
+                    f"🔴 Яндекс.Вебмастер: проблемы на {host}:\n{plist}",
+                    force="FATAL" in current.upper(),
+                )
+            elif prev:
+                await send_to_admin(
+                    bot, f"✅ Яндекс.Вебмастер: {host} — проблемы устранены")
 
 
 # ── Dead-man switch ──────────────────────────────────────────────────────────
@@ -697,6 +754,9 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     # digest shows fresh results.
     job(run_seo_checks, CronTrigger(hour=7, minute=30, timezone=tz), "seo_checks",
         misfire_grace_time=600)
+    # Index status (GSC / Yandex.Webmaster) daily at 07:45.
+    job(run_index_checks, CronTrigger(hour=7, minute=45, timezone=tz),
+        "index_checks", misfire_grace_time=600)
 
     job(run_links_checks,
         IntervalTrigger(hours=config.links_check_interval_hours),

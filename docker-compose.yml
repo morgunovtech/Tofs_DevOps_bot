@@ -11,6 +11,8 @@ services:
       # NOTE: the docker socket is root-equivalent access to the host —
       # enable only on a single-purpose server you fully control.
       # - /var/run/docker.sock:/var/run/docker.sock
+      # Google Search Console service-account key (see .env.example):
+      # - ./gsc-key.json:/app/gsc-key.json:ro
     ports:
       - "8080:8080"   # webhook endpoint (feedback from sites)
     environment:

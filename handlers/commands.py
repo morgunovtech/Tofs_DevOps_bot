@@ -713,7 +713,21 @@ async def cb_seo(call: CallbackQuery):
     )
 
     from monitors.seo_checker import check_all_seo
+    from services import gsc, yandex_webmaster
+
     results = await check_all_seo(config.get_site_urls())
+
+    # Live index status (only when tokens are configured).
+    gsc_status: dict[str, str] = {}
+    if gsc.available():
+        for u in config.get_site_urls():
+            info = await gsc.inspect_url(u.rstrip("/") + "/")
+            if info:
+                gsc_status[u] = ("в индексе ✅" if info["verdict"] == "PASS"
+                                 else f"НЕ в индексе 🔴 ({info['coverage']})")
+    yx_status: dict[str, dict] = {}
+    if yandex_webmaster.available():
+        yx_status = await yandex_webmaster.get_summaries() or {}
 
     lines = ["🔍 SEO/GEO-аудит:\n"]
     for r in results:
@@ -733,6 +747,19 @@ async def cb_seo(call: CallbackQuery):
                 lines.append(f"   … и ещё {len(problems) - 6}")
         if r.get("no_js_chars") is not None:
             lines.append(f"   📄 Текст без JS: {r['no_js_chars']} символов")
+        if r["url"] in gsc_status:
+            lines.append(f"   📇 Google: {gsc_status[r['url']]}")
+        yx = yx_status.get(host)
+        if yx:
+            chunk = []
+            if yx.get("searchable_pages") is not None:
+                chunk.append(f"{yx['searchable_pages']} стр. в поиске")
+            if yx.get("sqi") is not None:
+                chunk.append(f"ИКС {yx['sqi']}")
+            if yx["alert_problems"]:
+                chunk.append(f"🔴 проблем: {len(yx['alert_problems'])}")
+            if chunk:
+                lines.append(f"   📇 Яндекс: " + ", ".join(chunk))
         for note in (r.get("infos") or [])[:3]:
             lines.append(f"   ℹ️ {note}")
         lines.append("")
