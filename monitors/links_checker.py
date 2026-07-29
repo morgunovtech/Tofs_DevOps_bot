@@ -70,7 +70,7 @@ def _is_internal(link: str, base_url: str) -> bool:
     """Same registrable domain as the base site.
 
     NOTE: naive "last two labels" heuristic — correct for domains like
-    morgunov.tech, wrong for multi-part public suffixes (example.co.uk would
+    example.com, wrong for multi-part public suffixes (example.co.uk would
     match any *.co.uk). Switch to tldextract if such sites are ever added.
     """
     base_host = _host(base_url)

@@ -43,7 +43,7 @@ async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:
 
 
 async def get_summaries() -> dict[str, dict] | None:
-    """{host (e.g. 's.morgunov.tech'): summary} for every verified host.
+    """{host (e.g. 'app.example.com'): summary} for every verified host.
 
     summary: {sqi, searchable_pages, excluded_pages, problems: {type: severity}}
     """

@@ -8,7 +8,7 @@ exchanged for an OAuth token. Setup:
   3. GSC → property settings → Users → add the service account e-mail
      (Restricted/Full);
   4. .env: GSC_SERVICE_ACCOUNT_FILE=/app/gsc-key.json,
-     GSC_PROPERTY=sc-domain:morgunov.tech (a domain property covers all
+     GSC_PROPERTY=sc-domain:example.com (a domain property covers all
      subdomains; https://-prefix properties work too).
 
 Everything degrades to None when unconfigured — callers just skip sections.

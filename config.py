@@ -99,7 +99,7 @@ class Config:
     seo_min_text_chars: int = int(os.getenv("SEO_MIN_TEXT_CHARS", "400"))
 
     # ── Cloudflare Pages actions ─────────────────────────────────────────────
-    # Deploy hooks per host: "s.morgunov.tech=https://api.cloudflare.com/...".
+    # Deploy hooks per host: "example.com=https://api.cloudflare.com/...".
     deploy_hooks: dict[str, str] = field(default_factory=lambda: _map("DEPLOY_HOOKS"))
     # Fire the deploy hook automatically when a site goes down (once/incident).
     auto_redeploy: bool = _bool("AUTO_REDEPLOY")

@@ -24,7 +24,7 @@ DOMAIN_RTYPES = ("NS", "MX")
 
 def _registrable(host: str) -> str:
     # Same naive "last two labels" heuristic as elsewhere in the project —
-    # fine for morgunov.tech, wrong for multi-part public suffixes.
+    # fine for example.com, wrong for multi-part public suffixes (co.uk).
     parts = host.split(".")
     return ".".join(parts[-2:]) if len(parts) > 2 else host
 

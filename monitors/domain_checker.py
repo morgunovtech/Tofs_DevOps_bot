@@ -61,7 +61,7 @@ async def check_domain(url: str) -> dict:
     parsed = urlparse(url)
     hostname = parsed.hostname
     # NOTE: naive "last two labels" registrable-domain heuristic — correct for
-    # domains like morgunov.tech, wrong for multi-part public suffixes
+    # domains like example.com, wrong for multi-part public suffixes
     # (example.co.uk → co.uk). Switch to tldextract if such sites are added.
     parts = hostname.split(".")
     if len(parts) > 2:

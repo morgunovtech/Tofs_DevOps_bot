@@ -4,8 +4,8 @@ Lightweight aiohttp web server that receives feedback submissions from websites.
 Endpoint:  POST /api/feedback
 Headers:   X-Webhook-Secret: <WEBHOOK_SECRET>
 Body JSON: {
-    "site_url":  "https://s.morgunov.tech",
-    "page_url":  "https://s.morgunov.tech/about",
+    "site_url":  "https://example.com",
+    "page_url":  "https://example.com/about",
     "message":   "Кнопка не работает на мобиле"
 }
 
