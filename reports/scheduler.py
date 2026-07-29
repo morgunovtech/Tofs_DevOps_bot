@@ -99,6 +99,10 @@ async def send_to_admin(bot: Bot, text: str, force: bool = False,
     force=True — critical: bypasses both mute and quiet hours.
     Otherwise: dropped while muted, queued during quiet hours.
     """
+    if not config.admin_chat_id:
+        # Nobody has claimed the bot via /start yet — nowhere to deliver.
+        logger.warning("No admin yet, dropping message: %s", text[:60])
+        return
     if not force:
         if await is_muted():
             logger.info("Skipping alert (muted): %s", text[:60])

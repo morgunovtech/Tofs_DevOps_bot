@@ -299,26 +299,29 @@ async def cmd_start(message: Message):
 # ── Reply-keyboard taps ──────────────────────────────────────────────────────
 
 @router.message(F.text == "📱 Меню")
-async def reply_menu(message: Message):
+async def reply_menu(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    await state.clear()  # a menu tap always aborts any pending input flow
     await send_main_menu(message)
 
 
 @router.message(F.text == "📊 Статус")
-async def reply_status(message: Message):
+async def reply_status(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    await state.clear()
     await cmd_status(message)
 
 
 # ── /menu ─────────────────────────────────────────────────────────────────────
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message):
+async def cmd_menu(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
+    await state.clear()
     await send_main_menu(message)
 
 
@@ -329,8 +332,11 @@ async def cmd_status(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Доступ только для администратора.")
         return
-    await message.answer("⏳ Проверяю...")
     urls = await get_active_site_urls()
+    if not urls:
+        await message.answer("Сайтов пока нет — добавь через 📱 Меню → «🌍 Сайт детально».")
+        return
+    await message.answer("⏳ Проверяю...")
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     text = format_compact_status_report(
@@ -535,11 +541,12 @@ async def cb_alert_action(call: CallbackQuery):
 # ── Back to main menu ────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "menu_main")
-async def cb_main_menu(call: CallbackQuery):
+async def cb_main_menu(call: CallbackQuery, state: FSMContext):
     if not is_admin(call.from_user.id):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
+    await state.clear()  # «← Главное меню» aborts any pending input flow
     await send_main_menu(call)
 
 
@@ -566,6 +573,14 @@ async def cb_full_check(call: CallbackQuery):
     await call.answer()
 
     urls = await get_active_site_urls()
+    if not urls:
+        await call.message.edit_text(
+            "Сайтов пока нет — сначала добавь хотя бы один.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")],
+                [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
+            ]))
+        return
 
     # Step 1 — availability
     await call.message.edit_text(
@@ -639,9 +654,13 @@ async def cb_status(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
-    await call.message.edit_text("⏳ Проверяю доступность...")
-
     urls = await get_active_site_urls()
+    if not urls:
+        await call.message.edit_text(
+            "Сайтов пока нет — сначала добавь хотя бы один.",
+            reply_markup=back_button())
+        return
+    await call.message.edit_text("⏳ Проверяю доступность...")
     availability = await check_all(urls)
     incidents = await get_active_incidents()
     report = format_status_report(availability, incidents)
@@ -850,6 +869,11 @@ async def cb_seo(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
+    if not await get_active_site_urls():
+        await call.message.edit_text(
+            "Сайтов пока нет — сначала добавь хотя бы один.",
+            reply_markup=back_button())
+        return
     await call.message.edit_text(
         "🔍 Гоняю SEO/GEO-аудит по всем сайтам…\n"
         "(robots, sitemap, мета, noindex, AI-боты, контент без JS — ~30 сек)"

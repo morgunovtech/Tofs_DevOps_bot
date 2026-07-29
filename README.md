@@ -30,8 +30,17 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 - **Auto-redeploy**: optionally fires the deploy hook itself when a site goes down (once per incident) and reports what it did.
 - **Container auto-restart** and **disk auto-cleanup** (docker prune) on the bot's host — off by default, enabled by mounting the docker socket.
 
+### 📱 Managed entirely from the chat
+- **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
+- **Sites** — add/remove from the menu («🌍 Сайт детально»), with instant first-check feedback. The DB is the source of truth; `.env` is just an optional first-run seed.
+- **⚙️ Settings** — morning report hour, evening report on/off, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
+- **💓 Heartbeat jobs** — added from the chat with a ready-to-paste `curl` line for your cron.
+- **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
+- **🩺 Diagnostics** — one tap self-check: DB, web server, docker socket, Google/Yandex tokens (live probes), screenshot provider.
+- **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
+
 ### 💓 Dead-man switch
-Your backup cron can't tell you it *didn't* run. Add one line to it:
+Your backup cron can't tell you it *didn't* run. Add a job in the chat («📋 Ещё» → «💓 Heartbeats») — the bot hands you the exact line for your cron:
 
 ```bash
 curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
@@ -87,6 +96,7 @@ https://example.com
 ## Quick start
 
 Requirements: Docker + a Telegram bot token from [@BotFather](https://t.me/BotFather).
+Not a terminal person? There's a [step-by-step guide in plain language (RU)](docs/SETUP.md).
 
 ```bash
 git clone https://github.com/morgunovtech/devops-bot.git
