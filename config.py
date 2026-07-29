@@ -113,6 +113,11 @@ class Config:
     # ── Weekly report ────────────────────────────────────────────────────────
     weekly_report_hour: int = int(os.getenv("WEEKLY_REPORT_HOUR", "11"))
 
+    # ── Page screenshots ─────────────────────────────────────────────────────
+    # URL template of a rendering service returning an image; {url} is the page.
+    screenshot_template: str = os.getenv(
+        "SCREENSHOT_TEMPLATE", "https://image.thum.io/get/width/1024/{url}")
+
     # ── Self-maintenance ─────────────────────────────────────────────────────
     retention_days: int = int(os.getenv("RETENTION_DAYS", "30"))
     db_backup_keep: int = int(os.getenv("DB_BACKUP_KEEP", "7"))

@@ -35,7 +35,10 @@ def alert_actions_keyboard(url: str) -> InlineKeyboardMarkup | None:
         idx = urls.index(url)
     except ValueError:
         return None
-    rows = [[InlineKeyboardButton(text="🔍 Перепроверить", callback_data=f"act:recheck:{idx}")]]
+    rows = [[
+        InlineKeyboardButton(text="🔍 Перепроверить", callback_data=f"act:recheck:{idx}"),
+        InlineKeyboardButton(text="📸 Скрин", callback_data=f"act:shot:{idx}"),
+    ]]
     extra = []
     if deploy_hook_for(url):
         extra.append(InlineKeyboardButton(text="🚀 Передеплой", callback_data=f"act:redeploy:{idx}"))

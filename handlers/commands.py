@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from aiogram import Router, F
 from aiogram.types import (
-    Message, CallbackQuery, ErrorEvent,
+    Message, CallbackQuery, ErrorEvent, BufferedInputFile,
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton,
 )
@@ -23,9 +23,10 @@ from db.database import (
 )
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
-    format_compact_status_report, now_local,
+    format_compact_status_report, now_local, fmt_date, _short_host,
 )
 from services.actions import trigger_redeploy, purge_cf_cache
+from services.screenshots import fetch_screenshot
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -384,6 +385,19 @@ async def cb_alert_action(call: CallbackQuery):
         else:
             text = f"🔍 {url} — всё ещё недоступен: {avail.get('error', 'N/A')}"
         await call.message.answer(text)
+    elif action == "shot":
+        await call.answer("Делаю скрин… (~15 сек)")
+        image = await fetch_screenshot(url)
+        if image:
+            await call.message.answer_photo(
+                BufferedInputFile(image, filename="screenshot.png"),
+                caption=f"📸 {_short_host(url)} · {now_local().strftime('%d.%m %H:%M')}",
+            )
+        else:
+            await call.message.answer(
+                f"❌ Не удалось получить скрин {_short_host(url)} — "
+                f"сервис рендеринга не ответил, попробуй ещё раз."
+            )
     elif action == "redeploy":
         await call.answer("Запускаю передеплой…")
         await call.message.answer(await trigger_redeploy(url))
@@ -517,11 +531,11 @@ async def cb_ssl(call: CallbackQuery):
             info = r["ssl_info"]
             days = info["days_left"]
             icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
-            lines.append(f"{icon} {r['url']}")
-            lines.append(f"   Осталось: {days} дн. (до {info['not_after'][:10]})")
+            lines.append(f"{icon} {_short_host(r['url'])}")
+            lines.append(f"   Осталось: {days} дн. (до {fmt_date(info['not_after'])})")
             lines.append(f"   Издатель: {info['issuer']}")
         else:
-            lines.append(f"🔴 {r['url']}: {r.get('error', 'N/A')}")
+            lines.append(f"🔴 {_short_host(r['url'])}: {r.get('error', 'N/A')}")
 
     await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
 
@@ -545,7 +559,7 @@ async def cb_domains(call: CallbackQuery):
         if info and info["days_left"] is not None:
             days = info["days_left"]
             icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
-            exp = info["expiration_date"][:10] if info["expiration_date"] else "N/A"
+            exp = fmt_date(info["expiration_date"]) if info["expiration_date"] else "N/A"
             lines.append(f"{icon} {r['domain']}")
             lines.append(f"   Осталось: {days} дн. (до {exp})")
             lines.append(f"   Регистратор: {info['registrar']}")
@@ -745,7 +759,7 @@ async def cb_check_single_site(call: CallbackQuery):
         ssl_icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
         lines.append(f"{ssl_icon} SSL: {days} дн. до истечения")
         lines.append(f"   ↳ Издатель: {ssl_r['ssl_info']['issuer']}")
-        lines.append(f"   ↳ Истекает: {ssl_r['ssl_info']['not_after'][:10]}")
+        lines.append(f"   ↳ Истекает: {fmt_date(ssl_r['ssl_info']['not_after'])}")
     else:
         lines.append(f"🔴 SSL: {ssl_r.get('error', 'N/A')}")
 
@@ -753,10 +767,15 @@ async def cb_check_single_site(call: CallbackQuery):
     if dom_r.get("domain_info") and dom_r["domain_info"]["days_left"] is not None:
         days = dom_r["domain_info"]["days_left"]
         dom_icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
-        exp = dom_r["domain_info"]["expiration_date"][:10] if dom_r["domain_info"]["expiration_date"] else "N/A"
+        exp = fmt_date(dom_r["domain_info"]["expiration_date"]) if dom_r["domain_info"]["expiration_date"] else "N/A"
         lines.append(f"{dom_icon} Домен: {days} дн. (до {exp})")
         lines.append(f"   ↳ Регистратор: {dom_r['domain_info']['registrar']}")
     else:
         lines.append(f"⚠️ Домен: {dom_r.get('error', 'N/A')}")
 
-    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=back_button())
+    idx = call.data.split(":", 1)[1]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{idx}")],
+        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
+    ])
+    await call.message.edit_text(_clip("\n".join(lines)), reply_markup=kb)

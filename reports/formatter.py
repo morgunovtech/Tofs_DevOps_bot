@@ -18,6 +18,14 @@ def _short_host(url: str) -> str:
     return urlparse(url).hostname or url
 
 
+def fmt_date(iso: str) -> str:
+    """'2026-10-15…' → '15.10.2026'."""
+    try:
+        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (ValueError, TypeError):
+        return iso or "N/A"
+
+
 def now_local() -> datetime:
     """Current time in the configured timezone — the container itself runs
     in UTC, so naive datetime.now() would show server time to the user."""
@@ -34,17 +42,17 @@ def _avail_chip(r: dict) -> str:
 
 
 def _ssl_chip(r: dict) -> str:
+    """Empty string while healthy — the compact line stays short on mobile;
+    the chip appears only when expiry is close enough to care."""
     info = r.get("ssl_info")
     if not info:
         return "SSL ?"
     days = info["days_left"]
     if days < 0:
         return f"SSL ⛔ ({abs(days)}д назад)"
-    if days <= 7:
-        return f"SSL ⚠ {days}д"
     if days <= 14:
         return f"SSL ⚠ {days}д"
-    return f"SSL {days}д"
+    return ""
 
 
 def _domain_chip(r: dict) -> str:
@@ -56,7 +64,7 @@ def _domain_chip(r: dict) -> str:
         return f"домен ⛔ ({abs(days)}д назад)"
     if days <= 30:
         return f"домен ⚠ {days}д"
-    return f"домен {days}д"
+    return ""
 
 
 def format_compact_status_report(availability: list[dict],
@@ -235,7 +243,7 @@ def format_links_report(result: dict) -> str:
     lines: list[str] = []
     if internal:
         lines.append(
-            f"🔗 Битые внутренние ссылки на {_esc(result['url'])} "
+            f"🔗 Битые внутренние ссылки на {_esc(_short_host(result['url']))} "
             f"({len(internal)} шт.):"
         )
         for b in internal[:10]:

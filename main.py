@@ -52,7 +52,12 @@ async def main():
 
     bot = Bot(
         token=config.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        default=DefaultBotProperties(
+            parse_mode=ParseMode.HTML,
+            # Reports are full of URLs — without this every message grows a
+            # huge site-preview card.
+            link_preview_is_disabled=True,
+        ),
     )
     dp = Dispatcher()
     dp.include_router(commands_router)
