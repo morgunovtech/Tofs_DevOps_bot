@@ -8,6 +8,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
 )
 from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramBadRequest
 
 from config import config
 from monitors.availability import check_all
@@ -19,7 +20,7 @@ from monitors.ssl_checker import check_ssl
 from monitors.domain_checker import check_domain
 from db.database import (
     get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
-    get_state, set_state, resolve_all_incidents,
+    get_state, set_state, resolve_all_incidents, get_last_check,
 )
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
@@ -34,30 +35,88 @@ router = Router()
 
 # ── Keyboards ────────────────────────────────────────────────────────────────
 
-def main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+async def _mute_until_local() -> str | None:
+    """Human-readable local time the mute expires, or None when not muted."""
+    until_iso = await get_state("mute_until")
+    if not until_iso:
+        return None
+    try:
+        deadline = datetime.fromisoformat(until_iso)
+    except ValueError:
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    now_utc = datetime.now(timezone.utc)
+    if deadline <= now_utc:
+        return None
+    local = now_local() + (deadline - now_utc)
+    fmt = "%H:%M" if deadline - now_utc < timedelta(hours=20) else "%d.%m %H:%M"
+    return local.strftime(fmt)
+
+
+async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
+    """Main menu as a mini-dashboard: the header answers "is everything OK?"
+    before any tap, and button labels carry live state (incident count,
+    mute-until time). All data comes from the DB — opening the menu must be
+    instant, no network checks here."""
+    sites = await get_all_sites()
+    ok = total = 0
+    for s in sites:
+        last = await get_last_check(s["id"], "availability")
+        if last:
+            total += 1
+            if last["status"] == "ok":
+                ok += 1
+    incidents = await get_active_incidents()
+    mute_until = await _mute_until_local()
+
+    if total:
+        site_chip = f"{'✅' if ok == total else '⚠️'} {ok}/{total} сайтов ок"
+    else:
+        site_chip = "⏳ ещё нет проверок"
+    inc_chip = (f"инцидентов: {len(incidents)}" if incidents
+                else "инцидентов нет")
+    mute_chip = f"🔕 тихо до {mute_until}" if mute_until else "🔔 алерты вкл"
+    header = f"{site_chip} · {inc_chip} · {mute_chip}"
+
+    inc_label = (f"⚠️ Инциденты ({len(incidents)})" if incidents
+                 else "⚠️ Инциденты")
+    mute_label = f"🔔 Тихо до {mute_until}" if mute_until else "🔕 Тишина"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🚀 Полная проверка", callback_data="run_full_check"),
         ],
         [
-            InlineKeyboardButton(text="📊 Статус сайтов",  callback_data="menu_status"),
-            InlineKeyboardButton(text="🔒 SSL",            callback_data="menu_ssl"),
+            InlineKeyboardButton(text="📊 Статус",        callback_data="menu_status"),
+            InlineKeyboardButton(text=inc_label,          callback_data="menu_incidents"),
         ],
         [
-            InlineKeyboardButton(text="🌐 Домены",         callback_data="menu_domains"),
-            InlineKeyboardButton(text="🔗 Ссылки",         callback_data="menu_links"),
+            InlineKeyboardButton(text="🌍 Сайт детально", callback_data="menu_check_site"),
+            InlineKeyboardButton(text="🔍 SEO/GEO",       callback_data="menu_seo"),
         ],
         [
-            InlineKeyboardButton(text="📈 Uptime",         callback_data="menu_uptime"),
-            InlineKeyboardButton(text="⚠️ Инциденты",      callback_data="menu_incidents"),
+            InlineKeyboardButton(text="📋 Ещё",           callback_data="menu_more"),
+            InlineKeyboardButton(text=mute_label,         callback_data="menu_mute"),
+        ],
+    ])
+    return header, kb
+
+
+def more_menu() -> InlineKeyboardMarkup:
+    """Second-level menu: direct views that are useful occasionally but
+    don't deserve first-screen real estate (they're all in the daily
+    reports anyway)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔒 SSL",    callback_data="menu_ssl"),
+            InlineKeyboardButton(text="🌐 Домены", callback_data="menu_domains"),
         ],
         [
-            InlineKeyboardButton(text="🔍 SEO/GEO-аудит",  callback_data="menu_seo"),
+            InlineKeyboardButton(text="🔗 Ссылки", callback_data="menu_links"),
+            InlineKeyboardButton(text="📈 Uptime", callback_data="menu_uptime"),
         ],
-        [
-            InlineKeyboardButton(text="🌍 Проверить сайт", callback_data="menu_check_site"),
-            InlineKeyboardButton(text="🔕 Тишина",          callback_data="menu_mute"),
-        ],
+        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
     ])
 
 
@@ -122,12 +181,18 @@ def _clip(text: str, limit: int = TG_MESSAGE_LIMIT - 100) -> str:
     return text[:limit].rstrip() + "\n… (обрезано)"
 
 
-async def send_main_menu(target, text: str = "Выбери действие:"):
+async def send_main_menu(target):
     """Send main menu — works for both Message and CallbackQuery."""
+    header, kb = await build_main_menu()
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, reply_markup=main_menu())
+        try:
+            await target.message.edit_text(header, reply_markup=kb)
+        except TelegramBadRequest:
+            # "message is not modified" — the dashboard state hasn't changed
+            # since the menu was last drawn; nothing to do.
+            pass
     else:
-        await target.answer(text, reply_markup=main_menu())
+        await target.answer(header, reply_markup=kb)
 
 
 # ── Error handler ────────────────────────────────────────────────────────────
@@ -170,10 +235,7 @@ async def cmd_start(message: Message):
         "Кнопка «📱 Меню» внизу всегда под рукой.",
         reply_markup=persistent_keyboard(),
     )
-    await send_main_menu(
-        message,
-        "Главное меню:",
-    )
+    await send_main_menu(message)
 
 
 # ── Reply-keyboard taps ──────────────────────────────────────────────────────
@@ -420,6 +482,19 @@ async def cb_main_menu(call: CallbackQuery):
         return
     await call.answer()
     await send_main_menu(call)
+
+
+# ── 📋 "Ещё" submenu ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "menu_more")
+async def cb_more(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await call.message.edit_text(
+        "📋 Дополнительные проверки:", reply_markup=more_menu(),
+    )
 
 
 # ── 🚀 Full real-time check ───────────────────────────────────────────────────
