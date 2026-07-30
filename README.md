@@ -96,8 +96,20 @@ https://example.com
 
 ## Quick start
 
+### Railway (no server needed)
+
+Fork this repo → [Railway](https://railway.com) → **New Project → Deploy from GitHub repo**. Railway picks up the `Dockerfile`; then:
+
+1. **Variables**: `TELEGRAM_BOT_TOKEN` (from [@BotFather](https://t.me/BotFather)), `DB_PATH=/app/data/bot.db`, `WEBHOOK_SECRET=<random string>`.
+2. **Attach Volume** at mount path `/app/data` — the SQLite DB must survive redeploys.
+3. **Settings → Networking → Generate Domain** (port **8080**), then set `PUBLIC_BASE_URL=https://<your-app>.up.railway.app`.
+
+Full click-by-click walkthrough in plain language (RU): [docs/SETUP.md](docs/SETUP.md).
+Note: the docker-socket features (container auto-restart, disk auto-cleanup) only apply to self-hosting and silently disable themselves on Railway.
+
+### Self-hosted (Docker Compose)
+
 Requirements: Docker + a Telegram bot token from [@BotFather](https://t.me/BotFather).
-Not a terminal person? There's a [step-by-step guide in plain language (RU)](docs/SETUP.md).
 
 ```bash
 git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git

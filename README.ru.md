@@ -96,8 +96,20 @@ https://example.com
 
 ## Быстрый старт
 
+### Railway (сервер не нужен)
+
+Форкни репозиторий → [Railway](https://railway.com) → **New Project → Deploy from GitHub repo**. Railway сам подхватит `Dockerfile`; дальше:
+
+1. **Variables**: `TELEGRAM_BOT_TOKEN` (от [@BotFather](https://t.me/BotFather)), `DB_PATH=/app/data/bot.db`, `WEBHOOK_SECRET=<случайная строка>`.
+2. **Attach Volume** с mount path `/app/data` — база SQLite должна переживать редеплои.
+3. **Settings → Networking → Generate Domain** (порт **8080**), затем `PUBLIC_BASE_URL=https://<твоё-имя>.up.railway.app`.
+
+Подробная инструкция по кликам простым языком: [docs/SETUP.md](docs/SETUP.md).
+Заметка: функции с docker-сокетом (автоперезапуск контейнеров, автоочистка диска) актуальны только для своего сервера и на Railway тихо отключаются.
+
+### Свой сервер (Docker Compose)
+
 Нужны: Docker и токен бота от [@BotFather](https://t.me/BotFather).
-Не дружишь с терминалом — есть [пошаговая инструкция простым языком](docs/SETUP.md).
 
 ```bash
 git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
