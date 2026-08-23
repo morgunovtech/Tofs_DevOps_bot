@@ -18,6 +18,21 @@ def _short_host(url: str) -> str:
     return urlparse(url).hostname or url
 
 
+def is_http_url(url: str) -> bool:
+    return url.startswith(("http://", "https://"))
+
+
+def site_label(url: str) -> str:
+    """Compact display label: host for web sites, host:port for tcp://
+    monitors, 'ping host' for ping:// ones."""
+    p = urlparse(url)
+    if p.scheme == "tcp":
+        return f"{p.hostname}:{p.port}" if p.port else (p.hostname or url)
+    if p.scheme == "ping":
+        return f"ping {p.hostname}" if p.hostname else url
+    return p.hostname or url
+
+
 def fmt_date(iso: str) -> str:
     """'2026-10-15…' → '15.10.2026'."""
     try:
@@ -131,10 +146,14 @@ def format_compact_status_report(availability: list[dict],
 
     any_problem = False
     for r in availability:
-        host = _short_host(r["url"])
+        host = site_label(r["url"])
         avail = _avail_chip(r)
-        ssl = _ssl_chip(ssl_by_url.get(r["url"], {})) if ssl_results else ""
-        dom = _domain_chip(domain_by_root.get(_root(host), {})) if domain_results else ""
+        # SSL/domain chips only make sense for web sites — a tcp:// or
+        # ping:// monitor must not render a misleading "SSL ?".
+        http = is_http_url(r["url"])
+        ssl = _ssl_chip(ssl_by_url.get(r["url"], {})) if (ssl_results and http) else ""
+        dom = (_domain_chip(domain_by_root.get(_root(_short_host(r["url"])), {}))
+               if (domain_results and http) else "")
 
         is_ok = (
             r.get("status") == "ok"
@@ -155,7 +174,7 @@ def format_compact_status_report(availability: list[dict],
         for inc in incidents[:5]:
             sev = "🔴" if inc["severity"] == "critical" else "⚠️"
             lines.append(
-                f"  {sev} {_esc(_short_host(inc['url']))} "
+                f"  {sev} {_esc(site_label(inc['url']))} "
                 f"[{_esc(inc['check_type'])}]: {_esc(inc['message'])}"
             )
         if len(incidents) > 5:
@@ -180,13 +199,23 @@ format_status_report = format_compact_status_report
 def format_availability_alert(result: dict) -> str:
     if result["status"] != "error":
         return ""
-    return (
-        f"🚨 САЙТ НЕДОСТУПЕН\n"
-        f"{_esc(result['url'])}\n"
-        f"Ошибка: {_esc(result.get('error') or 'Unknown')}\n"
-        f"Код: {_esc(result.get('status_code') or '—')}\n"
-        f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms"
-    )
+    if result.get("keyword_failed"):
+        # The site answers fine — it's the CONTENT that's wrong. Saying
+        # «НЕДОСТУПЕН · Код: 200» would contradict itself.
+        header = "🚨 САЙТ ОТВЕЧАЕТ, НО СОДЕРЖИМОЕ НЕ В ПОРЯДКЕ"
+    else:
+        noun = "САЙТ" if is_http_url(result["url"]) else "СЕРВИС"
+        header = f"🚨 {noun} НЕДОСТУПЕН"
+    lines = [
+        header,
+        f"{_esc(result['url'])}",
+        f"Ошибка: {_esc(result.get('error') or 'Unknown')}",
+    ]
+    # tcp/ping monitors have no HTTP status code — skip a meaningless line.
+    if result.get("status_code") is not None:
+        lines.append(f"Код: {_esc(result['status_code'])}")
+    lines.append(f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms")
+    return "\n".join(lines)
 
 
 def _parse_sqlite_utc(value: str) -> datetime | None:
@@ -220,12 +249,14 @@ def incident_duration_line(incident: dict | None) -> str | None:
 
 
 def format_recovery_alert(result: dict) -> str:
+    noun = "САЙТ" if is_http_url(result["url"]) else "СЕРВИС"
     lines = [
-        f"✅ САЙТ ВОССТАНОВЛЕН",
+        f"✅ {noun} ВОССТАНОВЛЕН",
         f"{_esc(result['url'])}",
-        f"Код: {_esc(result.get('status_code') or '—')}\n"
-        f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms",
     ]
+    if result.get("status_code") is not None:
+        lines.append(f"Код: {_esc(result['status_code'])}")
+    lines.append(f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms")
     # Post-incident summary: how long it was down and what the problem was.
     incident = result.get("resolved_incident")
     duration = incident_duration_line(incident)

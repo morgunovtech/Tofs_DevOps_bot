@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from aiogram import Bot
@@ -28,7 +28,7 @@ from db.database import (
     get_active_incidents, get_state, set_state,
     get_or_create_site, save_incident, resolve_incident,
     get_heartbeats, get_all_sites, get_uptime_stats, get_last_check,
-    get_active_site_urls,
+    get_active_site_urls, get_active_http_site_urls,
     queue_notification, peek_notifications, delete_notifications,
     rollup_old_checks, backup_db, set_dns_state,
 )
@@ -46,6 +46,7 @@ from reports.formatter import (
     _short_host,
     _esc,
     plural,
+    site_label,
 )
 from reports.weekly import build_weekly_report
 
@@ -161,11 +162,48 @@ SLOW_RESPONSE_MS = 3000
 SLOW_RESPONSE_STREAK = 3
 _slow_streak: dict[str, int] = {}
 
+# Per-site check schedule (site_id → next due, UTC). The job ticks every
+# minute and checks only the sites whose time has come — that's how a
+# per-site interval override coexists with one scheduler job. In-memory on
+# purpose: after a restart everything is due immediately, which doubles as
+# a "check everything on boot" sweep.
+_next_avail_check: dict[int, datetime] = {}
+
+
+def reset_site_schedule(site_id: int):
+    """Forget the site's next-due time — the next minute tick re-checks it
+    immediately. Called when the user changes the per-site interval."""
+    _next_avail_check.pop(site_id, None)
+
 
 async def run_availability_checks(bot: Bot):
-    """Run availability checks. Alert only on state transitions."""
-    urls = await get_active_site_urls()
-    results = await check_all(urls)
+    """Run availability checks. Alert only on state transitions.
+    Called every minute; each site runs on its own interval
+    (per-site override or CHECK_INTERVAL_MINUTES)."""
+    now = datetime.now(timezone.utc)
+    sites = await get_all_sites()
+    active_ids = {s["id"] for s in sites}
+    # Sites removed from monitoring must not linger in the schedule map.
+    for sid in list(_next_avail_check):
+        if sid not in active_ids:
+            del _next_avail_check[sid]
+
+    due_urls = []
+    # 30s tolerance: fire times sit on a fixed minute grid while next_due
+    # carries a few ms of dispatch jitter — a strict comparison would lose
+    # the coin flip about half the time and stretch every interval by a
+    # full extra minute.
+    due_cutoff = now + timedelta(seconds=30)
+    for s in sites:
+        if due_cutoff >= _next_avail_check.get(s["id"], now):
+            interval = s.get("check_interval_min") or config.check_interval_minutes
+            # Scheduled relative to "now", not to check completion — the
+            # cadence doesn't drift when a check is slow.
+            _next_avail_check[s["id"]] = now + timedelta(minutes=interval)
+            due_urls.append(s["url"])
+    if not due_urls:
+        return
+    results = await check_all(due_urls)
 
     for r in results:
         # Maintenance pause: checks, incidents AND slow-streak bookkeeping
@@ -248,7 +286,7 @@ async def run_availability_checks(bot: Bot):
 
 async def run_ssl_checks(bot: Bot):
     """SSL alert ladder: notify only when crossing a new threshold."""
-    urls = await get_active_site_urls()
+    urls = await get_active_http_site_urls()
     results = await check_all_ssl(urls)
 
     for r in results:
@@ -275,7 +313,7 @@ async def run_ssl_checks(bot: Bot):
 
 async def run_domain_checks(bot: Bot):
     """Domain alert ladder."""
-    urls = await get_active_site_urls()
+    urls = await get_active_http_site_urls()
     results = await check_all_domains(urls)
 
     for r in results:
@@ -292,7 +330,7 @@ async def run_domain_checks(bot: Bot):
 
 async def run_links_checks(bot: Bot):
     """Broken-links alerts: only when a new internal-broken-links incident opens."""
-    urls = await get_active_site_urls()
+    urls = await get_active_http_site_urls()
     results = await check_all_links(urls)
 
     for r in results:
@@ -315,7 +353,7 @@ async def run_dns_checks(bot: Bot):
 
     The new baseline is committed only after the alert is delivered or
     queued — otherwise a failed send would swallow the change forever."""
-    changes = await check_all_dns(await get_active_site_urls())
+    changes = await check_all_dns(await get_active_http_site_urls())
     for change in changes:
         sent = await send_to_admin(bot, format_dns_change(change),
                                    force=change.get("critical", False))
@@ -325,7 +363,7 @@ async def run_dns_checks(bot: Bot):
 
 async def run_deep_checks(bot: Bot):
     """Sitemap 5xx probe: pages beyond the homepage."""
-    results = await check_all_deep(await get_active_site_urls())
+    results = await check_all_deep(await get_active_http_site_urls())
     for r in results:
         site_id = await get_or_create_site(r["url"])
         if await settings.is_paused(site_id):
@@ -351,7 +389,7 @@ async def run_seo_checks(bot: Bot):
     """Daily SEO/GEO audit: alert on state change, critical bypasses mute
     (noindex or a search-bot block means the site is disappearing from
     indexes right now)."""
-    results = await check_all_seo(await get_active_site_urls())
+    results = await check_all_seo(await get_active_http_site_urls())
     for r in results:
         if r.get("incident_new"):
             msg = format_seo_alert(r)
@@ -374,7 +412,7 @@ async def run_index_checks(bot: Bot):
     """
     # Google: is each homepage still in the index?
     if gsc.available():
-        for url in await get_active_site_urls():
+        for url in await get_active_http_site_urls():
             info = await gsc.inspect_url(url.rstrip("/") + "/")
             if not info:
                 continue
@@ -572,7 +610,7 @@ async def run_escalation_watch(bot: Bot):
         await send_to_admin(
             bot,
             f"⏰ ВСЁ ЕЩЁ НЕ РЕШЕНО (уже {_fmt_ago(age_min)})\n"
-            f"{_esc(_short_host(inc['url']))} [{_esc(inc['check_type'])}]: "
+            f"{_esc(site_label(inc['url']))} [{_esc(inc['check_type'])}]: "
             f"{_esc(inc['message'])}",
             force=True,
             reply_markup=await alert_actions_keyboard(inc["url"]),
@@ -671,7 +709,7 @@ async def _morning_extras(ssl_results: list[dict],
     for s in sites:
         stats = await get_uptime_stats(s["id"], hours=168)
         if stats["total_checks"]:
-            chips.append(f"{_short_host(s['url'])} {stats['uptime_pct']}%")
+            chips.append(f"{site_label(s['url'])} {stats['uptime_pct']}%")
     if chips:
         extras.append("📈 Uptime 7д: " + " · ".join(chips))
 
@@ -738,11 +776,12 @@ async def _morning_extras(ssl_results: list[dict],
 async def send_morning_report(bot: Bot):
     """Compact morning status report — the daily 10-second health digest."""
     urls = await get_active_site_urls()
+    http_urls = await get_active_http_site_urls()
     # manage=False: a report is a read-only observer — it must never consume
     # incident transitions that belong to the scheduled monitors.
     availability = await check_all(urls, manage=False)
-    ssl_results = await check_all_ssl(urls, manage=False)
-    domain_results = await check_all_domains(urls, manage=False)
+    ssl_results = await check_all_ssl(http_urls, manage=False)
+    domain_results = await check_all_domains(http_urls, manage=False)
     incidents = await get_active_incidents()
 
     report = format_compact_status_report(
@@ -769,9 +808,10 @@ async def send_evening_report(bot: Bot):
         return
 
     urls = await get_active_site_urls()
+    http_urls = await get_active_http_site_urls()
     availability = await check_all(urls, manage=False)
-    ssl_results = await check_all_ssl(urls, manage=False)
-    domain_results = await check_all_domains(urls, manage=False)
+    ssl_results = await check_all_ssl(http_urls, manage=False)
+    domain_results = await check_all_domains(http_urls, manage=False)
 
     report = format_compact_status_report(
         availability=availability,
@@ -837,8 +877,10 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
             replace_existing=True, max_instances=1, **kwargs,
         )
 
+    # Ticks every minute; the job itself decides which sites are due
+    # (per-site interval override or the CHECK_INTERVAL_MINUTES default).
     job(run_availability_checks,
-        IntervalTrigger(minutes=config.check_interval_minutes),
+        IntervalTrigger(minutes=1),
         "availability_checks", misfire_grace_time=60)
 
     # SSL + domain once a day — alert ladder prevents repeat noise.

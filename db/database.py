@@ -142,7 +142,32 @@ async def init_db():
             CREATE INDEX IF NOT EXISTS idx_incidents_active
                 ON incidents(site_id, resolved);
         """)
+        # Per-site monitoring overrides (NULL = use the global default).
+        # ALTER TABLE ADD COLUMN migrations so existing databases upgrade
+        # in place on restart.
+        await _ensure_columns(db, "sites", {
+            # Availability check cadence in minutes.
+            "check_interval_min": "INTEGER",
+            # Consecutive failures before an incident opens (anti-flap).
+            "fail_threshold": "INTEGER",
+            # Accepted HTTP status codes, e.g. "200-399" or "200-299,401".
+            "accepted_codes": "TEXT",
+            # Content keyword: page must contain it (mode 'present') or must
+            # NOT contain it (mode 'absent' — a stop-phrase like "Fatal error").
+            "keyword": "TEXT",
+            "keyword_mode": "TEXT",
+        })
         await db.commit()
+
+
+async def _ensure_columns(db, table: str, columns: dict[str, str]):
+    """Add missing columns to an existing table (SQLite has no IF NOT EXISTS
+    for columns). Caller holds _write_lock and commits."""
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in await cursor.fetchall()}
+    for name, decl in columns.items():
+        if name not in existing:
+            await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 async def get_or_create_site(url: str, name: str | None = None) -> int:
@@ -614,6 +639,48 @@ async def get_site(site_id: int) -> dict | None:
     cursor = await db.execute("SELECT * FROM sites WHERE id = ?", (site_id,))
     row = await cursor.fetchone()
     return dict(row) if row else None
+
+
+async def get_site_by_url(url: str) -> dict:
+    """Full site row (incl. per-site settings), creating the row if needed."""
+    site_id = await get_or_create_site(url)
+    return await get_site(site_id)
+
+
+def is_http_url(url: str) -> bool:
+    """True for regular web monitors; tcp:// and ping:// sites get
+    availability checks only (no SSL/domain/DNS/links/SEO)."""
+    return url.startswith(("http://", "https://"))
+
+
+async def get_active_http_site_urls() -> list[str]:
+    """Active sites that are real web pages — the input for every monitor
+    that only makes sense over HTTP (SSL, domains, DNS, links, SEO, deep)."""
+    return [u for u in await get_active_site_urls() if is_http_url(u)]
+
+
+# Whitelist for update_site_settings — the only columns the UI may touch.
+_SITE_SETTING_COLS = frozenset({
+    "check_interval_min", "fail_threshold", "accepted_codes",
+    "keyword", "keyword_mode",
+})
+
+
+async def update_site_settings(site_id: int, **fields):
+    """Set per-site monitoring overrides; value None clears an override."""
+    unknown = set(fields) - _SITE_SETTING_COLS
+    if unknown:
+        raise ValueError(f"Unknown site setting(s): {unknown}")
+    if not fields:
+        return
+    db = await get_db()
+    assignments = ", ".join(f"{k} = ?" for k in fields)
+    async with _write_lock:
+        await db.execute(
+            f"UPDATE sites SET {assignments} WHERE id = ?",
+            (*fields.values(), site_id),
+        )
+        await db.commit()
 
 
 async def activate_or_create_site(url: str) -> int:

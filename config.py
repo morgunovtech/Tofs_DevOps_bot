@@ -159,6 +159,15 @@ class Config:
         "https://api.microlink.io/?url={url}&screenshot=true&meta=false"
         "&waitForTimeout=3500")
 
+    # ── Public status page ───────────────────────────────────────────────────
+    # Serve a public HTML status page at /status (default off — it reveals
+    # the list of monitored sites to anyone who finds the URL).
+    status_page: bool = _bool("STATUS_PAGE")
+    # Optional secret path segment: when set, the page lives at
+    # /status/<slug> and bare /status returns 404 — "private" status page
+    # you can share as a link without exposing it to drive-by scanners.
+    status_page_slug: str = os.getenv("STATUS_PAGE_SLUG", "").strip().strip("/")
+
     # ── Self-maintenance ─────────────────────────────────────────────────────
     retention_days: int = _int("RETENTION_DAYS", 30)
     db_backup_keep: int = _int("DB_BACKUP_KEEP", 7)
