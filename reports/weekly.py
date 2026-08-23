@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from config import config
 from db.database import get_all_sites, get_daily_availability, get_incidents_since
-from reports.formatter import _short_host, sparkline, plural
+from reports.formatter import _short_host, site_label, sparkline, plural
 from services import gsc, yandex_webmaster
 
 logger = logging.getLogger(__name__)
@@ -125,7 +125,9 @@ async def build_weekly_report() -> tuple[str, str | None]:
     series: dict[str, list[dict]] = {}
     for s in sites:
         rows = await get_daily_availability(s["id"], days=7)
-        host = _short_host(s["url"])
+        # site_label, not bare host: tcp://example.com:25 must not
+        # overwrite example.com's chart series.
+        host = site_label(s["url"])
         series[host] = rows
         total = sum(r["total"] for r in rows)
         ok = sum(r["ok"] for r in rows)
@@ -142,7 +144,9 @@ async def build_weekly_report() -> tuple[str, str | None]:
             lines.append(f"⏳ {host} — нет данных")
 
     try:
-        search_lines = await search_metrics_lines([s["url"] for s in sites])
+        search_lines = await search_metrics_lines(
+            [s["url"] for s in sites
+             if s["url"].startswith(("http://", "https://"))])
         if search_lines:
             lines.append("")
             lines.extend(search_lines)
@@ -158,7 +162,7 @@ async def build_weekly_report() -> tuple[str, str | None]:
         )
         for inc in incidents[:5]:
             lines.append(
-                f"  • {inc['created_at'][5:16]} {_short_host(inc['url'])} "
+                f"  • {inc['created_at'][5:16]} {site_label(inc['url'])} "
                 f"[{inc['check_type']}]"
             )
         if len(incidents) > 5:

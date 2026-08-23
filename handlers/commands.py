@@ -26,14 +26,15 @@ from urllib.parse import urlparse
 from db.database import (
     get_active_incidents, get_all_sites, get_uptime_stats, get_or_create_site,
     get_state, set_state, resolve_all_incidents, get_last_check,
-    get_active_site_urls, get_site, activate_or_create_site, deactivate_site,
+    get_active_site_urls, get_active_http_site_urls, is_http_url,
+    get_site, activate_or_create_site, deactivate_site, update_site_settings,
     resolve_incident_by_id, get_heartbeats, get_recent_response_times,
 )
 from services import settings
 from reports.formatter import (
     format_status_report, format_links_report, format_uptime,
     format_compact_status_report, now_local, fmt_date, _short_host, _esc,
-    sparkline, plural, fmt_local,
+    sparkline, plural, fmt_local, site_label,
 )
 from services.actions import trigger_redeploy, purge_cf_cache
 from services.screenshots import fetch_screenshot
@@ -100,6 +101,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     header = f"{site_chip} · {inc_chip} · {mute_chip}"
     if paused_count:
         header += f" · ⏸ на паузе: {paused_count}"
+    if settings.maintenance_now(None):
+        header += " · 🔧 тех. окно"
     from reports.scheduler import in_quiet_hours
     if in_quiet_hours():
         header += " · 🌙 тихие часы"
@@ -172,20 +175,25 @@ def persistent_keyboard() -> ReplyKeyboardMarkup:
 
 
 async def sites_keyboard(action_prefix: str,
-                         manage: bool = False) -> InlineKeyboardMarkup:
+                         manage: bool = False,
+                         http_only: bool = False) -> InlineKeyboardMarkup:
     """Keyboard with a button per active site (from the DB).
 
     callback_data carries the site's DB id — stable across list edits and
     well under Telegram's 64-byte callback_data limit. `manage=True` adds
     the add/remove controls (used on the "Сайт детально" screen).
+    `http_only=True` hides tcp://-and-ping:// monitors — for pickers of
+    checks that only make sense for web pages (links, SEO).
     """
     sites = await get_all_sites()
+    if http_only:
+        sites = [s for s in sites if is_http_url(s["url"])]
     icon = "🗑" if action_prefix == "delsite" else "🔍"
     buttons = []
     for site in sites:
-        label = site["url"].replace("https://", "").replace("http://", "")
         buttons.append([InlineKeyboardButton(
-            text=f"{icon} {label}", callback_data=f"{action_prefix}:{site['id']}")])
+            text=f"{icon} {site_label(site['url'])}",
+            callback_data=f"{action_prefix}:{site['id']}")])
     if manage:
         row = [InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")]
         if sites:
@@ -209,6 +217,18 @@ class AddSiteForm(StatesGroup):
 
 class AddHeartbeatForm(StatesGroup):
     name = State()
+
+
+class SiteCodesForm(StatesGroup):
+    codes = State()
+
+
+class SiteKeywordForm(StatesGroup):
+    keyword = State()
+
+
+class MaintTimeForm(StatesGroup):
+    time = State()
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
@@ -566,8 +586,13 @@ async def cb_alert_action(call: CallbackQuery):
         await call.answer("Проверяю…")
         avail = await check_availability(url, manage=False)
         if avail["status"] == "ok":
-            text = (f"🔍 {url} — доступен: HTTP {avail.get('status_code')} "
-                    f"({avail.get('response_time_ms')}ms)")
+            ms = avail.get("response_time_ms")
+            ms_part = f" ({ms}ms)" if ms is not None else ""
+            if is_http_url(url):
+                text = (f"🔍 {url} — доступен: "
+                        f"HTTP {avail.get('status_code')}{ms_part}")
+            else:
+                text = f"🔍 {url} — отвечает{ms_part}"
         else:
             text = f"🔍 {url} — всё ещё недоступен: {_esc(avail.get('error', 'N/A'))}"
         await call.message.answer(text)
@@ -652,6 +677,8 @@ async def cb_full_check(call: CallbackQuery):
     # manage=False everywhere below: interactive checks are read-only
     # observers and must never consume the scheduled monitors' transitions.
     availability = await check_all(urls, manage=False)
+    # tcp:// and ping:// monitors are availability-only.
+    http_urls = await get_active_http_site_urls()
 
     # Step 2 — SSL
     await call.message.edit_text(
@@ -659,7 +686,7 @@ async def cb_full_check(call: CallbackQuery):
         "▰▱▱▱ Доступность — готово\n"
         "Проверяю SSL-сертификаты...",
     )
-    ssl_results = await check_all_ssl(urls, manage=False)
+    ssl_results = await check_all_ssl(http_urls, manage=False)
 
     # Step 3 — domains
     await call.message.edit_text(
@@ -667,7 +694,7 @@ async def cb_full_check(call: CallbackQuery):
         "▰▰▱▱ SSL — готово\n"
         "Проверяю домены...",
     )
-    domain_results = await check_all_domains(urls, manage=False)
+    domain_results = await check_all_domains(http_urls, manage=False)
 
     # Step 4 — links
     await call.message.edit_text(
@@ -675,7 +702,7 @@ async def cb_full_check(call: CallbackQuery):
         "▰▰▰▱ Домены — готово\n"
         "Проверяю ссылки на страницах...",
     )
-    links_results = await check_all_links(urls, manage=False)
+    links_results = await check_all_links(http_urls, manage=False)
 
     # Compose full report
     incidents = await get_active_incidents()
@@ -742,7 +769,7 @@ async def cb_ssl(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text("▱▱▱ Проверяю SSL-сертификаты...")
 
-    urls = await get_active_site_urls()
+    urls = await get_active_http_site_urls()
     results = await check_all_ssl(urls, manage=False)
 
     lines = ["🔒 SSL-сертификаты:\n"]
@@ -770,7 +797,7 @@ async def cb_domains(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text("▱▱▱ Проверяю домены через WHOIS...")
 
-    urls = await get_active_site_urls()
+    urls = await get_active_http_site_urls()
     results = await check_all_domains(urls, manage=False)
 
     lines = ["🌐 Домены:\n"]
@@ -799,7 +826,7 @@ async def cb_links_menu(call: CallbackQuery):
     await call.answer()
     await call.message.edit_text(
         "🔗 Выбери сайт для проверки ссылок:",
-        reply_markup=await sites_keyboard("check_links")
+        reply_markup=await sites_keyboard("check_links", http_only=True)
     )
 
 
@@ -941,9 +968,9 @@ async def cb_seo(call: CallbackQuery):
         await call.answer("⛔ Доступ запрещён", show_alert=True)
         return
     await call.answer()
-    if not await get_active_site_urls():
+    if not await get_active_http_site_urls():
         await call.message.edit_text(
-            "Сайтов пока нет — сначала добавь хотя бы один.",
+            "Веб-сайтов пока нет — SEO-аудит не применим к tcp/ping-мониторам.",
             reply_markup=back_button())
         return
     base = ("Гоняю SEO/GEO-аудит по всем сайтам…\n"
@@ -955,12 +982,12 @@ async def cb_seo(call: CallbackQuery):
 
     results = await _with_running_bar(
         call.message, base,
-        check_all_seo(await get_active_site_urls(), manage=False))
+        check_all_seo(await get_active_http_site_urls(), manage=False))
 
     # Live index status (only when tokens are configured).
     gsc_status: dict[str, str] = {}
     if gsc.available():
-        for u in await get_active_site_urls():
+        for u in await get_active_http_site_urls():
             info = await gsc.inspect_url(u.rstrip("/") + "/")
             if info:
                 gsc_status[u] = ("в индексе ✅" if info["verdict"] == "PASS"
@@ -1017,6 +1044,18 @@ def build_seo_report(results: list[dict], gsc_status: dict[str, str],
     return "\n".join(lines)
 
 
+async def _pause_controls(sid: int) -> tuple[list[InlineKeyboardButton], bool]:
+    """Pause/unpause button row for the site detail screen."""
+    paused = await settings.paused_until(sid)
+    if paused:
+        return [InlineKeyboardButton(
+            text="▶️ Снять паузу", callback_data=f"pause:{sid}:off")], True
+    return [
+        InlineKeyboardButton(text="⏸ Пауза 1ч", callback_data=f"pause:{sid}:60"),
+        InlineKeyboardButton(text="⏸ До утра", callback_data=f"pause:{sid}:morning"),
+    ], False
+
+
 # ── 🌍 Check single site ──────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "menu_check_site")
@@ -1047,6 +1086,35 @@ async def cb_check_single_site(call: CallbackQuery):
         )
         return
     url = site["url"]
+
+    if not is_http_url(url):
+        # tcp:// / ping:// monitor — availability IS the whole story:
+        # no SSL, no domain, no screenshot.
+        await call.message.edit_text(f"▱▱ Проверяю {url}...")
+        avail = await check_availability(url, manage=False)
+        lines = [f"📋 Детальная проверка\n{url}\n"]
+        if avail["status"] == "ok":
+            ms = avail.get("response_time_ms")
+            ms_part = f" ({ms}ms)" if ms is not None else ""
+            lines.append(f"✅ Доступность: отвечает{ms_part}")
+        else:
+            lines.append(
+                f"🔴 Доступность: {_esc(avail.get('error') or 'недоступен')}")
+        sid = site["id"]
+        pause_row, paused = await _pause_controls(sid)
+        if paused:
+            lines.append("\n⏸ Сервис на паузе — алерты по нему молчат.")
+        if settings.maintenance_now(sid):
+            lines.append("🔧 Сейчас действует тех. окно — алерты молчат.")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ Настройки сайта",
+                                  callback_data=f"sset:{sid}")],
+            pause_row,
+            [InlineKeyboardButton(text="← Главное меню",
+                                  callback_data="menu_main")],
+        ])
+        await call.message.edit_text(_clip("\n".join(lines)), reply_markup=kb)
+        return
 
     # Real-time progress
     await call.message.edit_text(f"▱▱▱ Проверяю доступность {url}...")
@@ -1097,18 +1165,14 @@ async def cb_check_single_site(call: CallbackQuery):
         lines.append(f"⚠️ Домен: {_esc(dom_r.get('error', 'N/A'))}")
 
     sid = site["id"]
-    paused = await settings.paused_until(sid)
+    pause_row, paused = await _pause_controls(sid)
     if paused:
-        pause_row = [InlineKeyboardButton(
-            text="▶️ Снять паузу", callback_data=f"pause:{sid}:off")]
         lines.append("\n⏸ Сайт на паузе — алерты по нему молчат.")
-    else:
-        pause_row = [
-            InlineKeyboardButton(text="⏸ Пауза 1ч", callback_data=f"pause:{sid}:60"),
-            InlineKeyboardButton(text="⏸ До утра", callback_data=f"pause:{sid}:morning"),
-        ]
+    if settings.maintenance_now(sid):
+        lines.append("🔧 Сейчас действует тех. окно — алерты молчат.")
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{sid}")],
+        [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{sid}"),
+         InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")],
         pause_row,
         [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
     ])
@@ -1133,16 +1197,74 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AddSiteForm.url)
     await call.message.edit_text(
-        "➕ Пришли домен или URL сайта (например, example.com):",
+        "➕ Пришли домен или URL сайта (например, example.com).\n\n"
+        "Также понимаю:\n"
+        "• <code>tcp://host:порт</code> — проверка TCP-порта (почта, SSH, БД)\n"
+        "• <code>ping://host</code> — ICMP-пинг хоста",
         reply_markup=_cancel_kb(),
     )
+
+
+# Hostname/IPv4 labels for tcp:// and ping:// targets: single-label LAN
+# hosts are allowed (unlike web sites, which need a real domain).
+_HOST_RE = r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*"
+
+
+def _valid_host_lengths(host: str) -> bool:
+    """DNS limits: 253 chars total, 63 per label — a 64-char label makes
+    the IDNA codec raise deep inside the resolver."""
+    return (len(host) <= 253
+            and all(len(label) <= 63 for label in host.split(".")))
 
 
 @router.message(AddSiteForm.url)
 async def msg_site_add(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
+    import re as _re
     raw = (message.text or "").strip().lower()
+
+    if raw.startswith(("tcp://", "ping://")):
+        # Non-HTTP monitor: tcp://host:port or ping://host.
+        try:
+            parsed = urlparse(raw)
+            host, port = parsed.hostname or "", parsed.port
+        except ValueError:
+            host, port = "", None
+        if not _re.fullmatch(_HOST_RE, host) or not _valid_host_lengths(host):
+            await message.answer(
+                "Не понял хост. Примеры: tcp://mail.example.com:25, "
+                "ping://10.0.0.1",
+                reply_markup=_cancel_kb())
+            return
+        if parsed.scheme == "tcp":
+            if not port:
+                await message.answer(
+                    "Для tcp нужен порт: tcp://host:порт (например, "
+                    "tcp://mail.example.com:25)",
+                    reply_markup=_cancel_kb())
+                return
+            url = f"tcp://{host}:{port}"
+        else:
+            url = f"ping://{host}"
+        await state.clear()
+        site_id = await activate_or_create_site(url)
+        label = site_label(url)
+        status = await message.answer(
+            f"▱▱ Добавил {label} — делаю первую проверку...")
+        avail = await check_availability(url)
+        lines = [f"✅ {label} в мониторинге (проверка каждые "
+                 f"{config.check_interval_minutes} мин)\n"]
+        if avail["status"] == "ok":
+            ms = avail.get("response_time_ms")
+            lines.append(f"✅ Отвечает" + (f" ({ms}ms)" if ms is not None else ""))
+        else:
+            lines.append(f"🔴 Не отвечает: {_esc(avail.get('error', 'N/A'))} — "
+                         f"я уже слежу, сообщу о восстановлении")
+        await status.edit_text(_clip("\n".join(lines)),
+                               reply_markup=back_button())
+        return
+
     # startswith(("http://", ...)): a bare domain like httpbin.org must not
     # be mistaken for an already-schemed URL.
     if not raw.startswith(("http://", "https://")):
@@ -1151,8 +1273,8 @@ async def msg_site_add(message: Message, state: FSMContext):
     host = parsed.hostname or ""
     # Strict hostname charset: anything else (spaces, <, >, cyrillic…) is
     # either a typo or would poison every screen that renders the URL.
-    import re as _re
-    if not _re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", host):
+    if (not _re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+", host)
+            or not _valid_host_lengths(host)):
         await message.answer(
             "Не похоже на домен. Пришли что-то вроде example.com",
             reply_markup=_cancel_kb())
@@ -1225,6 +1347,9 @@ async def cb_site_del_do(call: CallbackQuery):
     await call.answer()
     site = await _site_by_cb(call.data.split(":", 1)[1])
     if site and await deactivate_site(site["id"]):
+        # Its maintenance windows would otherwise keep triggering the
+        # 🔧 indicator and the status-page banner forever.
+        await settings.remove_windows_for_site(site["id"])
         await call.message.edit_text(
             f"🗑 {_esc(_short_host(site['url']))} убран из мониторинга.",
             reply_markup=back_button())
@@ -1292,6 +1417,7 @@ async def cb_pause(call: CallbackQuery):
 # ── ⚙️ Settings ───────────────────────────────────────────────────────────────
 
 def _settings_kb() -> InlineKeyboardMarkup:
+    sp_on = settings.status_page_enabled()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}")
          for h in (7, 8, 9, 10)],
@@ -1303,6 +1429,12 @@ def _settings_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔕 0–7",   callback_data="set_q:0-7"),
             InlineKeyboardButton(text="🔕 выкл",  callback_data="set_q:off"),
         ],
+        [
+            InlineKeyboardButton(text="🔧 Тех. окна", callback_data="menu_maint"),
+            InlineKeyboardButton(
+                text=("🌐 Статус: выключить" if sp_on else "🌐 Статус: включить"),
+                callback_data=f"set_sp:{'off' if sp_on else 'on'}"),
+        ],
         [InlineKeyboardButton(text="← Назад", callback_data="menu_more")],
     ])
 
@@ -1310,11 +1442,18 @@ def _settings_kb() -> InlineKeyboardMarkup:
 def _settings_text() -> str:
     evening = settings.evening_hour()
     quiet = settings.quiet_hours()
+    n_windows = len(settings.maintenance_windows())
+    if settings.status_page_enabled():
+        sp = f"вкл · {settings.status_page_url()}"
+    else:
+        sp = "выключена"
     return (
         "⚙️ Настройки\n\n"
         f"🌅 Утренний отчёт: {settings.morning_hour()}:00\n"
         f"🌙 Вечерний отчёт: {'выключен' if evening is None else f'{evening}:00 (только при инцидентах)'}\n"
-        f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'}\n\n"
+        f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'}\n"
+        f"🔧 Тех. окна: {n_windows or 'нет'}\n"
+        f"🌐 Статус-страница: {_esc(sp)}\n\n"
         "Тапни, чтобы изменить:"
     )
 
@@ -1340,6 +1479,8 @@ async def cb_settings_pick(call: CallbackQuery):
         await settings.set_evening_hour(None if value == "off" else int(value))
     elif kind == "set_q":
         await settings.set_quiet_hours(None if value == "off" else value)
+    elif kind == "set_sp":
+        await settings.set_status_page(value == "on")
     else:
         await call.answer("Не понял", show_alert=True)
         return
@@ -1351,6 +1492,475 @@ async def cb_settings_pick(call: CallbackQuery):
         await call.message.edit_text(_settings_text(), reply_markup=_settings_kb())
     except TelegramBadRequest:
         pass  # same value re-picked — nothing changed
+
+
+# ── ⚙️ Per-site settings ─────────────────────────────────────────────────────
+
+_INTERVAL_PRESETS = (1, 3, 5, 15, 30, 60)
+_FAIL_PRESETS = (1, 2, 3, 5)
+
+
+async def _sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Per-site settings screen: current values + buttons to change them."""
+    from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD
+    sid = site["id"]
+    http = is_http_url(site["url"])
+    interval = site.get("check_interval_min")
+    thr = site.get("fail_threshold")
+    lines = [f"⚙️ Настройки: {_esc(site_label(site['url']))}\n"]
+    lines.append(
+        f"⏱ Интервал проверки: {interval or config.check_interval_minutes} мин"
+        + ("" if interval else " (по умолчанию)"))
+    lines.append(
+        f"🔁 Фейлов подряд до алерта: {thr or CONSECUTIVE_FAILURE_THRESHOLD}"
+        + ("" if thr else " (по умолчанию)"))
+    if http:
+        codes = site.get("accepted_codes")
+        lines.append(f"🔢 Приемлемые коды: "
+                     + (_esc(codes) if codes else "по умолчанию (любой &lt; 400)"))
+        kw = (site.get("keyword") or "").strip()
+        if kw:
+            mode = ("не должна появляться (стоп-фраза)"
+                    if site.get("keyword_mode") == "absent"
+                    else "должна быть на странице")
+            lines.append(f"🔍 Фраза: «{_esc(kw)}» — {mode}")
+        else:
+            lines.append("🔍 Ключевая фраза: не задана")
+    if settings.status_page_enabled():
+        lines.append(f"🏷 Бейдж аптайма:\n"
+                     f"<code>{_esc(settings.badge_url(sid))}</code>")
+    rows = [
+        [InlineKeyboardButton(text="⏱ Интервал", callback_data=f"ssp:i:{sid}"),
+         InlineKeyboardButton(text="🔁 Порог фейлов", callback_data=f"ssp:f:{sid}")],
+    ]
+    if http:
+        rows.append(
+            [InlineKeyboardButton(text="🔢 Коды ответа", callback_data=f"ssp:c:{sid}"),
+             InlineKeyboardButton(text="🔍 Фраза", callback_data=f"ssp:k:{sid}")])
+    rows.append([InlineKeyboardButton(text="← К списку сайтов",
+                                      callback_data="menu_check_site")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("sset:"))
+async def cb_site_settings(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    site = await _site_by_cb(call.data.split(":", 1)[1])
+    if not site:
+        await call.message.edit_text("Сайт не найден.", reply_markup=back_button())
+        return
+    text, kb = await _sset_screen(site)
+    await call.message.edit_text(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("ssp:"))
+async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
+    """Sub-pickers: which value of the chosen setting?"""
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        await call.answer("Не понял", show_alert=True)
+        return
+    _, kind, sid = parts
+    site = await _site_by_cb(sid)
+    if not site:
+        await call.answer("Сайт не найден", show_alert=True)
+        return
+    await call.answer()
+    sid = site["id"]
+    label = _esc(site_label(site["url"]))
+
+    if kind == "i":
+        rows = [
+            [InlineKeyboardButton(text=f"{m} мин", callback_data=f"ssv:i:{sid}:{m}")
+             for m in _INTERVAL_PRESETS[:3]],
+            [InlineKeyboardButton(text=f"{m} мин", callback_data=f"ssv:i:{sid}:{m}")
+             for m in _INTERVAL_PRESETS[3:]],
+            [InlineKeyboardButton(text="↩︎ По умолчанию",
+                                  callback_data=f"ssv:i:{sid}:0")],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"sset:{sid}")],
+        ]
+        await call.message.edit_text(
+            f"⏱ Как часто проверять {label}?", 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    elif kind == "f":
+        rows = [
+            [InlineKeyboardButton(text=str(n), callback_data=f"ssv:f:{sid}:{n}")
+             for n in _FAIL_PRESETS],
+            [InlineKeyboardButton(text="↩︎ По умолчанию",
+                                  callback_data=f"ssv:f:{sid}:0")],
+            [InlineKeyboardButton(text="← Назад", callback_data=f"sset:{sid}")],
+        ]
+        await call.message.edit_text(
+            f"🔁 Сколько фейлов подряд должно случиться, чтобы {label} "
+            f"считался лежащим?\n(1 — алерт с первого фейла, больше — "
+            f"меньше ложных тревог)",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    elif kind == "c":
+        await state.set_state(SiteCodesForm.codes)
+        await state.update_data(sset_site_id=sid)
+        await call.message.edit_text(
+            f"🔢 Какие HTTP-коды считать нормой для {label}?\n\n"
+            "Примеры:\n"
+            "• <code>200-299</code> — только успешные\n"
+            "• <code>200-399,401</code> — плюс страница за паролем\n"
+            "• <code>default</code> — вернуть правило по умолчанию (любой &lt; 400)",
+            reply_markup=_cancel_kb())
+    elif kind == "k":
+        kw_set = bool((site.get("keyword") or "").strip())
+        rows = [
+            [InlineKeyboardButton(text="✅ Фраза должна быть на странице",
+                                  callback_data=f"sskw:{sid}:present")],
+            [InlineKeyboardButton(text="🚫 Стоп-фраза (не должна появляться)",
+                                  callback_data=f"sskw:{sid}:absent")],
+        ]
+        if kw_set:
+            rows.append([InlineKeyboardButton(
+                text="🗑 Убрать фразу", callback_data=f"ssv:k:{sid}:0")])
+        rows.append([InlineKeyboardButton(text="← Назад",
+                                          callback_data=f"sset:{sid}")])
+        await call.message.edit_text(
+            f"🔍 Проверка содержимого {label}: ловит «HTTP 200, а на странице "
+            f"ошибка или белый экран».\n\n"
+            f"• «должна быть» — алерт, когда фраза пропала\n"
+            f"• «стоп-фраза» — алерт, когда фраза появилась "
+            f"(например, «Fatal error»)\n\n"
+            f"Ищу без учёта регистра в первом 1 МБ страницы.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    else:
+        await call.answer("Не понял", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ssv:"))
+async def cb_site_setting_value(call: CallbackQuery):
+    """Apply a picked per-site value. Value 0 clears the override."""
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 4 or not parts[3].lstrip("-").isdigit():
+        await call.answer("Не понял", show_alert=True)
+        return
+    _, kind, sid, raw = parts
+    site = await _site_by_cb(sid)
+    if not site:
+        await call.answer("Сайт не найден", show_alert=True)
+        return
+    value = int(raw) or None
+    if kind == "i":
+        await update_site_settings(site["id"], check_interval_min=value)
+        # Apply the new cadence immediately, not after the old one expires.
+        from reports.scheduler import reset_site_schedule
+        reset_site_schedule(site["id"])
+    elif kind == "f":
+        await update_site_settings(site["id"], fail_threshold=value)
+    elif kind == "c":
+        await update_site_settings(site["id"], accepted_codes=None)
+    elif kind == "k":
+        await update_site_settings(site["id"], keyword=None, keyword_mode=None)
+    else:
+        await call.answer("Не понял", show_alert=True)
+        return
+    await call.answer("Сохранено ✅")
+    site = await get_site(site["id"])
+    text, kb = await _sset_screen(site)
+    await call.message.edit_text(text, reply_markup=kb)
+
+
+@router.message(SiteCodesForm.codes)
+async def msg_site_codes(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    from monitors.availability import parse_accepted_codes
+    data = await state.get_data()
+    sid = data.get("sset_site_id")
+    site = await get_site(sid) if sid else None
+    if not site:
+        await state.clear()
+        await message.answer("Сайт не найден — начни заново.",
+                             reply_markup=back_button())
+        return
+    raw = (message.text or "").strip().lower().replace(" ", "")
+    if raw in ("default", "поумолчанию", "сброс"):
+        await state.clear()
+        await update_site_settings(site["id"], accepted_codes=None)
+    else:
+        if len(raw) > 60 or parse_accepted_codes(raw) is None:
+            await message.answer(
+                "Не понял. Формат: <code>200-299</code> или "
+                "<code>200-399,401</code> (коды 100–599). "
+                "Или <code>default</code> для сброса.",
+                reply_markup=_cancel_kb())
+            return
+        await state.clear()
+        await update_site_settings(site["id"], accepted_codes=raw)
+    site = await get_site(site["id"])
+    text, kb = await _sset_screen(site)
+    await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("sskw:"))
+async def cb_site_keyword_mode(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 3 or parts[2] not in ("present", "absent"):
+        await call.answer("Не понял", show_alert=True)
+        return
+    site = await _site_by_cb(parts[1])
+    if not site:
+        await call.answer("Сайт не найден", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(SiteKeywordForm.keyword)
+    await state.update_data(sset_site_id=site["id"], kw_mode=parts[2])
+    what = ("которая должна быть на странице"
+            if parts[2] == "present" else
+            "при появлении которой нужен алерт (стоп-фраза)")
+    await call.message.edit_text(
+        f"🔍 Пришли фразу, {what}.\n"
+        f"От 2 до 100 символов, регистр не важен.",
+        reply_markup=_cancel_kb())
+
+
+@router.message(SiteKeywordForm.keyword)
+async def msg_site_keyword(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    sid, mode = data.get("sset_site_id"), data.get("kw_mode", "present")
+    site = await get_site(sid) if sid else None
+    if not site:
+        await state.clear()
+        await message.answer("Сайт не найден — начни заново.",
+                             reply_markup=back_button())
+        return
+    kw = (message.text or "").strip()
+    if not 2 <= len(kw) <= 100:
+        await message.answer("Нужна фраза от 2 до 100 символов. Попробуй ещё раз:",
+                             reply_markup=_cancel_kb())
+        return
+    await state.clear()
+    await update_site_settings(site["id"], keyword=kw, keyword_mode=mode)
+    site = await get_site(site["id"])
+    text, kb = await _sset_screen(site)
+    await message.answer(text, reply_markup=kb)
+
+
+# ── 🔧 Maintenance windows ───────────────────────────────────────────────────
+
+_MW_DAYS = {"a": [], "w": [0, 1, 2, 3, 4], "e": [5, 6]}
+_MW_TIME_PRESETS = ((120, 240), (180, 300), (1380, 360))  # 02–04, 03–05, 23–06
+
+
+async def _maint_screen() -> tuple[str, InlineKeyboardMarkup]:
+    windows = settings.maintenance_windows()
+    lines = ["🔧 Тех. окна — в это время алерты и эскалация молчат, "
+             "проверки и статистика продолжаются.\n"]
+    rows = []
+    if not windows:
+        lines.append("Пока ни одного окна.")
+    for w in windows:
+        if w.get("site_id") is None:
+            scope = "все сайты"
+        else:
+            site = await get_site(w["site_id"])
+            scope = site_label(site["url"]) if site else f"сайт #{w['site_id']}"
+        active = " · 🟢 активно сейчас" if settings.window_active_now(w) else ""
+        desc = f"{scope} · {settings.fmt_window(w)}"
+        lines.append(f"• {_esc(desc)}{active}")
+        rows.append([InlineKeyboardButton(
+            text=f"🗑 {desc}"[:60], callback_data=f"mw_del:{w['id']}")])
+    rows.insert(0, [InlineKeyboardButton(text="➕ Добавить окно",
+                                         callback_data="mw_add")])
+    rows.append([InlineKeyboardButton(text="← Настройки",
+                                      callback_data="menu_settings")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "menu_maint")
+async def cb_maint(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    await state.clear()
+    text, kb = await _maint_screen()
+    await call.message.edit_text(_clip(text), reply_markup=kb)
+
+
+@router.callback_query(F.data == "mw_add")
+async def cb_mw_add(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    await call.answer()
+    if len(settings.maintenance_windows()) >= settings.MAX_MAINT_WINDOWS:
+        await call.message.edit_text(
+            f"Лимит {settings.MAX_MAINT_WINDOWS} окон — удали ненужные.",
+            reply_markup=back_button())
+        return
+    rows = [[InlineKeyboardButton(text="🌐 Все сайты", callback_data="mw_scope:0")]]
+    for s in await get_all_sites():
+        rows.append([InlineKeyboardButton(
+            text=site_label(s["url"]), callback_data=f"mw_scope:{s['id']}")])
+    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="menu_maint")])
+    await call.message.edit_text(
+        "🔧 Для чего это тех. окно?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("mw_scope:"))
+async def cb_mw_scope(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    arg = call.data.split(":", 1)[1]
+    if not arg.isdigit():
+        await call.answer("Не понял", show_alert=True)
+        return
+    await call.answer()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Каждый день", callback_data=f"mw_days:{arg}:a")],
+        [InlineKeyboardButton(text="Будни", callback_data=f"mw_days:{arg}:w"),
+         InlineKeyboardButton(text="Выходные", callback_data=f"mw_days:{arg}:e")],
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="menu_maint")],
+    ])
+    await call.message.edit_text("🔧 В какие дни?", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("mw_days:"))
+async def cb_mw_days(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in _MW_DAYS:
+        await call.answer("Не понял", show_alert=True)
+        return
+    await call.answer()
+    scope, days = parts[1], parts[2]
+
+    def _fmt(m):
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    rows = [[InlineKeyboardButton(
+        text=f"{_fmt(s)}–{_fmt(e)}",
+        callback_data=f"mw_time:{scope}:{days}:{s}-{e}")
+        for s, e in _MW_TIME_PRESETS]]
+    rows.append([InlineKeyboardButton(
+        text="✏️ Своё время", callback_data=f"mw_custom:{scope}:{days}")])
+    rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="menu_maint")])
+    await call.message.edit_text(
+        "🔧 В какое время (по вашей таймзоне)?",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+async def _mw_create(call: CallbackQuery, scope: str, days_key: str,
+                     start_min: int, end_min: int):
+    site_id = int(scope) or None
+    if site_id and not await get_site(site_id):
+        await call.message.edit_text("Сайт не найден.", reply_markup=back_button())
+        return
+    await settings.add_maintenance_window(
+        site_id, _MW_DAYS[days_key], start_min, end_min)
+    text, kb = await _maint_screen()
+    await call.message.edit_text(_clip("✅ Окно добавлено.\n\n" + text),
+                                 reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("mw_time:"))
+async def cb_mw_time(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    ok = (len(parts) == 4 and parts[1].isdigit() and parts[2] in _MW_DAYS
+          and "-" in parts[3])
+    if ok:
+        a, _, b = parts[3].partition("-")
+        ok = a.isdigit() and b.isdigit()
+    if not ok:
+        await call.answer("Не понял", show_alert=True)
+        return
+    await call.answer()
+    await _mw_create(call, parts[1], parts[2], int(a), int(b))
+
+
+@router.callback_query(F.data.startswith("mw_custom:"))
+async def cb_mw_custom(call: CallbackQuery, state: FSMContext):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    parts = call.data.split(":")
+    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in _MW_DAYS:
+        await call.answer("Не понял", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(MaintTimeForm.time)
+    await state.update_data(mw_scope=parts[1], mw_days=parts[2])
+    await call.message.edit_text(
+        "🔧 Пришли время окна в формате <code>ЧЧ:ММ-ЧЧ:ММ</code>, "
+        "например <code>01:30-03:00</code>.\n"
+        "Окно через полночь тоже можно: <code>23:00-06:00</code>.",
+        reply_markup=_cancel_kb())
+
+
+@router.message(MaintTimeForm.time)
+async def msg_mw_time(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    import re as _re
+    m = _re.fullmatch(r"(\d{1,2}):(\d{2})\s*[-—–]\s*(\d{1,2}):(\d{2})",
+                      (message.text or "").strip())
+    start_min = end_min = -1
+    if m:
+        h1, m1, h2, m2 = map(int, m.groups())
+        if h1 <= 23 and h2 <= 23 and m1 <= 59 and m2 <= 59:
+            start_min, end_min = h1 * 60 + m1, h2 * 60 + m2
+    if start_min < 0 or start_min == end_min:
+        await message.answer(
+            "Не понял. Формат: <code>ЧЧ:ММ-ЧЧ:ММ</code>, и время начала "
+            "должно отличаться от конца.",
+            reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    scope, days = data.get("mw_scope"), data.get("mw_days")
+    await state.clear()
+    if scope is None or days not in _MW_DAYS:
+        await message.answer("Начни заново: Настройки → 🔧 Тех. окна.",
+                             reply_markup=back_button())
+        return
+    site_id = int(scope) or None
+    if site_id and not await get_site(site_id):
+        await message.answer("Сайт не найден.", reply_markup=back_button())
+        return
+    await settings.add_maintenance_window(
+        site_id, _MW_DAYS[days], start_min, end_min)
+    text, kb = await _maint_screen()
+    await message.answer(_clip("✅ Окно добавлено.\n\n" + text), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("mw_del:"))
+async def cb_mw_del(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        await call.answer("⛔ Доступ запрещён", show_alert=True)
+        return
+    arg = call.data.split(":", 1)[1]
+    removed = arg.isdigit() and await settings.remove_maintenance_window(int(arg))
+    await call.answer("Удалено" if removed else "Уже удалено")
+    text, kb = await _maint_screen()
+    try:
+        await call.message.edit_text(_clip(text), reply_markup=kb)
+    except TelegramBadRequest:
+        pass
 
 
 # ── 💓 Heartbeats management ─────────────────────────────────────────────────
@@ -1530,6 +2140,11 @@ async def cb_diag(call: CallbackQuery):
 
     lines.append("✅ PUBLIC_BASE_URL задан" if config.public_base_url
                  else "⚠️ PUBLIC_BASE_URL не задан — heartbeat-ссылки будут с плейсхолдером")
+
+    if settings.status_page_enabled():
+        lines.append(f"✅ Статус-страница: {_esc(settings.status_page_url())}")
+    else:
+        lines.append("ℹ️ Статус-страница выключена (Настройки → 🌐)")
 
     sites = await get_all_sites()
     lines.append(f"✅ Сайтов в мониторинге: {len(sites)}" if sites

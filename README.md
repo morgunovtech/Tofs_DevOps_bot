@@ -15,6 +15,8 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 - **DNS changes** — snapshots A/AAAA/CNAME/NS/MX records hourly; a changed NS record (that's what a hijack looks like) is a critical alert.
 - **Broken links** — crawls your pages, separates *your* broken links (actionable) from dead external ones (noise).
 - **Deep 5xx probe** — samples pages from `sitemap.xml` hourly, catching "homepage is fine but half the site is erroring".
+- **Keyword / stop-phrase check** — per site: alert when a phrase disappears from the page, or when a bad one appears («Fatal error»). Catches the classic "HTTP 200 with a white screen".
+- **TCP and ping monitors** — `tcp://mail.example.com:25`, `ping://10.0.0.1`: non-HTTP services (mail, SSH, databases) get the same incident pipeline, anti-flap and external second opinion.
 - **Bot-host health** — disk usage and docker containers on the server the bot runs on.
 
 ### 🔍 SEO / GEO (AI visibility)
@@ -34,8 +36,11 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 - **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
 - **Sites** — add/remove from the menu («🌍 Сайт детально»), with instant first-check feedback. The DB is the source of truth; `.env` is just an optional first-run seed.
 - **⚙️ Settings** — morning report hour, evening report on/off, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
+- **⚙️ Per-site overrides** — check interval, consecutive-failure threshold, accepted HTTP codes (e.g. `200-399,401`), keyword — each site gets its own dials.
+- **🔧 Maintenance windows** — recurring schedules («weekdays 02:00–04:00», overnight windows welcome) per site or for everything: alerts and escalation stay silent, checks and stats keep running.
 - **💓 Heartbeat jobs** — added from the chat with a ready-to-paste `curl` line for your cron.
 - **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
+- **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d uptime, anonymised incident history, maintenance banner) plus SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
 - **🩺 Diagnostics** — one tap self-check: DB, web server, docker socket, Google/Yandex tokens (live probes), screenshot provider.
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 

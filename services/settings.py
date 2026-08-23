@@ -12,6 +12,8 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
+import pytz
+
 from config import config
 from db.database import get_state, set_state
 
@@ -23,6 +25,11 @@ _cache: dict = {
     "evening_hour": None,     # int | "off"
     "quiet_hours": None,      # "23-8" | "off"
     "hb_jobs": {},            # {name: interval_min} added via UI
+    "status_page": None,      # "on" | "off" (None = .env default)
+    # Recurring maintenance windows added via UI:
+    # [{"id": 1, "site_id": None|int, "days": [0..6] ([] = daily),
+    #   "start_min": 120, "end_min": 240}, …]  (minutes since local midnight)
+    "maint_windows": [],
 }
 
 
@@ -50,6 +57,14 @@ async def load():
         _cache["hb_jobs"] = json.loads(v) if v else {}
     except ValueError:
         _cache["hb_jobs"] = {}
+    v = await get_state("cfg:status_page")
+    _cache["status_page"] = v if v in ("on", "off") else None
+    v = await get_state("cfg:maint_windows")
+    try:
+        windows = json.loads(v) if v else []
+        _cache["maint_windows"] = windows if isinstance(windows, list) else []
+    except ValueError:
+        _cache["maint_windows"] = []
 
 
 # ── Effective values (override → env default) ────────────────────────────────
@@ -116,6 +131,152 @@ async def remove_heartbeat_job(name: str) -> bool:
     return True
 
 
+# ── Recurring maintenance windows ────────────────────────────────────────────
+# During an active window a site behaves exactly like a paused one: checks
+# and incident bookkeeping continue, alerts and escalation stay silent.
+
+MAX_MAINT_WINDOWS = 10
+
+
+def _now_local() -> datetime:
+    return datetime.now(pytz.timezone(config.timezone))
+
+
+def maintenance_windows() -> list[dict]:
+    return list(_cache["maint_windows"])
+
+
+async def add_maintenance_window(site_id: int | None, days: list[int],
+                                 start_min: int, end_min: int) -> int:
+    """Returns the window's id (existing one when an identical window is
+    already there — a double-tapped preset must not create duplicates).
+    days=[] means every day."""
+    windows = _cache["maint_windows"]
+    days = sorted(set(days))
+    for w in windows:
+        if (w.get("site_id") == site_id and (w.get("days") or []) == days
+                and w.get("start_min") == start_min
+                and w.get("end_min") == end_min):
+            return w["id"]
+    new_id = max((w.get("id", 0) for w in windows), default=0) + 1
+    windows.append({
+        "id": new_id,
+        "site_id": site_id,
+        "days": days,
+        "start_min": start_min,
+        "end_min": end_min,
+    })
+    await set_state("cfg:maint_windows", json.dumps(windows))
+    return new_id
+
+
+async def remove_windows_for_site(site_id: int) -> int:
+    """Drop every window scoped to a removed site (all-sites windows stay).
+    Returns how many were removed."""
+    windows = _cache["maint_windows"]
+    kept = [w for w in windows if w.get("site_id") != site_id]
+    removed = len(windows) - len(kept)
+    if removed:
+        _cache["maint_windows"] = kept
+        await set_state("cfg:maint_windows", json.dumps(kept))
+    return removed
+
+
+async def remove_maintenance_window(win_id: int) -> bool:
+    windows = _cache["maint_windows"]
+    kept = [w for w in windows if w.get("id") != win_id]
+    if len(kept) == len(windows):
+        return False
+    _cache["maint_windows"] = kept
+    await set_state("cfg:maint_windows", json.dumps(kept))
+    return True
+
+
+def _window_active(w: dict, now: datetime) -> bool:
+    minutes = now.hour * 60 + now.minute
+    days = w.get("days") or []  # [] = every day
+    start, end = w.get("start_min"), w.get("end_min")
+    if not isinstance(start, int) or not isinstance(end, int) or start == end:
+        return False
+    if start < end:
+        return (not days or now.weekday() in days) and start <= minutes < end
+    # Overnight window (e.g. 23:00–06:00): [start, midnight) belongs to the
+    # window's start day, [midnight, end) to the following day.
+    if minutes >= start:
+        return not days or now.weekday() in days
+    if minutes < end:
+        return not days or (now.weekday() - 1) % 7 in days
+    return False
+
+
+def window_active_now(w: dict) -> bool:
+    """Is this specific window active right now? (list-screen indicator)"""
+    return _window_active(w, _now_local())
+
+
+def maintenance_now(site_id: int | None = None) -> bool:
+    """Is a maintenance window active for this site right now?
+    site_id=None asks "for any site at all" (menu header indicator)."""
+    now = _now_local()
+    for w in _cache["maint_windows"]:
+        scope = w.get("site_id")
+        if site_id is not None and scope is not None and scope != site_id:
+            continue
+        if _window_active(w, now):
+            return True
+    return False
+
+
+def fmt_window(w: dict) -> str:
+    """'будни · 02:00–04:00' — human-readable window description."""
+    day_names = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+    days = w.get("days") or []
+    if not days:
+        days_txt = "ежедневно"
+    elif days == [0, 1, 2, 3, 4]:
+        days_txt = "будни"
+    elif days == [5, 6]:
+        days_txt = "выходные"
+    else:
+        days_txt = " ".join(day_names[d] for d in days if 0 <= d <= 6)
+    s, e = w["start_min"], w["end_min"]
+    return (f"{days_txt} · {s // 60:02d}:{s % 60:02d}–"
+            f"{e // 60:02d}:{e % 60:02d}")
+
+
+# ── Public status page ───────────────────────────────────────────────────────
+
+def status_page_enabled() -> bool:
+    v = _cache["status_page"]
+    if v == "on":
+        return True
+    if v == "off":
+        return False
+    return config.status_page
+
+
+async def set_status_page(on: bool):
+    _cache["status_page"] = "on" if on else "off"
+    await set_state("cfg:status_page", _cache["status_page"])
+
+
+def status_page_url() -> str:
+    base = config.public_base_url or f"http://YOUR_SERVER:{config.webhook_port}"
+    path = "/status"
+    if config.status_page_slug:
+        path += f"/{config.status_page_slug}"
+    return base + path
+
+
+def badge_url(site_id: int) -> str:
+    """Shields-style SVG uptime badge for embedding in a README."""
+    base = config.public_base_url or f"http://YOUR_SERVER:{config.webhook_port}"
+    path = "/status"
+    if config.status_page_slug:
+        path += f"/{config.status_page_slug}"
+    return f"{base}{path}/badge/{site_id}.svg"
+
+
 # ── Per-site pause (maintenance mode) ────────────────────────────────────────
 
 async def pause_site(site_id: int, minutes: int | None):
@@ -144,6 +305,10 @@ async def paused_until(site_id: int) -> datetime | None:
 
 
 async def is_paused(site_id: int) -> bool:
+    """Manual pause OR an active recurring maintenance window — every
+    alert-silencing code path asks this one question."""
+    if maintenance_now(site_id):
+        return True
     return await paused_until(site_id) is not None
 
 

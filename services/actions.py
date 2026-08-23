@@ -26,6 +26,11 @@ def _host(url: str) -> str:
 
 
 def deploy_hook_for(url: str) -> str | None:
+    # Hooks are keyed by hostname, but only WEB sites can be redeployed —
+    # a tcp://example.com:25 incident must not fire example.com's Pages
+    # deploy hook just because the hostnames match.
+    if not url.startswith(("http://", "https://")):
+        return None
     return config.deploy_hooks.get(_host(url))
 
 
@@ -34,14 +39,18 @@ async def alert_actions_keyboard(url: str) -> InlineKeyboardMarkup:
     its DB id — stable across site list edits and short enough for the
     64-byte callback_data limit."""
     site_id = await get_or_create_site(url)
-    rows = [[
-        InlineKeyboardButton(text="🔍 Перепроверить", callback_data=f"act:recheck:{site_id}"),
-        InlineKeyboardButton(text="📸 Скрин", callback_data=f"act:shot:{site_id}"),
-    ]]
+    is_http = url.startswith(("http://", "https://"))
+    first_row = [InlineKeyboardButton(
+        text="🔍 Перепроверить", callback_data=f"act:recheck:{site_id}")]
+    if is_http:
+        # A screenshot of tcp://host:port makes no sense.
+        first_row.append(InlineKeyboardButton(
+            text="📸 Скрин", callback_data=f"act:shot:{site_id}"))
+    rows = [first_row]
     extra = []
-    if deploy_hook_for(url):
+    if is_http and deploy_hook_for(url):
         extra.append(InlineKeyboardButton(text="🚀 Передеплой", callback_data=f"act:redeploy:{site_id}"))
-    if config.cf_api_token and config.cf_zone_id:
+    if is_http and config.cf_api_token and config.cf_zone_id:
         extra.append(InlineKeyboardButton(text="🧹 Сброс кэша CF", callback_data=f"act:purge:{site_id}"))
     if extra:
         rows.append(extra)

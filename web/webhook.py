@@ -18,6 +18,7 @@ import hmac
 import html
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 
@@ -27,6 +28,8 @@ from aiogram import Bot
 from config import config
 from db.database import save_feedback, heartbeat_ping, get_state, set_state
 from reports.formatter import format_feedback
+from services import settings
+from web import status_page
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +191,57 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
 
+# ── Public status page ───────────────────────────────────────────────────────
+
+def _status_page_allowed(request: web.Request) -> bool:
+    """Page must be enabled AND the path must match the configured mode:
+    bare /status when no slug is set, /status/<slug> when it is."""
+    if not settings.status_page_enabled():
+        return False
+    got = request.match_info.get("slug", "")
+    if config.status_page_slug:
+        # The slug is a shared secret — compare in constant time.
+        return hmac.compare_digest(
+            got.encode(), config.status_page_slug.encode())
+    return got == ""
+
+
+async def handle_status_page(request: web.Request) -> web.Response:
+    if not _status_page_allowed(request):
+        return web.Response(status=404, text="Not Found")
+    return web.Response(
+        text=await status_page.status_html(),
+        content_type="text/html", charset="utf-8",
+        headers={"Cache-Control": "public, max-age=30",
+                 "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
+# ASCII digits only, bounded: str.isdigit() also passes Unicode digits that
+# int() may reject, and an astronomically long id would overflow SQLite.
+_SID_RE = re.compile(r"[0-9]{1,9}")
+
+
+async def handle_status_badge(request: web.Request) -> web.Response:
+    """SVG uptime badge: /status[/<slug>]/badge/<site_id>.svg"""
+    if not _status_page_allowed(request):
+        return web.Response(status=404, text="Not Found")
+    sid = request.match_info.get("sid", "").removesuffix(".svg")
+    if not _SID_RE.fullmatch(sid):
+        return web.Response(status=404, text="Not Found")
+    # badge_pct caches per site — anonymous hits must not turn into
+    # unbounded 7-day aggregate scans on the shared SQLite connection.
+    found, pct = await status_page.badge_pct(int(sid))
+    if not found:
+        return web.Response(status=404, text="Not Found")
+    return web.Response(
+        text=status_page.badge_svg(pct),
+        content_type="image/svg+xml", charset="utf-8",
+        headers={"Cache-Control": "public, max-age=300",
+                 "X-Robots-Tag": "noindex, nofollow"},
+    )
+
+
 async def handle_widget(request: web.Request) -> web.Response:
     """Serve the JS feedback widget file."""
     widget_path = os.path.join(os.path.dirname(__file__), "feedback-widget.js")
@@ -212,6 +266,12 @@ def create_app(bot: Bot) -> web.Application:
     app.router.add_post("/api/heartbeat/{token}/{job}", handle_heartbeat)
     app.router.add_get("/feedback-widget.js", handle_widget)
     app.router.add_get("/health", handle_health)
+    # Status page routes. Registration order matters: the literal "badge"
+    # segment must be matched before the {slug} catch-all.
+    app.router.add_get("/status", handle_status_page)
+    app.router.add_get("/status/badge/{sid}", handle_status_badge)
+    app.router.add_get("/status/{slug}", handle_status_page)
+    app.router.add_get("/status/{slug}/badge/{sid}", handle_status_badge)
     return app
 
 

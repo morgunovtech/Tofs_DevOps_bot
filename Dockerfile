@@ -1,9 +1,10 @@
 FROM python:3.12-slim
 
-# System deps
+# System deps (iputils-ping powers ping:// monitors — ICMP needs the binary)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libssl-dev \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
