@@ -13,7 +13,9 @@ async def _candidates() -> list[tuple[str, str, str, str]]:
     sites = await get_all_sites()
     http_sites = [s for s in sites if is_http_url(s["url"])]
     out = []
-    if http_sites and not any((s.get("keyword") or "").strip() for s in http_sites):
+    undecided = [s for s in http_sites if not (s.get("keyword") or "").strip()
+                 and not await get_state(f"kw_declined:{s['id']}")]
+    if undecided and not any((s.get("keyword") or "").strip() for s in http_sites):
         out.append(("keyword",
                     "Хочешь, буду проверять не только «открывается ли», но и «показывает ли то, что надо»? "
                     "Задай фразу с главной страницы — поймаю пустую страницу вместо сайта.",

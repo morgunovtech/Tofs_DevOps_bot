@@ -13,7 +13,7 @@ from monitors.base import (
     SeoResult,
     SslResult,
 )
-from services import humanize
+from services import humanize, seo_fixes
 from services.humanize import describe_error, explain, fmt_seconds, link_reason, steps_block
 from utils.clock import now_local, to_local
 from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
@@ -151,13 +151,20 @@ def format_deep_alert(r) -> str:
 
 
 def format_seo_alert(r: SeoResult) -> str:
-    """Only critical findings are alerted; the rest lives in the audit screen."""
+    """Only critical findings are alerted; the rest lives in the audit screen.
+    The keyboard (a «💡» per finding) is built by the scheduler."""
     critical = [p for p in r.problems if p.severity == "critical"]
     if not critical:
         return ""
-    expl = explain("seo", "")
-    lines = [f"🔴 {esc(site_label(r.url))} исчезает из поиска", expl.meaning, ""]
-    lines += [f"  • {esc(p.message)}" for p in critical[:6]]
+    lines = [f"🔴 {esc(site_label(r.url))} исчезает из поиска",
+             "Google и Яндекс уберут сайт при следующем обходе — переходы из поиска пропадут.", ""]
+    seen: set[str] = set()
+    for p in critical[:6]:
+        f = seo_fixes.fix(p.code)
+        head = f"  • <b>{esc(f.title)}</b>" if p.code not in seen else "  •"
+        seen.add(p.code)
+        lines.append(f"{head} — {esc(p.message)}")
+    lines += ["", "Нажми кнопку под сообщением: там шаги для твоего хостинга."]
     return "\n".join(lines)
 
 

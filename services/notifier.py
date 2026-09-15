@@ -91,9 +91,13 @@ def in_quiet_hours(hour: int | None = None) -> bool:
 # ── Sending ──────────────────────────────────────────────────────────────────
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
-               reply_markup=None, site_id: int | None = None) -> Message | bool:
+               reply_markup=None, site_id: int | None = None, always_ring: bool = False) -> Message | bool:
     """The sent Message when delivered now, True when queued, False when
-    dropped or failed — so `if sent:` keeps working for one-shot flags."""
+    dropped or failed — so `if sent:` keeps working for one-shot flags.
+    With «будить только когда сайт лёг» on, CRITICAL messages that are not
+    marked always_ring are treated as NORMAL."""
+    if priority is Priority.CRITICAL and settings.ring_only_down() and not always_ring:
+        priority = Priority.NORMAL
     chat_id = runtime.admin_chat_id()
     if not chat_id or _bot is None:
         logger.warning("No admin yet, dropping message: %s", text[:60])

@@ -4,9 +4,11 @@ quiet-hours checks never touch the DB."""
 
 import json
 from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
 from db.database import get_state, set_state
+from utils import clock
 from utils.parse import parse_hour_range
 
 
@@ -20,6 +22,8 @@ class Overrides:
     quiet_off: bool = False
     hb_jobs: dict[str, int] = field(default_factory=dict)  # added via UI
     status_page: bool | None = None      # None → .env
+    timezone: str | None = None          # IANA key; None → .env
+    ring_only_down: bool = False         # ring only for «site down»; the rest waits quietly
 
 
 _o = Overrides()
@@ -48,7 +52,28 @@ async def load():
         o.hb_jobs = {}
     v = await get_state("cfg:status_page")
     o.status_page = {"on": True, "off": False}.get(v or "")
+    o.timezone = valid_timezone(await get_state("cfg:timezone"))
+    clock.set_timezone(o.timezone)
+    o.ring_only_down = (await get_state("cfg:ring_only_down")) == "1"
     _o = o
+
+
+def valid_timezone(key: str | None) -> str | None:
+    if not key:
+        return None
+    try:
+        ZoneInfo(key)
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+    return key
+
+
+def timezone() -> str:
+    return _o.timezone or config.timezone
+
+
+def ring_only_down() -> bool:
+    return _o.ring_only_down
 
 
 # ── Effective values (override → env default) ────────────────────────────────
@@ -116,6 +141,21 @@ async def set_quiet_hours(raw: str | None):
 async def set_status_page(on: bool):
     _o.status_page = on
     await set_state("cfg:status_page", "on" if on else "off")
+
+
+async def set_timezone(key: str | None) -> bool:
+    """Validated IANA key or None to fall back to .env. False if unknown."""
+    if key is not None and not valid_timezone(key):
+        return False
+    _o.timezone = key
+    clock.set_timezone(key)
+    await set_state("cfg:timezone", key)
+    return True
+
+
+async def set_ring_only_down(on: bool):
+    _o.ring_only_down = on
+    await set_state("cfg:ring_only_down", "1" if on else "0")
 
 
 async def add_heartbeat_job(name: str, interval_min: int):

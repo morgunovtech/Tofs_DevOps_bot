@@ -28,7 +28,7 @@ from config import config
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
 from monitors.base import SeoProblem, SeoResult, gather_checks
 from monitors.sitemap import pick_sample, sitemap_urls
-from services import sitestatus
+from services import seo_fixes, sitestatus
 from utils.text import plural
 from utils.urls import USER_AGENT
 
@@ -48,35 +48,12 @@ AI_BOTS = {
 BLOCKED_CODES = {401, 403, 451}
 
 
-def _p(severity: str, message: str, hint: str = "") -> SeoProblem:
-    return SeoProblem(severity, message, hint)
+def _p(code: str, severity: str, message: str) -> SeoProblem:
+    return SeoProblem(code, severity, message)
 
 
-HINT_ROBOTS_SEARCH = ("В robots.txt стоит запрет для поискового робота — сайт пропадёт из поиска. "
-                      "Убери строку Disallow: / в секции этого робота (или во всех).")
-HINT_ROBOTS_AI = ("Сайт закрыт от ИИ-ассистентов (ChatGPT, Claude, Perplexity). Если хочешь, чтобы они "
-                  "знали о сайте и советовали его, убери запрет в robots.txt.")
-HINT_NOINDEX_HEADER = ("Сервер отдаёт заголовок X-Robots-Tag: noindex — поисковики выкинут страницу. "
-                       "Убери его в настройках хостинга или сервера.")
-HINT_NOINDEX_META = ("В коде страницы стоит meta robots noindex — поисковики выкинут страницу. Обычно это "
-                     "настройка тестовой версии, случайно попавшая в прод. Убери тег.")
-HINT_TITLE = "У страницы нет заголовка title — в поиске она будет без подписи. Добавь <title> в код."
-HINT_DESC = ("Нет описания страницы (meta description) — текста под заголовком в результатах поиска. "
-             "Добавь 1–2 предложения о странице.")
-HINT_CANONICAL = ("Тег canonical говорит поисковикам «главная копия этой страницы вон там». Он должен "
-                  "вести на https-адрес этой же страницы на этом же сайте.")
-HINT_JSONLD = ("Разметка JSON-LD (структурированные данные для поиска) с ошибкой синтаксиса — "
-               "поисковики её проигнорируют. Проверь блок валидатором schema.org.")
-HINT_ROBOTS_HTTP = "Файл robots.txt отвечает ошибкой — поисковики могут считать сайт закрытым. Проверь, что файл отдаётся."
-HINT_SITEMAP = ("Нет карты сайта (sitemap.xml) — без неё поисковики находят новые страницы медленнее. "
-                "Большинство движков умеют её генерировать.")
-HINT_NO_JS = ("Текст сайта появляется только после выполнения JavaScript. ИИ-ассистенты и часть поисковых "
-              "роботов JS не запускают и видят пустую страницу. Нужен серверный рендеринг или предрендер.")
-HINT_AI_BLOCKED = ("Сайт отвечает ИИ-ассистентам ошибкой доступа — обычно это включённый в Cloudflare "
-                   "переключатель «Block AI bots». Выключи его, если хочешь, чтобы ИИ знали о сайте.")
-HINT_SOFT404 = ("Несуществующие адреса отвечают «всё хорошо» вместо «страница не найдена». Поисковики "
-                "заполняют индекс мусором. Настрой ответ 404 для несуществующих страниц.")
-HINT_HTTPS = "Адрес с http:// не перенаправляется на https:// — часть посетителей попадёт на незащищённую версию. Настрой редирект у хостинга."
+def _page(path: str) -> str:
+    return "главная" if path in ("", "/") else path
 
 
 # ── Pure analysis (unit-testable) ────────────────────────────────────────────
@@ -87,71 +64,76 @@ def analyze_robots(text: str, base_url: str) -> tuple[list[SeoProblem], list[str
     rp = robotparser.RobotFileParser()
     rp.parse(text.splitlines())
     probe = base_url.rstrip("/") + "/"
-    for agent in SEARCH_BOTS:
-        if not rp.can_fetch(agent, probe):
-            problems.append(_p("critical", f"robots.txt запрещает {agent} — сайт закрыт от поиска!", HINT_ROBOTS_SEARCH))
-    for agent in AI_BOTS:
-        if not rp.can_fetch(agent, probe):
-            problems.append(_p("warning", f"robots.txt запрещает {agent} — ИИ-ассистенты не увидят сайт", HINT_ROBOTS_AI))
+    blocked = [agent for agent in SEARCH_BOTS if not rp.can_fetch(agent, probe)]
+    if blocked:
+        problems.append(_p("robots_search", "critical",
+                           f"robots.txt запрещает {', '.join(blocked)} — сайт закрыт от поиска"))
+    blocked_ai = [agent for agent in AI_BOTS if not rp.can_fetch(agent, probe)]
+    if blocked_ai:
+        problems.append(_p("robots_ai", "warning",
+                           f"robots.txt запрещает {', '.join(blocked_ai)} — ИИ-ассистенты не видят сайт"))
     return problems, list(rp.site_maps() or [])
 
 
 def analyze_page(html: str, page_url: str,
-                 headers: dict | None = None) -> tuple[list[SeoProblem], list[str], int]:
-    """Inspect one page's raw (no-JS) HTML → (problems, infos, visible_text_chars)."""
+                 headers: dict | None = None) -> tuple[list[SeoProblem], list[SeoProblem], int]:
+    """Inspect one page's raw (no-JS) HTML → (problems, infos, visible_text_chars).
+    Messages are for the owner: which page, what is missing, in words."""
     problems: list[SeoProblem] = []
-    infos: list[str] = []
+    infos: list[SeoProblem] = []
     path = urlparse(page_url).path or "/"
+    page = _page(path)
     headers = {k.lower(): v for k, v in (headers or {}).items()}
 
     if "noindex" in headers.get("x-robots-tag", "").lower():
-        problems.append(_p("critical", f"{path}: заголовок X-Robots-Tag noindex — страница скрыта от индексации!", HINT_NOINDEX_HEADER))
+        problems.append(_p("noindex_header", "critical", f"{page}: сервер отдаёт X-Robots-Tag: noindex"))
 
     soup = BeautifulSoup(html, "html.parser")
     robots_meta = soup.find("meta", attrs={"name": "robots"})
     if robots_meta and "noindex" in (robots_meta.get("content") or "").lower():
-        problems.append(_p("critical", f"{path}: meta robots noindex — страница скрыта от индексации!", HINT_NOINDEX_META))
+        problems.append(_p("noindex_meta", "critical", f"{page}: в коде стоит meta robots noindex"))
 
     title = soup.title.get_text(strip=True) if soup.title else ""
     if not title:
-        problems.append(_p("warning", f"{path}: нет <title>", HINT_TITLE))
+        problems.append(_p("no_title", "warning", f"{page}: нет заголовка <title>"))
     elif not 10 <= len(title) <= 70:
-        infos.append(f"{path}: длина title {len(title)} (рекомендуется 10–70)")
+        infos.append(_p("title_len", "info", f"{page}: заголовок {len(title)} символов (лучше 10–70)"))
 
     desc = soup.find("meta", attrs={"name": "description"})
     desc_text = (desc.get("content") or "").strip() if desc else ""
     if not desc_text:
-        problems.append(_p("warning", f"{path}: нет meta description", HINT_DESC))
+        problems.append(_p("no_description", "warning", f"{page}: нет описания (meta description)"))
     elif not 50 <= len(desc_text) <= 170:
-        infos.append(f"{path}: длина description {len(desc_text)} (рекомендуется 50–170)")
+        infos.append(_p("desc_len", "info", f"{page}: описание {len(desc_text)} символов (лучше 50–170)"))
 
     canonical = soup.find("link", attrs={"rel": "canonical"})
     if canonical:
         href = (canonical.get("href") or "").strip()
         if not href.startswith("https://"):
-            problems.append(_p("warning", f"{path}: canonical не https ({href[:60]})", HINT_CANONICAL))
+            problems.append(_p("canonical_bad", "warning", f"{page}: canonical ведёт не на https ({href[:60]})"))
         elif urlparse(href).hostname != urlparse(page_url).hostname:
-            problems.append(_p("warning", f"{path}: canonical указывает на другой хост ({urlparse(href).hostname})", HINT_CANONICAL))
+            problems.append(_p("canonical_bad", "warning",
+                               f"{page}: canonical ведёт на другой сайт ({urlparse(href).hostname})"))
     else:
-        infos.append(f"{path}: нет canonical")
+        infos.append(_p("no_canonical", "info", f"{page}: нет тега canonical"))
 
     if not soup.find("h1"):
-        infos.append(f"{path}: нет <h1>")
+        infos.append(_p("no_h1", "info", f"{page}: нет главного заголовка h1"))
 
     if path == "/":
         if not soup.find("meta", attrs={"property": "og:title"}):
-            infos.append("нет og:title (превью в соцсетях/мессенджерах)")
+            infos.append(_p("og_title", "info", "нет заголовка для превью в мессенджерах (og:title)"))
         if not soup.find("meta", attrs={"property": "og:image"}):
-            infos.append("нет og:image (превью в соцсетях/мессенджерах)")
+            infos.append(_p("og_image", "info", "нет картинки для превью в мессенджерах (og:image)"))
         html_tag = soup.find("html")
         if html_tag and not html_tag.get("lang"):
-            infos.append("нет атрибута lang у <html>")
+            infos.append(_p("no_lang", "info", "не указан язык страницы (lang)"))
 
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             json.loads(script.string or "")
         except (ValueError, TypeError):
-            problems.append(_p("warning", f"{path}: JSON-LD не парсится", HINT_JSONLD))
+            problems.append(_p("jsonld_invalid", "warning", f"{page}: разметка JSON-LD с ошибкой"))
             break
 
     for tag in soup(["script", "style", "noscript"]):
@@ -194,20 +176,20 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         if probe_status is None:
             r.status, r.transient = "error", True
             await save_check(site_id, "seo", "error", details="site unreachable, audit skipped")
-            await sitestatus.update(site_id, "seo", status="error", critical=0, improve=0)
+            await sitestatus.update(site_id, "seo", status="error", critical=0, improve=0, problems=[], infos=[])
             return r
 
         status, robots_text, _ = await _fetch(session, f"{base}/robots.txt")
         if status == 200:
             problems.extend(analyze_robots(robots_text, base)[0])
         elif status == 404:
-            infos.append("robots.txt отсутствует (всё разрешено — не критично)")
+            infos.append(_p("robots_missing", "info", "файла robots.txt нет — всё разрешено, не страшно"))
         elif status is not None:
-            problems.append(_p("warning", f"robots.txt отвечает HTTP {status}", HINT_ROBOTS_HTTP))
+            problems.append(_p("robots_http_error", "warning", f"robots.txt отвечает ошибкой HTTP {status}"))
 
         pages = await sitemap_urls(session, base)
         if not pages:
-            problems.append(_p("warning", "sitemap.xml не найден или пуст", HINT_SITEMAP))
+            problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
         sample = [base + "/"] + pick_sample(
             [p for p in pages if p.rstrip("/") != base], max(0, config.seo_pages_sample - 1))
         for page in sample:
@@ -221,35 +203,36 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             if page == sample[0]:
                 r.no_js_chars = text_len
                 if text_len < config.seo_min_text_chars:
-                    problems.append(_p("warning", (
+                    problems.append(_p("no_js", "warning", (
                         f"без JavaScript на главной всего {text_len} "
-                        f"{plural(text_len, 'символ', 'символа', 'символов')} текста — "
-                        f"ИИ-ассистенты видят почти пустую страницу"), HINT_NO_JS))
+                        f"{plural(text_len, 'символ', 'символа', 'символов')} текста")))
 
+        blocked_bots = []
         for bot, ua in AI_BOTS.items():
             status, _, _ = await _fetch(session, base + "/", ua=ua)
             if status in BLOCKED_CODES:
-                problems.append(_p("warning", (
-                    f"{bot} получает HTTP {status} — похоже, включена блокировка "
-                    f"ИИ-ботов (Cloudflare?)"), HINT_AI_BLOCKED))
+                blocked_bots.append(f"{bot} (HTTP {status})")
             await asyncio.sleep(0.3)
+        if blocked_bots:
+            problems.append(_p("ai_blocked", "warning", "доступ запрещён для " + ", ".join(blocked_bots)))
 
         status, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
-            problems.append(_p("warning", "несуществующие страницы отдают HTTP 200 (soft-404)", HINT_SOFT404))
+            problems.append(_p("soft404", "warning", "несуществующий адрес ответил «всё хорошо» (HTTP 200)"))
 
         try:
             async with session.get(f"http://{host}/", timeout=TIMEOUT, allow_redirects=False,
                                    headers={"User-Agent": USER_AGENT}) as resp:
                 loc = resp.headers.get("Location", "")
                 if not (300 <= resp.status < 400 and loc.startswith("https://")):
-                    problems.append(_p("warning", f"http:// не редиректит на https (HTTP {resp.status})", HINT_HTTPS))
+                    problems.append(_p("https_redirect", "warning",
+                                       f"http:// отвечает HTTP {resp.status} вместо перевода на https://"))
         except Exception:
-            infos.append("http://-версия недоступна (порт 80 закрыт — ок)")
+            infos.append(_p("http_closed", "info", "http://-версия закрыта (порт 80) — это нормально"))
 
         status, _, _ = await _fetch(session, f"{base}/llms.txt")
-        infos.append("llms.txt: есть ✅" if status == 200
-                     else "llms.txt: нет (опционально, помогает AI-агентам)")
+        infos.append(_p("llms_ok", "info", "есть llms.txt — справка для ИИ-агентов") if status == 200
+                     else _p("llms_missing", "info", "нет llms.txt — необязательная справка для ИИ-агентов"))
 
     if problems:
         r.status = "critical" if r.has_critical else "warning"
@@ -260,12 +243,15 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
     await save_check(site_id, "seo", r.status, details=summary[:500])
     await sitestatus.update(site_id, "seo", status=r.status,
                             critical=sum(p.severity == "critical" for p in problems),
-                            improve=sum(p.severity != "critical" for p in problems))
+                            improve=sum(p.severity != "critical" for p in problems),
+                            problems=[p.as_dict() for p in problems[:12]],
+                            infos=[i.as_dict() for i in infos[:12]],
+                            pages=r.pages_checked, no_js_chars=r.no_js_chars)
     if not manage:
         return r
     if problems:
-        r.error = (f"SEO: {n} {plural(n, 'проблема', 'проблемы', 'проблем')}, "
-                   f"напр.: {problems[0].message}")[:300]
+        first = seo_fixes.fix(problems[0].code).title
+        r.error = (f"{n} {plural(n, 'помеха', 'помехи', 'помех')} в поиске, напр.: {first}")[:300]
         r.incident_id, r.incident_new = await save_incident(site_id, "seo", r.error, severity=r.severity)
     elif await resolve_incident(site_id, "seo"):
         r.recovered = True

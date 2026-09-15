@@ -2,6 +2,7 @@
 Every outgoing message goes through services.notifier, which owns the
 mute / quiet-hours / pause rules."""
 
+import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ from db.database import (
     set_dns_state,
     set_state,
 )
+from monitors import region
 from monitors.availability import check_all, check_availability
 from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
@@ -51,18 +53,29 @@ from reports.formatter import (
     incident_line,
 )
 from reports.weekly import build_weekly_report
-from services import gsc, humanize, integrations, notifier, recommend, settings, updates, yandex_webmaster
+from services import (
+    gsc,
+    humanize,
+    integrations,
+    notifier,
+    recommend,
+    settings,
+    sitestatus,
+    updates,
+    yandex_webmaster,
+)
 from services.actions import (
     alert_actions_keyboard,
     deploy_hook_for,
     domain_keyboard,
     explain_keyboard,
+    seo_fix_keyboard,
     trigger_redeploy,
 )
 from services.notifier import Priority
 from utils.clock import local_tz
 from utils.text import SAFE_LIMIT, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
-from utils.urls import short_host, site_label
+from utils.urls import is_http_url, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +128,14 @@ async def run_availability_checks():
             if config.auto_redeploy and deploy_hook_for(r.url):
                 msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
             kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting)
-            sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb)
+            sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
+                                       always_ring=True)
             if isinstance(sent, Message):
                 _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
         elif r.external_ok is True:
             await _note_local_network_problem(r.url, r.site_id)
         elif r.recovered:
-            await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
+            await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id, always_ring=True)
         if r.ok:
             await _track_slow(r, site.get("slow_ms") or config.slow_response_ms)
 
@@ -288,7 +302,32 @@ async def run_seo_checks():
     await _notify_transitions(
         await check_all_seo([u for u in urls if u not in fresh]), format_seo_alert,
         lambda r: f"✅ {esc(site_label(r.url))} снова открыт для поисковиков. Ничего делать не нужно.",
-        priority=lambda r: Priority.CRITICAL)
+        priority=lambda r: Priority.CRITICAL,
+        keyboard=lambda r: seo_fix_keyboard(
+            r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical"))))
+
+
+REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
+
+
+async def run_region_checks():
+    """Hourly: how fast each site opens from the audience's region — a
+    check-host node picked by the owner's timezone. Same opt-in as the
+    second opinion (same external service). Sites that are down right now
+    are skipped: a timing of a broken site is noise."""
+    if not integrations.second_opinion_enabled():
+        return
+    country = region.country_for_timezone(settings.timezone())
+    for site in await get_all_sites():
+        if not is_http_url(site["url"]):
+            continue
+        snap = await sitestatus.get(site["id"])
+        if (snap.get("avail") or {}).get("status") not in (None, "ok"):
+            continue
+        measured = await region.measure(site["url"], country)
+        if measured:
+            await sitestatus.update(site["id"], "region", ms=measured[0], name=measured[1])
+        await asyncio.sleep(REGION_PAUSE)
 
 
 async def run_dns_checks():
@@ -450,7 +489,7 @@ async def run_escalation_watch():
             f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
             f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
             f"«🔧 Я чиню», и я замолчу на два часа.",
-            Priority.CRITICAL, site_id=inc["site_id"],
+            Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
             reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                                 hosting=await get_state(f"hosting:{inc['site_id']}")))
         if sent:
@@ -461,11 +500,12 @@ async def run_escalation_watch():
 
 async def run_self_heartbeat():
     """Ping the external watchdog (healthchecks.io etc.)."""
-    if not config.self_heartbeat_url:
+    url = integrations.self_heartbeat_url()
+    if not url:
         return
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            await s.get(config.self_heartbeat_url)
+            await s.get(url)
     except Exception as e:
         logger.warning("Self-heartbeat ping failed: %s", e)
 
@@ -656,16 +696,36 @@ def _cron(**kwargs) -> CronTrigger:
     return CronTrigger(timezone=local_tz(), **kwargs)
 
 
-def reschedule_report_jobs():
-    """Apply UI-changed report hours to the running scheduler on the fly."""
+def _cron_specs() -> dict[str, dict]:
+    """Every cron-based job with its local-time schedule, resolved now —
+    so a changed report hour or timezone can re-create all triggers."""
+    evening = settings.evening_hour()
+    return {
+        "ssl_checks": dict(hour=8, minute=0),
+        "domain_checks": dict(hour=8, minute=5),
+        "seo_checks": dict(hour=7, minute=30),
+        "index_checks": dict(hour=7, minute=45),
+        "dns_checks": dict(minute=20),
+        "region_checks": dict(minute=17),
+        "deep_checks": dict(minute=40),
+        "retention": dict(hour=3, minute=30),
+        "db_backup": dict(hour=3, minute=45),
+        "morning_report": dict(hour=settings.morning_hour(), minute=0),
+        "evening_report": dict(hour=evening if evening is not None else config.evening_report_hour, minute=0),
+        "weekly_report": dict(day_of_week="sun", hour=settings.weekly_hour(), minute=0),
+    }
+
+
+def reschedule_all():
+    """Apply UI-changed hours or timezone to the running scheduler."""
     if _scheduler is None:
         return
-    _scheduler.reschedule_job("morning_report", trigger=_cron(hour=settings.morning_hour(), minute=0))
-    evening = settings.evening_hour()
-    if evening is not None:
-        _scheduler.reschedule_job("evening_report", trigger=_cron(hour=evening, minute=0))
-    _scheduler.reschedule_job("weekly_report",
-                              trigger=_cron(day_of_week="sun", hour=settings.weekly_hour(), minute=0))
+    for job_id, spec in _cron_specs().items():
+        if _scheduler.get_job(job_id):
+            _scheduler.reschedule_job(job_id, trigger=_cron(**spec))
+
+
+reschedule_report_jobs = reschedule_all
 
 
 def setup_scheduler() -> AsyncIOScheduler:
@@ -679,21 +739,23 @@ def setup_scheduler() -> AsyncIOScheduler:
                           max_instances=1, **kwargs)
 
     soon = datetime.now(UTC) + timedelta(minutes=2)
+    specs = _cron_specs()
     # Ticks every minute; the job decides which sites are due.
     job(run_availability_checks, IntervalTrigger(minutes=1), "availability_checks",
         misfire_grace_time=60)
     # SSL + domain once a day — the alert ladder prevents repeat noise.
-    job(run_ssl_checks, _cron(hour=8, minute=0), "ssl_checks")
-    job(run_domain_checks, _cron(hour=8, minute=5), "domain_checks")
+    job(run_ssl_checks, _cron(**specs["ssl_checks"]), "ssl_checks")
+    job(run_domain_checks, _cron(**specs["domain_checks"]), "domain_checks")
     # SEO/GEO audit before the morning report, so the digest shows fresh results.
-    job(run_seo_checks, _cron(hour=7, minute=30), "seo_checks", misfire_grace_time=600)
-    job(run_index_checks, _cron(hour=7, minute=45), "index_checks", misfire_grace_time=600)
+    job(run_seo_checks, _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
+    job(run_index_checks, _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
     # Links: first run shortly after boot, then every N hours.
     job(run_links_checks, IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon),
         "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
-    job(run_dns_checks, _cron(minute=20), "dns_checks", misfire_grace_time=300)
-    job(run_deep_checks, _cron(minute=40), "deep_checks", misfire_grace_time=300)
+    job(run_dns_checks, _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
+    job(run_region_checks, _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
+    job(run_deep_checks, _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
     # Watchers.
     job(run_heartbeat_watch, IntervalTrigger(minutes=10), "heartbeat_watch")
     job(run_host_checks, IntervalTrigger(minutes=30), "host_checks")
@@ -702,13 +764,10 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
     # Nightly maintenance.
-    job(run_retention, _cron(hour=3, minute=30), "retention")
-    job(run_db_backup, _cron(hour=3, minute=45), "db_backup")
+    job(run_retention, _cron(**specs["retention"]), "retention")
+    job(run_db_backup, _cron(**specs["db_backup"]), "db_backup")
     # Reports.
-    job(send_morning_report, _cron(hour=settings.morning_hour(), minute=0), "morning_report")
-    job(send_evening_report,
-        _cron(hour=settings.evening_hour() if settings.evening_hour() is not None
-              else config.evening_report_hour, minute=0), "evening_report")
-    job(send_weekly_report, _cron(day_of_week="sun", hour=settings.weekly_hour(), minute=0),
-        "weekly_report", misfire_grace_time=3600)
+    job(send_morning_report, _cron(**specs["morning_report"]), "morning_report")
+    job(send_evening_report, _cron(**specs["evening_report"]), "evening_report")
+    job(send_weekly_report, _cron(**specs["weekly_report"]), "weekly_report", misfire_grace_time=3600)
     return scheduler

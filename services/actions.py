@@ -11,7 +11,7 @@ import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
-from services import humanize, integrations
+from services import humanize, integrations, seo_fixes
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -62,6 +62,18 @@ def explain_keyboard(incident_id: int | None, *extra_rows: list[InlineKeyboardBu
     rows = [[InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}")]] if incident_id else []
     rows += [row for row in extra_rows if row]
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False,
+                     extra_rows: tuple[list[InlineKeyboardButton], ...] = ()) -> InlineKeyboardMarkup:
+    """One «💡 …» button per kind of search/AI finding → its steps screen."""
+    rows = []
+    for i, code in enumerate(codes, 1):
+        label = seo_fixes.button_label(code)
+        rows.append([InlineKeyboardButton(text=f"{i}. {label}" if numbered else label,
+                                          callback_data=f"seo_fix:{site_id}:{code}")])
+    rows += [row for row in extra_rows if row]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def domain_keyboard(registrar: str | None, incident_id: int | None = None) -> InlineKeyboardMarkup | None:

@@ -19,7 +19,7 @@ from aiohttp import web
 from config import config
 from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import notifier, public_urls, secrets, settings
+from services import integrations, notifier, public_urls, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -159,8 +159,9 @@ def _status_allowed(request: web.Request) -> bool:
     if not settings.status_page_enabled():
         return False
     got = request.match_info.get("slug", "")
-    if config.status_page_slug:
-        return _secret_ok(got, config.status_page_slug)
+    slug = integrations.status_page_slug()
+    if slug:
+        return _secret_ok(got, slug)
     return got == ""
 
 

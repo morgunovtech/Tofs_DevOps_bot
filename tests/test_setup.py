@@ -190,3 +190,31 @@ async def test_env_fallback_and_source(db, cfg):
     await integrations.set_value("yandex_token", None)
     assert integrations.yandex_token() == "env-token"
     assert integrations.source("cf_api_token") is None
+
+
+async def test_watchdog_wizard(bot, db, monkeypatch):
+    call = FakeCall("setup:watchdog")
+    await setup.cb_guide_watchdog(call)
+    assert "Пока не подключён" in call.message.texts[-1]
+    assert "🔗 Вставить ссылку" in buttons(call.message.reply_markup)
+    state = FakeState()
+    await setup.cb_watchdog_url(FakeCall("setup:watchdog_url"), state)
+    msg = FakeMessage("hc-ping.com/abc")
+    await setup.msg_watchdog_url(msg, state)
+    assert "https-ссылка" in msg.texts[-1]
+
+    async def fake_ping(url):
+        return url.endswith("/good")
+    monkeypatch.setattr(setup, "_watchdog_ping", fake_ping)
+    msg = FakeMessage("https://hc-ping.com/bad")
+    await setup.msg_watchdog_url(msg, state)
+    assert "не ответил" in msg.texts[-1] and not integrations.self_heartbeat_url()
+    msg = FakeMessage("https://hc-ping.com/good")
+    await setup.msg_watchdog_url(msg, state)
+    assert "Сторож подключён" in msg.texts[-1]
+    assert integrations.self_heartbeat_url() == "https://hc-ping.com/good" and integrations.source("self_heartbeat_url") == "bot"
+    call = FakeCall("setup:watchdog")
+    await setup.cb_guide_watchdog(call)
+    assert "ссылка введена в боте" in call.message.texts[-1] and "🗑 Отключить" in buttons(call.message.reply_markup)
+    await setup.cb_watchdog_off(FakeCall("setup:watchdog_off"))
+    assert not integrations.self_heartbeat_url()

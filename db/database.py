@@ -8,6 +8,7 @@ can't interleave statements into each other's transactions.
 
 import asyncio
 import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import aiosqlite
@@ -549,3 +550,36 @@ async def backup_db(dest_path: str):
         if os.path.exists(dest_path):
             os.remove(dest_path)
         await db.execute("VACUUM INTO ?", (dest_path,))
+
+
+async def restore_from_bytes(data: bytes) -> int:
+    """Replace the live database with an uploaded copy (the weekly Telegram
+    backup, for instance). Validated first; the old file stays as .bak.
+    Returns the number of active sites in the restored copy."""
+    if not data.startswith(b"SQLite format 3"):
+        raise ValueError("not an SQLite file")
+    tmp = _db_path + ".restore"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    try:
+        probe = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        try:
+            tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "sites" not in tables:
+                raise ValueError("no sites table")
+            count = probe.execute("SELECT COUNT(*) FROM sites WHERE active = 1").fetchone()[0]
+        finally:
+            probe.close()
+    except sqlite3.DatabaseError as e:
+        os.remove(tmp)
+        raise ValueError(f"damaged file: {e}") from e
+    async with _write_lock:
+        await close_db()
+        if os.path.exists(_db_path):
+            os.replace(_db_path, _db_path + ".bak")
+        for suffix in ("-wal", "-shm"):
+            if os.path.exists(_db_path + suffix):
+                os.remove(_db_path + suffix)
+        os.replace(tmp, _db_path)
+    await init_db()
+    return count

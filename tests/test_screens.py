@@ -3,13 +3,13 @@ catches attribute errors in handlers without a Telegram connection."""
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
-from conftest import FakeCall, FakeMessage, FakeState
+from conftest import FakeCall, FakeMessage, FakeState, buttons
 
 from db.database import save_feedback, save_incident
-from handlers import feedback, heartbeats, incidents, maintenance, menu, settings, site_settings, sites
+from handlers import feedback, heartbeats, incidents, maintenance, menu, seo, settings, site_settings, sites
+from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
-from services import sitestatus
 
 
 async def test_main_menu_header_states(bot, db):
@@ -146,3 +146,87 @@ async def test_main_menu_header_is_short_when_all_is_well(bot, db):
     assert all(line.endswith("· быстро") for line in lines[1:])
     labels = [b.text for row in kb.inline_keyboard for b in row]
     assert labels == ["🌍 Сайты", "🔎 Проверить всё сейчас", "⚙️ Настройки"]   # no «Проблемы» on a good day
+
+
+async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):
+    sid = await db.activate_or_create_site("https://seo.test")
+    await sitestatus.set_field(sid, "hosting", "cloudflare")
+    await sitestatus.update(
+        sid, "seo", status="warning", critical=0, improve=4, pages=3, no_js_chars=60,
+        problems=[{"code": "no_js", "severity": "warning", "message": "без JavaScript на главной всего 60 символов текста"},
+                  {"code": "soft404", "severity": "warning", "message": "несуществующий адрес ответил «всё хорошо» (HTTP 200)"},
+                  {"code": "no_title", "severity": "warning", "message": "/about: нет заголовка <title>"},
+                  {"code": "no_title", "severity": "warning", "message": "/blog: нет заголовка <title>"}],
+        infos=[{"code": "og_image", "severity": "info", "message": "нет картинки для превью в мессенджерах (og:image)"}])
+    call = FakeCall(f"seo_site:{sid}")
+    await seo.cb_seo(call)
+    text = call.message.texts[-1]
+    assert len(call.message.texts) == 1                              # instant: no «Смотрю…» progress screen
+    assert "В поиске виден. 3 помехи" in text and "видят почти пустую страницу — 60 символов" in text
+    assert "1. 🤖" in text and "2. 🗑" in text and "3. 🏷" in text and "&lt;title&gt;" in text
+    assert "/about: " in text and "/blog: " in text                   # both pages under one numbered item
+    labels = buttons(call.message.reply_markup)
+    assert labels[0].startswith("1. 💡") and labels[2] == "3. 💡 Добавить заголовок страницы"
+    assert "💡 Мелочи: что с ними делать" in labels and "🔄 Проверить снова" in labels
+
+    call = FakeCall(f"seo_fix:{sid}:soft404")
+    await seo.cb_seo_fix(call)
+    text = call.message.texts[-1]
+    assert "Чем грозит" in text and "_redirects" in text and "Шаги для Cloudflare" in text and "Что я увидел" in text
+    labels = buttons(call.message.reply_markup)
+    assert "🔗 Открыть панель Cloudflare" in labels and "🔗 Открыть несуществующую страницу" in labels
+
+    call = FakeCall(f"seo_minor:{sid}")
+    await seo.cb_seo_minor(call)
+    assert "og:image" in call.message.texts[-1] and "1200×630" in call.message.texts[-1]
+
+    lines = await sites.card_lines(await db.get_site(sid))
+    assert any("есть что улучшить (4)" in line for line in lines)
+
+
+async def test_timezone_ring_and_status_page_screens(bot, db):
+    call = FakeCall("menu_tz")
+    await settings.cb_tz(call)
+    assert "Часовой пояс: <b>Europe/Moscow</b>" in call.message.texts[-1]
+    call = FakeCall("set_tz:4")                                       # Новосибирск
+    await settings.cb_settings_pick(call)
+    assert settings_service.timezone() == "Asia/Novosibirsk" and "Asia/Novosibirsk" in call.message.texts[-1]
+    state = FakeState()
+    msg = FakeMessage("Europe/Prague")
+    await settings.msg_tz(msg, state)
+    assert settings_service.timezone() == "Europe/Prague" and state.state is None
+    msg = FakeMessage("Mars/Olympus")
+    await settings.msg_tz(msg, FakeState())
+    assert "не знаю" in msg.texts[-1] and settings_service.timezone() == "Europe/Prague"
+    await settings.cb_settings_pick(FakeCall("set_tz:env"))
+    assert settings_service.timezone() == "Europe/Moscow"
+    assert "Часовой пояс: Europe/Moscow" in await settings.hub_text()
+
+    call = FakeCall("set_ring:on")
+    await settings.cb_settings_pick(call)
+    assert settings_service.ring_only_down() and "только когда сайт лёг" in call.message.texts[-1]
+    await settings.cb_settings_pick(FakeCall("set_ring:off"))
+    assert not settings_service.ring_only_down()
+
+    call = FakeCall("menu_statuspage")
+    await settings.cb_status_page(call)
+    assert "Выключена" in call.message.texts[-1]
+    call = FakeCall("set_sp:on")
+    await settings.cb_settings_pick(call)
+    assert "Включена: https://bot.example.test/status" in call.message.texts[-1]
+    call = FakeCall("sp_secret:on")
+    await settings.cb_status_page_secret(call)
+    slug = integrations.status_page_slug()
+    assert slug and slug in call.message.texts[-1] and "Секретная ссылка включена" in call.message.texts[-1]
+    await settings.cb_status_page_secret(FakeCall("sp_secret:off"))
+    assert not integrations.status_page_slug()
+    await settings.cb_settings_pick(FakeCall("set_sp:off"))
+
+
+async def test_declined_keyword_is_not_suggested_again(bot, db):
+    sid = await db.activate_or_create_site("https://kw.test")
+    assert "keyword" in [c[0] for c in await recommend._candidates()]
+    call = FakeCall(f"kwno:{sid}")
+    await sites.cb_keyword_decline(call, FakeState())
+    assert any(a and a.startswith("Ок") for a in call.answers) and call.message.texts   # back on the main screen
+    assert "keyword" not in [c[0] for c in await recommend._candidates()]

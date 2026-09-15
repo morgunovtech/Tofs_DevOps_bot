@@ -26,6 +26,7 @@ from db.database import (
     get_site,
     get_state,
     get_uptime_over_days,
+    restore_from_bytes,
     set_state,
     update_site_settings,
 )
@@ -38,15 +39,15 @@ from handlers.common import (
     render,
     site_by_cb,
 )
-from handlers.menu import best_ms, site_state
+from handlers.menu import best_ms, cb_main_menu, site_state
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
-from reports.scheduler import reset_site_schedule
-from services import humanize, maintenance, settings, sitestatus
+from reports.scheduler import reschedule_all, reset_site_schedule
+from services import humanize, integrations, maintenance, secrets, settings, sitestatus
 from utils.clock import fmt_local, local_at
 from utils.text import esc, fmt_date, fmt_duration, plural
 from utils.urls import is_http_url, short_host, site_label
@@ -177,9 +178,11 @@ async def card_lines(site: dict) -> list[str]:
                 lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
         seo = st.get("seo")
         if seo:
-            verdict = {"ok": "✅ В поиске: всё в порядке", "warning": "💡 В поиске: виден, есть что улучшить",
-                       "critical": "🔴 В поиске: сайт закрыт от поисковиков!"}.get(seo.get("status"),
-                                                                                     "⚠️ В поиске: не смог проверить")
+            n = seo.get("improve") or 0
+            verdict = {"ok": "✅ В поиске: всё в порядке",
+                       "warning": f"💡 В поиске: виден, есть что улучшить ({n})",
+                       "critical": "🔴 В поиске: сайт закрыт от поисковиков — жми «🔎 Поиск и ИИ»"}.get(
+                seo.get("status"), "⚠️ В поиске: не смог проверить")
             lines.append(f"{verdict}{_ago(seo)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
@@ -330,8 +333,19 @@ async def msg_site_add(message: Message, state: FSMContext):
                          f"Так я замечу пустую страницу или ошибку вместо сайта.")
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
-                 InlineKeyboardButton(text="Не надо", callback_data="menu_main")]])
+                 InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]])
     await status.edit_text("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("kwno:"))
+async def cb_keyword_decline(call: CallbackQuery, state: FSMContext):
+    """«Не надо» is remembered: the weekly tip never re-suggests it."""
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    if site:
+        await set_state(f"kw_declined:{site['id']}", "1")
+        await set_state(f"kw_suggest:{site['id']}", None)
+    await ack(call, "Ок, больше не предложу")
+    await cb_main_menu(call, state)
 
 
 @router.callback_query(F.data.startswith("kwok:"))
@@ -411,57 +425,48 @@ async def cb_pause(call: CallbackQuery):
 _EXPORT_FIELDS = sorted(SITE_SETTING_COLS)
 
 
-@router.callback_query(F.data == "site_export")
-async def cb_site_export(call: CallbackQuery):
-    await ack(call)
+async def export_document() -> dict:
+    """Everything a person configured: sites with dials, digest hours, quiet
+    hours, maintenance windows, task-control jobs and the integrations
+    entered in the chat (tokens included — treat the file as a secret)."""
     sites = [{"url": s["url"], **{k: s.get(k) for k in _EXPORT_FIELDS if s.get(k) is not None}}
              for s in await get_all_sites()]
-    doc = {"version": 1, "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
-           "sites": sites}
-    data = json.dumps(doc, ensure_ascii=False, indent=2).encode()
-    await call.message.answer_document(
-        BufferedInputFile(data, filename="tofsdevops-sites.json"),
-        caption=f"📤 {len(sites)} сайтов с настройками. Импорт: «⚙️ Настройки» → 📥.")
+    quiet = settings.quiet_hours()
+    return {
+        "version": 2,
+        "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "sites": sites,
+        "settings": {
+            "morning_hour": settings.morning_hour(), "evening_hour": settings.evening_hour(),
+            "weekly_hour": settings.weekly_hour(), "quiet_hours": f"{quiet[0]}-{quiet[1]}" if quiet else None,
+            "status_page": settings.status_page_enabled(), "timezone": settings.timezone(),
+            "ring_only_down": settings.ring_only_down(),
+        },
+        "maintenance_windows": [{k: w[k] for k in ("site_id", "days", "start_min", "end_min")}
+                                | {"site_url": (await get_site(w["site_id"]) or {}).get("url") if w.get("site_id") else None}
+                                for w in maintenance.windows()],
+        "heartbeat_jobs": settings.ui_heartbeat_jobs(),
+        "integrations": {k: integrations._values[k] for k in integrations.KEYS if integrations._values.get(k)},
+    }
 
 
-@router.callback_query(F.data == "site_import")
-async def cb_site_import(call: CallbackQuery, state: FSMContext):
-    await ack(call)
-    await state.set_state(ImportForm.data)
-    await render(call, "📥 Пришли JSON из экспорта — файлом или текстом.\n"
-                       "Сайты добавятся или обновятся, лишние не удалятся.", cancel_kb())
-
-
-@router.message(ImportForm.data)
-async def msg_site_import(message: Message, state: FSMContext):
-    raw = message.text or ""
-    if message.document:
-        if (message.document.file_size or 0) > 256 * 1024:
-            await message.answer("Файл слишком большой (лимит 256 КБ).", reply_markup=cancel_kb())
-            return
-        buf = await message.bot.download(message.document)
-        raw = buf.read().decode("utf-8", errors="replace")
-    try:
-        doc = json.loads(raw)
-        items = doc["sites"] if isinstance(doc, dict) else doc
-        assert isinstance(items, list)
-    except (ValueError, KeyError, AssertionError):
-        await message.answer("Не смог разобрать JSON. Нужен формат из «📤 Экспорт».",
-                             reply_markup=cancel_kb())
-        return
-    await state.clear()
-    added, updated, skipped = 0, 0, []
-    for item in items[:MAX_SITES]:
-        url, error = parse_site_input(str((item or {}).get("url", "")))
+async def apply_document(doc: dict) -> dict:
+    """Apply an export document; returns counters for the summary."""
+    counters = {"added": 0, "updated": 0, "skipped": [], "settings": 0, "windows": 0, "jobs": 0, "integrations": 0}
+    items = doc.get("sites", doc) if isinstance(doc, dict) else doc
+    by_url: dict[str, int] = {}
+    for item in list(items)[:MAX_SITES]:
+        url, _error = parse_site_input(str((item or {}).get("url", "")))
         if not url:
-            skipped.append(str((item or {}).get("url", "?"))[:60])
+            counters["skipped"].append(str((item or {}).get("url", "?"))[:60])
             continue
         existing = await get_all_sites()
         if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
-            skipped.append(f"{url} (лимит {MAX_SITES})")
+            counters["skipped"].append(f"{url} (лимит {MAX_SITES})")
             continue
         was = url in {s["url"] for s in existing}
         site_id = await activate_or_create_site(url)
+        by_url[url] = site_id
         fields = {k: (str(v) if k in ("accepted_codes", "keyword", "keyword_mode",
                                       "http_method", "http_headers", "http_body")
                       else int(v)) for k, v in item.items()
@@ -469,9 +474,120 @@ async def msg_site_import(message: Message, state: FSMContext):
         if fields:
             await update_site_settings(site_id, **fields)
         reset_site_schedule(site_id)
-        updated += was
-        added += not was
-    text = f"📥 Импорт: добавлено {added}, обновлено {updated}."
-    if skipped:
-        text += "\nПропущено:\n" + "\n".join(f"  • {esc(s)}" for s in skipped[:10])
+        counters["updated" if was else "added"] += 1
+    if not isinstance(doc, dict) or doc.get("version", 1) < 2:
+        return counters
+    st = doc.get("settings") or {}
+    if isinstance(st.get("morning_hour"), int):
+        await settings.set_morning_hour(st["morning_hour"])
+        counters["settings"] += 1
+    if "evening_hour" in st and (st["evening_hour"] is None or isinstance(st["evening_hour"], int)):
+        await settings.set_evening_hour(st["evening_hour"])
+        counters["settings"] += 1
+    if isinstance(st.get("weekly_hour"), int):
+        await settings.set_weekly_hour(st["weekly_hour"])
+        counters["settings"] += 1
+    if "quiet_hours" in st:
+        await settings.set_quiet_hours(st["quiet_hours"] or None)
+        counters["settings"] += 1
+    if isinstance(st.get("status_page"), bool):
+        await settings.set_status_page(st["status_page"])
+        counters["settings"] += 1
+    if st.get("timezone") and await settings.set_timezone(st["timezone"]):
+        counters["settings"] += 1
+    if isinstance(st.get("ring_only_down"), bool):
+        await settings.set_ring_only_down(st["ring_only_down"])
+        counters["settings"] += 1
+    for w in doc.get("maintenance_windows") or []:
+        try:
+            site_id = by_url.get(w.get("site_url")) if w.get("site_url") else None
+            if w.get("site_url") and site_id is None:
+                continue
+            await maintenance.add_window(site_id, [int(d) for d in w.get("days") or []],
+                                         int(w["start_min"]), int(w["end_min"]))
+            counters["windows"] += 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    for name, interval in (doc.get("heartbeat_jobs") or {}).items():
+        if isinstance(name, str) and str(interval).isdigit():
+            await settings.add_heartbeat_job(name[:20], int(interval))
+            counters["jobs"] += 1
+    for key, value in (doc.get("integrations") or {}).items():
+        if key in integrations.KEYS and isinstance(value, str):
+            await integrations.set_value(key, value)
+            counters["integrations"] += 1
+    reschedule_all()
+    return counters
+
+
+@router.callback_query(F.data == "site_export")
+async def cb_site_export(call: CallbackQuery):
+    await ack(call)
+    doc = await export_document()
+    data = json.dumps(doc, ensure_ascii=False, indent=2).encode()
+    await call.message.answer_document(
+        BufferedInputFile(data, filename="tofsdevops-export.json"),
+        caption=(f"📤 {len(doc['sites'])} сайтов с настройками, сводки, тихие часы, плановые работы, "
+                 f"контроль задач и подключения. В файле есть токены — храни его как пароль. "
+                 f"Восстановить: «⚙️ Настройки» → 📥."))
+
+
+@router.callback_query(F.data == "site_import")
+async def cb_site_import(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(ImportForm.data)
+    await render(call, "📥 Пришли файл экспорта (JSON) или копию базы (.db из воскресного отчёта).\n"
+                       "JSON добавит и обновит сайты и настройки, лишнее не удалит. Копия базы заменит всё "
+                       "целиком, текущая база сохранится рядом как .bak.", cancel_kb())
+
+
+@router.message(ImportForm.data)
+async def msg_site_import(message: Message, state: FSMContext):
+    raw_bytes = (message.text or "").encode()
+    if message.document:
+        if (message.document.file_size or 0) > 64 * 1024 * 1024:
+            await message.answer("Файл слишком большой (лимит 64 МБ).", reply_markup=cancel_kb())
+            return
+        buf = await message.bot.download(message.document)
+        raw_bytes = buf.read()
+    if raw_bytes.startswith(b"SQLite format 3"):
+        await state.clear()
+        try:
+            n = await restore_from_bytes(raw_bytes)
+        except ValueError as e:
+            await message.answer(f"❌ Это не похоже на копию базы бота: {esc(e)}.", reply_markup=back_button())
+            return
+        await reload_services()
+        await message.answer(f"✅ База восстановлена из копии: активных сайтов {n}. Прежняя база лежит "
+                             f"рядом как .bak. Проверки продолжаются.", reply_markup=back_button())
+        return
+    try:
+        doc = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+        items = doc["sites"] if isinstance(doc, dict) else doc
+        assert isinstance(items, list)
+    except (ValueError, KeyError, AssertionError):
+        await message.answer("Не смог разобрать файл. Нужен JSON из «📤 Экспорт» или копия базы .db.",
+                             reply_markup=cancel_kb())
+        return
+    await state.clear()
+    c = await apply_document(doc)
+    text = f"📥 Импорт: сайтов добавлено {c['added']}, обновлено {c['updated']}."
+    extras = [f"настроек {c['settings']}" if c["settings"] else "",
+              f"плановых работ {c['windows']}" if c["windows"] else "",
+              f"задач {c['jobs']}" if c["jobs"] else "",
+              f"подключений {c['integrations']}" if c["integrations"] else ""]
+    extras = [e for e in extras if e]
+    if extras:
+        text += " Также: " + ", ".join(extras) + "."
+    if c["skipped"]:
+        text += "\nПропущено:\n" + "\n".join(f"  • {esc(s)}" for s in c["skipped"][:10])
     await message.answer(text, reply_markup=back_button())
+
+
+async def reload_services():
+    """After a database restore every in-memory cache must be re-read."""
+    await secrets.load()
+    await settings.load()
+    await maintenance.load()
+    await integrations.load()
+    reschedule_all()

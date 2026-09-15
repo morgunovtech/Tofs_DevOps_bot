@@ -12,9 +12,9 @@ Sitemap: https://example.com/sitemap.xml
 
 def test_analyze_robots():
     problems, sitemaps = analyze_robots(ROBOTS, "https://example.com")
-    messages = {p.severity: p.message for p in problems}
-    assert "critical" in messages and "Googlebot" in messages["critical"]
-    assert any("GPTBot" in p.message and p.severity == "warning" for p in problems)
+    by_code = {p.code: p for p in problems}
+    assert by_code["robots_search"].severity == "critical" and "Googlebot" in by_code["robots_search"].message
+    assert by_code["robots_ai"].severity == "warning" and "GPTBot" in by_code["robots_ai"].message
     assert sitemaps == ["https://example.com/sitemap.xml"]
 
 
@@ -24,13 +24,12 @@ def test_analyze_page_flags_noindex_and_missing_meta():
     <body><p>Hello world text here</p><script>var x = 1;</script></body></html>"""
     problems, infos, text_len = analyze_page(html, "https://example.com/page",
                                              {"X-Robots-Tag": "noindex"})
-    kinds = [p.message for p in problems]
-    assert sum("noindex" in m for m in kinds) == 2
-    assert any("нет <title>" in m for m in kinds)
-    assert any("description" in m for m in kinds)
-    assert any("JSON-LD" in m for m in kinds)
+    codes = [p.code for p in problems]
+    assert codes.count("noindex_header") == 1 and codes.count("noindex_meta") == 1
+    assert {"no_title", "no_description", "jsonld_invalid"} <= set(codes)
+    assert all(p.message.startswith("/page: ") for p in problems if p.code != "noindex_header")
     assert text_len == len("Hello world text here")
-    assert any("canonical" in i for i in infos)
+    assert any(i.code == "no_canonical" for i in infos) and all(i.severity == "info" for i in infos)
 
 
 def test_analyze_page_clean():

@@ -14,7 +14,7 @@ from config import config
 from db.database import get_state, set_state
 
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
-        "cf_api_token", "cf_zone_id", "second_opinion")
+        "cf_api_token", "cf_zone_id", "second_opinion", "self_heartbeat_url", "status_page_slug")
 _values: dict[str, str] = {}
 
 
@@ -48,6 +48,8 @@ def source(key: str) -> str | None:
         "deploy_hooks": config.deploy_hooks,
         "cf_api_token": config.cf_api_token,
         "cf_zone_id": config.cf_zone_id,
+        "self_heartbeat_url": config.self_heartbeat_url,
+        "status_page_slug": config.status_page_slug,
     }.get(key)
     return "env" if env else None
 
@@ -135,6 +137,16 @@ def cf_zone_id() -> str:
 
 def cf_purge_configured() -> bool:
     return bool(cf_api_token() and cf_zone_id())
+
+
+# ── Watchdog & status page ───────────────────────────────────────────────────
+
+def self_heartbeat_url() -> str:
+    return _values.get("self_heartbeat_url") or config.self_heartbeat_url
+
+
+def status_page_slug() -> str:
+    return _values.get("status_page_slug") or config.status_page_slug
 
 
 # ── Second opinion ───────────────────────────────────────────────────────────

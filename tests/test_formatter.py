@@ -1,4 +1,4 @@
-from handlers.seo import build_seo_report
+from handlers.seo import fix_text, seo_text
 from monitors.base import (
     AvailabilityResult,
     DomainInfo,
@@ -64,15 +64,20 @@ def test_compact_report_chips():
 
 def test_seo_texts_are_html_safe():
     r = SeoResult(url="https://ex.com", site_id=1, status="critical",
-                  problems=[SeoProblem("critical", "/: meta robots noindex <title>")], infos=["нет <h1>"],
-                  pages_checked=3, no_js_chars=42)
-    assert "&lt;title&gt;" in format_seo_alert(r) and "исчезает из поиска" in format_seo_alert(r)
+                  problems=[SeoProblem("noindex_meta", "critical", "главная: meta robots noindex <title>")],
+                  infos=[SeoProblem("no_h1", "info", "нет <h1>")], pages_checked=3, no_js_chars=42)
+    alert = format_seo_alert(r)
+    assert "&lt;title&gt;" in alert and "исчезает из поиска" in alert and "запрет на индексацию" in alert
     warn_only = SeoResult(url="https://ex.com", site_id=1, status="warning",
-                          problems=[SeoProblem("warning", "/: нет <title>")])
+                          problems=[SeoProblem("no_title", "warning", "главная: нет <title>")])
     assert format_seo_alert(warn_only) == ""
-    report = build_seo_report([r], {"https://ex.com": "в индексе ✅"}, {})
-    assert "&lt;title&gt;" in report and "&lt;h1&gt;" in report and "<title>" not in report
-    assert "42 символа" in report
+    seo = {"status": "critical", "problems": [p.as_dict() for p in r.problems],
+           "infos": [i.as_dict() for i in r.infos], "pages": 3, "no_js_chars": 42}
+    screen = seo_text("https://ex.com", seo, "в индексе ✅")
+    assert "&lt;title&gt;" in screen and "&lt;h1&gt;" in screen and "<title>" not in screen
+    assert "42 символа" in screen and "Сайт закрыт от поиска" in screen and "1. 🔴" in screen
+    steps = fix_text("https://ex.com", "noindex_meta", seo, None)
+    assert "Чем грозит" in steps and "1. WordPress" in steps and "&lt;title&gt;" in steps
 
 
 def test_links_report_lists_external_links_too():

@@ -49,6 +49,7 @@ class SetupForm(StatesGroup):
     cf_hook = State()
     cf_token = State()
     cf_zone = State()
+    watchdog_url = State()
 
 
 @dataclass
@@ -134,7 +135,8 @@ async def build_items() -> list[Item]:
         items.append(Item("second_opinion", "ok", "вторая точка проверки"))
     else:
         items.append(Item("second_opinion", "off", "🌐 Вторая точка проверки",
-                          "перед алертом «сайт лежит» перепроверка с внешних нод check-host.net",
+                          "перед алертом «сайт лежит» перепроверка с внешних нод check-host.net, "
+                          "и раз в час — скорость сайта из региона твоей аудитории",
                           ("🌐 Включить вторую точку", "setup:so:on")))
 
     if settings.heartbeat_jobs():
@@ -180,12 +182,12 @@ async def build_items() -> list[Item]:
                               "автоперезапуск контейнеров и очистка диска на сервере бота",
                               ("🐳 Как подключить", "setup:docker")))
 
-    if config.self_heartbeat_url:
+    if integrations.self_heartbeat_url():
         items.append(Item("watchdog", "ok", "внешний сторож"))
     else:
         items.append(Item("watchdog", "off", "🛡 Внешний сторож",
                           "healthchecks.io скажет, если умрёт сам бот",
-                          ("🛡 Как подключить", "setup:watchdog")))
+                          ("🛡 Подключить сторожа", "setup:watchdog")))
     return items
 
 
@@ -322,16 +324,66 @@ async def cb_guide_docker(call: CallbackQuery):
                         "полностью твой."), _guide_kb())
 
 
+def _watchdog_kb() -> InlineKeyboardMarkup:
+    buttons = [("🔗 Вставить ссылку", "setup:watchdog_url")]
+    if integrations.source("self_heartbeat_url") == "bot":
+        buttons.append(("🗑 Отключить", "setup:watchdog_off"))
+    return _guide_kb(*buttons)
+
+
 @router.callback_query(F.data == "setup:watchdog")
 async def cb_guide_watchdog(call: CallbackQuery):
     await ack(call)
+    state_line = {"bot": "Подключён, ссылка введена в боте.", "env": "Подключён через .env."}.get(
+        integrations.source("self_heartbeat_url"), "Пока не подключён.")
     await render(call, ("🛡 Внешний сторож\n\n"
+                        f"{state_line}\n\n"
                         "Бот следит за сайтами, а кто следит за ботом? healthchecks.io (бесплатно).\n\n"
-                        "1. Зарегистрируйся на healthchecks.io, создай check с периодом 5 минут.\n"
-                        "2. Скопируй ссылку вида <code>https://hc-ping.com/…</code> в переменную "
-                        "<code>SELF_HEARTBEAT_URL</code> (Railway → Variables или .env).\n"
-                        "3. После перезапуска бот отмечается там каждые 5 минут; пропадёт — "
-                        "healthchecks пришлёт письмо."), _guide_kb())
+                        "1. Зарегистрируйся на <a href=\"https://healthchecks.io\">healthchecks.io</a>, "
+                        "создай check с периодом 5 минут.\n"
+                        "2. Скопируй ссылку вида <code>https://hc-ping.com/…</code> и нажми «🔗 Вставить ссылку».\n"
+                        "3. Бот будет отмечаться там каждые 5 минут; пропадёт — healthchecks пришлёт письмо."),
+                 _watchdog_kb())
+
+
+@router.callback_query(F.data == "setup:watchdog_url")
+async def cb_watchdog_url(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(SetupForm.watchdog_url)
+    await render(call, "🔗 Пришли ссылку check-а из healthchecks.io (начинается с https://hc-ping.com/).",
+                 cancel_kb())
+
+
+@router.message(SetupForm.watchdog_url)
+async def msg_watchdog_url(message: Message, state: FSMContext):
+    url = (message.text or "").strip()
+    if not re.fullmatch(r"https://[^\s]{10,300}", url):
+        await message.answer("Нужна https-ссылка. Попробуй ещё раз:", reply_markup=cancel_kb())
+        return
+    await state.clear()
+    if not await _watchdog_ping(url):
+        await message.answer("❌ По этой ссылке сторож не ответил. Проверь, что скопировал её целиком.",
+                             reply_markup=_watchdog_kb())
+        return
+    await integrations.set_value("self_heartbeat_url", url)
+    await message.answer("✅ Сторож подключён: только что отметился, дальше буду каждые 5 минут.",
+                         reply_markup=back_button("← К диагностике", "setup:check"))
+
+
+async def _watchdog_ping(url: str) -> bool:
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(url) as resp:
+                return resp.status < 400
+    except Exception:
+        return False
+
+
+@router.callback_query(F.data == "setup:watchdog_off")
+async def cb_watchdog_off(call: CallbackQuery):
+    await integrations.set_value("self_heartbeat_url", None)
+    await ack(call, "Отключено")
+    await show_checklist(call)
 
 
 # ── Yandex.Webmaster wizard ──────────────────────────────────────────────────

@@ -8,7 +8,8 @@ not, because an observation is an observation.
      "ssl": {"days_left", "issuer", "not_after", "error", "at"},
      "domain": {"days_left", "expiration", "registrar", "unsupported", "error", "at"},
      "links": {"status", "internal", "external", "at"},
-     "seo": {"status", "critical", "improve", "at"},
+     "seo": {"status", "critical", "improve", "problems": [{"code", "severity", "message"}],
+             "infos": [...], "pages", "no_js_chars", "at"},
      "region": {"ms", "name", "at"},          # response time from the audience's region
      "hosting": "cloudflare"}
 """

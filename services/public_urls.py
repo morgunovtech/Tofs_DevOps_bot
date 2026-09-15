@@ -1,7 +1,7 @@
 """Ready-to-paste URLs for things the bot serves over HTTP."""
 
 from config import config
-from services import secrets
+from services import integrations, secrets
 
 PLACEHOLDER_HOST = "YOUR_SERVER"
 
@@ -21,8 +21,8 @@ def is_public() -> bool:
 
 def _status_path() -> str:
     path = "/status"
-    if config.status_page_slug:
-        path += f"/{config.status_page_slug}"
+    if integrations.status_page_slug():
+        path += f"/{integrations.status_page_slug()}"
     return path
 
 

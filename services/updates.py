@@ -16,7 +16,9 @@ that CI tests and auto-merges; the hosting platform redeploys from main.
 import asyncio
 import json
 import logging
+import os
 import platform
+import re
 from datetime import UTC, datetime
 from importlib import metadata
 
@@ -34,6 +36,7 @@ PACKAGES = (
     "aiogram", "aiohttp", "aiosqlite", "apscheduler", "beautifulsoup4",
     "python-dotenv", "cryptography", "dnspython",
 )
+GITHUB_PULLS = "https://api.github.com/repos/{slug}/pulls"
 PYPI_SIMPLE = "https://pypi.org/simple/{name}/"
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
@@ -124,20 +127,72 @@ async def _vulnerabilities(session: aiohttp.ClientSession,
     return out
 
 
+def repo_slug() -> str | None:
+    """owner/name of the repository this bot was deployed from — Railway
+    injects it, GitHub Actions too; otherwise unknown."""
+    slug = os.getenv("GITHUB_REPOSITORY", "").strip()
+    if not slug:
+        owner = os.getenv("RAILWAY_GIT_REPO_OWNER", "").strip()
+        name = os.getenv("RAILWAY_GIT_REPO_NAME", "").strip()
+        slug = f"{owner}/{name}" if owner and name else ""
+    return slug or None
+
+
+_BUMP = re.compile(r"bump (\S+) from (\d+)(\S*) to (\d+)(\S*)", re.I)
+
+
+def is_major_bump(title: str) -> bool:
+    """Dependabot title «Bump aiogram from 3.31.0 to 4.0.0» → major changed."""
+    m = _BUMP.search(title)
+    return bool(m) and m.group(2) != m.group(4)
+
+
+def short_bump(title: str) -> str:
+    m = _BUMP.search(title)
+    return f"{m.group(1)} {m.group(2)}{m.group(3)}→{m.group(4)}{m.group(5)}" if m else title[:60]
+
+
+async def open_major_prs(session: aiohttp.ClientSession) -> list[dict]:
+    """Dependabot PRs that CI does not auto-merge (major bumps) and that
+    are waiting for a human — public repositories only, no token needed."""
+    slug = repo_slug()
+    if not slug:
+        return []
+    try:
+        async with session.get(GITHUB_PULLS.format(slug=slug), params={"state": "open", "per_page": "50"},
+                               headers={"Accept": "application/vnd.github+json",
+                                        "User-Agent": "TofsDevOps"}) as resp:
+            if resp.status != 200:
+                return []
+            data = await resp.json()
+    except Exception as e:
+        logger.debug("open PRs of %s: %s", slug, e)
+        return []
+    out = []
+    for pr in data if isinstance(data, list) else []:
+        login = str(((pr or {}).get("user") or {}).get("login") or "")
+        title = str((pr or {}).get("title") or "")
+        if login.startswith("dependabot") and is_major_bump(title):
+            out.append({"number": pr.get("number"), "title": title, "url": pr.get("html_url") or ""})
+    return out
+
+
 async def check_dependencies() -> dict:
     """{"outdated": [[name, installed, latest], …], "vulns": {name: [ids]},
-    "checked_at": iso} — network errors degrade to empty sections."""
+    "major_prs": [{number, title, url}], "checked_at": iso} — network
+    errors degrade to empty sections."""
     versions = installed_versions()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
         latest = dict(zip(versions, await asyncio.gather(
             *(_latest(session, n) for n in versions)), strict=True))
         vulns = await _vulnerabilities(session, versions)
+        major_prs = await open_major_prs(session)
     outdated = [
         [name, ver, latest[name]] for name, ver in versions.items()
         if latest.get(name) and _version_key(ver) and _version_key(latest[name])
         and _version_key(latest[name]) > _version_key(ver)
     ]
-    return {"outdated": outdated, "vulns": vulns,
+    return {"outdated": outdated, "vulns": vulns, "major_prs": major_prs,
             "checked_at": datetime.now(UTC).isoformat(timespec="minutes")}
 
 
@@ -191,6 +246,12 @@ def summary_lines(result: dict | None) -> list[str]:
     if result.get("outdated"):
         items = ", ".join(f"{n} {cur}→{new}" for n, cur, new in result["outdated"][:6])
         lines.append(f"📦 Есть обновления: {esc(items)}")
+    if result.get("major_prs"):
+        prs = result["major_prs"]
+        items = ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(short_bump(p.get("title") or ""))}</a>'
+                          for p in prs[:4])
+        lines.append(f"🔀 Ждут твоего решения: {len(prs)} PR с крупным обновлением — {items}. "
+                     f"Такие сами не вливаются: открой, прочитай «что поменялось» и нажми Merge.")
     if not lines:
         lines.append("📦 Зависимости актуальны, уязвимостей нет")
     return lines
