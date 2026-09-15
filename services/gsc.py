@@ -83,13 +83,13 @@ async def _access_token(session: aiohttp.ClientSession) -> str | None:
         }) as resp:
             data = await resp.json()
             if resp.status != 200:
-                logger.warning(f"GSC token exchange failed: {data}")
+                logger.warning("GSC token exchange failed: %s", data)
                 return None
         _token_cache["token"] = data["access_token"]
         _token_cache["exp"] = time.time() + data.get("expires_in", 3600)
         return _token_cache["token"]
     except Exception as e:
-        logger.warning(f"GSC auth failed: {e}")
+        logger.warning("GSC auth failed: %s", e)
         return None
 
 
@@ -118,7 +118,7 @@ async def search_totals(start: str, end: str,
             ) as resp:
                 data = await resp.json()
                 if resp.status != 200:
-                    logger.warning(f"GSC analytics HTTP {resp.status}: {data}")
+                    logger.warning("GSC analytics HTTP %s: %s", resp.status, data)
                     return None
         row = (data.get("rows") or [{}])[0]
         return {
@@ -127,7 +127,7 @@ async def search_totals(start: str, end: str,
             "position": round(row.get("position", 0), 1),
         }
     except Exception as e:
-        logger.warning(f"GSC analytics failed: {e}")
+        logger.warning("GSC analytics failed: %s", e)
         return None
 
 
@@ -148,7 +148,7 @@ async def inspect_url(page_url: str) -> dict | None:
             ) as resp:
                 data = await resp.json()
                 if resp.status != 200:
-                    logger.warning(f"GSC inspect HTTP {resp.status}: {data}")
+                    logger.warning("GSC inspect HTTP %s: %s", resp.status, data)
                     return None
         idx = (data.get("inspectionResult") or {}).get("indexStatusResult") or {}
         return {
@@ -157,5 +157,5 @@ async def inspect_url(page_url: str) -> dict | None:
             "last_crawl": idx.get("lastCrawlTime"),
         }
     except Exception as e:
-        logger.warning(f"GSC inspect failed: {e}")
+        logger.warning("GSC inspect failed: %s", e)
         return None

@@ -1,368 +1,195 @@
-import html
-from datetime import datetime, timezone
-from urllib.parse import urlparse
+"""Telegram message formatting for reports and single-event alerts.
+Everything user-controlled or site-controlled goes through esc()."""
 
-import pytz
+from datetime import UTC, datetime
 
-from config import config
+from monitors.base import (
+    AvailabilityResult,
+    DnsChange,
+    DomainResult,
+    LinksResult,
+    SeoResult,
+    SslResult,
+)
+from utils.clock import now_local, to_local
+from utils.text import esc, fmt_duration, parse_sqlite_utc
+from utils.urls import host_of, is_http_url, registrable_domain, short_host, site_label
+
+# ── One line per site (compact) ──────────────────────────────────────────────
+
+def _avail_chip(r: AvailabilityResult) -> str:
+    if r.ok:
+        return f"{r.response_time_ms}ms" if r.response_time_ms else "ok"
+    return f"❌ {esc(r.error or 'down')}"
 
 
-def _esc(value) -> str:
-    """HTML-escape a value for safe rendering in ParseMode.HTML."""
-    if value is None:
+def _ssl_chip(r: SslResult | None) -> str:
+    """Empty while healthy — the compact line stays short on mobile."""
+    if r is None:
         return ""
-    return html.escape(str(value), quote=False)
-
-
-def _short_host(url: str) -> str:
-    return urlparse(url).hostname or url
-
-
-def is_http_url(url: str) -> bool:
-    return url.startswith(("http://", "https://"))
-
-
-def site_label(url: str) -> str:
-    """Compact display label: host for web sites, host:port for tcp://
-    monitors, 'ping host' for ping:// ones."""
-    p = urlparse(url)
-    if p.scheme == "tcp":
-        return f"{p.hostname}:{p.port}" if p.port else (p.hostname or url)
-    if p.scheme == "ping":
-        return f"ping {p.hostname}" if p.hostname else url
-    return p.hostname or url
-
-
-def fmt_date(iso: str) -> str:
-    """'2026-10-15…' → '15.10.2026'."""
-    try:
-        return datetime.strptime(iso[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
-    except (ValueError, TypeError):
-        return iso or "N/A"
-
-
-def plural(n: int, one: str, few: str, many: str) -> str:
-    """Russian numeral agreement: 1 символ, 2 символа, 5 символов."""
-    n = abs(int(n))
-    if n % 10 == 1 and n % 100 != 11:
-        return one
-    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
-        return few
-    return many
-
-
-def fmt_local(sqlite_utc: str) -> str:
-    """sqlite datetime('now') string (UTC) → 'ДД.ММ ЧЧ:ММ' in the user's tz."""
-    dt = _parse_sqlite_utc(sqlite_utc)
-    if not dt:
-        return (sqlite_utc or "")[:16]
-    return dt.astimezone(pytz.timezone(config.timezone)).strftime("%d.%m %H:%M")
-
-
-SPARK_CHARS = "▁▂▃▄▅▆▇█"
-
-
-def sparkline(values: list) -> str:
-    """Unicode sparkline for response-time trends: ▂▃▂▁▅▂. Empty string
-    when there isn't enough data to say anything."""
-    vals = [v for v in values if v is not None]
-    if len(vals) < 3:
-        return ""
-    lo, hi = min(vals), max(vals)
-    if hi <= lo:
-        return SPARK_CHARS[1] * len(vals)
-    return "".join(
-        SPARK_CHARS[min(7, int((v - lo) / (hi - lo) * 7 + 0.5))] for v in vals)
-
-
-def now_local() -> datetime:
-    """Current time in the configured timezone — the container itself runs
-    in UTC, so naive datetime.now() would show server time to the user."""
-    return datetime.now(pytz.timezone(config.timezone))
-
-
-# ── One-line per site (compact) ──────────────────────────────────────────────
-
-def _avail_chip(r: dict) -> str:
-    if r.get("status") == "ok":
-        ms = r.get("response_time_ms")
-        return f"{ms}ms" if ms else "ok"
-    return f"❌ {_esc(r.get('error', 'down'))}"
-
-
-def _ssl_chip(r: dict) -> str:
-    """Empty string while healthy — the compact line stays short on mobile;
-    the chip appears only when expiry is close enough to care."""
-    info = r.get("ssl_info")
-    if not info:
+    if not r.ssl_info:
         return "SSL ?"
-    days = info["days_left"]
+    days = r.ssl_info.days_left
     if days < 0:
         return f"SSL ⛔ ({abs(days)}д назад)"
-    if days <= 14:
-        return f"SSL ⚠ {days}д"
-    return ""
+    return f"SSL ⚠ {days}д" if days <= 14 else ""
 
 
-def _domain_chip(r: dict) -> str:
-    info = r.get("domain_info")
-    if not info or info.get("days_left") is None:
+def _domain_chip(r: DomainResult | None) -> str:
+    if r is None or r.unsupported:
+        return ""
+    if not r.domain_info or r.domain_info.days_left is None:
         return "домен ?"
-    days = info["days_left"]
+    days = r.domain_info.days_left
     if days < 0:
         return f"домен ⛔ ({abs(days)}д назад)"
-    if days <= 30:
-        return f"домен ⚠ {days}д"
-    return ""
+    return f"домен ⚠ {days}д" if days <= 30 else ""
 
 
-def format_compact_status_report(availability: list[dict],
+def format_compact_status_report(availability: list[AvailabilityResult],
                                  incidents: list[dict],
-                                 ssl_results: list[dict] | None = None,
-                                 domain_results: list[dict] | None = None,
+                                 ssl_results: list[SslResult] | None = None,
+                                 domain_results: list[DomainResult] | None = None,
                                  report_type: str = "status",
                                  extras: list[str] | None = None) -> str:
     """One concise message: header + one line per site + incidents (if any)."""
     now = now_local().strftime("%d.%m %H:%M")
-    if report_type == "morning":
-        header = f"🌅 Доброе утро · {now}"
-    elif report_type == "evening":
-        header = f"🌙 Вечер · {now}"
-    else:
-        header = f"📊 Статус · {now}"
-
-    ssl_by_url = {r["url"]: r for r in (ssl_results or [])}
-
-    # Domain results are deduped by registrable domain — index by host root.
-    def _root(host: str) -> str:
-        parts = (host or "").split(".")
-        return ".".join(parts[-2:]) if len(parts) > 2 else host
-
-    domain_by_root = {}
-    for r in (domain_results or []):
-        domain_by_root[_root(_short_host(r.get("url", "")))] = r
+    header = {"morning": f"🌅 Доброе утро · {now}",
+              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"📊 Статус · {now}")
+    ssl_by_url = {r.url: r for r in (ssl_results or [])}
+    # Domain results are deduped by registrable domain — index by it.
+    domain_by_root = {registrable_domain(host_of(r.url)): r for r in (domain_results or [])}
 
     lines: list[str] = [header, ""]
-
     any_problem = False
     for r in availability:
-        host = site_label(r["url"])
-        avail = _avail_chip(r)
-        # SSL/domain chips only make sense for web sites — a tcp:// or
-        # ping:// monitor must not render a misleading "SSL ?".
-        http = is_http_url(r["url"])
-        ssl = _ssl_chip(ssl_by_url.get(r["url"], {})) if (ssl_results and http) else ""
-        dom = (_domain_chip(domain_by_root.get(_root(_short_host(r["url"])), {}))
-               if (domain_results and http) else "")
-
-        is_ok = (
-            r.get("status") == "ok"
-            and "⛔" not in ssl and "⚠" not in ssl
-            and "⛔" not in dom and "⚠" not in dom
-            and "?" not in ssl and "?" not in dom
-        )
-        icon = "✅" if is_ok else "⚠️"
-        if not is_ok:
-            any_problem = True
-
-        chips = " · ".join(c for c in [avail, ssl, dom] if c)
-        lines.append(f"{icon} {_esc(host)} — {chips}")
+        http = is_http_url(r.url)
+        ssl = _ssl_chip(ssl_by_url.get(r.url)) if (ssl_results is not None and http) else ""
+        dom = (_domain_chip(domain_by_root.get(registrable_domain(host_of(r.url))))
+               if (domain_results is not None and http) else "")
+        is_ok = r.ok and not any(m in ssl + dom for m in ("⛔", "⚠", "?"))
+        any_problem |= not is_ok
+        chips = " · ".join(c for c in (_avail_chip(r), ssl, dom) if c)
+        lines.append(f"{'✅' if is_ok else '⚠️'} {esc(site_label(r.url))} — {chips}")
 
     if incidents:
-        lines.append("")
-        lines.append(f"⚠️ Активных проблем: {len(incidents)}")
+        lines += ["", f"⚠️ Активных проблем: {len(incidents)}"]
         for inc in incidents[:5]:
             sev = "🔴" if inc["severity"] == "critical" else "⚠️"
-            lines.append(
-                f"  {sev} {_esc(site_label(inc['url']))} "
-                f"[{_esc(inc['check_type'])}]: {_esc(inc['message'])}"
-            )
+            lines.append(f"  {sev} {esc(site_label(inc['url']))} "
+                         f"[{esc(inc['check_type'])}]: {esc(inc['message'])}")
         if len(incidents) > 5:
             lines.append(f"  … и ещё {len(incidents) - 5}")
     elif not any_problem:
-        lines.append("")
-        lines.append("Всё спокойно 🐕")
-
+        lines += ["", "Всё спокойно 🐕"]
     if extras:
-        lines.append("")
-        lines.extend(extras)
-
+        lines += ["", *extras]
     return "\n".join(lines)
-
-
-# Backwards-compat alias used by interactive /menu_status handler.
-format_status_report = format_compact_status_report
 
 
 # ── Single-event alerts ──────────────────────────────────────────────────────
 
-def format_availability_alert(result: dict) -> str:
-    if result["status"] != "error":
+def format_availability_alert(r: AvailabilityResult) -> str:
+    if r.ok:
         return ""
-    if result.get("keyword_failed"):
-        # The site answers fine — it's the CONTENT that's wrong. Saying
-        # «НЕДОСТУПЕН · Код: 200» would contradict itself.
+    if r.keyword_failed:
+        # The site answers fine — it's the CONTENT that's wrong.
         header = "🚨 САЙТ ОТВЕЧАЕТ, НО СОДЕРЖИМОЕ НЕ В ПОРЯДКЕ"
     else:
-        noun = "САЙТ" if is_http_url(result["url"]) else "СЕРВИС"
-        header = f"🚨 {noun} НЕДОСТУПЕН"
-    lines = [
-        header,
-        f"{_esc(result['url'])}",
-        f"Ошибка: {_esc(result.get('error') or 'Unknown')}",
-    ]
-    # tcp/ping monitors have no HTTP status code — skip a meaningless line.
-    if result.get("status_code") is not None:
-        lines.append(f"Код: {_esc(result['status_code'])}")
-    lines.append(f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms")
+        header = f"🚨 {'САЙТ' if is_http_url(r.url) else 'СЕРВИС'} НЕДОСТУПЕН"
+    lines = [header, esc(r.url), f"Ошибка: {esc(r.error or 'Unknown')}"]
+    if r.status_code is not None:  # tcp/ping have no HTTP status
+        lines.append(f"Код: {r.status_code}")
+    lines.append(f"Время ответа: {r.response_time_ms if r.response_time_ms is not None else '—'}ms")
     return "\n".join(lines)
-
-
-def _parse_sqlite_utc(value: str) -> datetime | None:
-    """Parse sqlite's datetime('now') format ('YYYY-MM-DD HH:MM:SS', UTC)."""
-    try:
-        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
 
 
 def incident_duration_line(incident: dict | None) -> str | None:
-    """'лежал 12 мин (14:03–14:15)' — one line summarising the outage window
-    in the user's local timezone. None when the data isn't parseable."""
+    """'Длительность: 12 мин (14:03–14:15)' in the user's timezone."""
     if not incident:
         return None
-    started = _parse_sqlite_utc(incident.get("created_at", ""))
+    started = parse_sqlite_utc(incident.get("created_at"))
     if not started:
         return None
-    ended = datetime.now(timezone.utc)
+    ended = datetime.now(UTC)
     minutes = max(1, round((ended - started).total_seconds() / 60))
-    tz = pytz.timezone(config.timezone)
     fmt = "%H:%M" if minutes < 24 * 60 else "%d.%m %H:%M"
-    window = (f"{started.astimezone(tz).strftime(fmt)}–"
-              f"{ended.astimezone(tz).strftime(fmt)}")
-    if minutes < 60:
-        dur = f"{minutes} мин"
-    else:
-        dur = f"{minutes // 60} ч {minutes % 60} мин"
-    return f"Длительность: {dur} ({window})"
+    window = f"{to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)}"
+    return f"Длительность: {fmt_duration(minutes)} ({window})"
 
 
-def format_recovery_alert(result: dict) -> str:
-    noun = "САЙТ" if is_http_url(result["url"]) else "СЕРВИС"
-    lines = [
-        f"✅ {noun} ВОССТАНОВЛЕН",
-        f"{_esc(result['url'])}",
-    ]
-    if result.get("status_code") is not None:
-        lines.append(f"Код: {_esc(result['status_code'])}")
-    lines.append(f"Время ответа: {_esc(result.get('response_time_ms') or '—')}ms")
-    # Post-incident summary: how long it was down and what the problem was.
-    incident = result.get("resolved_incident")
-    duration = incident_duration_line(incident)
+def format_recovery_alert(r: AvailabilityResult) -> str:
+    lines = [f"✅ {'САЙТ' if is_http_url(r.url) else 'СЕРВИС'} ВОССТАНОВЛЕН", esc(r.url)]
+    if r.status_code is not None:
+        lines.append(f"Код: {r.status_code}")
+    lines.append(f"Время ответа: {r.response_time_ms if r.response_time_ms is not None else '—'}ms")
+    duration = incident_duration_line(r.resolved_incident)
     if duration:
         lines.append(duration)
-    if incident and incident.get("message"):
-        lines.append(f"Причина: {_esc(incident['message'])}")
+    if r.resolved_incident and r.resolved_incident.get("message"):
+        lines.append(f"Причина: {esc(r.resolved_incident['message'])}")
     return "\n".join(lines)
 
 
-def format_dns_change(change: dict) -> str:
-    icon = "🚨" if change.get("critical") else "⚠️"
+def format_dns_change(change: DnsChange) -> str:
+    icon = "🚨" if change["critical"] else "⚠️"
     header = ("DNS: СМЕНИЛИСЬ NS-ЗАПИСИ (проверь, не угнали ли домен!)"
-              if change.get("critical") else "DNS-запись изменилась")
-    return (
-        f"{icon} {header}\n"
-        f"{_esc(change['rtype'])} {_esc(change['host'])}\n"
-        f"Было: {_esc(change['old'])}\n"
-        f"Стало: {_esc(change['new'])}"
-    )
+              if change["critical"] else "DNS-запись изменилась")
+    return (f"{icon} {header}\n{esc(change['rtype'])} {esc(change['host'])}\n"
+            f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}")
 
 
-def format_ssl_alert(result: dict) -> str:
-    if result["status"] not in ("error", "critical", "warning"):
+def format_ssl_alert(r: SslResult) -> str:
+    if r.ok or not r.error:
         return ""
-    icon = "🔴" if result["status"] in ("error", "critical") else "⚠️"
-    return f"{icon} SSL: {_esc(result['url'])}\n{_esc(result['error'])}"
+    icon = "🔴" if r.severity == "critical" else "⚠️"
+    text = f"{icon} SSL: {esc(r.url)}\n{esc(r.error)}"
+    if r.renewal_note:
+        text += f"\n🔁 {esc(r.renewal_note)}"
+    return text
 
 
-def format_domain_alert(result: dict) -> str:
-    if result["status"] not in ("error", "critical", "warning"):
+def format_domain_alert(r: DomainResult) -> str:
+    if r.ok or not r.error:
         return ""
-    if not result.get("error"):
-        return ""
-    icon = "🔴" if result["status"] in ("error", "critical") else "⚠️"
-    return (
-        f"{icon} Домен: {_esc(result.get('domain', result['url']))}\n"
-        f"{_esc(result['error'])}"
-    )
+    icon = "🔴" if r.severity == "critical" else "⚠️"
+    return f"{icon} Домен: {esc(r.domain or r.url)}\n{esc(r.error)}"
 
 
-def format_links_report(result: dict) -> str:
-    internal = result.get("broken_internal") or []
-    external = result.get("broken_external") or []
-
+def format_links_report(r: LinksResult) -> str:
+    internal, external = r.broken_internal, r.broken_external
     if not internal and not external:
         return ""
-
     lines: list[str] = []
     if internal:
-        lines.append(
-            f"🔗 Битые внутренние ссылки на {_esc(_short_host(result['url']))} "
-            f"({len(internal)} шт.):"
-        )
-        for b in internal[:10]:
-            code = b.get("status_code") or b.get("error", "N/A")
-            lines.append(f"  • {_esc(b['url'])} — {_esc(code)}")
+        lines.append(f"🔗 Битые внутренние ссылки на {esc(short_host(r.url))} ({len(internal)} шт.):")
+        lines += [f"  • {esc(b.url)} — {esc(b.reason)}" for b in internal[:10]]
         if len(internal) > 10:
             lines.append(f"  … и ещё {len(internal) - 10}")
-
-    if external and not internal:
-        # Only mention external if there's no internal — otherwise user already
-        # has actionable items. (And external alone never triggers an alert.)
-        lines.append(
-            f"ℹ️ Внешних ресурсов недоступно: {len(external)} "
-            "(чужие домены — обычно ничего делать не нужно)"
-        )
-    elif external:
-        lines.append("")
-        lines.append(
-            f"ℹ️ Также недоступно внешних ресурсов: {len(external)} "
-            "(чужие домены — обычно не критично)"
-        )
-
+        if external:
+            lines += ["", f"ℹ️ Также недоступно внешних ресурсов: {len(external)} "
+                          "(чужие домены — обычно не критично)"]
+    else:
+        lines.append(f"ℹ️ Внешних ресурсов недоступно: {len(external)} "
+                     "(чужие домены — обычно ничего делать не нужно)")
     return "\n".join(lines)
 
 
-def format_feedback(site_url: str, page_url: str, message: str) -> str:
-    return (
-        f"📩 Новое сообщение от пользователя\n"
-        f"Сайт: {_esc(site_url)}\n"
-        f"Страница: {_esc(page_url)}\n"
-        f"Сообщение: {_esc(message)}"
-    )
-
-
-def format_uptime(url: str, stats: dict) -> str:
-    return (
-        f"📈 Uptime: {_esc(url)}\n"
-        f"Доступность: {stats['uptime_pct']}%\n"
-        f"Проверок: {stats['total_checks']}\n"
-        f"Среднее время ответа: {stats['avg_response_ms']}ms"
-    )
-
-
-def format_seo_alert(result: dict) -> str:
-    problems = result.get("problems") or []
-    if not problems:
+def format_seo_alert(r: SeoResult) -> str:
+    if not r.problems:
         return ""
-    has_critical = any(p["severity"] == "critical" for p in problems)
-    icon = "🔴" if has_critical else "⚠️"
-    lines = [f"{icon} SEO/GEO: {_esc(_short_host(result['url']))} — "
-             f"проблем: {len(problems)}"]
-    for p in problems[:8]:
-        sev = "🔴" if p["severity"] == "critical" else "⚠️"
-        lines.append(f"  {sev} {_esc(p['message'])}")
-    if len(problems) > 8:
-        lines.append(f"  … и ещё {len(problems) - 8}")
+    icon = "🔴" if r.has_critical else "⚠️"
+    lines = [f"{icon} SEO/GEO: {esc(short_host(r.url))} — проблем: {len(r.problems)}"]
+    lines += [f"  {'🔴' if p.severity == 'critical' else '⚠️'} {esc(p.message)}"
+              for p in r.problems[:8]]
+    if len(r.problems) > 8:
+        lines.append(f"  … и ещё {len(r.problems) - 8}")
     return "\n".join(lines)
+
+
+def format_feedback(site_url: str, page_url: str, message: str,
+                    feedback_id: int, ip_address: str) -> str:
+    return (f"📩 Сообщение с сайта\n"
+            f"Сайт: {esc(site_url)}\nСтраница: {esc(page_url)}\n"
+            f"Сообщение: {esc(message)}\n\n"
+            f"🆔 #{feedback_id} · 🌍 {esc(ip_address)}")

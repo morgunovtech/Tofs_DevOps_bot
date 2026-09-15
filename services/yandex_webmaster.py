@@ -37,7 +37,7 @@ async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:
     async with session.get(BASE + path, headers=_headers()) as resp:
         data = await resp.json()
         if resp.status != 200:
-            logger.warning(f"Yandex.Webmaster {path} HTTP {resp.status}: {data}")
+            logger.warning("Yandex.Webmaster %s HTTP %s: %s", path, resp.status, data)
             return None
         return data
 
@@ -85,5 +85,5 @@ async def get_summaries() -> dict[str, dict] | None:
                 }
             return out
     except Exception as e:
-        logger.warning(f"Yandex.Webmaster failed: {e}")
+        logger.warning("Yandex.Webmaster failed: %s", e)
         return None

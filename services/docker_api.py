@@ -49,7 +49,7 @@ async def list_containers() -> list[dict] | None:
             for c in data
         ]
     except Exception as e:
-        logger.warning(f"Docker API list_containers failed: {e}")
+        logger.warning("Docker API list_containers failed: %s", e)
         return None
 
 
@@ -63,7 +63,7 @@ async def restart_container(name: str) -> bool:
             ) as resp:
                 return resp.status == 204
     except Exception as e:
-        logger.warning(f"Docker API restart {name} failed: {e}")
+        logger.warning("Docker API restart %s failed: %s", name, e)
         return False
 
 
@@ -89,5 +89,5 @@ async def prune() -> int | None:
                     reclaimed += data.get("SpaceReclaimed") or 0
         return reclaimed
     except Exception as e:
-        logger.warning(f"Docker API prune failed: {e}")
+        logger.warning("Docker API prune failed: %s", e)
         return None

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: lint · test · audit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+      # Known vulnerabilities in the pinned dependencies fail the build —
+      # that is the point: a Dependabot bump is the fix.
+      - run: pip-audit -r requirements.txt --strict --progress-spinner off

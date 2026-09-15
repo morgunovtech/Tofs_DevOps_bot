@@ -10,3 +10,5 @@ __pycache__/
 venv/
 gsc-key.json
 *.json.key
+.pytest_cache/
+.ruff_cache/

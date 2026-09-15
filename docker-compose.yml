@@ -14,7 +14,11 @@ services:
       # Google Search Console service-account key (see .env.example):
       # - ./gsc-key.json:/app/gsc-key.json:ro
     ports:
-      - "8080:8080"   # webhook endpoint (feedback from sites)
+      # The web server (feedback widget, heartbeats, status page) is exposed
+      # on every interface so the widget on your sites can reach it. Put a
+      # reverse proxy with TLS in front (and set TRUST_PROXY=1), or bind to
+      # localhost only: "127.0.0.1:8080:8080".
+      - "8080:8080"
     environment:
       - DB_PATH=/app/data/bot.db
 

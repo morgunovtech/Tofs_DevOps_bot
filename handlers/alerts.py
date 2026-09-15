@@ -1,0 +1,84 @@
+"""One-tap actions attached to alert messages: act:<action>:<site_id> and
+ack:<incident_id>:<minutes>. Results go out as replies — the alert text
+itself stays intact and the buttons remain usable."""
+
+from datetime import UTC, datetime, timedelta
+
+from aiogram import F, Router
+from aiogram.types import BufferedInputFile, CallbackQuery
+
+from db.database import get_incident, set_state
+from handlers.common import cb_args, site_by_cb
+from monitors.availability import check_availability
+from services.actions import purge_cf_cache, trigger_redeploy
+from services.screenshots import fetch_screenshot
+from utils.clock import now_local
+from utils.text import esc, fmt_duration
+from utils.urls import is_http_url, short_host
+
+router = Router(name="alerts")
+
+
+@router.callback_query(F.data.startswith("act:"))
+async def cb_alert_action(call: CallbackQuery):
+    args = cb_args(call, 2)
+    if not args:
+        await call.answer("Не понял действие", show_alert=True)
+        return
+    action, sid = args
+    site = await site_by_cb(sid)
+    if not site:
+        await call.answer("Сайт не найден или убран из мониторинга", show_alert=True)
+        return
+    url = site["url"]
+    if action == "recheck":
+        await call.answer("Проверяю…")
+        r = await check_availability(url, manage=False)
+        ms = f" ({r.response_time_ms}ms)" if r.response_time_ms is not None else ""
+        if r.ok:
+            text = (f"🔍 {esc(url)} — доступен: HTTP {r.status_code}{ms}" if is_http_url(url)
+                    else f"🔍 {esc(url)} — отвечает{ms}")
+        else:
+            text = f"🔍 {esc(url)} — всё ещё недоступен: {esc(r.error or 'N/A')}"
+        await call.message.answer(text)
+    elif action == "shot":
+        await call.answer("Делаю скрин… (~15 сек)")
+        try:
+            await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
+        except Exception:
+            pass
+        image = await fetch_screenshot(url)
+        if image:
+            await call.message.answer_photo(
+                BufferedInputFile(image, filename="screenshot.png"),
+                caption=f"📸 {short_host(url)} · {now_local().strftime('%d.%m %H:%M')}")
+        else:
+            await call.message.answer(f"❌ Не удалось получить скрин {esc(short_host(url))} — "
+                                      f"сервис рендеринга не ответил, попробуй ещё раз.")
+    elif action == "redeploy":
+        await call.answer("Запускаю передеплой…")
+        await call.message.answer(await trigger_redeploy(url))
+    elif action == "purge":
+        await call.answer("Сбрасываю кэш…")
+        await call.message.answer(await purge_cf_cache(url))
+    else:
+        await call.answer("Неизвестное действие", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("ack:"))
+async def cb_ack(call: CallbackQuery):
+    """Snooze escalation for one incident without closing it."""
+    args = cb_args(call, 2)
+    if not args or not all(a.isdigit() for a in args):
+        await call.answer("Не понял", show_alert=True)
+        return
+    incident_id, minutes = int(args[0]), max(5, min(int(args[1]), 24 * 60))
+    inc = await get_incident(incident_id)
+    if not inc or inc["resolved"]:
+        await call.answer("Инцидент уже закрыт", show_alert=True)
+        return
+    until = datetime.now(UTC) + timedelta(minutes=minutes)
+    await set_state(f"ack:{incident_id}", until.isoformat())
+    await call.answer(f"Ок, не напоминаю {fmt_duration(minutes)}")
+    await call.message.answer(f"👀 {esc(short_host(inc['url']))}: эскалация на паузе на "
+                              f"{fmt_duration(minutes)}. Инцидент открыт, проверки идут.")

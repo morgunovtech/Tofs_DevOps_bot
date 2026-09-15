@@ -1,0 +1,24 @@
+# Dependabot opens one grouped PR per week with every Python update, plus
+# monthly PRs for the base image and the Actions. CI tests them; the
+# auto-merge workflow merges minor/patch bumps once CI is green, and the
+# hosting platform redeploys from main. The bot then reports «🔄 Бот
+# обновился» on its next start.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: saturday
+    groups:
+      python-deps:
+        patterns: ["*"]
+    labels: ["dependencies"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

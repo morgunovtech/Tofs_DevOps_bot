@@ -67,7 +67,7 @@ async def _fetch_once(session: aiohttp.ClientSession, api: str) -> bytes | None:
                 async with session.get(img_url) as img_resp:
                     return await _read_image(img_resp)
         else:
-            logger.warning(f"Screenshot service HTTP {resp.status} ({ctype})")
+            logger.warning("Screenshot service HTTP %s (%s)", resp.status, ctype)
     return None
 
 
@@ -81,7 +81,7 @@ async def fetch_screenshot(url: str) -> bytes | None:
             except Exception as e:
                 # First hit often times out while the provider renders the
                 # page; the result is cached server-side, so retry.
-                logger.info(f"Screenshot attempt {attempt + 1} for {url}: {e}")
+                logger.info("Screenshot attempt %s for %s: %s", attempt + 1, url, e)
                 image = None
             # A GIF or tiny image is the provider's "still rendering"
             # placeholder; give it time and ask again.

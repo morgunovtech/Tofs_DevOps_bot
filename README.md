@@ -11,11 +11,12 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 ### 📡 Monitoring
 - **Availability** every 5 minutes — with a twist: before paging you, it re-checks from external nodes (check-host.net). If the site is up for the rest of the world, it won't cry wolf.
 - **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 → 0 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working.
-- **Domain expiry** via WHOIS, with its own alert ladder.
+- **Domain expiry** via RDAP (the protocol that replaced WHOIS for gTLDs in 2025; IANA bootstrap + rdap.org, a tiny async WHOIS fallback for .ru/.su/.рф), with its own alert ladder.
 - **DNS changes** — snapshots A/AAAA/CNAME/NS/MX records hourly; a changed NS record (that's what a hijack looks like) is a critical alert.
 - **Broken links** — crawls your pages, separates *your* broken links (actionable) from dead external ones (noise).
 - **Deep 5xx probe** — samples pages from `sitemap.xml` hourly, catching "homepage is fine but half the site is erroring".
 - **Keyword / stop-phrase check** — per site: alert when a phrase disappears from the page, or when a bad one appears («Fatal error»). Catches the classic "HTTP 200 with a white screen".
+- **Custom HTTP requests** — per site: method (GET/HEAD/POST…), headers (`Authorization: Bearer …`) and a request body, so an API behind a token or a POST-only health endpoint is a first-class monitor.
 - **TCP and ping monitors** — `tcp://mail.example.com:25`, `ping://10.0.0.1`: non-HTTP services (mail, SSH, databases) get the same incident pipeline, anti-flap and external second opinion.
 - **Bot-host health** — disk usage and docker containers on the server the bot runs on.
 
@@ -35,12 +36,14 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 ### 📱 Managed entirely from the chat
 - **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
 - **Sites** — add/remove from the menu («🌍 Сайт детально»), with instant first-check feedback. The DB is the source of truth; `.env` is just an optional first-run seed.
-- **⚙️ Settings** — morning report hour, evening report on/off, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
-- **⚙️ Per-site overrides** — check interval, consecutive-failure threshold, accepted HTTP codes (e.g. `200-399,401`), keyword — each site gets its own dials.
+- **⚙️ Settings** — morning report hour, evening report on/off, weekly report hour, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
+- **⚙️ Per-site overrides** — check interval, consecutive-failure threshold, accepted HTTP codes (e.g. `200-399,401`), keyword, "slow" threshold, HTTP method/headers/body — each site gets its own dials.
+- **📤 Export / 📥 import** — the site list with all per-site settings as one JSON file: move between instances or keep a copy.
+- **👀 Acknowledge** — «Видел, не напоминать 2 ч» on an escalating incident: snoozes the re-alerts without closing the incident.
 - **🔧 Maintenance windows** — recurring schedules («weekdays 02:00–04:00», overnight windows welcome) per site or for everything: alerts and escalation stay silent, checks and stats keep running.
 - **💓 Heartbeat jobs** — added from the chat with a ready-to-paste `curl` line for your cron.
 - **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
-- **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d uptime, anonymised incident history, maintenance banner) plus SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
+- **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d/90d uptime, anonymised incident history, maintenance banner), a `/status.json` twin for your own dashboards, and SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
 - **🩺 Diagnostics** — one tap self-check: DB, web server, docker socket, Google/Yandex tokens (live probes), screenshot provider.
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 
@@ -55,7 +58,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 
 ### 📊 Reports that respect your attention
 - **Morning digest** — one message: per-site status, 7-day uptime, upcoming SSL/domain expirations, heartbeat status, disk, SEO summary. Reads in 10 seconds.
-- **Weekly report** (Sundays) — uptime, incidents, a response-time chart, Google/Yandex search metrics week-over-week.
+- **Weekly report** (Sundays) — honest 7/30/90-day uptime (raw checks + nightly rollups), incidents, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, and the state of the bot's own dependencies.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
 - **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
 - **Escalation** — a site that is still down re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable (deliberately availability-only: half-hourly pages about an expiring cert would train you to ignore alerts).
@@ -65,9 +68,11 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 - Old raw checks roll up into daily aggregates nightly — the SQLite DB stays small forever.
 - Nightly DB backups with rotation + a weekly off-host copy sent straight to your Telegram chat.
 - Self-heartbeat to an external watchdog (healthchecks.io) — who watches the watchman.
+- **Keeps its dependencies fresh without you**: Dependabot opens a weekly PR, CI (ruff + pytest + pip-audit) tests it, the auto-merge workflow merges minor/patch bumps, the host redeploys — and the bot announces «🔄 Бот обновился: aiohttp 3.10 → 3.14» on its next start. A weekly check against PyPI and the OSV vulnerability database reports anything outdated or vulnerable.
+- Secrets take care of themselves: an empty or placeholder `WEBHOOK_SECRET`/`HEARTBEAT_SECRET` is replaced by a generated one stored in the DB. The two are always different — the webhook secret is public by design (it ships in the widget), the heartbeat one is not.
 
 ### 📩 Bonus: feedback widget
-A tiny embeddable JS widget ("Report a problem" button) for your sites — messages land in your Telegram with rate limiting and size caps server-side.
+A tiny embeddable JS widget for your sites — messages land in your Telegram (rate limiting and size caps server-side) and stay readable in the bot («📋 Ещё» → «📩 Обратная связь»). Two modes: a floating "⚠️ Проблема?" button, or `button: false` plus `data-devops-feedback` on any link — the classic footer "нашли опечатку?" opens the form with the visitor's selected text pre-filled. Setup snippet and the CSP notes: [docs/SETUP.md](docs/SETUP.md#виджет-обратной-связи-нашли-опечатку).
 
 ## What it looks like
 
@@ -105,7 +110,7 @@ https://example.com
 
 Fork this repo → [Railway](https://railway.com) → **New Project → Deploy from GitHub repo**. Railway picks up the `Dockerfile`; then:
 
-1. **Variables**: `TELEGRAM_BOT_TOKEN` (from [@BotFather](https://t.me/BotFather)), `DB_PATH=/app/data/bot.db`, `WEBHOOK_SECRET=<random string>`.
+1. **Variables**: `TELEGRAM_BOT_TOKEN` (from [@BotFather](https://t.me/BotFather)) and `DB_PATH=/app/data/bot.db`. Secrets are generated on first start.
 2. **Attach Volume** at mount path `/app/data` — the SQLite DB must survive redeploys.
 3. **Settings → Networking → Generate Domain** (port **8080**), then set `PUBLIC_BASE_URL=https://<your-app>.up.railway.app`.
 
@@ -142,20 +147,39 @@ the optional integrations below (documented in [.env.example](.env.example)):
 ## Architecture
 
 ```
-main.py                 entry point: DB → webhook server → scheduler → polling
-├── monitors/           availability, ssl, domain, dns, links, deep 5xx,
-│                       seo/geo, host — each saves checks & manages incidents
-├── services/           cloudflare actions, docker API, screenshots,
-│                       google search console, yandex webmaster
-├── reports/            scheduler (19 jobs), formatters, weekly chart
-├── handlers/           telegram menu (a mini-dashboard) & alert buttons
-├── web/                aiohttp: feedback API, heartbeat endpoint, widget
-└── db/                 aiosqlite, WAL, retention rollups, backups
+main.py                 entry point: DB → services → web server → scheduler → polling
+├── monitors/           availability, ssl, domain (rdap), dns, links, deep 5xx,
+│                       seo/geo, host — typed results, shared alert ladder
+├── services/           notifier (the one door for every message: priorities,
+│                       mute, quiet hours, pauses), settings, maintenance,
+│                       secrets, runtime (admin), updates (dependency watch),
+│                       cloudflare actions, docker API, screenshots, GSC, Yandex
+├── reports/            scheduler (19 jobs), formatters, ASCII weekly report
+├── handlers/           one router per screen behind a single AdminFilter
+├── web/                aiohttp: feedback API, heartbeats, status page + JSON
+│                       + badges, the widget; HTML template in web/templates
+├── db/                 aiosqlite, WAL, PRAGMA user_version migrations,
+│                       retention rollups, backups
+├── utils/              url/text/time helpers shared by everything above
+└── tests/              pytest: pure functions, DB, monitors against a local
+                        HTTP server, notifier rules, web endpoints, bot screens
 ```
 
-Stack: Python 3.12, [aiogram 3](https://github.com/aiogram/aiogram), aiohttp, APScheduler, SQLite (WAL), matplotlib. No external monitoring dependencies — the bot *is* the monitoring.
+Stack: Python 3.12+, [aiogram 3](https://github.com/aiogram/aiogram), aiohttp, APScheduler, SQLite (WAL), stdlib `zoneinfo`. No external monitoring dependencies — the bot *is* the monitoring. No image libraries either: charts are monospace text.
 
-A note on the feedback widget's security model: the widget's "secret" ships to every site visitor, so the endpoint is treated as public — protection is rate limiting and strict size caps, not the token. This is a deliberate, documented trade-off for a personal-scale tool.
+A note on the feedback widget's security model: the widget's "secret" ships to every site visitor, so the endpoint is treated as public — protection is rate limiting and strict size caps, not the token. That is exactly why the heartbeat endpoint uses a *different* secret. A deliberate, documented trade-off for a personal-scale tool.
+
+## Development
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+ruff check .          # lint + import order
+pytest -q             # ~70 tests, no network, no Telegram
+pip-audit -r requirements.txt
+```
+
+CI runs the same three on every push and PR (Python 3.12 and 3.13). Dependabot files a grouped PR every Saturday; `.github/workflows/dependabot-automerge.yml` auto-merges minor/patch updates once CI is green — enable **Allow auto-merge** in the repository settings and protect `main` with the «lint · test · audit» check required, otherwise the merge does not wait for tests. The container runs as an unprivileged user; `entrypoint.sh` fixes the data volume's ownership first.
 
 ## Status
 

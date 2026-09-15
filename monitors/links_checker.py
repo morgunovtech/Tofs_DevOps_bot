@@ -1,3 +1,6 @@
+"""Broken-link crawl of one page: internal broken links are actionable
+(incident), external unreachable ones are informational."""
+
 import asyncio
 import logging
 from urllib.parse import urljoin, urlparse
@@ -5,272 +8,141 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-from db.database import (
-    get_or_create_site, save_check, save_incident, resolve_incident,
-)
+from db.database import get_or_create_site, resolve_incident, save_check, save_incident
+from monitors.base import LinkCheck, LinksResult, gather_checks
+from utils.urls import USER_AGENT, host_of, same_site
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = aiohttp.ClientTimeout(total=15, connect=8)
-
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 DevOpsBot/1.0"
-)
-
+MAX_PAGE_BYTES = 2 * 1024 * 1024
 DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru,en;q=0.9",
 }
-
-# Codes that look like errors but in practice mean "bot blocked / method not allowed"
-# rather than "the resource is broken". We treat them as OK.
-BENIGN_STATUS_CODES = {401, 403, 405, 429, 503}
-
-# Hosts known to aggressively block non-browser HEAD/automated requests.
-# We don't even try to verify these — assume they work.
+# Codes that look like errors but mean "bot blocked / method not allowed /
+# range not satisfiable" rather than "the resource is broken".
+BENIGN_STATUS_CODES = {401, 403, 405, 416, 429, 503}
+# Hosts known to block automated requests — assume they work.
 ALWAYS_OK_HOSTS = {
-    "linkedin.com", "www.linkedin.com",
-    "facebook.com", "www.facebook.com", "m.facebook.com",
-    "twitter.com", "x.com", "www.twitter.com",
-    "instagram.com", "www.instagram.com",
-    "t.me", "telegram.me",
+    "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com",
+    "m.facebook.com", "twitter.com", "x.com", "www.twitter.com",
+    "instagram.com", "www.instagram.com", "t.me", "telegram.me",
     "youtube.com", "www.youtube.com", "youtu.be",
 }
-
-# Tracking / analytics — skip checking entirely
+# Tracking / analytics — skip entirely.
 SKIP_HOSTS = {
     "google-analytics.com", "www.google-analytics.com",
-    "googletagmanager.com", "www.googletagmanager.com",
-    "doubleclick.net",
-    "yandex.ru/metrika", "mc.yandex.ru",
-    "facebook.net", "connect.facebook.net",
+    "googletagmanager.com", "www.googletagmanager.com", "doubleclick.net",
+    "mc.yandex.ru", "facebook.net", "connect.facebook.net",
 }
-
-# URL path prefixes to skip — infrastructure not owned by the site author.
-# /cdn-cgi/ is Cloudflare's internal namespace: email obfuscation, bot
-# challenges, RUM, etc. These intentionally 404 on direct requests
-# (e.g. /cdn-cgi/l/email-protection only works via Cloudflare's JS) and
-# can't be "fixed" by the site owner anyway.
-SKIP_PATH_PREFIXES = (
-    "/cdn-cgi/",
-)
-
-
-def _host(url: str) -> str:
-    return (urlparse(url).hostname or "").lower()
-
-
-def _path(url: str) -> str:
-    return urlparse(url).path or ""
-
-
-def _is_internal(link: str, base_url: str) -> bool:
-    """Same registrable domain as the base site.
-
-    NOTE: naive "last two labels" heuristic — correct for domains like
-    example.com, wrong for multi-part public suffixes (example.co.uk would
-    match any *.co.uk). Switch to tldextract if such sites are ever added.
-    """
-    base_host = _host(base_url)
-    link_host = _host(link)
-    if not base_host or not link_host:
-        return False
-    base_root = ".".join(base_host.split(".")[-2:])
-    link_root = ".".join(link_host.split(".")[-2:])
-    return base_root == link_root
+# /cdn-cgi/ is Cloudflare's internal namespace: these intentionally 404 on
+# direct requests and can't be fixed by the site owner anyway.
+SKIP_PATH_PREFIXES = ("/cdn-cgi/",)
 
 
 async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str | None:
     try:
-        async with session.get(
-            url, timeout=TIMEOUT, allow_redirects=True, headers=DEFAULT_HEADERS,
-        ) as resp:
+        async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
+                               headers=DEFAULT_HEADERS) as resp:
             if resp.status == 200 and "text/html" in (resp.content_type or ""):
-                return await resp.text()
+                raw = await resp.content.read(MAX_PAGE_BYTES)
+                return raw.decode(resp.charset or "utf-8", errors="replace")
     except Exception as e:
-        logger.debug(f"Could not fetch {url}: {e}")
+        logger.debug("Could not fetch %s: %s", url, e)
     return None
 
 
-async def _check_link(session: aiohttp.ClientSession, url: str,
-                      base_url: str) -> dict:
-    """Check if a single link is accessible.
-
-    Strategy:
-      1. Skip known always-OK / tracker hosts.
-      2. Try GET with Range: bytes=0-0 (cheap, but real GET behaviour).
-      3. On timeout/5xx, retry once with a small backoff.
-      4. 4xx codes that mean "bot blocked" (401/403/405/429/503) are not failures.
-
-    TLS: internal links are verified strictly — a broken cert on our own
-    domain IS a problem we want to catch. External hosts often have odd TLS
-    setups we can't fix, so there we only care about reachability.
-    """
-    host = _host(url)
-    path = _path(url)
-    if host in SKIP_HOSTS:
-        return {"url": url, "status_code": None, "ok": True, "skipped": True}
-    if host in ALWAYS_OK_HOSTS:
-        return {"url": url, "status_code": None, "ok": True, "skipped": True}
-    if any(path.startswith(p) for p in SKIP_PATH_PREFIXES):
-        return {"url": url, "status_code": None, "ok": True, "skipped": True}
+async def _check_link(session: aiohttp.ClientSession, url: str, base_url: str) -> LinkCheck:
+    """GET with Range: bytes=0-0 (cheap but real GET behaviour), one retry
+    on timeout/5xx. TLS is verified strictly for internal links (a broken
+    cert on our own domain IS a problem); external hosts only need to be
+    reachable."""
+    host = host_of(url)
+    path = urlparse(url).path or ""
+    if (host in SKIP_HOSTS or host in ALWAYS_OK_HOSTS
+            or any(path.startswith(p) for p in SKIP_PATH_PREFIXES)):
+        return LinkCheck(url=url, status_code=None, ok=True, skipped=True)
 
     headers = {**DEFAULT_HEADERS, "Range": "bytes=0-0"}
-    ssl_arg = True if _is_internal(url, base_url) else False
+    ssl_arg = same_site(url, base_url)
 
-    async def _attempt() -> dict:
+    async def attempt() -> LinkCheck:
         try:
-            async with session.get(
-                url, timeout=TIMEOUT, allow_redirects=True, headers=headers,
-                ssl=ssl_arg,
-            ) as resp:
-                status = resp.status
-                ok = status < 400 or status in BENIGN_STATUS_CODES
-                return {"url": url, "status_code": status, "ok": ok}
-        except asyncio.TimeoutError:
-            return {"url": url, "status_code": None, "ok": False, "error": "timeout"}
-        except aiohttp.ClientError as e:
-            return {"url": url, "status_code": None, "ok": False, "error": str(e)}
+            async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
+                                   headers=headers, ssl=ssl_arg) as resp:
+                ok = resp.status < 400 or resp.status in BENIGN_STATUS_CODES
+                return LinkCheck(url=url, status_code=resp.status, ok=ok)
+        except TimeoutError:
+            return LinkCheck(url=url, status_code=None, ok=False, error="timeout")
         except Exception as e:
-            return {"url": url, "status_code": None, "ok": False, "error": str(e)}
+            return LinkCheck(url=url, status_code=None, ok=False, error=str(e) or type(e).__name__)
 
-    result = await _attempt()
-
-    # Retry once for transient failures (timeout / 5xx that isn't benign)
-    needs_retry = (
-        not result["ok"]
-        and (result.get("status_code") is None  # network error / timeout
-             or (result.get("status_code", 0) >= 500
-                 and result["status_code"] not in BENIGN_STATUS_CODES))
-    )
-    if needs_retry:
+    result = await attempt()
+    transient = not result.ok and (result.status_code is None or result.status_code >= 500)
+    if transient:
         await asyncio.sleep(0.8)
-        result = await _attempt()
-
+        result = await attempt()
     return result
 
 
-def _extract_links(html: str, base_url: str) -> list[str]:
-    """Extract anchor and resource links from HTML."""
+def extract_links(html: str, base_url: str) -> list[str]:
+    """Anchor and resource links (a/link/script/img) resolved to absolute URLs."""
     soup = BeautifulSoup(html, "html.parser")
     links = set()
-
     for tag in soup.find_all(["a", "link", "script", "img"]):
         href = tag.get("href") or tag.get("src")
-        if not href:
+        if not href or href.startswith(("mailto:", "tel:", "javascript:", "#", "data:")):
             continue
-        if href.startswith(("mailto:", "tel:", "javascript:", "#", "data:")):
-            continue
-        full_url = urljoin(base_url, href)
-        parsed = urlparse(full_url)
-        if parsed.scheme in ("http", "https"):
-            links.add(full_url)
-
-    return list(links)
+        full = urljoin(base_url, href)
+        if urlparse(full).scheme in ("http", "https"):
+            links.add(full)
+    return sorted(links)
 
 
-async def check_links(url: str, manage: bool = True) -> dict:
-    """Check all links on a page. manage=False = read-only (no incidents).
-
-    Returns:
-        {
-          url, status, total_links,
-          broken_internal: [...],     # broken links on YOUR domain — actionable
-          broken_external: [...],     # broken third-party links — informational
-          error,
-        }
-    """
+async def check_links(url: str, manage: bool = True) -> LinksResult:
     site_id = await get_or_create_site(url)
-
-    result = {
-        "url": url,
-        "status": "ok",
-        "total_links": 0,
-        "broken_internal": [],
-        "broken_external": [],
-        "broken_links": [],  # backwards-compat: combined view
-        "error": None,
-        "incident_new": False,
-        "recovered": False,
-    }
-
-    # Certificate verification stays ON by default (used for the page fetch
-    # and internal links); _check_link relaxes it per-request for external
-    # hosts only.
-    connector = aiohttp.TCPConnector(limit=20)
-    async with aiohttp.ClientSession(connector=connector) as session:
+    r = LinksResult(url=url, site_id=site_id)
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=20)) as session:
         html = await _fetch_page(session, url)
         if not html:
-            result["status"] = "error"
-            result["error"] = "Could not fetch page"
-            await save_check(site_id, "links", "error", details=result["error"])
-            return result
-
-        links = _extract_links(html, url)
-        result["total_links"] = len(links)
-
+            r.status, r.error, r.transient = "error", "Could not fetch page", True
+            await save_check(site_id, "links", "error", details=r.error)
+            return r
+        links = extract_links(html, url)
+        r.total_links = len(links)
         sem = asyncio.Semaphore(8)
 
-        async def check_with_sem(link):
+        async def guarded(link: str) -> LinkCheck:
             async with sem:
                 return await _check_link(session, link, url)
 
-        checks = await asyncio.gather(*[check_with_sem(l) for l in links])
-
-        broken_internal: list[dict] = []
-        broken_external: list[dict] = []
-        for c in checks:
-            if c["ok"]:
+        for c in await asyncio.gather(*(guarded(link) for link in links)):
+            if c.ok:
                 continue
-            if _is_internal(c["url"], url):
-                broken_internal.append(c)
-            else:
-                broken_external.append(c)
+            (r.broken_internal if same_site(c.url, url) else r.broken_external).append(c)
 
-        result["broken_internal"] = broken_internal
-        result["broken_external"] = broken_external
-        result["broken_links"] = broken_internal + broken_external
-
-        if broken_internal:
-            result["status"] = "warning"
-            preview = "\n".join(
-                f"  - {b['url']} ({b.get('status_code') or b.get('error', 'N/A')})"
-                for b in broken_internal[:10]
-            )
-            result["error"] = (
-                f"{len(broken_internal)} broken internal link(s)"
-                + (f" (+{len(broken_external)} external unreachable)"
-                   if broken_external else "")
-                + f":\n{preview}"
-            )
-
-    details = result["error"] or (
-        f"All {result['total_links']} links OK"
-        + (f" ({len(result['broken_external'])} external unreachable, ignored)"
-           if result["broken_external"] else "")
-    )
-    await save_check(site_id, "links", result["status"], details=details)
-
+    if r.broken_internal:
+        r.status = "warning"
+        preview = "\n".join(f"  - {b.url} ({b.reason})" for b in r.broken_internal[:10])
+        r.error = (f"{len(r.broken_internal)} broken internal link(s)"
+                   + (f" (+{len(r.broken_external)} external unreachable)"
+                      if r.broken_external else "") + f":\n{preview}")
+    details = r.error or (f"All {r.total_links} links OK"
+                          + (f" ({len(r.broken_external)} external unreachable, ignored)"
+                             if r.broken_external else ""))
+    await save_check(site_id, "links", r.status, details=details)
     if not manage:
-        return result
-
-    # Only treat broken INTERNAL links as an incident — external is just noise.
-    if broken_internal:
-        _, is_new = await save_incident(
-            site_id, "links",
-            f"{len(broken_internal)} broken link(s) found on {url}",
-            severity="warning",
-        )
-        result["incident_new"] = is_new
-    else:
-        if await resolve_incident(site_id, "links"):
-            result["recovered"] = True
-
-    return result
+        return r
+    if r.broken_internal:
+        _, r.incident_new = await save_incident(
+            site_id, "links", f"{len(r.broken_internal)} broken link(s) found on {url}",
+            severity="warning")
+    elif await resolve_incident(site_id, "links"):
+        r.recovered = True
+    return r
 
 
-async def check_all_links(urls: list[str], manage: bool = True) -> list[dict]:
-    tasks = [check_links(url, manage=manage) for url in urls]
-    return await asyncio.gather(*tasks, return_exceptions=False)
+async def check_all_links(urls: list[str], manage: bool = True) -> list[LinksResult]:
+    return await gather_checks((check_links(u, manage=manage) for u in urls), "links")

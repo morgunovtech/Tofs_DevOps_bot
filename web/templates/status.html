@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta http-equiv="refresh" content="60">
+<title>Статус сервисов</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #70757d;
+    --up: #22a55b; --down: #dc3f45; --maint: #3577d4; --warn: #d9822b;
+    --border: #e4e6ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --card: #1d2026; --text: #e8eaed; --muted: #9aa0a8;
+      --border: #2a2e35;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 640px; margin: 0 auto; padding: 24px 16px 48px;
+  }
+  .banner { border-radius: 12px; padding: 16px 20px; font-weight: 600;
+            color: #fff; margin-bottom: 20px; }
+  .banner-up { background: var(--up); }
+  .banner-down { background: var(--down); }
+  .banner-maint { background: var(--maint); }
+  .site { background: var(--card); border: 1px solid var(--border);
+          border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+  .site-head { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .dot-up { background: var(--up); }
+  .dot-down { background: var(--down); }
+  .dot-maint { background: var(--maint); }
+  .dot-pending { background: var(--muted); }
+  .site-name { font-weight: 600; overflow-wrap: anywhere; }
+  .site-state { margin-left: auto; color: var(--muted); font-size: 14px;
+                white-space: nowrap; }
+  .uptime { margin-top: 6px; display: flex; gap: 14px; font-size: 14px;
+            flex-wrap: wrap; }
+  .good { color: var(--up); } .warn { color: var(--warn); } .bad { color: var(--down); }
+  h2 { font-size: 16px; margin: 28px 0 10px; }
+  .incidents { width: 100%; border-collapse: collapse; font-size: 14px;
+               background: var(--card); border: 1px solid var(--border);
+               border-radius: 12px; overflow: hidden; }
+  .incidents th, .incidents td { text-align: left; padding: 8px 12px;
+                                 border-bottom: 1px solid var(--border); }
+  .incidents tr:last-child td { border-bottom: none; }
+  .incidents th { color: var(--muted); font-weight: 500; }
+  .inc-open { color: var(--down); font-weight: 600; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="banner $banner_cls">$banner</div>
+  $sites_html
+  $incidents_html
+  <footer>Обновлено $now · страница обновляется автоматически · TofsDevOps 🐕</footer>
+</body>
+</html>
