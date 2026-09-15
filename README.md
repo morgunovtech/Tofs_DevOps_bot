@@ -38,8 +38,9 @@ And one audience: **people who have never heard of DNS or a 502**. Every message
 - **Container auto-restart** and **disk auto-cleanup** (docker prune) on the bot's host — off by default, enabled by mounting the docker socket.
 
 ### 📱 Managed entirely from the chat
+- **Three buttons.** The main screen answers "is everything OK?" by itself — one line per site from the last checks, open problems listed inline — and offers «🌍 Сайты», «🔎 Проверить всё сейчас», «⚙️ Настройки». A fourth, «🔴 Проблемы», appears only while something is broken. A site card holds everything about one site at once (availability, certificate, domain, links, search visibility, downtime, its problems with "what to do") plus «🔧 Я чиню», «🔎 Поиск и ИИ», «🔗 Ссылки» and the site's settings. Everything else lives under settings.
 - **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
-- **Sites** — add/remove from the menu («🌍 Мои сайты»), with instant first-check feedback: the bot also suggests a phrase from the page to watch (catches "HTTP 200 with a blank page") and warns when the www twin behaves like a separate site. The DB is the source of truth; `.env` is just an optional first-run seed.
+- **Sites** — add/remove from the menu («🌍 Сайты»), with instant first-check feedback: the bot also suggests a phrase from the page to watch (catches "HTTP 200 with a blank page") and warns when the www twin behaves like a separate site. The DB is the source of truth; `.env` is just an optional first-run seed.
 - **Two-level settings** — how often to check and whether to watch a phrase, in words; the other eight dials are behind «🛠 Для продвинутых».
 - **⚙️ Settings** — morning report hour, evening report on/off, weekly report hour, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
 - **⚙️ Per-site overrides** — check interval, consecutive-failure threshold, accepted HTTP codes (e.g. `200-399,401`), keyword, "slow" threshold, HTTP method/headers/body — each site gets its own dials.
@@ -53,7 +54,7 @@ And one audience: **people who have never heard of DNS or a 502**. Every message
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 
 ### 💓 Dead-man switch
-Your backup cron can't tell you it *didn't* run. Add a job in the chat («🔌 Подключения» → «⏰ Контроль задач») — the bot hands you the exact line for your cron:
+Your backup cron can't tell you it *didn't* run. Add a job in the chat («⚙️ Настройки» → «⏰ Контроль задач») — the bot hands you the exact line for your cron:
 
 ```bash
 curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
