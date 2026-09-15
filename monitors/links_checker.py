@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
 from monitors.base import LinkCheck, LinksResult, gather_checks
+from services import sitestatus
 from utils.urls import USER_AGENT, host_of, same_site
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
         if not html:
             r.status, r.error, r.transient = "error", "Could not fetch page", True
             await save_check(site_id, "links", "error", details=r.error)
+            await sitestatus.update(site_id, "links", status="error", internal=0, external=0)
             return r
         links = extract_links(html, url)
         r.total_links = len(links)
@@ -133,10 +135,12 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
                           + (f" ({len(r.broken_external)} external unreachable, ignored)"
                              if r.broken_external else ""))
     await save_check(site_id, "links", r.status, details=details)
+    await sitestatus.update(site_id, "links", status=r.status, internal=len(r.broken_internal),
+                            external=len(r.broken_external), total=r.total_links)
     if not manage:
         return r
     if r.broken_internal:
-        _, r.incident_new = await save_incident(
+        r.incident_id, r.incident_new = await save_incident(
             site_id, "links", f"{len(r.broken_internal)} broken link(s) found on {url}",
             severity="warning")
     elif await resolve_incident(site_id, "links"):

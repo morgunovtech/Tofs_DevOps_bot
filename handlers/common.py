@@ -16,10 +16,9 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from db.database import get_all_sites, get_site
+from db.database import get_site
 from handlers.filters import AdminFilter
 from utils.text import clip
-from utils.urls import is_http_url, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ def cancel_kb() -> InlineKeyboardMarkup:
 def persistent_keyboard() -> ReplyKeyboardMarkup:
     """Always-visible bottom keyboard so the menu is one tap away."""
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Меню"), KeyboardButton(text="📊 Статус")]],
+        keyboard=[[KeyboardButton(text="📱 Меню")]],
         resize_keyboard=True, is_persistent=True,
         input_field_placeholder="Тапни «📱 Меню» или введи команду")
 
@@ -59,25 +58,6 @@ async def render(target: Message | CallbackQuery, text: str,
                 raise
     else:
         await target.answer(text, reply_markup=kb)
-
-
-async def sites_keyboard(prefix: str, *, icon: str = "🔍", manage: bool = False,
-                         http_only: bool = False, back: str = "menu_main") -> InlineKeyboardMarkup:
-    """One button per active site; callback_data carries the DB id."""
-    sites = await get_all_sites()
-    if http_only:
-        sites = [s for s in sites if is_http_url(s["url"])]
-    rows = [[InlineKeyboardButton(text=f"{icon} {site_label(s['url'])}",
-                                  callback_data=f"{prefix}:{s['id']}")] for s in sites]
-    if manage:
-        row = [InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")]
-        if sites:
-            row.append(InlineKeyboardButton(text="🗑 Удалить", callback_data="site_del"))
-        rows.append(row)
-        rows.append([InlineKeyboardButton(text="📤 Экспорт", callback_data="site_export"),
-                     InlineKeyboardButton(text="📥 Импорт", callback_data="site_import")])
-    rows.append([InlineKeyboardButton(text="← Назад", callback_data=back)])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def ack(call: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:

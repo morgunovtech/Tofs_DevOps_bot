@@ -25,7 +25,8 @@ def test_availability_alert_escapes_and_omits_code_for_tcp():
                            error="<script>", status_code=502, response_time_ms=10)
     text = format_availability_alert(r)
     assert "&lt;script&gt;" in text and "<script>" not in text
-    assert text.startswith("🔴 ex.com не открывается") and "Что делать:" in text
+    assert text.startswith("🔴 ex.com не открывается") and "Продолжаю проверять" in text
+    assert "Что делать:" not in text            # steps live behind the «ℹ️ Что делать» button
     r502 = AvailabilityResult(url="https://ex.com", site_id=1, status="error", error="HTTP 502",
                               status_code=502, external_ok=False)
     text = format_availability_alert(r502)

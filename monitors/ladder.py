@@ -27,7 +27,7 @@ async def apply_ladder(result: CheckResult, check_type: str,
     last = await get_last_alert_threshold(result.site_id, check_type)
     if not result.ok and result.error:
         current = current_threshold(days_left, thresholds) if days_left is not None else 0
-        await save_incident(result.site_id, check_type, result.error, result.severity)
+        result.incident_id, _ = await save_incident(result.site_id, check_type, result.error, result.severity)
         if last is None or (current is not None and current < last):
             # Force "new" even if the incident was already open from a prior
             # threshold, so the scheduler sends the worse-threshold alert.

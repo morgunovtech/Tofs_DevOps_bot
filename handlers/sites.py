@@ -23,7 +23,6 @@ from db.database import (
     deactivate_site,
     get_active_incidents,
     get_all_sites,
-    get_last_check,
     get_site,
     get_state,
     get_uptime_over_days,
@@ -39,7 +38,7 @@ from handlers.common import (
     render,
     site_by_cb,
 )
-from handlers.menu import site_state
+from handlers.menu import best_ms, site_state
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
@@ -47,9 +46,9 @@ from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
 from reports.scheduler import reset_site_schedule
-from services import humanize, maintenance, settings
+from services import humanize, maintenance, settings, sitestatus
 from utils.clock import fmt_local, local_at
-from utils.text import esc, fmt_date, fmt_duration
+from utils.text import esc, fmt_date, fmt_duration, plural
 from utils.urls import is_http_url, short_host, site_label
 
 router = Router(name="sites")
@@ -121,26 +120,67 @@ async def cb_sites_list(call: CallbackQuery, state: FSMContext):
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
-async def _stored_status_lines(site: dict) -> list[str]:
-    """Links, search visibility and downtime from the last scheduled checks
-    — no network, so the one-screen picture stays fast."""
+def _ago(section: dict | None) -> str:
+    age = sitestatus.age_minutes(section)
+    if age is None:
+        return ""
+    return " · только что" if age < 1 else f" · {fmt_duration(age)} назад"
+
+
+async def card_lines(site: dict) -> list[str]:
+    """Everything about one site from the stored snapshot — instant."""
+    st = await sitestatus.get(site["id"])
+    http = is_http_url(site["url"])
     lines: list[str] = []
-    links = await get_last_check(site["id"], "links")
-    if links:
-        when = fmt_local(links["checked_at"])
-        if links["status"] == "ok":
-            lines.append(f"✅ Ссылки: все работают (проверял {when})")
-        elif links["status"] == "warning":
-            lines.append(f"⚠️ Ссылки: {esc(humanize.describe_error((links.get('details') or '').split(chr(10))[0]))} "
-                         f"(проверял {when})")
+    avail = st.get("avail")
+    if not avail:
+        lines.append("⏳ Ещё не проверял — первая проверка в течение минуты")
+    elif avail.get("status") == "ok":
+        ms, region = best_ms(st)
+        verb = "Открывается" if http else "Отвечает"
+        lines.append(f"✅ {verb}, {humanize.speed(ms, region)}{_ago(avail)}")
+    else:
+        verb = "Не открывается" if http else "Не отвечает"
+        lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
+    if http:
+        ssl = st.get("ssl")
+        if not ssl:
+            lines.append("⏳ Сертификат: ещё не проверял")
+        elif ssl.get("days_left") is not None:
+            days = ssl["days_left"]
+            icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
+            issuer = f", выдан {esc(ssl['issuer'])}" if ssl.get("issuer") else ""
+            lines.append(f"{icon} Сертификат действует ещё {days} дн. (до {fmt_date(ssl.get('not_after'))}){issuer}")
         else:
-            lines.append(f"⚠️ Ссылки: не смог проверить (проверял {when})")
-    seo = await get_last_check(site["id"], "seo")
-    if seo:
-        verdict = {"ok": "✅ В поиске: всё в порядке", "warning": "💡 В поиске: виден, есть что улучшить",
-                   "critical": "🔴 В поиске: сайт закрыт от поисковиков!"}.get(seo["status"],
-                                                                                 "⚠️ В поиске: не смог проверить")
-        lines.append(f"{verdict} (проверял {fmt_local(seo['checked_at'])})")
+            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl.get('error')))}")
+        dom = st.get("domain")
+        if not dom:
+            lines.append("⏳ Домен: ещё не проверял")
+        elif dom.get("days_left") is not None:
+            days = dom["days_left"]
+            icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
+            registrar = (f", регистратор {esc(dom['registrar'])}"
+                         if dom.get("registrar") not in (None, "", "Unknown") else "")
+            lines.append(f"{icon} Домен оплачен до {fmt_date(dom.get('expiration'))} (ещё {days} дн.){registrar}")
+        elif dom.get("unsupported"):
+            lines.append(f"ℹ️ Домен: {esc(dom.get('error') or 'срок не сообщается')}")
+        else:
+            lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
+        links = st.get("links")
+        if links:
+            if links.get("status") == "ok":
+                lines.append(f"✅ Ссылки: все работают{_ago(links)}")
+            elif links.get("status") == "warning":
+                n = links.get("internal") or 0
+                lines.append(f"⚠️ Ссылки: {n} {plural(n, 'ведёт', 'ведут', 'ведут')} в никуда{_ago(links)}")
+            else:
+                lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
+        seo = st.get("seo")
+        if seo:
+            verdict = {"ok": "✅ В поиске: всё в порядке", "warning": "💡 В поиске: виден, есть что улучшить",
+                       "critical": "🔴 В поиске: сайт закрыт от поисковиков!"}.get(seo.get("status"),
+                                                                                     "⚠️ В поиске: не смог проверить")
+            lines.append(f"{verdict}{_ago(seo)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     month = await get_uptime_over_days(site["id"], 30)
@@ -162,70 +202,60 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
     return row, notes
 
 
-@router.callback_query(F.data.startswith("check_site:"))
-async def cb_check_single_site(call: CallbackQuery):
-    await ack(call)
-    site = await site_by_cb(call.data.split(":", 1)[1])
-    if not site:
-        await render(call, "Сайт не найден — список сайтов изменился. Открой меню заново.",
-                     back_button())
-        return
+async def render_card(call: CallbackQuery, site: dict):
     url, sid = site["url"], site["id"]
-    lines = [f"🌍 {esc(url)}\n"]
-    if not is_http_url(url):
-        await render(call, f"▱▱ Проверяю {esc(url)}...")
-        r = await check_availability(url, manage=False)
-        lines.append(f"✅ Отвечает, {humanize.speed(r.response_time_ms)}" if r.ok
-                     else f"🔴 Не отвечает: {esc(humanize.describe_error(r.error))}")
-        lines += await _stored_status_lines(site)
-        first_row = [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
-    else:
-        await render(call, f"▱▱▱ Проверяю, открывается ли {esc(url)}...")
-        r = await check_availability(url, manage=False)
-        await render(call, "▰▱▱ Открывается. Смотрю сертификат...")
-        ssl_r = await check_ssl(url, manage=False)
-        await render(call, "▰▰▱ Сертификат есть. Узнаю срок домена...")
-        dom_r = await check_domain(url, manage=False)
-        lines.append(f"✅ Открывается, {humanize.speed(r.response_time_ms)}" if r.ok
-                     else f"🔴 Не открывается: {esc(humanize.describe_error(r.error))}")
-        if ssl_r.ssl_info:
-            days = ssl_r.ssl_info.days_left
-            icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
-            issuer = f", выдан {esc(ssl_r.ssl_info.issuer)}" if ssl_r.ssl_info.issuer else ""
-            lines.append(f"{icon} Сертификат действует ещё {days} дн. "
-                         f"(до {fmt_date(ssl_r.ssl_info.not_after)}){issuer}")
-        else:
-            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
-        info = dom_r.domain_info
-        if info and info.days_left is not None:
-            icon = "✅" if info.days_left > 30 else ("⚠️" if info.days_left > 7 else "🔴")
-            registrar = f", регистратор {esc(info.registrar)}" if info.registrar not in ("", "Unknown") else ""
-            lines.append(f"{icon} Домен оплачен до {fmt_date(info.expiration_date)} "
-                         f"(ещё {info.days_left} дн.){registrar}")
-        elif dom_r.unsupported:
-            lines.append(f"ℹ️ Домен: {esc(dom_r.error)}")
-        else:
-            lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom_r.error))}")
-        lines += await _stored_status_lines(site)
-        first_row = [InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{sid}"),
-                     InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
+    lines = [f"🌍 {esc(url)}\n", *await card_lines(site)]
     pause_row, notes = await _pause_rows(sid)
     if notes:
         lines += ["", *notes]
     problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
-    explain_row = []
     if problems:
         lines.append("")
-        for inc in problems[:3]:
-            lines.append(f"🔴 {esc(incident_line(inc))} <i>с {fmt_local(inc['created_at'])}</i>")
-        explain_row = [InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}")]
-    rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site:{sid}"), *pause_row[:1]]]
+        lines += [f"🔴 {esc(incident_line(inc))} <i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
+    rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site_live:{sid}"),
+             *pause_row[:1]]]
     if is_http_url(url):
         rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}"),
                      InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
-    rows.append([*explain_row, *first_row[-1:]])
+    last_row = []
+    if problems:
+        last_row.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}"))
+    last_row.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}"))
+    rows.append(last_row)
     rows.append([InlineKeyboardButton(text="← Сайты", callback_data="menu_sites")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("check_site:"))
+async def cb_check_single_site(call: CallbackQuery):
+    """The card, instantly, from the last stored checks."""
+    await ack(call)
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    if not site:
+        await render(call, "Сайт не найден — список сайтов изменился. Открой меню заново.",
+                     back_button("← Сайты", "menu_sites"))
+        return
+    await render_card(call, site)
+
+
+@router.callback_query(F.data.startswith("check_site_live:"))
+async def cb_check_site_live(call: CallbackQuery):
+    """«🔍 Проверить сейчас»: fresh availability, certificate and domain,
+    then the same card."""
+    await ack(call, "Проверяю…")
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    if not site:
+        await render(call, "Сайт не найден.", back_button("← Сайты", "menu_sites"))
+        return
+    url = site["url"]
+    await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
+    await check_availability(url, manage=False)
+    if is_http_url(url):
+        await render(call, "▰▱▱ Смотрю сертификат...")
+        await check_ssl(url, manage=False)
+        await render(call, "▰▰▱ Узнаю срок домена...")
+        await check_domain(url, manage=False)
+    await render_card(call, site)
 
 
 # ── Add ──────────────────────────────────────────────────────────────────────

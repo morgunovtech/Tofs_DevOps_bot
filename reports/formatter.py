@@ -47,9 +47,7 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
             situation += " Проверил дважды подряд; внешнюю проверку сделать не удалось."
         else:
             situation += " Проверил дважды подряд."
-    return (f"{header}\n{situation}\n\n"
-            f"Что это обычно значит: {esc(expl.cause)}.\n\n"
-            f"{esc(steps_block(expl))}"
+    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, когда поднимется."
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 
@@ -89,10 +87,8 @@ def format_ssl_alert(r: SslResult) -> str:
     icon = "🔴" if r.severity == "critical" else "⚠️"
     what = esc(describe_error(r.error))
     header = f"{icon} {label}: {what}"
-    cause = expl.cause
-    if r.renewal_note:
-        cause = "автопродление не сработало — сертификат не менялся, хотя срок уже близко"
-    return (f"{header}\n{expl.meaning}\n\nЧто это обычно значит: {esc(cause)}.\n\n{esc(steps_block(expl))}"
+    note = " Автопродление не сработало: сертификат не менялся, хотя срок уже близко." if r.renewal_note else ""
+    return (f"{header}\n{expl.meaning}{note}"
             + _tech(r.error, f"выдан {r.ssl_info.issuer}" if r.ssl_info and r.ssl_info.issuer else None))
 
 
@@ -103,14 +99,9 @@ def format_domain_alert(r: DomainResult) -> str:
     expl = explain("domain", r.error)
     icon = "🔴" if r.severity == "critical" else "⚠️"
     registrar = r.domain_info.registrar if r.domain_info and r.domain_info.registrar not in ("", "Unknown") else ""
-    steps = list(expl.steps)
-    if registrar:
-        steps[0] = steps[0].replace("у регистратора", f"у регистратора ({registrar})")
-        steps[0] = steps[0].replace("в панели регистратора", f"в панели регистратора ({registrar})")
-    return (f"{icon} Домен {label}: {esc(describe_error(r.error))}\n{expl.meaning}\n\n"
-            f"Что это обычно значит: {esc(expl.cause)}.\n\n"
-            + esc("Что делать:\n" + "\n".join(f"• {s}" for s in steps))
-            + _tech(r.error, f"регистратор {registrar}" if registrar else None))
+    where = f" Продлевается у регистратора: {esc(registrar)}." if registrar else ""
+    return (f"{icon} Домен {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
+            + _tech(r.error))
 
 
 # ── Links / deep / SEO / DNS ─────────────────────────────────────────────────
@@ -129,8 +120,6 @@ def format_links_report(r: LinksResult) -> str:
         lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in internal[:10]]
         if n > 10:
             lines.append(f"  … и ещё {n - 10}")
-        lines.append("")
-        lines.append(esc(steps_block(expl)))
         if external:
             lines.append("")
             lines += external_links_block(external)
@@ -158,8 +147,7 @@ def external_links_block(external: list, label: str | None = None) -> list[str]:
 def format_deep_alert(r) -> str:
     expl = explain("deep", r.error)
     errors = "\n".join(f"  • {esc(u)} — {esc(describe_error(f'HTTP {code}'))}" for u, code in r.errors[:5])
-    return (f"⚠️ {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}\n\n"
-            f"{esc(steps_block(expl))}")
+    return f"⚠️ {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}"
 
 
 def format_seo_alert(r: SeoResult) -> str:
@@ -170,7 +158,6 @@ def format_seo_alert(r: SeoResult) -> str:
     expl = explain("seo", "")
     lines = [f"🔴 {esc(site_label(r.url))} исчезает из поиска", expl.meaning, ""]
     lines += [f"  • {esc(p.message)}" for p in critical[:6]]
-    lines += ["", f"Что это обычно значит: {esc(expl.cause)}.", "", esc(steps_block(expl))]
     return "\n".join(lines)
 
 

@@ -57,13 +57,18 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def domain_keyboard(registrar: str | None) -> InlineKeyboardMarkup | None:
-    """«Продлить у регистратора» link when the registrar is a known one."""
+def explain_keyboard(incident_id: int | None, *extra_rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup | None:
+    """«ℹ️ Что делать» for an incident, plus any extra rows (links etc.)."""
+    rows = [[InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}")]] if incident_id else []
+    rows += [row for row in extra_rows if row]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def domain_keyboard(registrar: str | None, incident_id: int | None = None) -> InlineKeyboardMarkup | None:
+    """«ℹ️ Что делать» and a «Продлить у регистратора» link when known."""
     url = humanize.registrar_url(registrar)
-    if not url:
-        return None
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"🔗 Открыть панель {registrar}", url=url)]])
+    link_row = [InlineKeyboardButton(text=f"🔗 Открыть панель {registrar}", url=url)] if url else []
+    return explain_keyboard(incident_id, link_row)
 
 
 async def trigger_redeploy(url: str) -> str:

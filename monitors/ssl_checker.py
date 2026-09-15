@@ -13,6 +13,7 @@ from config import config
 from db.database import get_or_create_site, get_state, save_check, set_state
 from monitors.base import SslInfo, SslResult, gather_checks
 from monitors.ladder import apply_ladder
+from services import sitestatus
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,10 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
 
     details = r.error or (f"OK, {r.ssl_info.days_left} days left" if r.ssl_info else None)
     await save_check(site_id, "ssl", r.status, details=details)
+    await sitestatus.update(site_id, "ssl", days_left=r.ssl_info.days_left if r.ssl_info else None,
+                            issuer=r.ssl_info.issuer if r.ssl_info else None,
+                            not_after=r.ssl_info.not_after if r.ssl_info else None,
+                            error=None if r.ssl_info else r.error, transient=r.transient)
     if manage and not r.transient:
         await apply_ladder(r, "ssl", r.ssl_info.days_left if r.ssl_info else None,
                            SSL_THRESHOLDS)

@@ -58,14 +58,13 @@ async def cb_alert_action(call: CallbackQuery):
             await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
         except Exception:
             pass
-        image = await fetch_screenshot(url)
+        image, reason = await fetch_screenshot(url)
         if image:
             await call.message.answer_photo(
                 BufferedInputFile(image, filename="screenshot.png"),
                 caption=f"📸 {short_host(url)} · {now_local().strftime('%d.%m %H:%M')}")
         else:
-            await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))} — "
-                                      f"сервис снимков не ответил, попробуй через минуту.")
+            await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
     elif action == "redeploy":
         await ack(call, "Запускаю передеплой…")
         await call.message.answer(await trigger_redeploy(url))

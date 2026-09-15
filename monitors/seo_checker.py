@@ -28,6 +28,7 @@ from config import config
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
 from monitors.base import SeoProblem, SeoResult, gather_checks
 from monitors.sitemap import pick_sample, sitemap_urls
+from services import sitestatus
 from utils.text import plural
 from utils.urls import USER_AGENT
 
@@ -193,6 +194,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         if probe_status is None:
             r.status, r.transient = "error", True
             await save_check(site_id, "seo", "error", details="site unreachable, audit skipped")
+            await sitestatus.update(site_id, "seo", status="error", critical=0, improve=0)
             return r
 
         status, robots_text, _ = await _fetch(session, f"{base}/robots.txt")
@@ -256,12 +258,15 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                + "; ".join(p.message for p in problems[:3])
                if problems else f"OK, проверено страниц: {r.pages_checked}")
     await save_check(site_id, "seo", r.status, details=summary[:500])
+    await sitestatus.update(site_id, "seo", status=r.status,
+                            critical=sum(p.severity == "critical" for p in problems),
+                            improve=sum(p.severity != "critical" for p in problems))
     if not manage:
         return r
     if problems:
         r.error = (f"SEO: {n} {plural(n, 'проблема', 'проблемы', 'проблем')}, "
                    f"напр.: {problems[0].message}")[:300]
-        _, r.incident_new = await save_incident(site_id, "seo", r.error, severity=r.severity)
+        r.incident_id, r.incident_new = await save_incident(site_id, "seo", r.error, severity=r.severity)
     elif await resolve_incident(site_id, "seo"):
         r.recovered = True
     return r

@@ -23,7 +23,7 @@ from db.database import (
 )
 from monitors.base import AvailabilityResult, gather_checks
 from monitors.second_opinion import second_opinion_up
-from services import hosting, integrations
+from services import hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
 from utils.urls import USER_AGENT
 
@@ -225,8 +225,11 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     if r.hosting:
         if await get_state(f"hosting:{r.site_id}") != r.hosting:
             await set_state(f"hosting:{r.site_id}", r.hosting)
+            await sitestatus.set_field(r.site_id, "hosting", r.hosting)
     else:
         r.hosting = await get_state(f"hosting:{r.site_id}")
+    await sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms, error=r.error,
+                            code=r.status_code)
     if not manage:
         return r
 

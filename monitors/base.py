@@ -21,6 +21,7 @@ class CheckResult:
     status: str = "ok"                 # ok | warning | critical | error
     error: str | None = None
     incident_new: bool = False
+    incident_id: int | None = None
     recovered: bool = False
     resolved_incident: dict | None = None
     # True when the failure is on OUR side (network, verdict service) and
@@ -40,7 +41,6 @@ class CheckResult:
 class AvailabilityResult(CheckResult):
     status_code: int | None = None
     response_time_ms: int | None = None
-    incident_id: int | None = None
     # Second-opinion verdict: True = up externally, False = confirmed down,
     # None = not checked / verdict service unreachable.
     external_ok: bool | None = None

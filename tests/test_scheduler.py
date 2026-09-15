@@ -28,7 +28,8 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
         assert bot.sent and "не открывается" in bot.sent[-1]["text"] and bot.sent[-1]["silent"] is False
-        assert "Что делать:" in bot.sent[-1]["text"]
+        labels = [b.text for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row]
+        assert "ℹ️ Что делать" in labels and "🔧 Я чиню, час тишины" in labels
         assert bot.sent[-1]["reply_markup"] is not None
         # Not due again within the interval → no second alert.
         n = len(bot.sent)

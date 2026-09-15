@@ -9,13 +9,14 @@ from db.database import save_feedback, save_incident
 from handlers import feedback, heartbeats, incidents, maintenance, menu, settings, site_settings, sites
 from services import maintenance as maint_service
 from services import settings as settings_service
+from services import sitestatus
 
 
 async def test_main_menu_header_states(bot, db):
     header, kb = await menu.build_main_menu()
     assert "Сайтов пока нет" in header
     sid = await db.activate_or_create_site("https://ex.test")
-    await db.save_check(sid, "availability", "ok", response_time_ms=90)
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
     await save_incident(sid, "ssl", "expiring", "warning")
     await maint_service.pause_site(sid, 30)
     header, kb = await menu.build_main_menu()
@@ -43,11 +44,14 @@ async def test_site_add_flow_and_detail_screen(bot, db):
 
         sid = (await db.get_site_by_url(url))["id"]
         call = FakeCall(f"check_site:{sid}")
-        await sites.cb_check_single_site(call)
+        await sites.cb_check_single_site(call)            # instant: from the snapshot the add flow wrote
         assert url in call.message.texts[-1] and "Открывается, быстро" in call.message.texts[-1]
+        assert "Домен: ещё не проверял" in call.message.texts[-1]
+        call = FakeCall(f"check_site_live:{sid}")
+        await sites.cb_check_site_live(call)              # live: domain gets checked
         assert "Домен: это IP-адрес" in call.message.texts[-1]          # one screen, no pointer elsewhere
-        await db.save_check(sid, "links", "ok", details="All 12 links OK")
-        await db.save_check(sid, "seo", "warning", details="2 проблемы")
+        await sitestatus.update(sid, "links", status="ok", internal=0, external=0)
+        await sitestatus.update(sid, "seo", status="warning", critical=0, improve=2)
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
         assert "Ссылки: все работают" in call.message.texts[-1]
@@ -135,7 +139,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
 async def test_main_menu_header_is_short_when_all_is_well(bot, db):
     for i in range(3):
         sid = await db.activate_or_create_site(f"https://ok{i}.test")
-        await db.save_check(sid, "availability", "ok", response_time_ms=90)
+        await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
     header, kb = await menu.build_main_menu()
     lines = header.split("\n")
     assert lines[0].startswith("✅ 3/3 в порядке") and len(lines) == 4

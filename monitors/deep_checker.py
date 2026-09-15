@@ -53,7 +53,7 @@ async def check_deep(url: str) -> DeepResult:
         r.error = f"5xx на {len(r.errors)} из {r.sampled} проверенных страниц"
         preview = ", ".join(f"{u} ({code})" for u, code in r.errors[:5])
         await save_check(site_id, "deep", "error", details=preview)
-        _, r.incident_new = await save_incident(site_id, "deep", r.error, severity="warning")
+        r.incident_id, r.incident_new = await save_incident(site_id, "deep", r.error, severity="warning")
     else:
         n = len(r.errors)
         await save_check(site_id, "deep", "ok", details=(

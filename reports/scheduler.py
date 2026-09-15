@@ -52,7 +52,13 @@ from reports.formatter import (
 )
 from reports.weekly import build_weekly_report
 from services import gsc, humanize, integrations, notifier, recommend, settings, updates, yandex_webmaster
-from services.actions import alert_actions_keyboard, deploy_hook_for, domain_keyboard, trigger_redeploy
+from services.actions import (
+    alert_actions_keyboard,
+    deploy_hook_for,
+    domain_keyboard,
+    explain_keyboard,
+    trigger_redeploy,
+)
 from services.notifier import Priority
 from utils.clock import local_tz
 from utils.text import SAFE_LIMIT, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
@@ -149,6 +155,18 @@ async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minu
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
+async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb, slow_ms: int):
+    r = await check_availability(url, manage=False)
+    ms = r.response_time_ms or 0
+    if r.ok and ms < slow_ms:
+        line = f"\n\n🔁 Через 5 мин: {humanize.fmt_seconds(ms)}, уже нормально."
+    elif r.ok:
+        line = f"\n\n🔁 Через 5 мин: всё ещё медленно ({humanize.fmt_seconds(ms)})."
+    else:
+        line = "\n\n🔁 Через 5 мин: теперь вообще не открывается — напишу отдельно."
+    await notifier.edit(message_id, clip(text + line), reply_markup=kb)
+
+
 async def _note_local_network_problem(url: str, site_id: int):
     """Down from the bot's network but fine externally — mention it at most
     once per 6 hours."""
@@ -171,16 +189,21 @@ async def _track_slow(r, slow_ms: int):
     if ms >= slow_ms:
         _slow_streak[r.site_id] = _slow_streak.get(r.site_id, 0) + 1
         if _slow_streak[r.site_id] == SLOW_RESPONSE_STREAK:
-            _, is_new = await save_incident(r.site_id, "performance",
-                                            f"Slow responses: ~{ms}ms", severity="warning")
+            inc_id, is_new = await save_incident(r.site_id, "performance",
+                                                 f"Slow responses: ~{ms}ms", severity="warning")
             if is_new:
                 expl = humanize.EXPLANATIONS["slow"]
-                await notifier.send(
-                    f"⚠️ {esc(site_label(r.url))} открывается медленно: {humanize.fmt_seconds(ms)} "
-                    f"вместо обычных долей секунды, {SLOW_RESPONSE_STREAK} "
-                    f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
-                    f"{expl.meaning}\n\nЧто это обычно значит: {esc(expl.cause)}.\n\n"
-                    f"{esc(humanize.steps_block(expl))}", Priority.NORMAL, site_id=r.site_id)
+                text = (f"⚠️ {esc(site_label(r.url))} открывается медленно: {humanize.fmt_seconds(ms)} "
+                        f"вместо обычных долей секунды, {SLOW_RESPONSE_STREAK} "
+                        f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
+                        f"{expl.meaning}")
+                sent = await notifier.send(text, Priority.NORMAL, site_id=r.site_id,
+                                           reply_markup=explain_keyboard(inc_id))
+                if isinstance(sent, Message) and _scheduler is not None:
+                    _scheduler.add_job(_followup_slow, "date",
+                                       run_date=datetime.now(UTC) + timedelta(minutes=5),
+                                       args=[r.url, r.site_id, sent.message_id, text, explain_keyboard(inc_id), slow_ms],
+                                       id=f"followup-slow:{sent.message_id}", replace_existing=True)
         return
     _slow_streak[r.site_id] = 0
     if await resolve_incident(r.site_id, "performance"):
@@ -192,12 +215,14 @@ async def _track_slow(r, slow_ms: int):
 
 async def _notify_transitions(results: list[CheckResult], alert, recovery,
                               priority=lambda r: Priority.NORMAL, keyboard=None):
+    """Alert on incident_new (with «ℹ️ Что делать» for the incident),
+    a one-liner on recovery."""
     for r in results:
         if r.incident_new:
             msg = alert(r)
             if msg:
-                await notifier.send(clip(msg), priority(r), site_id=r.site_id,
-                                    reply_markup=keyboard(r) if keyboard else None)
+                kb = keyboard(r) if keyboard else explain_keyboard(r.incident_id)
+                await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb)
         elif r.recovered:
             await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id)
 
@@ -220,7 +245,7 @@ async def run_domain_checks():
     await _notify_transitions(
         await check_all_domains(await get_active_http_site_urls()), format_domain_alert,
         lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.",
-        keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None))
+        keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None, r.incident_id))
 
 
 async def run_links_checks():
@@ -233,7 +258,7 @@ async def run_deep_checks():
     await _notify_transitions(
         await check_all_deep(await get_active_http_site_urls()), format_deep_alert,
         lambda r: f"✅ На {esc(site_label(r.url))} все страницы снова отвечают без ошибок.",
-        keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id))
+        keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id, r.incident_id))
 
 
 SEO_GRACE_HOURS = 24

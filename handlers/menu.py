@@ -3,8 +3,8 @@ site from the last checks, problems listed inline when there are any, and
 three buttons — sites, check now, settings. A fourth («🔴 Проблемы»)
 appears only while something is broken."""
 
-import re
-from datetime import UTC, datetime, timedelta
+
+from datetime import timedelta
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -17,7 +17,6 @@ from db.database import (
     get_active_incidents,
     get_active_site_urls,
     get_all_sites,
-    get_last_check,
 )
 from handlers.common import ack, back_button, render
 from monitors.availability import check_all
@@ -25,14 +24,14 @@ from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
 from monitors.ssl_checker import check_all_ssl
 from reports.formatter import format_compact_status_report, incident_line
-from services import humanize, maintenance, notifier
+from services import humanize, maintenance, notifier, sitestatus
 from utils.clock import to_local, utcnow
-from utils.text import clip, esc, fmt_duration, parse_sqlite_utc, plural
-from utils.urls import is_http_url, site_label
+from utils.text import clip, esc, fmt_duration, plural
+from utils.urls import site_label
 
 router = Router(name="menu")
 
-_DAYS_LEFT = re.compile(r"(-?\d+) days left")
+FRESH_REGION_MINUTES = 3 * 60
 
 
 async def mute_until_local() -> str | None:
@@ -43,28 +42,44 @@ async def mute_until_local() -> str | None:
     return to_local(deadline).strftime(fmt)
 
 
-async def site_state(site: dict) -> tuple[str, str, datetime | None]:
-    """(icon, short state, checked_at) for one site from the last stored
-    checks — no network, the menu must open instantly."""
-    last = await get_last_check(site["id"], "availability")
-    if not last:
+def best_ms(status: dict) -> tuple[int | None, str | None]:
+    """Response time to show: from the audience's region when fresh, else
+    from the bot's own probe."""
+    region = status.get("region") or {}
+    age = sitestatus.age_minutes(region)
+    if region.get("ms") is not None and age is not None and age < FRESH_REGION_MINUTES:
+        return region["ms"], region.get("name")
+    return (status.get("avail") or {}).get("ms"), None
+
+
+async def site_state(site: dict) -> tuple[str, str, float | None]:
+    """(icon, short state, minutes since the last availability check) from
+    the stored snapshot — no network, the menu must open instantly."""
+    st = await sitestatus.get(site["id"])
+    avail = st.get("avail")
+    if not avail:
         return "⏳", "ждёт первой проверки", None
-    checked = parse_sqlite_utc(last["checked_at"])
-    if last["status"] != "ok":
-        return "🔴", humanize.describe_error(last.get("details")), checked
+    age = sitestatus.age_minutes(avail)
+    if avail.get("status") != "ok":
+        return "🔴", humanize.describe_error(avail.get("error")), age
     notes = []
-    if is_http_url(site["url"]):
-        for kind, word, limit in (("ssl", "сертификат", 14), ("domain", "домен", 30)):
-            row = await get_last_check(site["id"], kind)
-            m = _DAYS_LEFT.search(row.get("details") or "") if row else None
-            if m and int(m.group(1)) <= limit:
-                days = int(m.group(1))
-                notes.append(f"{word} {'истёк' if days < 0 else f'через {days} дн.'}")
+    ssl, dom = st.get("ssl") or {}, st.get("domain") or {}
+    if ssl.get("days_left") is not None and ssl["days_left"] <= 14:
+        notes.append("сертификат истёк" if ssl["days_left"] < 0 else f"сертификат через {ssl['days_left']} дн.")
+    if not dom.get("unsupported") and dom.get("days_left") is not None and dom["days_left"] <= 30:
+        notes.append("домен истёк" if dom["days_left"] < 0 else f"домен через {dom['days_left']} дн.")
+    links = st.get("links") or {}
+    if links.get("internal"):
+        n = links["internal"]
+        notes.append(f"{n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} в никуда")
+    if (st.get("seo") or {}).get("status") == "critical":
+        notes.append("закрыт от поиска")
     if notes:
-        return "⚠️", ", ".join(notes), checked
+        return "⚠️", ", ".join(notes), age
+    word = humanize.speed_word(best_ms(st)[0])
     if await maintenance.is_paused(site["id"]):
-        return "🔧", "чинится, " + humanize.speed(last.get("response_time_ms")).split(" (")[0], checked
-    return "✅", humanize.speed(last.get("response_time_ms")).split(" (")[0], checked
+        return "🔧", f"чинится, {word}", age
+    return "✅", word, age
 
 
 async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
@@ -77,7 +92,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                 f"{config.check_interval_minutes} мин и напишу, только если что-то сломается.", kb)
 
     states = [(s, *await site_state(s)) for s in sites]
-    checked = [c for *_, c in states if c]
+    ages = [age for *_, age in states if age is not None]
     ok = sum(1 for _, icon, *_ in states if icon in ("✅", "🔧"))
     total = sum(1 for _, icon, *_ in states if icon != "⏳")
     incidents = await get_active_incidents()
@@ -89,10 +104,9 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                     f"{plural(total, 'открывается', 'открываются', 'открываются')} · 🔴 проблем: {len(incidents)}")
     else:
         headline = f"{'✅' if ok == total else '⚠️'} {ok}/{total} в порядке"
-    if total and checked:
-        if True:
-            ago = (datetime.now(UTC) - max(checked)).total_seconds() / 60
-            headline += f" · проверял {fmt_duration(ago)} назад" if ago >= 1 else " · проверял только что"
+    if total and ages:
+        ago = min(ages)
+        headline += f" · проверял {fmt_duration(ago)} назад" if ago >= 1 else " · проверял только что"
     lines = [headline]
     for s, icon, state, _ in states[:10]:
         lines.append(f"{icon} {esc(site_label(s['url']))} · {esc(state)}")
@@ -129,7 +143,7 @@ async def send_main_menu(target: Message | CallbackQuery):
 
 
 @router.message(Command("menu"))
-@router.message(F.text == "📱 Меню")
+@router.message(F.text.in_({"📱 Меню", "📊 Статус"}))
 async def cmd_menu(message: Message, state: FSMContext):
     await state.clear()  # a menu tap always aborts any pending input flow
     await send_main_menu(message)
@@ -160,7 +174,6 @@ _NO_SITES = "Сайтов пока нет — добавь через 📱 Ме�
 
 
 @router.message(Command("status"))
-@router.message(F.text == "📊 Статус")
 async def cmd_status(message: Message, state: FSMContext):
     await state.clear()
     urls = await get_active_site_urls()

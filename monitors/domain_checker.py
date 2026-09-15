@@ -8,6 +8,7 @@ from db.database import get_or_create_site, save_check
 from monitors import rdap
 from monitors.base import DomainResult, gather_checks
 from monitors.ladder import apply_ladder
+from services import sitestatus
 from utils.urls import host_of, registrable_domain
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
     else:
         r.unsupported, r.error = True, "это IP-адрес, домена нет"
         await save_check(site_id, "domain", "ok", details=r.error)
+        await sitestatus.update(site_id, "domain", days_left=None, unsupported=True, error=r.error)
         return r
     try:
         info = await rdap.lookup(domain)
@@ -58,6 +60,12 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
     else:
         details = r.error
     await save_check(site_id, "domain", r.status, details=details)
+    info = r.domain_info
+    await sitestatus.update(site_id, "domain", days_left=info.days_left if info else None,
+                            expiration=info.expiration_date if info else None,
+                            registrar=info.registrar if info else None, unsupported=r.unsupported,
+                            error=None if info and info.days_left is not None else r.error,
+                            transient=r.transient)
 
     if manage and not r.transient and not r.unsupported:
         await apply_ladder(r, "domain", r.domain_info.days_left if r.domain_info else None,
