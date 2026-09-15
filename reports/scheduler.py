@@ -7,7 +7,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import aiohttp
-from aiogram.types import FSInputFile
+from aiogram.types import FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -29,7 +29,7 @@ from db.database import (
     set_dns_state,
     set_state,
 )
-from monitors.availability import check_all
+from monitors.availability import check_all, check_availability
 from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
 from monitors.dns_checker import check_all_dns
@@ -51,8 +51,8 @@ from reports.formatter import (
     incident_line,
 )
 from reports.weekly import build_weekly_report
-from services import gsc, humanize, integrations, notifier, settings, updates, yandex_webmaster
-from services.actions import alert_actions_keyboard, deploy_hook_for, trigger_redeploy
+from services import gsc, humanize, integrations, notifier, recommend, settings, updates, yandex_webmaster
+from services.actions import alert_actions_keyboard, deploy_hook_for, domain_keyboard, trigger_redeploy
 from services.notifier import Priority
 from utils.clock import local_tz
 from utils.text import SAFE_LIMIT, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
@@ -108,14 +108,45 @@ async def run_availability_checks():
             msg = format_availability_alert(r, integrations.second_opinion_enabled())
             if config.auto_redeploy and deploy_hook_for(r.url):
                 msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
-            await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id,
-                                reply_markup=alert_actions_keyboard(r.url, r.site_id, r.incident_id))
+            kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting)
+            sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb)
+            if isinstance(sent, Message):
+                _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
         elif r.external_ok is True:
             await _note_local_network_problem(r.url, r.site_id)
         elif r.recovered:
             await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
         if r.ok:
             await _track_slow(r, site.get("slow_ms") or config.slow_response_ms)
+
+
+FOLLOWUP_MINUTES = (2, 5)
+
+
+def _schedule_followups(url: str, site_id: int, message_id: int, text: str, kb):
+    """Re-check 2 and 5 minutes after an alert and append the verdict to the
+    same message — the person should not have to press «Проверить»."""
+    if _scheduler is None:
+        return
+    for minutes in FOLLOWUP_MINUTES:
+        _scheduler.add_job(_followup, "date",
+                           run_date=datetime.now(UTC) + timedelta(minutes=minutes),
+                           args=[url, site_id, message_id, text, kb, minutes],
+                           id=f"followup:{message_id}:{minutes}", replace_existing=True)
+
+
+async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minutes: int):
+    r = await check_availability(url, manage=False)
+    if r.ok:
+        line = f"\n\n🔁 Через {minutes} мин: уже открывается. Подтвержу отдельным сообщением."
+        for other in FOLLOWUP_MINUTES:
+            if other > minutes and _scheduler is not None:
+                job = _scheduler.get_job(f"followup:{message_id}:{other}")
+                if job:
+                    job.remove()
+    else:
+        line = f"\n\n🔁 Через {minutes} мин: всё ещё не открывается ({esc(humanize.describe_error(r.error))})."
+    await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
 async def _note_local_network_problem(url: str, site_id: int):
@@ -188,7 +219,8 @@ async def run_ssl_checks():
 async def run_domain_checks():
     await _notify_transitions(
         await check_all_domains(await get_active_http_site_urls()), format_domain_alert,
-        lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.")
+        lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.",
+        keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None))
 
 
 async def run_links_checks():
@@ -204,12 +236,32 @@ async def run_deep_checks():
         keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id))
 
 
+SEO_GRACE_HOURS = 24
+
+
+async def _recently_added() -> set[str]:
+    """URLs of sites added less than SEO_GRACE_HOURS ago."""
+    cutoff = datetime.now(UTC) - timedelta(hours=SEO_GRACE_HOURS)
+    out = set()
+    for s in await get_all_sites():
+        added = parse_sqlite_utc(s.get("added_at"))
+        if added and added > cutoff:
+            out.add(s["url"])
+    return out
+
+
 async def run_seo_checks():
     """Daily SEO/GEO audit. Only critical findings (noindex, search bots
     blocked) become alerts — the site is disappearing from search right
-    now, so they bypass mute. Improvements wait for the weekly report."""
+    now, so they bypass mute. Improvements wait for the weekly report.
+    A site added today is audited quietly: its first findings arrive in
+    the next morning digest, not as ten separate alerts."""
+    urls = await get_active_http_site_urls()
+    fresh = await _recently_added()
+    if fresh:
+        await check_all_seo([u for u in urls if u in fresh], manage=False)
     await _notify_transitions(
-        await check_all_seo(await get_active_http_site_urls()), format_seo_alert,
+        await check_all_seo([u for u in urls if u not in fresh]), format_seo_alert,
         lambda r: f"✅ {esc(site_label(r.url))} снова открыт для поисковиков. Ничего делать не нужно.",
         priority=lambda r: Priority.CRITICAL)
 
@@ -374,7 +426,8 @@ async def run_escalation_watch():
             f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
             f"«🔧 Я чиню», и я замолчу на два часа.",
             Priority.CRITICAL, site_id=inc["site_id"],
-            reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"]))
+            reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
+                                                hosting=await get_state(f"hosting:{inc['site_id']}")))
         if sent:
             await set_state(f"escalated:{inc['id']}", now.isoformat())
 
@@ -489,6 +542,17 @@ async def _morning_extras(ssl_results, domain_results) -> list[str]:
             seo_chips.append(f"{esc(short_host(s['url']))} {'🔴' if last['status'] == 'critical' else '⚠️'}")
     if seo_chips:
         extras.append("🔍 В поиске: " + ("✅ всё в порядке" if seo_ok else " · ".join(seo_chips)))
+    now = datetime.now(UTC)
+    for s in sites:
+        added = parse_sqlite_utc(s.get("added_at"))
+        if not added or not (timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)):
+            continue
+        last = await get_last_check(s["id"], "seo")
+        if last:
+            verdict = ("всё в порядке" if last["status"] == "ok" else
+                       "есть что поправить" if last["status"] == "warning" else "сайт закрыт от поиска!")
+            extras.append(f"🔍 Первый взгляд на {esc(site_label(s['url']))} глазами поисковиков: {verdict} — "
+                          f"подробности в «🔍 Поиск и ИИ»")
 
     try:
         disk = await check_disk(auto_cleanup=False)
@@ -553,6 +617,9 @@ async def send_weekly_report():
         if chart_blocks:
             for msg in pack_blocks(["⏱ Как быстро открывались сайты по дням:", *chart_blocks]):
                 await notifier.send(msg, Priority.DIGEST)
+        tip = await recommend.weekly_recommendation()
+        if tip:
+            await notifier.send(tip[0], Priority.DIGEST, reply_markup=tip[1])
     except Exception as e:
         logger.error("Weekly report failed: %s", e)
     await send_db_backup_to_telegram()

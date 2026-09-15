@@ -322,3 +322,37 @@ def incident_headline(check_type: str, message: str | None, label: str) -> str:
     if check_type == "seo":
         return f"{label}: {what}"
     return f"{label}: {what}"
+
+
+# ── Registrar panels (from RDAP registrar names) ─────────────────────────────
+
+_REGISTRARS: list[tuple[str, str]] = [
+    ("cloudflare", "https://dash.cloudflare.com/?to=/:account/domains"),
+    ("namecheap", "https://ap.www.namecheap.com/domains/list/"),
+    ("godaddy", "https://dcc.godaddy.com/control/portfolio"),
+    ("regru", "https://www.reg.ru/user/domains"), ("reg.ru", "https://www.reg.ru/user/domains"),
+    ("ru-center", "https://www.nic.ru/manager/"), ("nic.ru", "https://www.nic.ru/manager/"),
+    ("timeweb", "https://timeweb.cloud/my/domains"),
+    ("beget", "https://cp.beget.com/domains"),
+    ("gandi", "https://admin.gandi.net/domain"),
+    ("ovh", "https://www.ovh.com/manager/"),
+    ("hostinger", "https://hpanel.hostinger.com/domains"),
+    ("name.com", "https://www.name.com/account/domain"),
+    ("porkbun", "https://porkbun.com/account/domainsSpeedy"),
+    ("ionos", "https://my.ionos.com/domains"),
+    ("squarespace", "https://account.squarespace.com/domains"),
+    ("tucows", "https://www.hover.com/domains"), ("hover", "https://www.hover.com/domains"),
+    ("dynadot", "https://www.dynadot.com/domain/manage"),
+    ("google", "https://domains.squarespace.com/"),
+]
+
+
+def registrar_url(registrar: str | None) -> str | None:
+    """Panel link for a registrar name as RDAP/WHOIS reports it."""
+    name = (registrar or "").lower()
+    if not name or name == "unknown":
+        return None
+    for needle, url in _REGISTRARS:
+        if needle in name:
+            return url
+    return None

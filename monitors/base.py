@@ -46,6 +46,8 @@ class AvailabilityResult(CheckResult):
     external_ok: bool | None = None
     # HTTP succeeded but the keyword/stop-phrase check failed.
     keyword_failed: bool = False
+    # Hosting guessed from response headers (services.hosting key).
+    hosting: str | None = None
 
 
 @dataclass

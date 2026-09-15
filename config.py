@@ -122,7 +122,8 @@ class Config:
 
     # ── Cloudflare Pages actions ─────────────────────────────────────────────
     deploy_hooks: dict[str, str] = field(default_factory=lambda: _map("DEPLOY_HOOKS"))
-    auto_redeploy: bool = _bool("AUTO_REDEPLOY")
+    # On by default: a deploy hook that exists is a fix that exists.
+    auto_redeploy: bool = _bool("AUTO_REDEPLOY", "1")
     cf_api_token: str = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
     cf_zone_id: str = os.getenv("CLOUDFLARE_ZONE_ID", "").strip()
 

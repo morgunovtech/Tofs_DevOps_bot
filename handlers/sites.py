@@ -22,6 +22,8 @@ from db.database import (
     deactivate_site,
     get_all_sites,
     get_site,
+    get_state,
+    set_state,
     update_site_settings,
 )
 from handlers.common import (
@@ -36,6 +38,7 @@ from handlers.common import (
 )
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
+from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import reset_site_schedule
 from services import humanize, maintenance, settings
@@ -217,7 +220,34 @@ async def msg_site_add(message: Message, state: FSMContext):
     if first_site:
         lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
-    await status.edit_text("\n".join(lines), reply_markup=back_button())
+    kb = back_button()
+    if is_http_url(url) and r.ok:
+        note = await alt_host_note(url)
+        if note:
+            lines.append("\n" + note)
+        phrase = await suggest_keyword(url)
+        if phrase:
+            await set_state(f"kw_suggest:{site_id}", phrase)
+            lines.append(f"\n💡 На главной есть «{esc(phrase)}». Следить, чтобы она не пропадала? "
+                         f"Так я замечу пустую страницу или ошибку вместо сайта.")
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
+                 InlineKeyboardButton(text="Не надо", callback_data="menu_main")]])
+    await status.edit_text("\n".join(lines), reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("kwok:"))
+async def cb_keyword_accept(call: CallbackQuery):
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    phrase = await get_state(f"kw_suggest:{site['id']}") if site else None
+    if not site or not phrase:
+        await ack(call, "Подсказка устарела — задай фразу в настройках сайта", show_alert=True)
+        return
+    await update_site_settings(site["id"], keyword=phrase, keyword_mode="present")
+    await set_state(f"kw_suggest:{site['id']}", None)
+    await ack(call, "Слежу ✅")
+    await render(call, f"✅ Слежу, чтобы на {esc(site_label(site['url']))} была фраза «{esc(phrase)}». "
+                       f"Поменять можно в настройках сайта.", back_button())
 
 
 # ── Remove ───────────────────────────────────────────────────────────────────

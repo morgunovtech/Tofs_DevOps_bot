@@ -10,7 +10,8 @@ import logging
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from services import integrations
+from services import hosting as hosting_svc
+from services import humanize, integrations
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -27,8 +28,8 @@ def deploy_hook_for(url: str) -> str | None:
     return integrations.deploy_hooks().get(host_of(url))
 
 
-def alert_actions_keyboard(url: str, site_id: int,
-                           incident_id: int | None = None) -> InlineKeyboardMarkup:
+def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = None,
+                           hosting: str | None = None) -> InlineKeyboardMarkup:
     """Action buttons attached to availability alerts. The site is addressed
     by its DB id — stable across list edits and well under the 64-byte
     callback_data limit. With an incident_id an «👀 не напоминать» row lets
@@ -50,7 +51,19 @@ def alert_actions_keyboard(url: str, site_id: int,
         extra.append(InlineKeyboardButton(text="🧹 Сбросить кэш", callback_data=f"act:purge:{site_id}"))
     if extra:
         rows.append(extra)
+    panel = hosting_svc.panel_url(hosting)
+    if panel:
+        rows.append([InlineKeyboardButton(text=f"🔗 Открыть панель {hosting_svc.label(hosting)}", url=panel)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def domain_keyboard(registrar: str | None) -> InlineKeyboardMarkup | None:
+    """«Продлить у регистратора» link when the registrar is a known one."""
+    url = humanize.registrar_url(registrar)
+    if not url:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=f"🔗 Открыть панель {registrar}", url=url)]])
 
 
 async def trigger_redeploy(url: str) -> str:

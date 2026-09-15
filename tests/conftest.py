@@ -31,10 +31,12 @@ from services import integrations, maintenance, notifier, runtime, secrets, sett
 
 
 class FakeBot:
-    """Records what the bot would have sent."""
+    """Records what the bot would have sent; send_message returns a
+    message-like object with a message_id, as aiogram's Bot does."""
 
     def __init__(self):
         self.sent: list[dict] = []
+        self.edited: list[dict] = []
         self.fail = False
 
     async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False):
@@ -42,6 +44,11 @@ class FakeBot:
             raise RuntimeError("telegram down")
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
                           "silent": disable_notification})
+        return SimpleNamespace(message_id=len(self.sent), text=text)
+
+    async def edit_message_text(self, text, chat_id=None, message_id=None, reply_markup=None):
+        self.edited.append({"message_id": message_id, "text": text, "reply_markup": reply_markup})
+        return SimpleNamespace(message_id=message_id, text=text)
 
     async def send_document(self, chat_id, document, caption=None, disable_notification=False):
         self.sent.append({"chat_id": chat_id, "document": document, "caption": caption})

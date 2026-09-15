@@ -15,13 +15,15 @@ import aiohttp
 from db.database import (
     get_recent_check_statuses,
     get_site_by_url,
+    get_state,
     resolve_incident,
     save_check,
     save_incident,
+    set_state,
 )
 from monitors.base import AvailabilityResult, gather_checks
 from monitors.second_opinion import second_opinion_up
-from services import integrations
+from services import hosting, integrations
 from utils.parse import parse_accepted_codes
 from utils.urls import USER_AGENT
 
@@ -108,6 +110,7 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                                        ssl=True, allow_redirects=True) as resp:
                 r.status_code = resp.status
                 r.response_time_ms = int((time.monotonic() - start) * 1000)
+                r.hosting = hosting.detect_hosting(resp.headers)
                 if not code_accepted(resp.status, ranges):
                     r.status, r.error = "error", f"HTTP {resp.status}"
                 elif keyword and method != "HEAD":
@@ -217,6 +220,13 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     await save_check(r.site_id, "availability", r.status,
                      response_time_ms=r.response_time_ms,
                      status_code=r.status_code, details=r.error)
+    # Remember the hosting so alerts can link to its panel even when the
+    # failing response carries no headers at all.
+    if r.hosting:
+        if await get_state(f"hosting:{r.site_id}") != r.hosting:
+            await set_state(f"hosting:{r.site_id}", r.hosting)
+    else:
+        r.hosting = await get_state(f"hosting:{r.site_id}")
     if not manage:
         return r
 

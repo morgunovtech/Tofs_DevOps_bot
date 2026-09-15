@@ -6,6 +6,8 @@
 
 Built around one principle: **minimal involvement**. You shouldn't babysit your infrastructure — the bot tells you when something needs attention, tries to fix it first, and proves everything is OK with one short digest a day.
 
+And one audience: **people who have never heard of DNS or a 502**. Every message answers, in order, what happened, what it means for visitors, what it usually is, and what to do — with buttons. No percentages ("unavailable for 3 minutes this week"), no jargon in the menu, no dead ends: a non-green line always has a button that fixes it or walks you through.
+
 ## What it does
 
 ### 📡 Monitoring
@@ -30,25 +32,28 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 
 ### 🔧 Self-healing (Cloudflare Pages friendly)
 - Alerts come with **one-tap action buttons**: re-check, trigger a Pages deploy hook, purge the Cloudflare cache, grab a live page screenshot.
-- **Auto-redeploy**: optionally fires the deploy hook itself when a site goes down (once per incident) and reports what it did.
+- **Auto-redeploy**: fires the deploy hook itself when a site goes down (on by default once a hook exists, once per incident) and reports what it did in the alert.
+- **Follow-ups without you**: 2 and 5 minutes after a "site down" alert the bot re-checks and edits the same message — "still down" or "already up". A "I'm on it, one hour of silence" button lives in every alert.
+- **Knows your hosting**: guesses Cloudflare / Vercel / Netlify / GitHub Pages / Railway / Render / Fly / Heroku from response headers and puts an "Open the panel" link into the alert; domain alerts link to the registrar's panel (Cloudflare, reg.ru, Namecheap, GoDaddy…).
 - **Container auto-restart** and **disk auto-cleanup** (docker prune) on the bot's host — off by default, enabled by mounting the docker socket.
 
 ### 📱 Managed entirely from the chat
 - **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
-- **Sites** — add/remove from the menu («🌍 Сайт детально»), with instant first-check feedback. The DB is the source of truth; `.env` is just an optional first-run seed.
+- **Sites** — add/remove from the menu («🌍 Мои сайты»), with instant first-check feedback: the bot also suggests a phrase from the page to watch (catches "HTTP 200 with a blank page") and warns when the www twin behaves like a separate site. The DB is the source of truth; `.env` is just an optional first-run seed.
+- **Two-level settings** — how often to check and whether to watch a phrase, in words; the other eight dials are behind «🛠 Для продвинутых».
 - **⚙️ Settings** — morning report hour, evening report on/off, weekly report hour, quiet-hours presets: changed from the chat, applied to the running scheduler on the fly.
 - **⚙️ Per-site overrides** — check interval, consecutive-failure threshold, accepted HTTP codes (e.g. `200-399,401`), keyword, "slow" threshold, HTTP method/headers/body — each site gets its own dials.
 - **📤 Export / 📥 import** — the site list with all per-site settings as one JSON file: move between instances or keep a copy.
 - **👀 Acknowledge** — «Видел, не напоминать 2 ч» on an escalating incident: snoozes the re-alerts without closing the incident.
 - **🔧 Maintenance windows** — recurring schedules («weekdays 02:00–04:00», overnight windows welcome) per site or for everything: alerts and escalation stay silent, checks and stats keep running.
-- **💓 Heartbeat jobs** — added from the chat with a ready-to-paste `curl` line for your cron.
+- **⏰ Task control (heartbeats)** — added from the chat with a ready-to-paste `curl` line for your cron.
 - **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
 - **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d/90d uptime, anonymised incident history, maintenance banner), a `/status.json` twin for your own dashboards, and SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
 - **🩺 Diagnostics as a setup checklist** — three groups: works / needs attention / can be connected. Every non-green line carries a button that either fixes it on the spot (enable the status page, regenerate the heartbeat secret, toggle the second opinion) or opens a two-three step wizard. Google Search Console, Yandex.Webmaster and Cloudflare are connected **from the chat**: paste the token or send the JSON key, the bot validates it with a live request and stores it. `.env` remains a fallback; lines that cannot apply (docker socket on Railway) are hidden, and the public URL is picked up from Railway's domain automatically.
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 
 ### 💓 Dead-man switch
-Your backup cron can't tell you it *didn't* run. Add a job in the chat («📋 Ещё» → «💓 Heartbeats») — the bot hands you the exact line for your cron:
+Your backup cron can't tell you it *didn't* run. Add a job in the chat («🔌 Подключения» → «⏰ Контроль задач») — the bot hands you the exact line for your cron:
 
 ```bash
 curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
@@ -58,7 +63,8 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 
 ### 📊 Reports that respect your attention
 - **Morning digest** — one message: per-site status, 7-day uptime, upcoming SSL/domain expirations, heartbeat status, disk, SEO summary. Reads in 10 seconds.
-- **Weekly report** (Sundays) — honest 7/30/90-day uptime (raw checks + nightly rollups), incidents, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, and the state of the bot's own dependencies.
+- **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), problems in plain words, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies — and exactly one suggestion with a button, never more.
+- **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔍 Поиск и ИИ» with a hint per line.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
 - **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
 - **Escalation** — a site that is still down re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable (deliberately availability-only: half-hourly pages about an expiring cert would train you to ignore alerts).
@@ -72,7 +78,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 - Secrets take care of themselves: an empty or placeholder `WEBHOOK_SECRET`/`HEARTBEAT_SECRET` is replaced by a generated one stored in the DB. The two are always different — the webhook secret is public by design (it ships in the widget), the heartbeat one is not.
 
 ### 📩 Bonus: feedback widget
-A tiny embeddable JS widget for your sites — messages land in your Telegram (rate limiting and size caps server-side) and stay readable in the bot («📋 Ещё» → «📩 Обратная связь»). Two modes: a floating "⚠️ Проблема?" button, or `button: false` plus `data-devops-feedback` on any link — the classic footer "нашли опечатку?" opens the form with the visitor's selected text pre-filled. Setup snippet and the CSP notes: [docs/SETUP.md](docs/SETUP.md#виджет-обратной-связи-нашли-опечатку).
+A tiny embeddable JS widget for your sites — messages land in your Telegram (rate limiting and size caps server-side) and stay readable in the bot («🔌 Подключения» → «📩 Обратная связь»). Two modes: a floating "⚠️ Проблема?" button, or `button: false` plus `data-devops-feedback` on any link — the classic footer "нашли опечатку?" opens the form with the visitor's selected text pre-filled. Setup snippet and the CSP notes: [docs/SETUP.md](docs/SETUP.md#виджет-обратной-связи-нашли-опечатку).
 
 ## What it looks like
 
@@ -91,15 +97,27 @@ A tiny embeddable JS widget for your sites — messages land in your Telegram (r
 ```
 
 ```
-🚨 САЙТ НЕДОСТУПЕН
-https://example.com
-Ошибка: HTTP 502
-🌐 Подтверждено извне: сайт недоступен и со второй точки
+🔴 example.com не открывается: хостинг отвечает ошибкой 502
+Посетители видят страницу с ошибкой вместо сайта. Проверил дважды
+подряд и с внешних серверов: не открывается ни у кого.
 
-🤖 Автодействие: 🚀 Передеплой запущен — Cloudflare Pages собирает сайт
+Что это обычно значит: сбой на стороне хостинга, упавший деплой
+или закончившиеся лимиты тарифа.
 
-[🔍 Перепроверить] [📸 Скрин]
-[🚀 Передеплой] [🧹 Сброс кэша CF]
+Что делать:
+• Подождать 5 минут: я проверяю каждую минуту и напишу, как только
+  сайт поднимется.
+• Если не поднимется — открыть панель хостинга, посмотреть последний
+  деплой и перезапустить или откатить его.
+
+🤖 Уже сделал сам: 🚀 запустил пересборку сайта — Cloudflare Pages
+соберёт его за 1–2 минуты
+🔁 Через 2 мин: уже открывается. Подтвержу отдельным сообщением.
+HTTP 502 · 0.81 с
+
+[🔧 Я чиню, час тишины] [🔍 Проверить сейчас]
+[📸 Как выглядит сайт] [ℹ️ Что делать]
+[🔗 Открыть панель Cloudflare]
 ```
 
 <!-- Add screenshots here: docs/screenshots/{menu,report,alert}.png -->

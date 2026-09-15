@@ -20,6 +20,8 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import Message
 
 from db.database import (
     delete_notifications,
@@ -89,7 +91,9 @@ def in_quiet_hours(hour: int | None = None) -> bool:
 # ── Sending ──────────────────────────────────────────────────────────────────
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
-               reply_markup=None, site_id: int | None = None) -> bool:
+               reply_markup=None, site_id: int | None = None) -> Message | bool:
+    """The sent Message when delivered now, True when queued, False when
+    dropped or failed — so `if sent:` keeps working for one-shot flags."""
     chat_id = runtime.admin_chat_id()
     if not chat_id or _bot is None:
         logger.warning("No admin yet, dropping message: %s", text[:60])
@@ -108,11 +112,26 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
             return True
     try:
         # Informational messages arrive silently; only critical ones ring.
-        await _bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup,
-                                disable_notification=priority is not Priority.CRITICAL)
-        return True
+        return await _bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup,
+                                       disable_notification=priority is not Priority.CRITICAL)
     except Exception as e:
         logger.error("Failed to send message to admin: %s", e)
+        return False
+
+
+async def edit(message_id: int, text: str, reply_markup=None) -> bool:
+    """Update an alert in place (follow-up re-checks). Silent on 'not modified'."""
+    chat_id = runtime.admin_chat_id()
+    if not chat_id or _bot is None:
+        return False
+    try:
+        await _bot.edit_message_text(text, chat_id=chat_id, message_id=message_id,
+                                     reply_markup=reply_markup)
+        return True
+    except TelegramBadRequest as e:
+        return "not modified" in str(e)
+    except Exception as e:
+        logger.warning("Failed to edit message %s: %s", message_id, e)
         return False
 
 
