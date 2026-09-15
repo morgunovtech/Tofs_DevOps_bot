@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 # iputils-ping powers ping:// monitors (ICMP needs the binary); everything
 # Python ships as wheels, so no compiler is needed.
