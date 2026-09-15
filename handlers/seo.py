@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
 from db.database import get_active_http_site_urls
-from handlers.common import back_button, render, with_running_bar
+from handlers.common import ack, back_button, render, with_running_bar
 from monitors.base import SeoResult
 from monitors.seo_checker import check_all_seo
 from services import gsc, yandex_webmaster
@@ -54,7 +54,7 @@ def build_seo_report(results: list[SeoResult], gsc_status: dict[str, str],
 
 @router.callback_query(F.data == "menu_seo")
 async def cb_seo(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     urls = await get_active_http_site_urls()
     if not urls:
         await render(call, "Веб-сайтов пока нет — SEO-аудит не применим к tcp/ping-мониторам.",

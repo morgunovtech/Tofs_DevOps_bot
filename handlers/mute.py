@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from handlers.common import back_button, render
+from handlers.common import ack, back_button, render
 from services import notifier
 from utils.clock import to_local
 from utils.parse import parse_duration
@@ -49,7 +49,7 @@ def _mute_menu() -> InlineKeyboardMarkup:
 
 @router.callback_query(F.data == "menu_mute")
 async def cb_mute_menu(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     deadline = await notifier.mute_until()
     status = (f"🔕 Сейчас приглушено до {to_local(deadline).strftime('%d.%m %H:%M')}\n\n"
               if deadline else "")
@@ -59,7 +59,7 @@ async def cb_mute_menu(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("mute:"))
 async def cb_mute_pick(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     arg = call.data.split(":", 1)[1]
     if arg == "off":
         await notifier.set_mute(None)

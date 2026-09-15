@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import get_site, update_site_settings
-from handlers.common import back_button, cancel_kb, cb_args, render, site_by_cb
+from handlers.common import ack, back_button, cancel_kb, cb_args, render, site_by_cb
 from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS
 from reports.scheduler import reset_site_schedule
 from services import public_urls, settings
@@ -96,7 +96,7 @@ async def _show(target, site_id: int):
 
 @router.callback_query(F.data.startswith("sset:"))
 async def cb_site_settings(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.clear()
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
@@ -124,9 +124,9 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
     args = cb_args(call, 2)
     site = await site_by_cb(args[1]) if args else None
     if not site:
-        await call.answer("Сайт не найден", show_alert=True)
+        await ack(call, "Сайт не найден", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     kind, sid, label = args[0], site["id"], esc(site_label(site["url"]))
     if kind == "i":
         await render(call, f"⏱ Как часто проверять {label}?",
@@ -179,7 +179,7 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
         await render(call, f"📡 Тело запроса для {label} (отправляется с POST/PUT/PATCH/DELETE), "
                            "до 4000 символов.\nПришли <code>-</code>, чтобы убрать тело.", cancel_kb())
     else:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("ssv:"))
@@ -187,12 +187,12 @@ async def cb_site_setting_value(call: CallbackQuery):
     """Apply a picked per-site value. Value 0 clears the override."""
     args = cb_args(call, 3)
     if not args or not args[2].isdigit():
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
     kind, sid, raw = args
     site = await site_by_cb(sid)
     if not site:
-        await call.answer("Сайт не найден", show_alert=True)
+        await ack(call, "Сайт не найден", show_alert=True)
         return
     value = int(raw) or None
     if kind == "i":
@@ -207,9 +207,9 @@ async def cb_site_setting_value(call: CallbackQuery):
     elif kind == "k":
         await update_site_settings(site["id"], keyword=None, keyword_mode=None)
     else:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer("Сохранено ✅")
+    await ack(call, "Сохранено ✅")
     await _show(call, site["id"])
 
 
@@ -218,10 +218,10 @@ async def cb_site_method(call: CallbackQuery):
     args = cb_args(call, 2)
     site = await site_by_cb(args[0]) if args else None
     if not site or args[1] not in HTTP_METHODS:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
     await update_site_settings(site["id"], http_method=None if args[1] == "GET" else args[1])
-    await call.answer("Сохранено ✅")
+    await ack(call, "Сохранено ✅")
     await _show(call, site["id"])
 
 
@@ -230,9 +230,9 @@ async def cb_site_keyword_mode(call: CallbackQuery, state: FSMContext):
     args = cb_args(call, 2)
     site = await site_by_cb(args[0]) if args else None
     if not site or args[1] not in ("present", "absent"):
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     await state.set_state(SiteKeywordForm.keyword)
     await state.update_data(sset_site_id=site["id"], kw_mode=args[1])
     what = ("которая должна быть на странице" if args[1] == "present"

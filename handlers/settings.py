@@ -5,7 +5,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import render
+from handlers.common import ack, render
 from reports.scheduler import reschedule_report_jobs
 from services import maintenance, public_urls, settings
 from utils.text import esc
@@ -43,7 +43,7 @@ def _text() -> str:
 
 @router.callback_query(F.data == "menu_settings")
 async def cb_settings(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, _text(), _kb())
 
 
@@ -61,10 +61,10 @@ async def cb_settings_pick(call: CallbackQuery):
     elif kind == "set_sp" and value in ("on", "off"):
         await settings.set_status_page(value == "on")
     else:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
     reschedule_report_jobs()  # apply new hours to the running scheduler now
-    await call.answer("Сохранено ✅")
+    await ack(call, "Сохранено ✅")
     try:
         await render(call, _text(), _kb())
     except TelegramBadRequest:

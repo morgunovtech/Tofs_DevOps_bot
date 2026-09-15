@@ -80,6 +80,17 @@ async def sites_keyboard(prefix: str, *, icon: str = "🔍", manage: bool = Fals
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def ack(call: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
+    """Answer a button tap. A tap that reaches us after a restart is older
+    than Telegram's answer window and gets 'query is too old' — the screen
+    should still render, so that error is swallowed here."""
+    try:
+        await call.answer(text, show_alert=show_alert)
+    except TelegramBadRequest as e:
+        if "query is too old" not in str(e) and "query ID is invalid" not in str(e):
+            raise
+
+
 def cb_args(call: CallbackQuery, n: int) -> list[str] | None:
     """Split 'prefix:a:b' into exactly n parts after the prefix, else None."""
     parts = (call.data or "").split(":")
@@ -169,4 +180,4 @@ async def deny_command(message: Message):
 
 @deny_router.callback_query(~AdminFilter())
 async def deny_callback(call: CallbackQuery):
-    await call.answer("⛔ Доступ запрещён", show_alert=True)
+    await ack(call, "⛔ Доступ запрещён", show_alert=True)

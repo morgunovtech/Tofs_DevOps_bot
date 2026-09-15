@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import get_heartbeats
-from handlers.common import back_button, cancel_kb, render
+from handlers.common import ack, back_button, cancel_kb, render
 from services import public_urls, settings
 from utils.text import esc, fmt_duration, parse_sqlite_utc
 
@@ -59,13 +59,13 @@ def _kb() -> InlineKeyboardMarkup:
 
 @router.callback_query(F.data == "menu_hb")
 async def cb_hb(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, await _text(), _kb())
 
 
 @router.callback_query(F.data == "hb_add")
 async def cb_hb_add(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.set_state(AddHeartbeatForm.name)
     await render(call, "💓 Название джобы латиницей (например, backup или certs-sync):", cancel_kb())
 
@@ -98,10 +98,10 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     await state.clear()
     arg = call.data.split(":", 1)[1]
     if not name or not arg.isdigit():
-        await call.answer("Начни заново: 💓 Heartbeats → ➕", show_alert=True)
+        await ack(call, "Начни заново: 💓 Heartbeats → ➕", show_alert=True)
         return
     await settings.add_heartbeat_job(name, int(arg))
-    await call.answer("Добавлено ✅")
+    await ack(call, "Добавлено ✅")
     await render(call, f"💓 «{esc(name)}» добавлена. Вставь в конец крон-строки:\n\n"
                        f"<code>&& curl -fsS {esc(public_urls.heartbeat_url(name))}</code>\n\n"
                        f"Если сигналов не будет дольше ожидания — сообщу.", back_button())
@@ -110,5 +110,5 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("hb_del:"))
 async def cb_hb_del(call: CallbackQuery):
     removed = await settings.remove_heartbeat_job(call.data.split(":", 1)[1])
-    await call.answer("Удалено" if removed else "Не нашёл (из .env — убери там)")
+    await ack(call, "Удалено" if removed else "Не нашёл (из .env — убери там)")
     await render(call, await _text(), _kb())

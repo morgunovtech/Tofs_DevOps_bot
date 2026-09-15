@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery
 
 from config import config
 from db.database import get_all_sites, set_state
-from handlers.common import back_button, render
+from handlers.common import ack, back_button, render
 from services import docker_api, gsc, notifier, public_urls, secrets, settings, updates, yandex_webmaster
 from services.notifier import Priority
 from utils.clock import now_local
@@ -21,7 +21,7 @@ router = Router(name="diag")
 
 @router.callback_query(F.data == "menu_diag")
 async def cb_diag(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "▱▱▱ Проверяю сам себя...")
     lines = ["🩺 Диагностика:\n"]
     me = await call.bot.get_me()
@@ -84,7 +84,7 @@ async def cb_diag(call: CallbackQuery):
 
 @router.callback_query(F.data == "menu_testalert")
 async def cb_test_alert(call: CallbackQuery):
-    await call.answer("Отправляю тестовый алерт…")
+    await ack(call, "Отправляю тестовый алерт…")
     await notifier.send("🚨 ТЕСТОВЫЙ АЛЕРТ\nТак выглядит критическое уведомление — оно пробивает "
                         "mute и тихие часы.\n\nЕсли ты это видишь — доставка работает. ✅",
                         Priority.CRITICAL)

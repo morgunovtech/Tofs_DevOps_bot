@@ -5,7 +5,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import count_feedback, list_feedback
-from handlers.common import render
+from handlers.common import ack, render
 from services import public_urls, secrets
 from utils.clock import fmt_local
 from utils.text import esc
@@ -17,7 +17,7 @@ PAGE = 5
 
 @router.callback_query(F.data.startswith("menu_feedback:"))
 async def cb_feedback(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     arg = call.data.split(":", 1)[1]
     offset = int(arg) if arg.isdigit() else 0
     total = await count_feedback()

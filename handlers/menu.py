@@ -19,7 +19,7 @@ from db.database import (
     get_uptime_over_days,
     get_uptime_stats,
 )
-from handlers.common import back_button, render
+from handlers.common import ack, back_button, render
 from monitors.availability import check_all
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
@@ -119,21 +119,21 @@ async def cmd_menu(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "menu_main")
 async def cb_main_menu(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.clear()
     await send_main_menu(call)
 
 
 @router.callback_query(F.data == "fsm_cancel")
 async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
-    await call.answer("Отменено")
+    await ack(call, "Отменено")
     await state.clear()
     await send_main_menu(call)
 
 
 @router.callback_query(F.data == "menu_more")
 async def cb_more(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "📋 Дополнительные проверки:", more_menu())
 
 
@@ -158,7 +158,7 @@ async def cmd_status(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "menu_status")
 async def cb_status(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     urls = await get_active_site_urls()
     if not urls:
         await render(call, "Сайтов пока нет — сначала добавь хотя бы один.", back_button())
@@ -182,7 +182,7 @@ async def cmd_sites(message: Message):
 
 @router.callback_query(F.data == "run_full_check")
 async def cb_full_check(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     urls = await get_active_site_urls()
     if not urls:
         await render(call, "Сайтов пока нет — сначала добавь хотя бы один.", InlineKeyboardMarkup(
@@ -225,7 +225,7 @@ async def cb_full_check(call: CallbackQuery):
 
 @router.callback_query(F.data == "menu_ssl")
 async def cb_ssl(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "▱▱▱ Проверяю SSL-сертификаты...")
     lines = ["🔒 SSL-сертификаты:\n"]
     for r in await check_all_ssl(await get_active_http_site_urls(), manage=False):
@@ -242,7 +242,7 @@ async def cb_ssl(call: CallbackQuery):
 
 @router.callback_query(F.data == "menu_domains")
 async def cb_domains(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "▱▱▱ Проверяю домены через RDAP...")
     lines = ["🌐 Домены:\n"]
     for r in await check_all_domains(await get_active_http_site_urls(), manage=False):
@@ -261,7 +261,7 @@ async def cb_domains(call: CallbackQuery):
 
 @router.callback_query(F.data == "menu_uptime")
 async def cb_uptime(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     sites = await get_all_sites()
     if not sites:
         await render(call, "Нет данных — бот только запустился, подожди несколько минут.",

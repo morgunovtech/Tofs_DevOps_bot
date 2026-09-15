@@ -27,6 +27,7 @@ from db.database import (
 )
 from handlers.common import (
     MAX_SITES,
+    ack,
     back_button,
     cancel_kb,
     cb_args,
@@ -94,7 +95,7 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
 
 @router.callback_query(F.data == "menu_check_site")
 async def cb_check_site_menu(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.clear()
     await render(call, "🌍 Сайты в мониторинге — выбери для детальной проверки,\nили управляй списком:",
                  await sites_keyboard("check_site", manage=True))
@@ -115,7 +116,7 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
 
 @router.callback_query(F.data.startswith("check_site:"))
 async def cb_check_single_site(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
         await render(call, "Сайт не найден — список сайтов изменился. Открой меню заново.",
@@ -162,7 +163,7 @@ async def cb_check_single_site(call: CallbackQuery):
 
 @router.callback_query(F.data == "site_add")
 async def cb_site_add(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     if len(await get_all_sites()) >= MAX_SITES:
         await render(call, f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга.",
                      back_button())
@@ -208,14 +209,14 @@ async def msg_site_add(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "site_del")
 async def cb_site_del(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "🗑 Какой сайт убрать из мониторинга?\n(история проверок сохранится)",
                  await sites_keyboard("delsite", icon="🗑", back="menu_check_site"))
 
 
 @router.callback_query(F.data.startswith("delsite:"))
 async def cb_site_del_confirm(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
         await render(call, "Сайт не найден.", back_button())
@@ -229,7 +230,7 @@ async def cb_site_del_confirm(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("delok:"))
 async def cb_site_del_do(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])
@@ -245,16 +246,16 @@ async def cb_site_del_do(call: CallbackQuery):
 async def cb_pause(call: CallbackQuery):
     args = cb_args(call, 2)
     if not args or not args[0].isdigit():
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
     site = await get_site(int(args[0]))
     if not site:
-        await call.answer("Сайт не найден", show_alert=True)
+        await ack(call, "Сайт не найден", show_alert=True)
         return
     sid, arg, host = site["id"], args[1], short_host(site["url"])
     if arg == "off":
         await maintenance.pause_site(sid, None)
-        await call.answer("Пауза снята")
+        await ack(call, "Пауза снята")
         await call.message.answer(f"▶️ {esc(host)} — алерты снова включены.")
         return
     if arg == "morning":
@@ -263,7 +264,7 @@ async def cb_pause(call: CallbackQuery):
     else:
         minutes = int(arg) if arg.isdigit() else 60
     await maintenance.pause_site(sid, minutes)
-    await call.answer("Пауза включена")
+    await ack(call, "Пауза включена")
     await call.message.answer(f"⏸ {esc(host)} — алерты на паузе на {fmt_duration(minutes)} "
                               f"(проверки продолжаются). Снять: «🌍 Сайт детально» → сайт.")
 
@@ -275,7 +276,7 @@ _EXPORT_FIELDS = sorted(SITE_SETTING_COLS)
 
 @router.callback_query(F.data == "site_export")
 async def cb_site_export(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     sites = [{"url": s["url"], **{k: s.get(k) for k in _EXPORT_FIELDS if s.get(k) is not None}}
              for s in await get_all_sites()]
     doc = {"version": 1, "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -288,7 +289,7 @@ async def cb_site_export(call: CallbackQuery):
 
 @router.callback_query(F.data == "site_import")
 async def cb_site_import(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.set_state(ImportForm.data)
     await render(call, "📥 Пришли JSON из экспорта — файлом или текстом.\n"
                        "Сайты добавятся или обновятся, лишние не удалятся.", cancel_kb())

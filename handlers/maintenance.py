@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_all_sites, get_site
-from handlers.common import back_button, cancel_kb, cb_args, render
+from handlers.common import ack, back_button, cancel_kb, cb_args, render
 from services import maintenance
 from utils.parse import parse_time_window
 from utils.text import esc
@@ -50,14 +50,14 @@ async def _show(target, prefix: str = ""):
 
 @router.callback_query(F.data == "menu_maint")
 async def cb_maint(call: CallbackQuery, state: FSMContext):
-    await call.answer()
+    await ack(call)
     await state.clear()
     await _show(call)
 
 
 @router.callback_query(F.data == "mw_add")
 async def cb_mw_add(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     if len(maintenance.windows()) >= maintenance.MAX_MAINT_WINDOWS:
         await render(call, f"Лимит {maintenance.MAX_MAINT_WINDOWS} окон — удали ненужные.", back_button())
         return
@@ -72,9 +72,9 @@ async def cb_mw_add(call: CallbackQuery):
 async def cb_mw_scope(call: CallbackQuery):
     scope = call.data.split(":", 1)[1]
     if not scope.isdigit():
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Каждый день", callback_data=f"mw_days:{scope}:a")],
         [InlineKeyboardButton(text="Будни", callback_data=f"mw_days:{scope}:w"),
@@ -91,9 +91,9 @@ def _fmt(m: int) -> str:
 async def cb_mw_days(call: CallbackQuery):
     args = cb_args(call, 2)
     if not args or not args[0].isdigit() or args[1] not in _DAYS:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     scope, days = args
     rows = [[InlineKeyboardButton(text=f"{_fmt(s)}–{_fmt(e)}",
                                   callback_data=f"mw_time:{scope}:{days}:{s}-{e}")
@@ -120,9 +120,9 @@ async def cb_mw_time(call: CallbackQuery):
         a, _, b = args[2].partition("-")
         ok = a.isdigit() and b.isdigit()
     if not ok:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     await _create(call, args[0], args[1], int(a), int(b))
 
 
@@ -130,9 +130,9 @@ async def cb_mw_time(call: CallbackQuery):
 async def cb_mw_custom(call: CallbackQuery, state: FSMContext):
     args = cb_args(call, 2)
     if not args or not args[0].isdigit() or args[1] not in _DAYS:
-        await call.answer("Не понял", show_alert=True)
+        await ack(call, "Не понял", show_alert=True)
         return
-    await call.answer()
+    await ack(call)
     await state.set_state(MaintTimeForm.time)
     await state.update_data(mw_scope=args[0], mw_days=args[1])
     await render(call, "🔧 Пришли время окна в формате <code>ЧЧ:ММ-ЧЧ:ММ</code>, например "
@@ -160,5 +160,5 @@ async def msg_mw_time(message: Message, state: FSMContext):
 async def cb_mw_del(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
     removed = arg.isdigit() and await maintenance.remove_window(int(arg))
-    await call.answer("Удалено" if removed else "Уже удалено")
+    await ack(call, "Удалено" if removed else "Уже удалено")
     await _show(call)

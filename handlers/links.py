@@ -3,7 +3,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from handlers.common import back_button, render, site_by_cb, sites_keyboard, with_running_bar
+from handlers.common import ack, back_button, render, site_by_cb, sites_keyboard, with_running_bar
 from monitors.links_checker import check_links
 from reports.formatter import format_links_report
 from utils.text import esc
@@ -13,14 +13,14 @@ router = Router(name="links")
 
 @router.callback_query(F.data == "menu_links")
 async def cb_links_menu(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     await render(call, "🔗 Выбери сайт для проверки ссылок:",
                  await sites_keyboard("check_links", http_only=True, back="menu_more"))
 
 
 @router.callback_query(F.data.startswith("check_links:"))
 async def cb_check_links(call: CallbackQuery):
-    await call.answer()
+    await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
         await render(call, "Сайт не найден — список сайтов изменился. Открой меню заново.",
