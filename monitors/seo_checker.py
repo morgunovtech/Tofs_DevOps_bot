@@ -47,8 +47,35 @@ AI_BOTS = {
 BLOCKED_CODES = {401, 403, 451}
 
 
-def _p(severity: str, message: str) -> SeoProblem:
-    return SeoProblem(severity, message)
+def _p(severity: str, message: str, hint: str = "") -> SeoProblem:
+    return SeoProblem(severity, message, hint)
+
+
+HINT_ROBOTS_SEARCH = ("В robots.txt стоит запрет для поискового робота — сайт пропадёт из поиска. "
+                      "Убери строку Disallow: / в секции этого робота (или во всех).")
+HINT_ROBOTS_AI = ("Сайт закрыт от ИИ-ассистентов (ChatGPT, Claude, Perplexity). Если хочешь, чтобы они "
+                  "знали о сайте и советовали его, убери запрет в robots.txt.")
+HINT_NOINDEX_HEADER = ("Сервер отдаёт заголовок X-Robots-Tag: noindex — поисковики выкинут страницу. "
+                       "Убери его в настройках хостинга или сервера.")
+HINT_NOINDEX_META = ("В коде страницы стоит meta robots noindex — поисковики выкинут страницу. Обычно это "
+                     "настройка тестовой версии, случайно попавшая в прод. Убери тег.")
+HINT_TITLE = "У страницы нет заголовка title — в поиске она будет без подписи. Добавь <title> в код."
+HINT_DESC = ("Нет описания страницы (meta description) — текста под заголовком в результатах поиска. "
+             "Добавь 1–2 предложения о странице.")
+HINT_CANONICAL = ("Тег canonical говорит поисковикам «главная копия этой страницы вон там». Он должен "
+                  "вести на https-адрес этой же страницы на этом же сайте.")
+HINT_JSONLD = ("Разметка JSON-LD (структурированные данные для поиска) с ошибкой синтаксиса — "
+               "поисковики её проигнорируют. Проверь блок валидатором schema.org.")
+HINT_ROBOTS_HTTP = "Файл robots.txt отвечает ошибкой — поисковики могут считать сайт закрытым. Проверь, что файл отдаётся."
+HINT_SITEMAP = ("Нет карты сайта (sitemap.xml) — без неё поисковики находят новые страницы медленнее. "
+                "Большинство движков умеют её генерировать.")
+HINT_NO_JS = ("Текст сайта появляется только после выполнения JavaScript. ИИ-ассистенты и часть поисковых "
+              "роботов JS не запускают и видят пустую страницу. Нужен серверный рендеринг или предрендер.")
+HINT_AI_BLOCKED = ("Сайт отвечает ИИ-ассистентам ошибкой доступа — обычно это включённый в Cloudflare "
+                   "переключатель «Block AI bots». Выключи его, если хочешь, чтобы ИИ знали о сайте.")
+HINT_SOFT404 = ("Несуществующие адреса отвечают «всё хорошо» вместо «страница не найдена». Поисковики "
+                "заполняют индекс мусором. Настрой ответ 404 для несуществующих страниц.")
+HINT_HTTPS = "Адрес с http:// не перенаправляется на https:// — часть посетителей попадёт на незащищённую версию. Настрой редирект у хостинга."
 
 
 # ── Pure analysis (unit-testable) ────────────────────────────────────────────
@@ -61,10 +88,10 @@ def analyze_robots(text: str, base_url: str) -> tuple[list[SeoProblem], list[str
     probe = base_url.rstrip("/") + "/"
     for agent in SEARCH_BOTS:
         if not rp.can_fetch(agent, probe):
-            problems.append(_p("critical", f"robots.txt запрещает {agent} — сайт закрыт от поиска!"))
+            problems.append(_p("critical", f"robots.txt запрещает {agent} — сайт закрыт от поиска!", HINT_ROBOTS_SEARCH))
     for agent in AI_BOTS:
         if not rp.can_fetch(agent, probe):
-            problems.append(_p("warning", f"robots.txt запрещает {agent} — AI-агенты не увидят сайт"))
+            problems.append(_p("warning", f"robots.txt запрещает {agent} — ИИ-ассистенты не увидят сайт", HINT_ROBOTS_AI))
     return problems, list(rp.site_maps() or [])
 
 
@@ -77,23 +104,23 @@ def analyze_page(html: str, page_url: str,
     headers = {k.lower(): v for k, v in (headers or {}).items()}
 
     if "noindex" in headers.get("x-robots-tag", "").lower():
-        problems.append(_p("critical", f"{path}: заголовок X-Robots-Tag noindex — страница скрыта от индексации!"))
+        problems.append(_p("critical", f"{path}: заголовок X-Robots-Tag noindex — страница скрыта от индексации!", HINT_NOINDEX_HEADER))
 
     soup = BeautifulSoup(html, "html.parser")
     robots_meta = soup.find("meta", attrs={"name": "robots"})
     if robots_meta and "noindex" in (robots_meta.get("content") or "").lower():
-        problems.append(_p("critical", f"{path}: meta robots noindex — страница скрыта от индексации!"))
+        problems.append(_p("critical", f"{path}: meta robots noindex — страница скрыта от индексации!", HINT_NOINDEX_META))
 
     title = soup.title.get_text(strip=True) if soup.title else ""
     if not title:
-        problems.append(_p("warning", f"{path}: нет <title>"))
+        problems.append(_p("warning", f"{path}: нет <title>", HINT_TITLE))
     elif not 10 <= len(title) <= 70:
         infos.append(f"{path}: длина title {len(title)} (рекомендуется 10–70)")
 
     desc = soup.find("meta", attrs={"name": "description"})
     desc_text = (desc.get("content") or "").strip() if desc else ""
     if not desc_text:
-        problems.append(_p("warning", f"{path}: нет meta description"))
+        problems.append(_p("warning", f"{path}: нет meta description", HINT_DESC))
     elif not 50 <= len(desc_text) <= 170:
         infos.append(f"{path}: длина description {len(desc_text)} (рекомендуется 50–170)")
 
@@ -101,9 +128,9 @@ def analyze_page(html: str, page_url: str,
     if canonical:
         href = (canonical.get("href") or "").strip()
         if not href.startswith("https://"):
-            problems.append(_p("warning", f"{path}: canonical не https ({href[:60]})"))
+            problems.append(_p("warning", f"{path}: canonical не https ({href[:60]})", HINT_CANONICAL))
         elif urlparse(href).hostname != urlparse(page_url).hostname:
-            problems.append(_p("warning", f"{path}: canonical указывает на другой хост ({urlparse(href).hostname})"))
+            problems.append(_p("warning", f"{path}: canonical указывает на другой хост ({urlparse(href).hostname})", HINT_CANONICAL))
     else:
         infos.append(f"{path}: нет canonical")
 
@@ -123,7 +150,7 @@ def analyze_page(html: str, page_url: str,
         try:
             json.loads(script.string or "")
         except (ValueError, TypeError):
-            problems.append(_p("warning", f"{path}: JSON-LD не парсится"))
+            problems.append(_p("warning", f"{path}: JSON-LD не парсится", HINT_JSONLD))
             break
 
     for tag in soup(["script", "style", "noscript"]):
@@ -174,11 +201,11 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         elif status == 404:
             infos.append("robots.txt отсутствует (всё разрешено — не критично)")
         elif status is not None:
-            problems.append(_p("warning", f"robots.txt отвечает HTTP {status}"))
+            problems.append(_p("warning", f"robots.txt отвечает HTTP {status}", HINT_ROBOTS_HTTP))
 
         pages = await sitemap_urls(session, base)
         if not pages:
-            problems.append(_p("warning", "sitemap.xml не найден или пуст"))
+            problems.append(_p("warning", "sitemap.xml не найден или пуст", HINT_SITEMAP))
         sample = [base + "/"] + pick_sample(
             [p for p in pages if p.rstrip("/") != base], max(0, config.seo_pages_sample - 1))
         for page in sample:
@@ -195,26 +222,26 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                     problems.append(_p("warning", (
                         f"без JavaScript на главной всего {text_len} "
                         f"{plural(text_len, 'символ', 'символа', 'символов')} текста — "
-                        f"AI-краулеры и часть скрейперов видят почти пустую страницу")))
+                        f"ИИ-ассистенты видят почти пустую страницу"), HINT_NO_JS))
 
         for bot, ua in AI_BOTS.items():
             status, _, _ = await _fetch(session, base + "/", ua=ua)
             if status in BLOCKED_CODES:
                 problems.append(_p("warning", (
                     f"{bot} получает HTTP {status} — похоже, включена блокировка "
-                    f"AI-ботов (Cloudflare?)")))
+                    f"ИИ-ботов (Cloudflare?)"), HINT_AI_BLOCKED))
             await asyncio.sleep(0.3)
 
         status, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
-            problems.append(_p("warning", "несуществующие страницы отдают HTTP 200 (soft-404)"))
+            problems.append(_p("warning", "несуществующие страницы отдают HTTP 200 (soft-404)", HINT_SOFT404))
 
         try:
             async with session.get(f"http://{host}/", timeout=TIMEOUT, allow_redirects=False,
                                    headers={"User-Agent": USER_AGENT}) as resp:
                 loc = resp.headers.get("Location", "")
                 if not (300 <= resp.status < 400 and loc.startswith("https://")):
-                    problems.append(_p("warning", f"http:// не редиректит на https (HTTP {resp.status})"))
+                    problems.append(_p("warning", f"http:// не редиректит на https (HTTP {resp.status})", HINT_HTTPS))
         except Exception:
             infos.append("http://-версия недоступна (порт 80 закрыт — ок)")
 

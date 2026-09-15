@@ -41,7 +41,8 @@ class SiteBodyForm(StatesGroup):
     body = State()
 
 
-async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
+async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Every dial. Reached from the simple screen via «🛠 Для продвинутых»."""
     sid, http = site["id"], is_http_url(site["url"])
     interval, thr, slow = site.get("check_interval_min"), site.get("fail_threshold"), site.get("slow_ms")
     lines = [f"⚙️ Настройки: {esc(site_label(site['url']))}\n",
@@ -84,14 +85,54 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         rows.append([InlineKeyboardButton(text="📡 Метод", callback_data=f"ssp:m:{sid}"),
                      InlineKeyboardButton(text="📡 Заголовки", callback_data=f"ssp:h:{sid}"),
                      InlineKeyboardButton(text="📡 Тело", callback_data=f"ssp:b:{sid}")])
-    rows.append([InlineKeyboardButton(text="← К списку сайтов", callback_data="menu_check_site")])
+    rows.append([InlineKeyboardButton(text="← Простые настройки", callback_data=f"sset:{sid}")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def _show(target, site_id: int):
+_SIMPLE_INTERVALS = {1: "чаще (раз в минуту)", 5: "обычно (раз в 5 минут)", 15: "реже (раз в 15 минут)"}
+
+
+async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """Two things a person actually decides: how often to check and
+    whether to watch a phrase on the page. Everything else is advanced."""
+    sid, http = site["id"], is_http_url(site["url"])
+    interval = site.get("check_interval_min") or config.check_interval_minutes
+    how_often = _SIMPLE_INTERVALS.get(interval, f"раз в {interval} мин")
+    lines = [f"⚙️ {esc(site_label(site['url']))}\n",
+             f"⏱ Проверяю {how_often}."]
+    if http:
+        kw = (site.get("keyword") or "").strip()
+        if kw:
+            mode = ("не должно появляться" if site.get("keyword_mode") == "absent" else "должно быть на странице")
+            lines.append(f"🔍 Слежу за фразой «{esc(kw)}» — {mode}.")
+        else:
+            lines.append("🔍 За фразой на странице не слежу. Это ловит случай «сайт открывается, "
+                         "но показывает пустую страницу или ошибку».")
+    rows = [[InlineKeyboardButton(text="⏱ Чаще", callback_data=f"ssv:i:{sid}:1"),
+             InlineKeyboardButton(text="⏱ Обычно", callback_data=f"ssv:i:{sid}:0"),
+             InlineKeyboardButton(text="⏱ Реже", callback_data=f"ssv:i:{sid}:15")]]
+    if http:
+        rows.append([InlineKeyboardButton(text="🔍 Следить за фразой", callback_data=f"ssp:k:{sid}")])
+    rows.append([InlineKeyboardButton(text="🛠 Для продвинутых", callback_data=f"ssetx:{sid}")])
+    rows.append([InlineKeyboardButton(text="← К сайту", callback_data=f"check_site:{sid}")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _show(target, site_id: int, advanced: bool = False):
     site = await get_site(site_id)
-    text, kb = await sset_screen(site)
+    text, kb = await (advanced_screen(site) if advanced else sset_screen(site))
     await render(target, text, kb)
+
+
+@router.callback_query(F.data.startswith("ssetx:"))
+async def cb_site_settings_advanced(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.clear()
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    if not site:
+        await render(call, "Сайт не найден.", back_button())
+        return
+    await _show(call, site["id"], advanced=True)
 
 
 @router.callback_query(F.data.startswith("sset:"))
@@ -155,10 +196,12 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
         if (site.get("keyword") or "").strip():
             rows.append([InlineKeyboardButton(text="🗑 Убрать фразу", callback_data=f"ssv:k:{sid}:0")])
         rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"sset:{sid}")])
-        await render(call, f"🔍 Проверка содержимого {label}: ловит «HTTP 200, а на странице "
-                           f"ошибка или белый экран».\n\n• «должна быть» — алерт, когда фраза пропала\n"
-                           f"• «стоп-фраза» — алерт, когда фраза появилась (например, «Fatal error»)\n\n"
-                           f"Ищу без учёта регистра в первом 1 МБ страницы.",
+        await render(call, f"🔍 Слежка за фразой на {label}: сайт может «открываться», но показывать "
+                           f"пустую страницу или ошибку вместо себя. Фраза это ловит.\n\n"
+                           f"• «должна быть» — например, название компании из шапки: пропала — значит "
+                           f"вместо сайта что-то другое\n"
+                           f"• «стоп-фраза» — например, «Fatal error»: появилась — значит сломалось\n\n"
+                           f"Регистр не важен.",
                      InlineKeyboardMarkup(inline_keyboard=rows))
     elif kind == "m":
         rows = [[InlineKeyboardButton(text=m, callback_data=f"ssm:{sid}:{m}") for m in HTTP_METHODS[:4]],
@@ -210,7 +253,7 @@ async def cb_site_setting_value(call: CallbackQuery):
         await ack(call, "Не понял", show_alert=True)
         return
     await ack(call, "Сохранено ✅")
-    await _show(call, site["id"])
+    await _show(call, site["id"], advanced=kind in ("f", "s", "c") or (kind == "i" and value not in (None, 1, 15)))
 
 
 @router.callback_query(F.data.startswith("ssm:"))
@@ -222,7 +265,7 @@ async def cb_site_method(call: CallbackQuery):
         return
     await update_site_settings(site["id"], http_method=None if args[1] == "GET" else args[1])
     await ack(call, "Сохранено ✅")
-    await _show(call, site["id"])
+    await _show(call, site["id"], advanced=True)
 
 
 @router.callback_query(F.data.startswith("sskw:"))
@@ -258,6 +301,9 @@ async def msg_site_codes(message: Message, state: FSMContext):
     raw = (message.text or "").strip().lower().replace(" ", "")
     if raw in ("default", "поумолчанию", "сброс", "-"):
         await update_site_settings(site["id"], accepted_codes=None)
+        await state.clear()
+        await _show(message, site["id"], advanced=True)
+        return
     elif len(raw) > 60 or parse_accepted_codes(raw) is None:
         await message.answer("Не понял. Формат: <code>200-299</code> или <code>200-399,401</code> "
                              "(коды 100–599). Или <code>default</code> для сброса.",
@@ -302,7 +348,7 @@ async def msg_site_headers(message: Message, state: FSMContext):
         headers = json.dumps(parsed, ensure_ascii=False) if parsed else None
     await state.clear()
     await update_site_settings(site["id"], http_headers=headers)
-    await _show(message, site["id"])
+    await _show(message, site["id"], advanced=True)
 
 
 @router.message(SiteBodyForm.body)
@@ -316,4 +362,4 @@ async def msg_site_body(message: Message, state: FSMContext):
         return
     await state.clear()
     await update_site_settings(site["id"], http_body=None if raw.strip() == "-" else raw)
-    await _show(message, site["id"])
+    await _show(message, site["id"], advanced=True)

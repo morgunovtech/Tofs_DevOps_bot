@@ -34,16 +34,18 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         msg = FakeMessage(f"http://127.0.0.1:{server.port}")
         state = FakeState()
         await sites.msg_site_add(msg, state)
-        assert any("в мониторинге" in t for t in msg.texts) and state.state is None
+        assert any("под присмотром" in t for t in msg.texts) and state.state is None
+        assert any("Как я работаю" in t for t in msg.texts)   # first site → rules of the game
         assert url in await db.get_active_site_urls()
 
         sid = (await db.get_site_by_url(url))["id"]
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
-        assert "Детальная проверка" in call.message.texts[-1]
-        assert "Доступность: HTTP 200" in call.message.texts[-1]
+        assert url in call.message.texts[-1] and "Открывается, быстро" in call.message.texts[-1]
 
         text, kb = await site_settings.sset_screen(await db.get_site(sid))
+        assert "Проверяю обычно" in text and any("Для продвинутых" in b.text for r in kb.inline_keyboard for b in r)
+        text, kb = await site_settings.advanced_screen(await db.get_site(sid))
         assert "по умолчанию" in text and any("Метод" in b.text for r in kb.inline_keyboard for b in r)
         call = FakeCall(f"ssv:s:{sid}:5000")
         await site_settings.cb_site_setting_value(call)
@@ -59,7 +61,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
 
         call = FakeCall(f"pause:{sid}:morning")
         await sites.cb_pause(call)
-        assert "на паузе" in call.message.texts[-1]
+        assert "чинится" in call.message.texts[-1]
         assert await maint_service.is_paused(sid)
 
         call = FakeCall("site_export")
@@ -100,11 +102,14 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
 
     call = FakeCall("menu_hb")
     await heartbeats.cb_hb(call)
-    assert "ни одной джобы" in call.message.texts[-1]
+    assert "ни одной задачи" in call.message.texts[-1]
     await settings_service.add_heartbeat_job("backup", 1440)
     call = FakeCall("menu_hb")
     await heartbeats.cb_hb(call)
-    assert "unit-test-heartbeat-secret" in call.message.texts[-1]
+    assert "backup" in call.message.texts[-1] and "ожидаю каждые" in call.message.texts[-1]
+    call = FakeCall("hb_show:backup")
+    await heartbeats.cb_hb_show(call)
+    assert "unit-test-heartbeat-secret" in call.message.texts[-1] and "curl -fsS" in call.message.texts[-1]
     await settings_service.remove_heartbeat_job("backup")
 
     await save_feedback("https://ex.test", "https://ex.test/p", "typo <here>", "", "1.1.1.1")

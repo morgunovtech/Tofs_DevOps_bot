@@ -16,7 +16,6 @@ from aiogram.types import (
     Message,
 )
 
-from config import config
 from db.database import (
     SITE_SETTING_COLS,
     activate_or_create_site,
@@ -35,10 +34,11 @@ from handlers.common import (
     site_by_cb,
     sites_keyboard,
 )
+from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import reset_site_schedule
-from services import maintenance, settings
+from services import humanize, maintenance, settings
 from utils.clock import local_at
 from utils.text import esc, fmt_date, fmt_duration
 from utils.urls import is_http_url, short_host, site_label
@@ -97,20 +97,20 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
 async def cb_check_site_menu(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.clear()
-    await render(call, "🌍 Сайты в мониторинге — выбери для детальной проверки,\nили управляй списком:",
+    await render(call, "🌍 Мои сайты — выбери сайт, чтобы проверить его и настроить:",
                  await sites_keyboard("check_site", manage=True))
 
 
 async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
     notes = []
     if await maintenance.paused_until(sid):
-        notes.append("⏸ На паузе — алерты по сайту молчат.")
-        row = [InlineKeyboardButton(text="▶️ Снять паузу", callback_data=f"pause:{sid}:off")]
+        notes.append("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут.")
+        row = [InlineKeyboardButton(text="✅ Починил, пиши снова", callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text="⏸ Пауза 1ч", callback_data=f"pause:{sid}:60"),
-               InlineKeyboardButton(text="⏸ До утра", callback_data=f"pause:{sid}:morning")]
+        row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60"),
+               InlineKeyboardButton(text="🔧 До утра", callback_data=f"pause:{sid}:morning")]
     if maintenance.maintenance_now(sid):
-        notes.append("🔧 Сейчас действует тех. окно — алерты молчат.")
+        notes.append("🕐 Сейчас плановые работы — про этот сайт не пишу.")
     return row, notes
 
 
@@ -123,32 +123,30 @@ async def cb_check_single_site(call: CallbackQuery):
                      back_button())
         return
     url, sid = site["url"], site["id"]
-    lines = [f"📋 Детальная проверка\n{esc(url)}\n"]
+    lines = [f"🌍 {esc(url)}\n"]
     if not is_http_url(url):
         await render(call, f"▱▱ Проверяю {esc(url)}...")
         r = await check_availability(url, manage=False)
-        ms = f" ({r.response_time_ms}ms)" if r.response_time_ms is not None else ""
-        lines.append(f"✅ Доступность: отвечает{ms}" if r.ok
-                     else f"🔴 Доступность: {esc(r.error or 'недоступен')}")
-        first_row = [InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")]
+        lines.append(f"✅ Отвечает, {humanize.speed(r.response_time_ms)}" if r.ok
+                     else f"🔴 Не отвечает: {esc(humanize.describe_error(r.error))}")
+        first_row = [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
     else:
         await render(call, f"▱▱ Проверяю доступность {esc(url)}...")
         r = await check_availability(url, manage=False)
         await render(call, "▰▱ Доступность — готово\nПроверяю SSL...")
         ssl_r = await check_ssl(url, manage=False)
-        ms = f" ({r.response_time_ms}ms)" if r.response_time_ms is not None else ""
-        lines.append(f"✅ Доступность: HTTP {r.status_code or '—'}{ms}" if r.ok
-                     else f"🔴 Доступность: {esc(r.error or 'недоступен')}")
+        lines.append(f"✅ Открывается, {humanize.speed(r.response_time_ms)}" if r.ok
+                     else f"🔴 Не открывается: {esc(humanize.describe_error(r.error))}")
         if ssl_r.ssl_info:
             days = ssl_r.ssl_info.days_left
             icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
-            lines += [f"{icon} SSL: {days} дн. до истечения",
-                      f"   ↳ Издатель: {esc(ssl_r.ssl_info.issuer)}",
-                      f"   ↳ Истекает: {fmt_date(ssl_r.ssl_info.not_after)}"]
+            issuer = f", выдан {esc(ssl_r.ssl_info.issuer)}" if ssl_r.ssl_info.issuer else ""
+            lines.append(f"{icon} Сертификат действует ещё {days} дн. "
+                         f"(до {fmt_date(ssl_r.ssl_info.not_after)}){issuer}")
         else:
-            lines.append(f"🔴 SSL: {esc(ssl_r.error or 'N/A')}")
-        lines.append("ℹ️ Домен: см. «📋 Ещё → 🌐 Домены» (RDAP, проверяется раз в день)")
-        first_row = [InlineKeyboardButton(text="📸 Скрин страницы", callback_data=f"act:shot:{sid}"),
+            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
+        lines.append("ℹ️ Срок домена: «📈 Здоровье сайтов → 🌐 Домены»")
+        first_row = [InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{sid}"),
                      InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
     pause_row, notes = await _pause_rows(sid)
     if notes:
@@ -169,19 +167,34 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
                      back_button())
         return
     await state.set_state(AddSiteForm.url)
-    await render(call, "➕ Пришли домен или URL сайта (например, example.com).\n\n"
-                       "Также понимаю:\n"
-                       "• <code>tcp://host:порт</code> — проверка TCP-порта (почта, SSH, БД)\n"
-                       "• <code>ping://host</code> — ICMP-пинг хоста", cancel_kb())
+    await render(call, "➕ Пришли адрес сайта, например <code>example.com</code>.", _add_kb())
+
+
+def _add_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛠 Продвинутое: порты и ping", callback_data="site_add_adv")],
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+
+
+@router.callback_query(F.data == "site_add_adv")
+async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(AddSiteForm.url)
+    await render(call, "🛠 Кроме сайтов я умею следить за сервисами без веб-страницы:\n\n"
+                       "• <code>tcp://mail.example.com:25</code> — отвечает ли порт "
+                       "(почта, SSH, база данных)\n"
+                       "• <code>ping://10.0.0.1</code> — отвечает ли хост на ping\n\n"
+                       "Пришли адрес в таком виде.", cancel_kb())
 
 
 @router.message(AddSiteForm.url)
 async def msg_site_add(message: Message, state: FSMContext):
     url, error = parse_site_input(message.text or "")
     if not url:
-        await message.answer(error, reply_markup=cancel_kb())
+        await message.answer(error, reply_markup=_add_kb())
         return
     await state.clear()
+    first_site = not await get_all_sites()
     site_id = await activate_or_create_site(url)
     label = site_label(url)
     status = await message.answer(f"▱▱ Добавил {esc(label)} — делаю первую проверку...")
@@ -189,18 +202,20 @@ async def msg_site_add(message: Message, state: FSMContext):
     # incidents and alert ladders; a manage=True check here would silently
     # consume the SSL alert for a nearly-expired certificate.
     r = await check_availability(url, manage=False)
-    lines = [f"✅ {esc(label)} в мониторинге (проверка каждые {config.check_interval_minutes} мин)\n"]
-    ms = f" ({r.response_time_ms}ms)" if r.response_time_ms is not None else ""
+    lines = [f"✅ {esc(label)} под присмотром.\n"]
     if r.ok:
-        lines.append(f"✅ Доступность: HTTP {r.status_code}{ms}" if is_http_url(url)
-                     else f"✅ Отвечает{ms}")
+        lines.append(f"✅ Открывается, {humanize.speed(r.response_time_ms)}" if is_http_url(url)
+                     else f"✅ Отвечает, {humanize.speed(r.response_time_ms)}")
     else:
-        lines.append(f"🔴 Не отвечает: {esc(r.error or 'N/A')} — я уже слежу, сообщу о восстановлении")
+        lines.append(f"🔴 Сейчас не открывается: {esc(humanize.describe_error(r.error))}. "
+                     f"Я уже слежу и напишу, когда поднимется.")
     if is_http_url(url):
         ssl_r = await check_ssl(url, manage=False)
-        lines.append(f"🔒 SSL: {ssl_r.ssl_info.days_left} дн. до истечения" if ssl_r.ssl_info
-                     else f"⚠️ SSL: {esc(ssl_r.error or 'N/A')}")
-        lines.append("\nDNS-эталон и SEO-аудит сниму в ближайшие часы автоматически.")
+        lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн." if ssl_r.ssl_info
+                     else f"⚠️ Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
+        lines.append("\nСрок домена, ссылки и видимость в поиске проверю в ближайшие часы сам.")
+    if first_site:
+        lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
     await status.edit_text("\n".join(lines), reply_markup=back_button())
 
@@ -256,7 +271,7 @@ async def cb_pause(call: CallbackQuery):
     if arg == "off":
         await maintenance.pause_site(sid, None)
         await ack(call, "Пауза снята")
-        await call.message.answer(f"▶️ {esc(host)} — алерты снова включены.")
+        await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём. Ничего делать не нужно.")
         return
     if arg == "morning":
         target = local_at(settings.morning_hour())
@@ -265,8 +280,8 @@ async def cb_pause(call: CallbackQuery):
         minutes = int(arg) if arg.isdigit() else 60
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
-    await call.message.answer(f"⏸ {esc(host)} — алерты на паузе на {fmt_duration(minutes)} "
-                              f"(проверки продолжаются). Снять: «🌍 Сайт детально» → сайт.")
+    await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
+                              f"проверки идут. Раньше снять: «🌍 Мои сайты» → сайт.")
 
 
 # ── Export / import ──────────────────────────────────────────────────────────

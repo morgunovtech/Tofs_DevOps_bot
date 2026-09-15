@@ -127,6 +127,7 @@ class DeepResult(CheckResult):
 class SeoProblem:
     severity: str      # critical | warning
     message: str
+    hint: str = ""     # what it means / what to do, in plain words
 
 
 @dataclass
