@@ -61,21 +61,25 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     incidents = await get_active_incidents()
     mute_until = await mute_until_local()
 
+    # Only what differs from the calm default earns a chip: «✅ 3/3 в порядке»
+    # is the whole header on a good day.
     if not total:
-        site_chip = "⏳ первая проверка через минуту"
-    elif ok == total:
-        site_chip = f"✅ {'сайт' if total == 1 else f'все {total} сайта' if total < 5 else f'все {total} сайтов'} в порядке"
+        chips = ["⏳ первая проверка через минуту"]
+    elif incidents:
+        chips = [f"{'✅' if ok == total else '⚠️'} {ok}/{total} "
+                 f"{plural(total, 'открывается', 'открываются', 'открываются')}",
+                 f"🔴 проблем: {len(incidents)}"]
     else:
-        site_chip = f"⚠️ {ok} из {total} в порядке"
-    inc_chip = f"проблем: {len(incidents)}" if incidents else "проблем нет"
-    mute_chip = f"🔕 тихо до {mute_until}" if mute_until else "🔔 алерты включены"
-    header = f"{site_chip} · {inc_chip} · {mute_chip}"
+        chips = [f"{'✅' if ok == total else '⚠️'} {ok}/{total} в порядке"]
+    if mute_until:
+        chips.append(f"🔕 тихо до {mute_until}")
     if paused:
-        header += f" · 🔧 чинится: {paused}"
+        chips.append(f"🔧 чинится: {paused}")
     if maintenance.maintenance_now(None):
-        header += " · 🕐 плановые работы"
+        chips.append("🕐 плановые работы")
     if notifier.in_quiet_hours():
-        header += " · 🌙 тихие часы"
+        chips.append("🌙 тихие часы")
+    header = " · ".join(chips)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔎 Проверить сейчас", callback_data="run_full_check")],

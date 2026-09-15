@@ -19,7 +19,7 @@ async def test_main_menu_header_states(bot, db):
     await save_incident(sid, "ssl", "expiring", "warning")
     await maint_service.pause_site(sid, 30)
     header, kb = await menu.build_main_menu()
-    assert "сайт в порядке" in header and "проблем: 1" in header and "чинится: 1" in header
+    assert header.startswith("✅ 1/1 открывается · 🔴 проблем: 1 · 🔧 чинится: 1")
     assert any("Проблемы (1)" in b.text for row in kb.inline_keyboard for b in row)
     await maint_service.pause_site(sid, None)
 
@@ -125,3 +125,11 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     text = call.message.texts[-1]
     assert "typo &lt;here&gt;" in text and "data-devops-feedback" in text
     assert "unit-test-webhook-secret" in text
+
+
+async def test_main_menu_header_is_short_when_all_is_well(bot, db):
+    for i in range(3):
+        sid = await db.activate_or_create_site(f"https://ok{i}.test")
+        await db.save_check(sid, "availability", "ok", response_time_ms=90)
+    header, _ = await menu.build_main_menu()
+    assert header == "✅ 3/3 в порядке"
