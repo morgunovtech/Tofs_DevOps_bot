@@ -97,14 +97,14 @@ def analyze_page(html: str, page_url: str,
     if not title:
         problems.append(_p("no_title", "warning", f"{page}: нет заголовка <title>"))
     elif not 10 <= len(title) <= 70:
-        infos.append(_p("title_len", "info", f"{page}: заголовок {len(title)} символов (лучше 10–70)"))
+        infos.append(_p("title_len", "info", f"{page}: заголовок {len(title)} {plural(len(title), 'символ', 'символа', 'символов')} (лучше 10–70)"))
 
     desc = soup.find("meta", attrs={"name": "description"})
     desc_text = (desc.get("content") or "").strip() if desc else ""
     if not desc_text:
         problems.append(_p("no_description", "warning", f"{page}: нет описания (meta description)"))
     elif not 50 <= len(desc_text) <= 170:
-        infos.append(_p("desc_len", "info", f"{page}: описание {len(desc_text)} символов (лучше 50–170)"))
+        infos.append(_p("desc_len", "info", f"{page}: описание {len(desc_text)} {plural(len(desc_text), 'символ', 'символа', 'символов')} (лучше 50–170)"))
 
     canonical = soup.find("link", attrs={"rel": "canonical"})
     if canonical:
