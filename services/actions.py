@@ -34,24 +34,22 @@ def alert_actions_keyboard(url: str, site_id: int,
     callback_data limit. With an incident_id an «👀 не напоминать» row lets
     the user snooze escalation without closing the incident."""
     http = is_http_url(url)
-    first_row = [InlineKeyboardButton(text="🔍 Перепроверить",
-                                      callback_data=f"act:recheck:{site_id}")]
+    rows = [[InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{site_id}"),
+             InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
+    second = []
     if http:
-        first_row.append(InlineKeyboardButton(text="📸 Скрин",
-                                              callback_data=f"act:shot:{site_id}"))
-    rows = [first_row]
+        second.append(InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{site_id}"))
+    if incident_id:
+        second.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}"))
+    if second:
+        rows.append(second)
     extra = []
     if http and deploy_hook_for(url):
-        extra.append(InlineKeyboardButton(text="🚀 Передеплой",
-                                          callback_data=f"act:redeploy:{site_id}"))
+        extra.append(InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}"))
     if http and integrations.cf_purge_configured():
-        extra.append(InlineKeyboardButton(text="🧹 Сброс кэша CF",
-                                          callback_data=f"act:purge:{site_id}"))
+        extra.append(InlineKeyboardButton(text="🧹 Сбросить кэш", callback_data=f"act:purge:{site_id}"))
     if extra:
         rows.append(extra)
-    if incident_id:
-        rows.append([InlineKeyboardButton(text="👀 Видел, не напоминать 2 ч",
-                                          callback_data=f"ack:{incident_id}:120")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -59,16 +57,16 @@ async def trigger_redeploy(url: str) -> str:
     """Fire the Cloudflare Pages deploy hook. Returns a human-readable line."""
     hook = deploy_hook_for(url)
     if not hook:
-        return "❌ Deploy hook не настроен для этого сайта (DEPLOY_HOOKS в .env)"
+        return "❌ Пересборка не настроена для этого сайта (🩺 Диагностика → Cloudflare)"
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(hook) as resp:
                 if resp.status in (200, 201):
-                    return "🚀 Передеплой запущен — Cloudflare Pages собирает сайт (~1-2 мин)"
-                return f"❌ Deploy hook ответил HTTP {resp.status}"
+                    return "🚀 Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты"
+                return f"❌ Cloudflare не принял команду пересборки (ошибка {resp.status})"
     except Exception as e:
         logger.warning("Deploy hook for %s failed: %s", url, e)
-        return f"❌ Не удалось дёрнуть deploy hook: {esc(e)}"
+        return f"❌ Не удалось запустить пересборку: {esc(e)}"
 
 
 async def purge_cf_cache(url: str) -> str:
@@ -83,7 +81,7 @@ async def purge_cf_cache(url: str) -> str:
                               headers={"Authorization": f"Bearer {integrations.cf_api_token()}"}) as resp:
                 data = await resp.json()
                 if data.get("success"):
-                    return "🧹 Кэш Cloudflare сброшен по всей зоне"
+                    return "🧹 Кэш Cloudflare сброшен — посетители увидят свежую версию сайта"
                 errs = data.get("errors") or [{"message": f"HTTP {resp.status}"}]
                 return "❌ Cloudflare: " + esc(errs[0].get("message", "ошибка"))
     except Exception as e:

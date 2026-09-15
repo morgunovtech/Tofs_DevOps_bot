@@ -53,7 +53,7 @@ def _kb() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="➕ Добавить джобу", callback_data="hb_add")]]
     rows += [[InlineKeyboardButton(text=f"🗑 {name}", callback_data=f"hb_del:{name}")]
              for name in list(settings.ui_heartbeat_jobs())[:_MAX_UI_JOBS]]
-    rows.append([InlineKeyboardButton(text="← Назад", callback_data="menu_more")])
+    rows.append([InlineKeyboardButton(text="← Подключения", callback_data="menu_connections")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

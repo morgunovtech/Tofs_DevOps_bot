@@ -41,5 +41,5 @@ async def cb_feedback(call: CallbackQuery):
     if offset + PAGE < total:
         nav.append(InlineKeyboardButton(text="Старее →", callback_data=f"menu_feedback:{offset + PAGE}"))
     kb_rows = [nav] if nav else []
-    kb_rows.append([InlineKeyboardButton(text="← Назад", callback_data="menu_more")])
+    kb_rows.append([InlineKeyboardButton(text="← Подключения", callback_data="menu_connections")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))

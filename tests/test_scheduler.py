@@ -27,7 +27,8 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         await db.update_site_settings(sid, fail_threshold=1)
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
-        assert bot.sent and "НЕДОСТУПЕН" in bot.sent[-1]["text"] and bot.sent[-1]["silent"] is False
+        assert bot.sent and "не открывается" in bot.sent[-1]["text"] and bot.sent[-1]["silent"] is False
+        assert "Что делать:" in bot.sent[-1]["text"]
         assert bot.sent[-1]["reply_markup"] is not None
         # Not due again within the interval → no second alert.
         n = len(bot.sent)
@@ -40,7 +41,7 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         await save_incident(sid2, "availability", "Site down: HTTP 500", "critical")
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
-        assert "ВОССТАНОВЛЕН" in bot.sent[-1]["text"]
+        assert "снова открывается" in bot.sent[-1]["text"]
 
 
 async def test_slow_streak_opens_performance_incident(bot, db):
@@ -54,7 +55,7 @@ async def test_slow_streak_opens_performance_incident(bot, db):
     assert len([i for i in await get_active_incidents() if i["check_type"] == "performance"]) == 1
     r.response_time_ms = 100
     await scheduler._track_slow(r, slow_ms=3000)
-    assert "восстановилась" in bot.sent[-1]["text"]
+    assert "снова открывается быстро" in bot.sent[-1]["text"]
     assert not [i for i in await get_active_incidents() if i["check_type"] == "performance"]
 
 
@@ -67,7 +68,7 @@ async def test_escalation_respects_ack(bot, db, cfg):
                        (inc_id,))
     await conn.commit()
     await scheduler.run_escalation_watch()
-    assert "ВСЁ ЕЩЁ НЕ РЕШЕНО" in bot.sent[-1]["text"]
+    assert "Лежит уже" in bot.sent[-1]["text"] and "Я чиню" in bot.sent[-1]["text"]
     n = len(bot.sent)
     await scheduler.run_escalation_watch()                 # within repeat window
     assert len(bot.sent) == n
@@ -81,7 +82,7 @@ async def test_heartbeat_watch_and_recovery_flag(bot, db, monkeypatch):
     await settings.add_heartbeat_job("backup", 60)
     monkeypatch.setattr(scheduler, "_started_at", datetime.now(UTC) - timedelta(hours=2))
     await scheduler.run_heartbeat_watch()
-    assert "молчит" in bot.sent[-1]["text"] and await get_state("hb_alerted:backup")
+    assert "не отчиталась" in bot.sent[-1]["text"] and await get_state("hb_alerted:backup")
     await db.heartbeat_ping("backup")
     await scheduler.run_heartbeat_watch()
     assert await get_state("hb_alerted:backup") is None
@@ -100,8 +101,8 @@ async def test_reports_do_not_crash_on_empty_and_populated_db(bot, db, cfg, tmp_
     assert "Вечер" in bot.sent[-1]["text"]
     await scheduler.send_weekly_report()
     texts = [m.get("text", "") for m in bot.sent]
-    assert any("Итоги недели" in t and "90д" in t for t in texts)
-    assert any("Среднее время ответа по дням" in t and "<pre>" in t for t in texts)
+    assert any("Итоги недели" in t and "за месяц" in t for t in texts)
+    assert any("Как быстро открывались" in t and "<pre>" in t for t in texts)
     assert any(m.get("document") is not None for m in bot.sent)   # DB copy sent
 
 

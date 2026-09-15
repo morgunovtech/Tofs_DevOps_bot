@@ -41,15 +41,17 @@ from monitors.ssl_checker import check_all_ssl
 from reports.formatter import (
     format_availability_alert,
     format_compact_status_report,
+    format_deep_alert,
     format_dns_change,
     format_domain_alert,
     format_links_report,
     format_recovery_alert,
     format_seo_alert,
     format_ssl_alert,
+    incident_line,
 )
 from reports.weekly import build_weekly_report
-from services import gsc, integrations, notifier, settings, updates, yandex_webmaster
+from services import gsc, humanize, integrations, notifier, settings, updates, yandex_webmaster
 from services.actions import alert_actions_keyboard, deploy_hook_for, trigger_redeploy
 from services.notifier import Priority
 from utils.clock import local_tz
@@ -70,6 +72,10 @@ _slow_streak: dict[int, int] = {}
 # after a restart everything is due immediately — a "check everything on
 # boot" sweep.
 _next_avail_check: dict[int, datetime] = {}
+
+
+def _tech_line(text: str | None) -> str:
+    return f"\n<i>{esc(text)}</i>" if text else ""
 
 
 def reset_site_schedule(site_id: int):
@@ -99,13 +105,9 @@ async def run_availability_checks():
     for r in await check_all(due):
         site = by_url.get(r.url, {})
         if r.incident_new:
-            msg = format_availability_alert(r)
-            if r.external_ok is False:
-                msg += "\n🌐 Подтверждено извне: сайт недоступен и со второй точки"
-            elif integrations.second_opinion_enabled() and not r.keyword_failed:
-                msg += "\n❓ Перепроверить со второй точки не удалось"
+            msg = format_availability_alert(r, integrations.second_opinion_enabled())
             if config.auto_redeploy and deploy_hook_for(r.url):
-                msg += f"\n\n🤖 Автодействие: {await trigger_redeploy(r.url)}"
+                msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
             await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id,
                                 reply_markup=alert_actions_keyboard(r.url, r.site_id, r.incident_id))
         elif r.external_ok is True:
@@ -124,8 +126,8 @@ async def _note_local_network_problem(url: str, site_id: int):
     if last and (datetime.now(UTC) - last) < timedelta(hours=6):
         return
     sent = await notifier.send(
-        f"🤔 {esc(url)} не открывается с сервера бота, но извне доступен. "
-        f"Похоже на сетевую проблему на моей стороне — инцидент не открываю.",
+        f"🤔 {esc(site_label(url))} не открылся с моего сервера, но у всех остальных открывается. "
+        f"Похоже, сеть шалит на моей стороне — тревогу не поднимаю, продолжаю проверять.",
         Priority.NORMAL, site_id=site_id)
     if sent:
         await set_state(key, datetime.now(UTC).isoformat())
@@ -141,16 +143,18 @@ async def _track_slow(r, slow_ms: int):
             _, is_new = await save_incident(r.site_id, "performance",
                                             f"Slow responses: ~{ms}ms", severity="warning")
             if is_new:
+                expl = humanize.EXPLANATIONS["slow"]
                 await notifier.send(
-                    f"🐢 {esc(r.url)} отвечает медленно — {ms}ms "
-                    f"({SLOW_RESPONSE_STREAK} "
-                    f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд, "
-                    f"порог {slow_ms}ms)", Priority.NORMAL, site_id=r.site_id)
+                    f"⚠️ {esc(site_label(r.url))} открывается медленно: {humanize.fmt_seconds(ms)} "
+                    f"вместо обычных долей секунды, {SLOW_RESPONSE_STREAK} "
+                    f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
+                    f"{expl.meaning}\n\nЧто это обычно значит: {esc(expl.cause)}.\n\n"
+                    f"{esc(humanize.steps_block(expl))}", Priority.NORMAL, site_id=r.site_id)
         return
     _slow_streak[r.site_id] = 0
     if await resolve_incident(r.site_id, "performance"):
-        await notifier.send(f"✅ {esc(r.url)} — скорость восстановилась ({ms}ms)",
-                            Priority.NORMAL, site_id=r.site_id)
+        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается быстро ({humanize.fmt_seconds(ms)}). "
+                            f"Ничего делать не нужно.", Priority.NORMAL, site_id=r.site_id)
 
 
 # ── Generic "alert on transition" for the daily/hourly monitors ──────────────
@@ -171,46 +175,43 @@ async def run_ssl_checks():
     results = await check_all_ssl(await get_active_http_site_urls())
     await _notify_transitions(
         results, format_ssl_alert,
-        lambda r: f"✅ SSL: {esc(r.url)} — сертификат обновлён, всё в порядке")
+        lambda r: f"✅ Сертификат {esc(site_label(r.url))} обновлён, всё в порядке. Ничего делать не нужно.")
     for r in results:
         if r.renewed and not r.incident_new and not r.recovered:
             # Renewal before any alert threshold — confirms auto-renewal works.
             await notifier.send(
-                f"🔁 SSL: {esc(r.url)} — сертификат автоматически обновлён "
-                f"({r.ssl_info.days_left} дн. запаса)", Priority.NORMAL, site_id=r.site_id)
+                f"✅ Сертификат {esc(site_label(r.url))} продлился сам, как и должен "
+                f"(действует ещё {r.ssl_info.days_left} дн.). Ничего делать не нужно.",
+                Priority.NORMAL, site_id=r.site_id)
 
 
 async def run_domain_checks():
     await _notify_transitions(
         await check_all_domains(await get_active_http_site_urls()), format_domain_alert,
-        lambda r: f"✅ Домен {esc(r.domain or r.url)} — продлён, всё в порядке")
+        lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.")
 
 
 async def run_links_checks():
     await _notify_transitions(
         await check_all_links(await get_active_http_site_urls()), format_links_report,
-        lambda r: f"✅ Ссылки на {esc(r.url)} — все внутренние ссылки снова работают")
-
-
-def _deep_alert(r) -> str:
-    errors = "\n".join(f"  • {esc(u)} — HTTP {code}" for u, code in r.errors[:5])
-    return f"🕳 {esc(r.url)}: {esc(r.error)}:\n{errors}"
+        lambda r: f"✅ На {esc(site_label(r.url))} все ссылки снова работают.")
 
 
 async def run_deep_checks():
     await _notify_transitions(
-        await check_all_deep(await get_active_http_site_urls()), _deep_alert,
-        lambda r: f"✅ {esc(r.url)} — страницы из sitemap снова отвечают без 5xx",
+        await check_all_deep(await get_active_http_site_urls()), format_deep_alert,
+        lambda r: f"✅ На {esc(site_label(r.url))} все страницы снова отвечают без ошибок.",
         keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id))
 
 
 async def run_seo_checks():
-    """Daily SEO/GEO audit: a noindex or a search-bot block means the site is
-    disappearing from indexes right now — critical bypasses mute."""
+    """Daily SEO/GEO audit. Only critical findings (noindex, search bots
+    blocked) become alerts — the site is disappearing from search right
+    now, so they bypass mute. Improvements wait for the weekly report."""
     await _notify_transitions(
         await check_all_seo(await get_active_http_site_urls()), format_seo_alert,
-        lambda r: f"✅ SEO: {esc(r.url)} — все проблемы устранены",
-        priority=lambda r: Priority.CRITICAL if r.has_critical else Priority.NORMAL)
+        lambda r: f"✅ {esc(site_label(r.url))} снова открыт для поисковиков. Ничего делать не нужно.",
+        priority=lambda r: Priority.CRITICAL)
 
 
 async def run_dns_checks():
@@ -241,11 +242,15 @@ async def run_index_checks():
             if info["verdict"] == "PASS":
                 if prev and prev_verdict != "PASS":
                     sent = await notifier.send(
-                        f"✅ Google: {esc(url)} снова в индексе ({esc(info['coverage'])})")
+                        f"✅ Google снова показывает {esc(site_label(url))} в поиске. Ничего делать не нужно."
+                        + _tech_line(info["coverage"]))
             elif prev_verdict != info["verdict"]:
                 sent = await notifier.send(
-                    f"🔴 Google: {esc(url)} НЕ в индексе!\nСтатус: {esc(info['coverage'])}\n"
-                    f"Проверь в Search Console.", Priority.CRITICAL)
+                    f"🔴 Google убрал {esc(site_label(url))} из поиска\n"
+                    f"Люди больше не найдут сайт через Google.\n\n"
+                    f"Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
+                    f"написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
+                    f"проверь «🔍 Поиск и ИИ» в боте." + _tech_line(info["coverage"]), Priority.CRITICAL)
             if sent:
                 await set_state(key, current)
     if yandex_webmaster.available():
@@ -259,10 +264,12 @@ async def run_index_checks():
             if current:
                 plist = "\n".join(f"  • {esc(k)}: {esc(v)}" for k, v in s["alert_problems"].items())
                 sent = await notifier.send(
-                    f"🔴 Яндекс.Вебмастер: проблемы на {esc(host)}:\n{plist}",
+                    f"🔴 Яндекс видит проблемы на {esc(host)}:\n{plist}\n\n"
+                    f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
+                    f"с инструкцией.",
                     Priority.CRITICAL if "FATAL" in current.upper() else Priority.NORMAL)
             elif prev:
-                sent = await notifier.send(f"✅ Яндекс.Вебмастер: {esc(host)} — проблемы устранены")
+                sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.")
             if sent:
                 await set_state(key, current)
 
@@ -286,9 +293,11 @@ async def run_heartbeat_watch():
             overdue, detail = True, "ни одного сигнала с момента запуска бота"
         alerted = await get_state(f"hb_alerted:{job}")
         if overdue and not alerted:
+            expl = humanize.EXPLANATIONS["heartbeat"]
             sent = await notifier.send(
-                f"💔 Heartbeat «{esc(job)}» молчит ({detail}; ожидание: каждые "
-                f"{fmt_duration(interval_min)}).\nПроверь, отработал ли он.")
+                f"⚠️ Задача «{esc(job)}» не отчиталась: {detail}, ожидалось каждые "
+                f"{fmt_duration(interval_min)}.\n{expl.meaning}\n\n"
+                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
             if sent:
                 await set_state(f"hb_alerted:{job}", now.isoformat())
         elif not overdue and alerted:
@@ -309,27 +318,30 @@ async def run_host_checks():
                 await notifier.send(msg)
                 return
         if not already:
+            expl = humanize.EXPLANATIONS["disk"]
             sent = await notifier.send(
-                f"💾 Диск на сервере бота заполнен на {result['pct']}% "
-                f"({result['used_gb']}/{result['total_gb']} GB) — надо разобраться",
+                f"⚠️ Диск на сервере бота заполнен на {result['pct']}% "
+                f"({result['used_gb']} из {result['total_gb']} GB).\n{expl.meaning}\n\n"
+                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}",
                 Priority.CRITICAL if result["pct"] >= 95 else Priority.NORMAL)
             if sent:
                 await set_state("disk_alerted", "1")
     elif already:
         await set_state("disk_alerted", None)
-        await notifier.send(f"💾 Диск в норме: {result['pct']}%")
+        await notifier.send(f"✅ Диск на сервере бота снова в норме: {result['pct']}%. Ничего делать не нужно.")
 
 
 async def run_container_watch():
     for e in await watch_containers():
         if e["restarted"] and e["ok_after"]:
-            await notifier.send(f"🔄 Контейнер «{esc(e['name'])}» был {esc(e['problem'])} — "
-                                f"перезапустил, работает.")
+            await notifier.send(f"✅ Сервис «{esc(e['name'])}» на сервере бота был {esc(e['problem'])} — "
+                                f"перезапустил сам, работает. Ничего делать не нужно.")
         else:
+            expl = humanize.EXPLANATIONS["container"]
             await notifier.send(
-                f"🔴 Контейнер «{esc(e['name'])}» {esc(e['problem'])}, "
-                + ("перезапустил, но он всё ещё нездоров." if e["restarted"]
-                   else "перезапустить не удалось.") + " Нужно смотреть руками.",
+                f"🔴 Сервис «{esc(e['name'])}» на сервере бота {esc(e['problem'])}. "
+                + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
+                   else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{esc(humanize.steps_block(expl))}",
                 Priority.CRITICAL)
 
 
@@ -358,8 +370,9 @@ async def run_escalation_watch():
             continue
         age_min = (now - created).total_seconds() / 60
         sent = await notifier.send(
-            f"⏰ ВСЁ ЕЩЁ НЕ РЕШЕНО (уже {fmt_duration(age_min)})\n"
-            f"{esc(site_label(inc['url']))} [{esc(inc['check_type'])}]: {esc(inc['message'])}",
+            f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
+            f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
+            f"«🔧 Я чиню», и я замолчу на два часа.",
             Priority.CRITICAL, site_id=inc["site_id"],
             reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"]))
         if sent:
@@ -410,7 +423,8 @@ async def run_db_backup():
         logger.info("DB backup written: %s", path)
     except Exception as e:
         logger.error("DB backup failed: %s", e)
-        await notifier.send(f"⚠️ Не удалось сделать бэкап базы бота: {esc(e)}")
+        await notifier.send("⚠️ Не удалось сохранить резервную копию базы бота. Проверь место на диске."
+                            + _tech_line(str(e)))
 
 
 async def send_db_backup_to_telegram():
@@ -433,18 +447,20 @@ async def _morning_extras(ssl_results, domain_results) -> list[str]:
     for s in sites:
         stats = await get_uptime_over_days(s["id"], 7)
         if stats["total_checks"]:
-            chips.append(f"{esc(site_label(s['url']))} {stats['uptime_pct']}%")
+            interval = s.get("check_interval_min") or config.check_interval_minutes
+            chips.append(f"{esc(site_label(s['url']))} "
+                         f"{humanize.downtime(stats['total_checks'], stats['ok_checks'], interval)}")
     if chips:
-        extras.append("📈 Uptime 7д: " + " · ".join(chips))
+        extras.append("📈 За неделю: " + " · ".join(chips))
 
-    expiring = [f"SSL {esc(short_host(r.url))} — {r.ssl_info.days_left}д"
+    expiring = [f"сертификат {esc(short_host(r.url))} через {r.ssl_info.days_left} дн."
                 for r in ssl_results if r.ssl_info and r.ssl_info.days_left <= 14]
-    expiring += [f"домен {esc(r.domain)} — {r.domain_info.days_left}д"
+    expiring += [f"домен {esc(r.domain)} через {r.domain_info.days_left} дн."
                  for r in domain_results
                  if r.domain_info and r.domain_info.days_left is not None
                  and r.domain_info.days_left <= 60]
     if expiring:
-        extras.append("🔜 Истекает скоро: " + "; ".join(expiring))
+        extras.append("🔜 Истекает: " + "; ".join(expiring))
 
     jobs = settings.heartbeat_jobs()
     if jobs:
@@ -455,11 +471,11 @@ async def _morning_extras(ssl_results, domain_results) -> list[str]:
             last = parse_sqlite_utc(beats.get(job))
             if last:
                 ago = (now - last).total_seconds() / 60
-                hb.append(f"{esc(job)} {'✅' if ago <= interval_min * 1.25 else '💔'} "
-                          f"{fmt_duration(ago)} назад")
+                ok = ago <= interval_min * 1.25
+                hb.append(f"{esc(job)} {'✅' if ok else '⚠️'} {fmt_duration(ago)} назад")
             else:
-                hb.append(f"{esc(job)} ❓ нет сигналов")
-        extras.append("💓 " + " · ".join(hb))
+                hb.append(f"{esc(job)} ❓ ещё не отчитывалась")
+        extras.append("⏰ Задачи: " + " · ".join(hb))
 
     seo_chips, seo_ok = [], True
     for s in sites:
@@ -472,12 +488,11 @@ async def _morning_extras(ssl_results, domain_results) -> list[str]:
             seo_ok = False
             seo_chips.append(f"{esc(short_host(s['url']))} {'🔴' if last['status'] == 'critical' else '⚠️'}")
     if seo_chips:
-        extras.append("🔍 SEO: " + ("✅ все сайты" if seo_ok else " · ".join(seo_chips)))
+        extras.append("🔍 В поиске: " + ("✅ всё в порядке" if seo_ok else " · ".join(seo_chips)))
 
     try:
         disk = await check_disk(auto_cleanup=False)
-        extras.append(f"💾 Диск: {'⚠️' if disk['over_threshold'] else '✅'} {disk['pct']}% "
-                      f"({disk['used_gb']}/{disk['total_gb']} GB)")
+        extras.append(f"💾 Диск сервера: {'⚠️' if disk['over_threshold'] else '✅'} занято {disk['pct']}%")
     except Exception as e:
         logger.warning("Disk stat for morning report failed: %s", e)
     return extras
@@ -536,7 +551,7 @@ async def send_weekly_report():
         text, chart_blocks = await build_weekly_report()
         await notifier.send(clip(text), Priority.DIGEST)
         if chart_blocks:
-            for msg in pack_blocks(["⏱ Среднее время ответа по дням:", *chart_blocks]):
+            for msg in pack_blocks(["⏱ Как быстро открывались сайты по дням:", *chart_blocks]):
                 await notifier.send(msg, Priority.DIGEST)
     except Exception as e:
         logger.error("Weekly report failed: %s", e)

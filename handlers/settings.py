@@ -26,7 +26,7 @@ def _kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔧 Тех. окна", callback_data="menu_maint"),
          InlineKeyboardButton(text="🌐 Статус: выключить" if sp_on else "🌐 Статус: включить",
                               callback_data=f"set_sp:{'off' if sp_on else 'on'}")],
-        [InlineKeyboardButton(text="← Назад", callback_data="menu_more")]])
+        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]])
 
 
 def _text() -> str:

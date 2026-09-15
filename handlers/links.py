@@ -15,7 +15,7 @@ router = Router(name="links")
 async def cb_links_menu(call: CallbackQuery):
     await ack(call)
     await render(call, "🔗 Выбери сайт для проверки ссылок:",
-                 await sites_keyboard("check_links", http_only=True, back="menu_more"))
+                 await sites_keyboard("check_links", http_only=True, back="menu_health"))
 
 
 @router.callback_query(F.data.startswith("check_links:"))
@@ -38,4 +38,4 @@ async def cb_check_links(call: CallbackQuery):
         text = f"✅ Все внутренние ссылки на {esc(url)} работают (проверено: {r.total_links})"
         if r.broken_external:
             text += f"\nℹ️ Внешних ресурсов недоступно: {len(r.broken_external)} — обычно не критично"
-    await render(call, text, back_button())
+    await render(call, text, back_button("← Здоровье сайтов", "menu_health"))

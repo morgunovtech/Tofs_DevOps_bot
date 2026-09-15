@@ -7,14 +7,15 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery
 
-from db.database import get_incident, set_state
+from db.database import get_active_incidents, get_incident, set_state
 from handlers.common import ack, cb_args, site_by_cb
 from monitors.availability import check_availability
+from services import humanize, maintenance
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
 from utils.text import esc, fmt_duration
-from utils.urls import is_http_url, short_host
+from utils.urls import is_http_url, short_host, site_label
 
 router = Router(name="alerts")
 
@@ -31,16 +32,26 @@ async def cb_alert_action(call: CallbackQuery):
         await ack(call, "Сайт не найден или убран из мониторинга", show_alert=True)
         return
     url = site["url"]
+    label = esc(site_label(url))
     if action == "recheck":
         await ack(call, "Проверяю…")
         r = await check_availability(url, manage=False)
-        ms = f" ({r.response_time_ms}ms)" if r.response_time_ms is not None else ""
+        speed = f", {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
         if r.ok:
-            text = (f"🔍 {esc(url)} — доступен: HTTP {r.status_code}{ms}" if is_http_url(url)
-                    else f"🔍 {esc(url)} — отвечает{ms}")
+            text = (f"✅ {label} сейчас открывается{speed}." if is_http_url(url)
+                    else f"✅ {label} сейчас отвечает{speed}.")
         else:
-            text = f"🔍 {esc(url)} — всё ещё недоступен: {esc(r.error or 'N/A')}"
+            text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
         await call.message.answer(text)
+    elif action == "fix":
+        await maintenance.pause_site(site["id"], 60)
+        now = datetime.now(UTC)
+        for inc in await get_active_incidents():
+            if inc["site_id"] == site["id"]:
+                await set_state(f"ack:{inc['id']}", (now + timedelta(hours=2)).isoformat())
+        await ack(call, "Понял, молчу час")
+        await call.message.answer(f"🔧 Понял, ты чинишь {label}. Час не пишу про него, проверки "
+                                  f"продолжаются, напишу, когда поднимется.")
     elif action == "shot":
         await ack(call, "Делаю скрин… (~15 сек)")
         try:
@@ -53,8 +64,8 @@ async def cb_alert_action(call: CallbackQuery):
                 BufferedInputFile(image, filename="screenshot.png"),
                 caption=f"📸 {short_host(url)} · {now_local().strftime('%d.%m %H:%M')}")
         else:
-            await call.message.answer(f"❌ Не удалось получить скрин {esc(short_host(url))} — "
-                                      f"сервис рендеринга не ответил, попробуй ещё раз.")
+            await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))} — "
+                                      f"сервис снимков не ответил, попробуй через минуту.")
     elif action == "redeploy":
         await ack(call, "Запускаю передеплой…")
         await call.message.answer(await trigger_redeploy(url))

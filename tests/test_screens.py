@@ -19,8 +19,8 @@ async def test_main_menu_header_states(bot, db):
     await save_incident(sid, "ssl", "expiring", "warning")
     await maint_service.pause_site(sid, 30)
     header, kb = await menu.build_main_menu()
-    assert "1/1 сайтов ок" in header and "инцидентов: 1" in header and "на паузе: 1" in header
-    assert any("Инциденты (1)" in b.text for row in kb.inline_keyboard for b in row)
+    assert "сайт в порядке" in header and "проблем: 1" in header and "чинится: 1" in header
+    assert any("Проблемы (1)" in b.text for row in kb.inline_keyboard for b in row)
     await maint_service.pause_site(sid, None)
 
 
@@ -83,8 +83,9 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await save_incident(sid, "availability", "Site down: <b>", "critical")
     call = FakeCall("menu_incidents")
     await incidents.cb_incidents(call)
-    assert "&lt;b&gt;" in call.message.texts[-1]
-    assert any("👀" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
+    assert "&lt;b&gt;" in call.message.texts[-1] and "не открывается" in call.message.texts[-1]
+    assert any("Я чиню" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
+    assert any("Что делать" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
 
     call = FakeCall("menu_settings")
     await settings.cb_settings(call)

@@ -5,14 +5,15 @@ dependency check — sent every Sunday."""
 import logging
 from datetime import date, timedelta
 
+from config import config
 from db.database import (
     get_all_sites,
     get_daily_availability,
     get_incidents_since,
     get_uptime_over_days,
 )
-from services import gsc, updates, yandex_webmaster
-from utils.text import bar, esc, plural, sparkline
+from services import gsc, humanize, updates, yandex_webmaster
+from utils.text import bar, esc, plural
 from utils.urls import is_http_url, short_host, site_label
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def render_ascii_chart(series: dict[str, list[dict]]) -> list[str]:
         for r in rows:
             ms = r["avg_ms"] or 0
             day = f"{r['day'][8:10]}.{r['day'][5:7]}"
-            lines.append(f"{day} {bar(ms, peak, CHART_WIDTH)} {ms:>5}ms")
+            lines.append(f"{day} {bar(ms, peak, CHART_WIDTH)} {humanize.fmt_seconds(ms):>7}")
         blocks.append("<pre>" + "\n".join(lines) + "</pre>")
     return blocks
 
@@ -104,15 +105,16 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         if not total:
             lines.append(f"⏳ {esc(label)} — нет данных")
             continue
-        week = round(sum(r["ok"] for r in rows) / total * 100, 2)
+        ok = sum(r["ok"] for r in rows)
+        interval = s.get("check_interval_min") or config.check_interval_minutes
         month = await get_uptime_over_days(s["id"], 30)
-        quarter = await get_uptime_over_days(s["id"], 90)
         avg_ms = round(sum((r["avg_ms"] or 0) * r["total"] for r in rows) / total)
-        icon = "✅" if week >= 99.9 else ("⚠️" if week >= 99 else "🔴")
-        spark = sparkline([r["avg_ms"] for r in rows])
-        lines.append(f"{icon} {esc(label)} — 7д {week}% · 30д {month['uptime_pct']}% · "
-                     f"90д {quarter['uptime_pct']}% · ~{avg_ms}ms"
-                     + (f"  {spark}" if spark else ""))
+        week_pct = ok / total * 100
+        icon = "✅" if week_pct >= 99.9 else ("⚠️" if week_pct >= 99 else "🔴")
+        week_txt = humanize.downtime(total, ok, interval)
+        month_txt = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
+                     f"Открывается {humanize.speed(avg_ms)}.")
 
     chart = render_ascii_chart(series)
 
@@ -127,14 +129,15 @@ async def build_weekly_report() -> tuple[str, list[str]]:
     incidents = await get_incidents_since(days=7)
     if incidents:
         unresolved = sum(1 for i in incidents if not i["resolved"])
-        lines.append(f"\n⚠️ Инцидентов за неделю: {len(incidents)}"
-                     + (f" (открытых: {unresolved})" if unresolved else " (все решены)"))
-        lines += [f"  • {inc['created_at'][5:16]} {esc(site_label(inc['url']))} "
-                  f"[{esc(inc['check_type'])}]" for inc in incidents[:5]]
+        lines.append(f"\n⚠️ Проблем за неделю: {len(incidents)}"
+                     + (f" (не решено: {unresolved})" if unresolved else " (все решены)"))
+        lines += [f"  • {inc['created_at'][8:10]}.{inc['created_at'][5:7]} "
+                  f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), site_label(inc['url'])))}"
+                  for inc in incidents[:5]]
         if len(incidents) > 5:
             lines.append(f"  … и ещё {len(incidents) - 5}")
     else:
-        lines.append("\n🎉 Ни одного инцидента за неделю")
+        lines.append("\n🎉 За неделю ни одной проблемы")
 
     deps = updates.summary_lines(await updates.last_check())
     if deps:

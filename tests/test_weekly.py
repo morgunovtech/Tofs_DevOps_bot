@@ -7,7 +7,7 @@ def test_ascii_chart_blocks():
               "empty": []}
     blocks = render_ascii_chart(series)
     assert len(blocks) == 1 and blocks[0].startswith("<pre>ex.com")
-    assert "08.09" in blocks[0] and "200ms" in blocks[0]
+    assert "08.09" in blocks[0] and "0.20 с" in blocks[0]
     assert render_ascii_chart({"x": [{"day": "2026-09-08", "avg_ms": None}]}) == []
 
 
