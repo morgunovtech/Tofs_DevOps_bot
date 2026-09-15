@@ -44,7 +44,7 @@ Built around one principle: **minimal involvement**. You shouldn't babysit your 
 - **💓 Heartbeat jobs** — added from the chat with a ready-to-paste `curl` line for your cron.
 - **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
 - **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d/90d uptime, anonymised incident history, maintenance banner), a `/status.json` twin for your own dashboards, and SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
-- **🩺 Diagnostics** — one tap self-check: DB, web server, docker socket, Google/Yandex tokens (live probes), screenshot provider.
+- **🩺 Diagnostics as a setup checklist** — three groups: works / needs attention / can be connected. Every non-green line carries a button that either fixes it on the spot (enable the status page, regenerate the heartbeat secret, toggle the second opinion) or opens a two-three step wizard. Google Search Console, Yandex.Webmaster and Cloudflare are connected **from the chat**: paste the token or send the JSON key, the bot validates it with a live request and stores it. `.env` remains a fallback; lines that cannot apply (docker socket on Railway) are hidden, and the public URL is picked up from Railway's domain automatically.
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 
 ### 💓 Dead-man switch

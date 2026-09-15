@@ -100,7 +100,6 @@ def more_menu() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="💓 Heartbeats", callback_data="menu_hb")],
         [InlineKeyboardButton(text="📩 Обратная связь", callback_data="menu_feedback:0"),
          InlineKeyboardButton(text="🩺 Диагностика", callback_data="menu_diag")],
-        [InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert")],
         [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")],
     ])
 

@@ -57,6 +57,20 @@ async def load():
                        "Give the heartbeat its own value.")
 
 
+async def regenerate(name: str) -> str:
+    """Replace a secret with a fresh random one (stored in the DB). An env
+    value stays in the environment but is no longer used until restart —
+    the checklist tells the user to clear it."""
+    global _webhook, _heartbeat
+    value = _secrets.token_urlsafe(24)
+    await set_state(f"secret:{name}", value)
+    if name == "webhook":
+        _webhook = value
+    else:
+        _heartbeat = value
+    return value
+
+
 def webhook_secret() -> str:
     return _webhook
 

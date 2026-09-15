@@ -10,7 +10,7 @@ import logging
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import config
+from services import integrations
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -24,7 +24,7 @@ def deploy_hook_for(url: str) -> str | None:
     # a tcp://example.com:25 incident must not fire example.com's hook.
     if not is_http_url(url):
         return None
-    return config.deploy_hooks.get(host_of(url))
+    return integrations.deploy_hooks().get(host_of(url))
 
 
 def alert_actions_keyboard(url: str, site_id: int,
@@ -44,7 +44,7 @@ def alert_actions_keyboard(url: str, site_id: int,
     if http and deploy_hook_for(url):
         extra.append(InlineKeyboardButton(text="🚀 Передеплой",
                                           callback_data=f"act:redeploy:{site_id}"))
-    if http and config.cf_api_token and config.cf_zone_id:
+    if http and integrations.cf_purge_configured():
         extra.append(InlineKeyboardButton(text="🧹 Сброс кэша CF",
                                           callback_data=f"act:purge:{site_id}"))
     if extra:
@@ -74,13 +74,13 @@ async def trigger_redeploy(url: str) -> str:
 async def purge_cf_cache(url: str) -> str:
     """Purge the whole Cloudflare zone cache (per-host purge needs an
     Enterprise plan; purge_everything works everywhere)."""
-    if not (config.cf_api_token and config.cf_zone_id):
-        return "❌ CLOUDFLARE_API_TOKEN / CLOUDFLARE_ZONE_ID не настроены"
-    api = f"https://api.cloudflare.com/client/v4/zones/{config.cf_zone_id}/purge_cache"
+    if not integrations.cf_purge_configured():
+        return "❌ Cloudflare API token / zone id не настроены (🩺 Диагностика → Cloudflare)"
+    api = f"https://api.cloudflare.com/client/v4/zones/{integrations.cf_zone_id()}/purge_cache"
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(api, json={"purge_everything": True},
-                              headers={"Authorization": f"Bearer {config.cf_api_token}"}) as resp:
+                              headers={"Authorization": f"Bearer {integrations.cf_api_token()}"}) as resp:
                 data = await resp.json()
                 if data.get("success"):
                     return "🧹 Кэш Cloudflare сброшен по всей зоне"

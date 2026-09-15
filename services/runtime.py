@@ -10,6 +10,16 @@ logger = logging.getLogger(__name__)
 
 _chat_id: str | None = config.admin_chat_id or None
 _user_id: str | None = config.admin_user_id or None
+_bot_username: str = ""
+
+
+def set_bot_username(username: str | None):
+    global _bot_username
+    _bot_username = username or ""
+
+
+def bot_username() -> str:
+    return _bot_username
 
 
 async def load():

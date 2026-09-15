@@ -9,7 +9,6 @@ from aiogram import Router
 
 from handlers import (
     alerts,
-    diag,
     feedback,
     heartbeats,
     incidents,
@@ -19,6 +18,7 @@ from handlers import (
     mute,
     seo,
     settings,
+    setup,
     site_settings,
     sites,
     start,
@@ -36,7 +36,7 @@ admin.callback_query.filter(AdminFilter())
 admin.include_routers(
     menu.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
-    seo.router, links.router, feedback.router, diag.router,
+    seo.router, links.router, feedback.router, setup.router,
 )
 router.include_router(admin)
 router.include_router(deny_router)

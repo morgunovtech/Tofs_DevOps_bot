@@ -1,59 +1,14 @@
 """Bot screens rendered against the test DB with fake Telegram objects —
 catches attribute errors in handlers without a Telegram connection."""
 
-from types import SimpleNamespace
-
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from conftest import FakeCall, FakeMessage, FakeState
 
 from db.database import save_feedback, save_incident
 from handlers import feedback, heartbeats, incidents, maintenance, menu, settings, site_settings, sites
 from services import maintenance as maint_service
 from services import settings as settings_service
-
-
-class FakeMessage:
-    def __init__(self):
-        self.texts: list[str] = []
-        self.chat = SimpleNamespace(id=1)
-
-    async def edit_text(self, text, reply_markup=None):
-        self.texts.append(text)
-        self.reply_markup = reply_markup
-
-    async def answer(self, text, reply_markup=None):
-        self.texts.append(text)
-        self.reply_markup = reply_markup
-        return self
-
-
-class FakeCall:
-    def __init__(self, data: str):
-        self.data = data
-        self.message = FakeMessage()
-        self.from_user = SimpleNamespace(id=777)
-        self.answers: list = []
-
-    async def answer(self, text=None, show_alert=False):
-        self.answers.append(text)
-
-
-class FakeState:
-    def __init__(self):
-        self.state = None
-        self.data = {}
-
-    async def clear(self):
-        self.state, self.data = None, {}
-
-    async def set_state(self, s):
-        self.state = s
-
-    async def update_data(self, **kw):
-        self.data.update(kw)
-
-    async def get_data(self):
-        return dict(self.data)
 
 
 async def test_main_menu_header_states(bot, db):
@@ -76,8 +31,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
     app.router.add_get("/", h)
     async with TestServer(app) as server:
         url = str(server.make_url("")).rstrip("/")
-        msg = FakeMessage()
-        msg.text = f"http://127.0.0.1:{server.port}"
+        msg = FakeMessage(f"http://127.0.0.1:{server.port}")
         state = FakeState()
         await sites.msg_site_add(msg, state)
         assert any("в мониторинге" in t for t in msg.texts) and state.state is None
@@ -98,10 +52,8 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         await site_settings.cb_site_method(call)
         assert "Запрос: HEAD" in call.message.texts[-1]
 
-        headers_msg = FakeMessage()
-        headers_msg.text = "Authorization: Bearer x"
-        state = FakeState()
-        state.data = {"sset_site_id": sid}
+        headers_msg = FakeMessage("Authorization: Bearer x")
+        state = FakeState(sset_site_id=sid)
         await site_settings.msg_site_headers(headers_msg, state)
         assert "заголовков: 1" in headers_msg.texts[-1]
 
@@ -116,9 +68,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         await sites.cb_site_export(call)
         assert docs and b'"url"' in docs[0]
 
-        imp = FakeMessage()
-        imp.text = '{"sites": [{"url": "https://imported.test", "slow_ms": 1234}, {"url": "bad host!"}]}'
-        imp.document = None
+        imp = FakeMessage('{"sites": [{"url": "https://imported.test", "slow_ms": 1234}, {"url": "bad host!"}]}')
         await sites.msg_site_import(imp, FakeState())
         assert "добавлено 1" in imp.texts[-1] and "Пропущено" in imp.texts[-1]
         assert (await db.get_site_by_url("https://imported.test"))["slow_ms"] == 1234

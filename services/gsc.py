@@ -17,7 +17,6 @@ Everything degrades to None when unconfigured — callers just skip sections.
 import base64
 import json
 import logging
-import os
 import time
 from urllib.parse import quote
 
@@ -25,7 +24,7 @@ import aiohttp
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from config import config
+from services import integrations
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +38,12 @@ _token_cache: dict = {"token": None, "exp": 0.0}
 
 
 def available() -> bool:
-    return bool(config.gsc_property and config.gsc_service_account_file
-                and os.path.exists(config.gsc_service_account_file))
+    return integrations.gsc_configured()
+
+
+def reset_token_cache():
+    """Forget the cached OAuth token (after the key or property changed)."""
+    _token_cache["token"], _token_cache["exp"] = None, 0.0
 
 
 def _b64url(data: bytes) -> str:
@@ -74,8 +77,9 @@ async def _access_token(session: aiohttp.ClientSession) -> str | None:
     if _token_cache["token"] and _token_cache["exp"] - 60 > time.time():
         return _token_cache["token"]
     try:
-        with open(config.gsc_service_account_file, encoding="utf-8") as f:
-            creds = json.load(f)
+        creds = integrations.gsc_credentials()
+        if not creds:
+            return None
         assertion = make_assertion(creds)
         async with session.post(TOKEN_URL, data={
             "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -111,7 +115,7 @@ async def search_totals(start: str, end: str,
             token = await _access_token(session)
             if not token:
                 return None
-            url = ANALYTICS_URL.format(prop=quote(config.gsc_property, safe=""))
+            url = ANALYTICS_URL.format(prop=quote(integrations.gsc_property(), safe=""))
             async with session.post(
                 url, json=body,
                 headers={"Authorization": f"Bearer {token}"},
@@ -143,7 +147,7 @@ async def inspect_url(page_url: str) -> dict | None:
                 return None
             async with session.post(
                 INSPECT_URL,
-                json={"inspectionUrl": page_url, "siteUrl": config.gsc_property},
+                json={"inspectionUrl": page_url, "siteUrl": integrations.gsc_property()},
                 headers={"Authorization": f"Bearer {token}"},
             ) as resp:
                 data = await resp.json()

@@ -15,7 +15,7 @@ from config import config
 from db.database import close_db, count_sites_total, get_or_create_site, init_db
 from handlers import router
 from reports.scheduler import setup_scheduler
-from services import maintenance, notifier, runtime, secrets, settings, updates
+from services import integrations, maintenance, notifier, runtime, secrets, settings, updates
 from web.webhook import start_web_server
 
 logging.basicConfig(level=logging.INFO,
@@ -34,6 +34,7 @@ COMMANDS = [
 
 async def on_startup(bot: Bot):
     me = await bot.get_me()
+    runtime.set_bot_username(me.username)
     logger.info("Bot started: @%s — TofsDevOps on duty 🐕", me.username)
     await bot.set_my_commands(COMMANDS)
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
@@ -60,6 +61,7 @@ async def main():
     await secrets.load()
     await settings.load()
     await maintenance.load()
+    await integrations.load()
     await runtime.load()
     notifier.configure(bot)
 

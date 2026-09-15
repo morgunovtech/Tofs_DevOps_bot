@@ -3,9 +3,20 @@
 from config import config
 from services import secrets
 
+PLACEHOLDER_HOST = "YOUR_SERVER"
+
 
 def base_url() -> str:
-    return config.public_base_url or f"http://YOUR_SERVER:{config.webhook_port}"
+    """PUBLIC_BASE_URL, else the domain Railway generated, else a placeholder."""
+    if config.public_base_url:
+        return config.public_base_url
+    if config.railway_public_domain:
+        return f"https://{config.railway_public_domain}"
+    return f"http://{PLACEHOLDER_HOST}:{config.webhook_port}"
+
+
+def is_public() -> bool:
+    return PLACEHOLDER_HOST not in base_url()
 
 
 def _status_path() -> str:

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from config import config
+from services import integrations
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +26,11 @@ ALERT_SEVERITIES = {"FATAL", "CRITICAL"}
 
 
 def available() -> bool:
-    return bool(config.yandex_webmaster_token)
+    return bool(integrations.yandex_token())
 
 
 def _headers() -> dict:
-    return {"Authorization": f"OAuth {config.yandex_webmaster_token}"}
+    return {"Authorization": f"OAuth {integrations.yandex_token()}"}
 
 
 async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:

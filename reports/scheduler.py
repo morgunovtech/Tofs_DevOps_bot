@@ -49,7 +49,7 @@ from reports.formatter import (
     format_ssl_alert,
 )
 from reports.weekly import build_weekly_report
-from services import gsc, notifier, settings, updates, yandex_webmaster
+from services import gsc, integrations, notifier, settings, updates, yandex_webmaster
 from services.actions import alert_actions_keyboard, deploy_hook_for, trigger_redeploy
 from services.notifier import Priority
 from utils.clock import local_tz
@@ -102,7 +102,7 @@ async def run_availability_checks():
             msg = format_availability_alert(r)
             if r.external_ok is False:
                 msg += "\n🌐 Подтверждено извне: сайт недоступен и со второй точки"
-            elif config.second_opinion and not r.keyword_failed:
+            elif integrations.second_opinion_enabled() and not r.keyword_failed:
                 msg += "\n❓ Перепроверить со второй точки не удалось"
             if config.auto_redeploy and deploy_hook_for(r.url):
                 msg += f"\n\n🤖 Автодействие: {await trigger_redeploy(r.url)}"

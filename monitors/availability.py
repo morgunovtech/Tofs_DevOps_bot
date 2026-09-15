@@ -12,7 +12,6 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from config import config
 from db.database import (
     get_recent_check_statuses,
     get_site_by_url,
@@ -22,6 +21,7 @@ from db.database import (
 )
 from monitors.base import AvailabilityResult, gather_checks
 from monitors.second_opinion import second_opinion_up
+from services import integrations
 from utils.parse import parse_accepted_codes
 from utils.urls import USER_AGENT
 
@@ -233,7 +233,7 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     # Second opinion from external nodes before paging: reachable from
     # outside means the problem is on our side. Skipped for keyword
     # failures — our own fetch succeeded, so the content problem is real.
-    if config.second_opinion and not r.keyword_failed:
+    if integrations.second_opinion_enabled() and not r.keyword_failed:
         r.external_ok = await second_opinion_up(url)
     if r.external_ok is True:
         logger.warning("%s: down from here but UP externally — skipping incident", url)

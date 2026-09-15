@@ -97,6 +97,10 @@ class Config:
     # Git commit of the running build, when the platform exposes it
     # (Railway sets RAILWAY_GIT_COMMIT_SHA; docker builds can pass APP_COMMIT).
     app_commit: str = (os.getenv("APP_COMMIT") or os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()[:12]
+    # Railway injects these: the public domain becomes the default
+    # PUBLIC_BASE_URL, and host-only features (docker socket) hide themselves.
+    railway_public_domain: str = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    on_railway: bool = bool(os.getenv("RAILWAY_ENVIRONMENT", "").strip())
 
     # ── Dead-man switch (heartbeats) ─────────────────────────────────────────
     heartbeat_jobs: dict[str, int] = field(default_factory=lambda: _jobs("HEARTBEAT_JOBS"))

@@ -21,11 +21,13 @@ os.environ.update({
     "TRUST_PROXY": "0",
 })
 
+from types import SimpleNamespace  # noqa: E402
+
 import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from services import maintenance, notifier, runtime, secrets, settings  # noqa: E402
+from services import integrations, maintenance, notifier, runtime, secrets, settings  # noqa: E402
 
 
 class FakeBot:
@@ -45,6 +47,60 @@ class FakeBot:
         self.sent.append({"chat_id": chat_id, "document": document, "caption": caption})
 
 
+class FakeMessage:
+    """Stand-in for aiogram Message: records everything sent or edited."""
+
+    def __init__(self, text: str = ""):
+        self.text = text
+        self.document = None
+        self.texts: list[str] = []
+        self.chat = SimpleNamespace(id=1)
+        self.reply_markup = None
+
+    async def edit_text(self, text, reply_markup=None):
+        self.texts.append(text)
+        self.reply_markup = reply_markup
+
+    async def answer(self, text, reply_markup=None):
+        self.texts.append(text)
+        self.reply_markup = reply_markup
+        return self
+
+
+class FakeCall:
+    def __init__(self, data: str):
+        self.data = data
+        self.message = FakeMessage()
+        self.from_user = SimpleNamespace(id=777)
+        self.answers: list = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append(text)
+
+
+class FakeState:
+    def __init__(self, **data):
+        self.state = None
+        self.data = dict(data)
+
+    async def clear(self):
+        self.state, self.data = None, {}
+
+    async def set_state(self, s):
+        self.state = s
+
+    async def update_data(self, **kw):
+        self.data.update(kw)
+
+    async def get_data(self):
+        return dict(self.data)
+
+
+def buttons(kb) -> list[str]:
+    """Flat list of button labels of an inline keyboard."""
+    return [b.text for row in kb.inline_keyboard for b in row]
+
+
 @pytest.fixture
 async def db(tmp_path):
     """Fresh SQLite DB per test with all migrations applied and the
@@ -55,6 +111,7 @@ async def db(tmp_path):
     await secrets.load()
     await settings.load()
     await maintenance.load()
+    await integrations.load()
     yield database
     await database.close_db()
 
