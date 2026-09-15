@@ -3,7 +3,7 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from handlers.common import ack, back_button, render, site_by_cb, sites_keyboard, with_running_bar
+from handlers.common import ack, back_button, render, site_by_cb, with_running_bar
 from monitors.links_checker import check_links
 from reports.formatter import external_links_block, format_links_report
 from services import humanize
@@ -11,13 +11,6 @@ from utils.text import esc
 from utils.urls import site_label
 
 router = Router(name="links")
-
-
-@router.callback_query(F.data == "menu_links")
-async def cb_links_menu(call: CallbackQuery):
-    await ack(call)
-    await render(call, "🔗 Какой сайт проверить на битые ссылки?",
-                 await sites_keyboard("check_links", http_only=True, back="menu_health"))
 
 
 @router.callback_query(F.data.startswith("check_links:"))
@@ -41,4 +34,4 @@ async def cb_check_links(call: CallbackQuery):
         text = f"✅ На {label} все свои ссылки работают (проверил {r.total_links})"
         if r.broken_external:
             text += "\n\n" + "\n".join(external_links_block(r.broken_external))
-    await render(call, text, back_button("← Здоровье сайтов", "menu_health"))
+    await render(call, text, back_button("← К сайту", f"check_site:{site['id']}"))

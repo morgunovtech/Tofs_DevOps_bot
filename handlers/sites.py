@@ -21,6 +21,7 @@ from db.database import (
     SITE_SETTING_COLS,
     activate_or_create_site,
     deactivate_site,
+    get_active_incidents,
     get_all_sites,
     get_last_check,
     get_site,
@@ -37,13 +38,14 @@ from handlers.common import (
     cb_args,
     render,
     site_by_cb,
-    sites_keyboard,
 )
+from handlers.menu import site_state
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
+from reports.formatter import incident_line
 from reports.scheduler import reset_site_schedule
 from services import humanize, maintenance, settings
 from utils.clock import fmt_local, local_at
@@ -100,12 +102,23 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
 
 # ── Detail screen ────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "menu_check_site")
-async def cb_check_site_menu(call: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data.in_({"menu_sites", "menu_check_site"}))
+async def cb_sites_list(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.clear()
-    await render(call, "🌍 Мои сайты — выбери сайт, чтобы проверить его и настроить:",
-                 await sites_keyboard("check_site", manage=True))
+    sites_ = await get_all_sites()
+    lines = ["🌍 Сайты — тап по сайту открывает карточку со всем сразу:\n"]
+    rows = []
+    for site in sites_:
+        icon, state_txt, _ = await site_state(site)
+        lines.append(f"{icon} {esc(site_label(site['url']))} · {esc(state_txt)}")
+        rows.append([InlineKeyboardButton(text=f"{icon} {site_label(site['url'])}",
+                                          callback_data=f"check_site:{site['id']}")])
+    if not sites_:
+        lines.append("Пока ни одного.")
+    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")])
+    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 async def _stored_status_lines(site: dict) -> list[str]:
@@ -143,8 +156,7 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
         notes.append("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут.")
         row = [InlineKeyboardButton(text="✅ Починил, пиши снова", callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60"),
-               InlineKeyboardButton(text="🔧 До утра", callback_data=f"pause:{sid}:morning")]
+        row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60")]
     if maintenance.maintenance_now(sid):
         notes.append("🕐 Сейчас плановые работы — про этот сайт не пишу.")
     return row, notes
@@ -200,10 +212,20 @@ async def cb_check_single_site(call: CallbackQuery):
     pause_row, notes = await _pause_rows(sid)
     if notes:
         lines += ["", *notes]
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        first_row, pause_row,
-        [InlineKeyboardButton(text="← К списку сайтов", callback_data="menu_check_site")]])
-    await render(call, "\n".join(lines), kb)
+    problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
+    explain_row = []
+    if problems:
+        lines.append("")
+        for inc in problems[:3]:
+            lines.append(f"🔴 {esc(incident_line(inc))} <i>с {fmt_local(inc['created_at'])}</i>")
+        explain_row = [InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}")]
+    rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site:{sid}"), *pause_row[:1]]]
+    if is_http_url(url):
+        rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}"),
+                     InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
+    rows.append([*explain_row, *first_row[-1:]])
+    rows.append([InlineKeyboardButton(text="← Сайты", callback_data="menu_sites")])
+    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 # ── Add ──────────────────────────────────────────────────────────────────────
@@ -298,13 +320,6 @@ async def cb_keyword_accept(call: CallbackQuery):
 
 # ── Remove ───────────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == "site_del")
-async def cb_site_del(call: CallbackQuery):
-    await ack(call)
-    await render(call, "🗑 Какой сайт убрать из мониторинга?\n(история проверок сохранится)",
-                 await sites_keyboard("delsite", icon="🗑", back="menu_check_site"))
-
-
 @router.callback_query(F.data.startswith("delsite:"))
 async def cb_site_del_confirm(call: CallbackQuery):
     await ack(call)
@@ -314,7 +329,7 @@ async def cb_site_del_confirm(call: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Да, убрать", callback_data=f"delok:{site['id']}")],
-        [InlineKeyboardButton(text="← Отмена", callback_data="menu_check_site")]])
+        [InlineKeyboardButton(text="← Отмена", callback_data=f"sset:{site['id']}")]])
     await render(call, f"Убрать {esc(short_host(site['url']))} из мониторинга?\n"
                        "Открытые инциденты по нему закроются, история останется.", kb)
 
@@ -326,7 +341,8 @@ async def cb_site_del_do(call: CallbackQuery):
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])
         reset_site_schedule(site["id"])
-        await render(call, f"🗑 {esc(short_host(site['url']))} убран из мониторинга.", back_button())
+        await render(call, f"🗑 {esc(short_host(site['url']))} больше не под присмотром. История сохранилась.",
+                     back_button("← Сайты", "menu_sites"))
     else:
         await render(call, "Сайт уже убран.", back_button())
 
@@ -375,7 +391,7 @@ async def cb_site_export(call: CallbackQuery):
     data = json.dumps(doc, ensure_ascii=False, indent=2).encode()
     await call.message.answer_document(
         BufferedInputFile(data, filename="tofsdevops-sites.json"),
-        caption=f"📤 {len(sites)} сайтов с настройками. Импорт: «🌍 Сайт детально» → 📥.")
+        caption=f"📤 {len(sites)} сайтов с настройками. Импорт: «⚙️ Настройки» → 📥.")
 
 
 @router.callback_query(F.data == "site_import")

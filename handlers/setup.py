@@ -224,7 +224,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check"),
                  InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert")])
-    rows.append([InlineKeyboardButton(text="← Подключения", callback_data="menu_connections")])
+    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 

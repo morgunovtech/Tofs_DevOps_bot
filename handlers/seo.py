@@ -3,13 +3,12 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from db.database import get_active_http_site_urls
-from handlers.common import ack, back_button, render, with_running_bar
+from handlers.common import ack, back_button, render, site_by_cb, with_running_bar
 from monitors.base import SeoResult
 from monitors.seo_checker import check_all_seo
 from services import gsc, yandex_webmaster
 from utils.text import esc, plural
-from utils.urls import short_host
+from utils.urls import is_http_url, short_host, site_label
 
 router = Router(name="seo")
 
@@ -68,15 +67,15 @@ def build_seo_report(results: list[SeoResult], gsc_status: dict[str, str],
     return "\n".join(lines)
 
 
-@router.callback_query(F.data == "menu_seo")
+@router.callback_query(F.data.startswith("seo_site:"))
 async def cb_seo(call: CallbackQuery):
-    await ack(call)
-    urls = await get_active_http_site_urls()
-    if not urls:
-        await render(call, "Пока нет ни одного сайта — проверка видимости в поиске применима только к сайтам.",
-                     back_button())
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    if not site or not is_http_url(site["url"]):
+        await ack(call, "Сайт не найден", show_alert=True)
         return
-    base = ("Смотрю на сайты глазами Google, Яндекса и ИИ-ассистентов…\n"
+    await ack(call)
+    urls = [site["url"]]
+    base = (f"Смотрю на {esc(site_label(site['url']))} глазами Google, Яндекса и ИИ-ассистентов…\n"
             "(это занимает около 30 секунд)")
     await render(call, f"▰▱▱ {base}")
     results = await with_running_bar(call.message, base, check_all_seo(urls, manage=False))
@@ -88,4 +87,5 @@ async def cb_seo(call: CallbackQuery):
                 gsc_status[u] = ("главная есть в поиске ✅" if info["verdict"] == "PASS"
                                  else f"главной НЕТ в поиске 🔴 ({info['coverage']})")
     yx_status = (await yandex_webmaster.get_summaries() or {}) if yandex_webmaster.available() else {}
-    await render(call, build_seo_report(results, gsc_status, yx_status), back_button())
+    await render(call, build_seo_report(results, gsc_status, yx_status),
+                 back_button("← К сайту", f"check_site:{site['id']}"))

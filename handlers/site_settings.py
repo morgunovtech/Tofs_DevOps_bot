@@ -113,7 +113,11 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
              InlineKeyboardButton(text="⏱ Реже", callback_data=f"ssv:i:{sid}:15")]]
     if http:
         rows.append([InlineKeyboardButton(text="🔍 Следить за фразой", callback_data=f"ssp:k:{sid}")])
-    rows.append([InlineKeyboardButton(text="🛠 Для продвинутых", callback_data=f"ssetx:{sid}")])
+    extra = [InlineKeyboardButton(text="🛠 Для продвинутых", callback_data=f"ssetx:{sid}")]
+    if http:
+        extra.insert(0, InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{sid}"))
+    rows.append(extra)
+    rows.append([InlineKeyboardButton(text="🗑 Убрать из мониторинга", callback_data=f"delsite:{sid}")])
     rows.append([InlineKeyboardButton(text="← К сайту", callback_data=f"check_site:{sid}")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 

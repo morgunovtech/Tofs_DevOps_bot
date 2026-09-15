@@ -44,7 +44,7 @@ def _mute_menu() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="8 часов", callback_data="mute:8h")],
         [InlineKeyboardButton(text="1 день", callback_data="mute:1d"),
          InlineKeyboardButton(text="🔔 Снять тишину", callback_data="mute:off")],
-        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]])
+        [InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")]])
 
 
 @router.callback_query(F.data == "menu_mute")
