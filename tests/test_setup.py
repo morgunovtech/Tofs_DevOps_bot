@@ -5,7 +5,16 @@ import json
 from conftest import FakeCall, FakeMessage, FakeState, buttons
 
 from handlers import setup
-from services import gsc, integrations, public_urls, runtime, secrets, settings, yandex_webmaster
+from services import (
+    docker_api,
+    gsc,
+    integrations,
+    public_urls,
+    runtime,
+    secrets,
+    settings,
+    yandex_webmaster,
+)
 from services.actions import deploy_hook_for
 
 
@@ -47,10 +56,14 @@ async def test_checklist_groups_and_buttons(bot, db, cfg, monkeypatch):
 
 async def test_public_url_warning_and_docker_on_self_host(bot, db, cfg, monkeypatch):
     cfg(on_railway=False, railway_public_domain="", public_base_url="")
+    # GitHub runners ship a docker socket — pin the probe so the test means the same everywhere.
+    monkeypatch.setattr(docker_api, "docker_available", lambda: False)
     items = _by_key(await _items(monkeypatch, web_ok=False))
     assert items["url"].status == "warn" and items["url"].button[1] == "setup:url"
     assert items["web"].status == "warn"
     assert items["docker"].status == "off" and items["docker"].button[1] == "setup:docker"
+    monkeypatch.setattr(docker_api, "docker_available", lambda: True)
+    assert _by_key(await _items(monkeypatch))["docker"].status == "ok"
     assert not public_urls.is_public()
     call = FakeCall("setup:url")
     await setup.cb_guide_url(call)
