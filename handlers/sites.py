@@ -16,13 +16,16 @@ from aiogram.types import (
     Message,
 )
 
+from config import config
 from db.database import (
     SITE_SETTING_COLS,
     activate_or_create_site,
     deactivate_site,
     get_all_sites,
+    get_last_check,
     get_site,
     get_state,
+    get_uptime_over_days,
     set_state,
     update_site_settings,
 )
@@ -38,11 +41,12 @@ from handlers.common import (
 )
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
+from monitors.domain_checker import check_domain
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import reset_site_schedule
 from services import humanize, maintenance, settings
-from utils.clock import local_at
+from utils.clock import fmt_local, local_at
 from utils.text import esc, fmt_date, fmt_duration
 from utils.urls import is_http_url, short_host, site_label
 
@@ -104,6 +108,35 @@ async def cb_check_site_menu(call: CallbackQuery, state: FSMContext):
                  await sites_keyboard("check_site", manage=True))
 
 
+async def _stored_status_lines(site: dict) -> list[str]:
+    """Links, search visibility and downtime from the last scheduled checks
+    — no network, so the one-screen picture stays fast."""
+    lines: list[str] = []
+    links = await get_last_check(site["id"], "links")
+    if links:
+        when = fmt_local(links["checked_at"])
+        if links["status"] == "ok":
+            lines.append(f"✅ Ссылки: все работают (проверял {when})")
+        elif links["status"] == "warning":
+            lines.append(f"⚠️ Ссылки: {esc(humanize.describe_error((links.get('details') or '').split(chr(10))[0]))} "
+                         f"(проверял {when})")
+        else:
+            lines.append(f"⚠️ Ссылки: не смог проверить (проверял {when})")
+    seo = await get_last_check(site["id"], "seo")
+    if seo:
+        verdict = {"ok": "✅ В поиске: всё в порядке", "warning": "💡 В поиске: виден, есть что улучшить",
+                   "critical": "🔴 В поиске: сайт закрыт от поисковиков!"}.get(seo["status"],
+                                                                                 "⚠️ В поиске: не смог проверить")
+        lines.append(f"{verdict} (проверял {fmt_local(seo['checked_at'])})")
+    interval = site.get("check_interval_min") or config.check_interval_minutes
+    week = await get_uptime_over_days(site["id"], 7)
+    month = await get_uptime_over_days(site["id"], 30)
+    if week["total_checks"]:
+        lines.append(f"📈 За неделю {humanize.downtime(week['total_checks'], week['ok_checks'], interval)}, "
+                     f"за месяц {humanize.downtime(month['total_checks'], month['ok_checks'], interval)}")
+    return lines
+
+
 async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
     notes = []
     if await maintenance.paused_until(sid):
@@ -132,12 +165,15 @@ async def cb_check_single_site(call: CallbackQuery):
         r = await check_availability(url, manage=False)
         lines.append(f"✅ Отвечает, {humanize.speed(r.response_time_ms)}" if r.ok
                      else f"🔴 Не отвечает: {esc(humanize.describe_error(r.error))}")
+        lines += await _stored_status_lines(site)
         first_row = [InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
     else:
-        await render(call, f"▱▱ Проверяю доступность {esc(url)}...")
+        await render(call, f"▱▱▱ Проверяю, открывается ли {esc(url)}...")
         r = await check_availability(url, manage=False)
-        await render(call, "▰▱ Доступность — готово\nПроверяю SSL...")
+        await render(call, "▰▱▱ Открывается. Смотрю сертификат...")
         ssl_r = await check_ssl(url, manage=False)
+        await render(call, "▰▰▱ Сертификат есть. Узнаю срок домена...")
+        dom_r = await check_domain(url, manage=False)
         lines.append(f"✅ Открывается, {humanize.speed(r.response_time_ms)}" if r.ok
                      else f"🔴 Не открывается: {esc(humanize.describe_error(r.error))}")
         if ssl_r.ssl_info:
@@ -148,7 +184,17 @@ async def cb_check_single_site(call: CallbackQuery):
                          f"(до {fmt_date(ssl_r.ssl_info.not_after)}){issuer}")
         else:
             lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
-        lines.append("ℹ️ Срок домена: «📈 Здоровье сайтов → 🌐 Домены»")
+        info = dom_r.domain_info
+        if info and info.days_left is not None:
+            icon = "✅" if info.days_left > 30 else ("⚠️" if info.days_left > 7 else "🔴")
+            registrar = f", регистратор {esc(info.registrar)}" if info.registrar not in ("", "Unknown") else ""
+            lines.append(f"{icon} Домен оплачен до {fmt_date(info.expiration_date)} "
+                         f"(ещё {info.days_left} дн.){registrar}")
+        elif dom_r.unsupported:
+            lines.append(f"ℹ️ Домен: {esc(dom_r.error)}")
+        else:
+            lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom_r.error))}")
+        lines += await _stored_status_lines(site)
         first_row = [InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{sid}"),
                      InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}")]
     pause_row, notes = await _pause_rows(sid)

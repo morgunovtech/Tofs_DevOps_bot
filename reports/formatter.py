@@ -14,7 +14,7 @@ from monitors.base import (
     SslResult,
 )
 from services import humanize
-from services.humanize import describe_error, explain, fmt_seconds, steps_block
+from services.humanize import describe_error, explain, fmt_seconds, link_reason, steps_block
 from utils.clock import now_local, to_local
 from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import host_of, is_http_url, registrable_domain, site_label
@@ -126,7 +126,7 @@ def format_links_report(r: LinksResult) -> str:
         n = len(internal)
         lines.append(f"⚠️ На {label} {n} {'ссылка ведёт' if n % 10 == 1 and n % 100 != 11 else 'ссылок ведут'} в никуда")
         lines.append(expl.meaning)
-        lines += [f"  • {esc(b.url)} — {esc(describe_error(b.reason))}" for b in internal[:10]]
+        lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in internal[:10]]
         if n > 10:
             lines.append(f"  … и ещё {n - 10}")
         lines.append("")
@@ -147,7 +147,7 @@ def external_links_block(external: list, label: str | None = None) -> list[str]:
     where = f" на {label}" if label else ""
     lines = [f"ℹ️ {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')}{where} на чужие сайты "
              f"{'не открывается' if n % 10 == 1 and n % 100 != 11 else 'не открываются'}:"]
-    lines += [f"  • {esc(b.url)} — {esc(describe_error(b.reason))}" for b in external[:10]]
+    lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in external[:10]]
     if n > 10:
         lines.append(f"  … и ещё {n - 10}")
     lines.append("Обычно это чужая поломка и ничего делать не нужно; если ссылка важна, "

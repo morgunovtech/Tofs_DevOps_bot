@@ -83,6 +83,13 @@ _RULES: list[tuple[re.Pattern, object]] = [
 ]
 
 
+def link_reason(status_code: int | None, error: str | None) -> str:
+    """Why one link is broken: '404' → 'страница не найдена (ошибка 404)'."""
+    if status_code:
+        return _http(status_code)
+    return describe_error(error)
+
+
 def describe_error(text: str | None) -> str:
     """Technical error / incident message → short human phrase (Russian
     text that is already human passes through unchanged)."""

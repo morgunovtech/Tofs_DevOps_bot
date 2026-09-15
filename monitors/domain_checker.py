@@ -1,6 +1,7 @@
 """Domain registration expiry via RDAP (see monitors.rdap) with an alert
 ladder that starts earlier than SSL — registrars are slower."""
 
+import ipaddress
 import logging
 
 from db.database import get_or_create_site, save_check
@@ -22,6 +23,14 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
     if not host:
         r.status, r.error, r.transient = "warning", "Некорректный URL", True
         await save_check(site_id, "domain", r.status, details=r.error)
+        return r
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        r.unsupported, r.error = True, "это IP-адрес, домена нет"
+        await save_check(site_id, "domain", "ok", details=r.error)
         return r
     try:
         info = await rdap.lookup(domain)

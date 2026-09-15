@@ -42,6 +42,13 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
         assert url in call.message.texts[-1] and "Открывается, быстро" in call.message.texts[-1]
+        assert "Домен: это IP-адрес" in call.message.texts[-1]          # one screen, no pointer elsewhere
+        await db.save_check(sid, "links", "ok", details="All 12 links OK")
+        await db.save_check(sid, "seo", "warning", details="2 проблемы")
+        call = FakeCall(f"check_site:{sid}")
+        await sites.cb_check_single_site(call)
+        assert "Ссылки: все работают" in call.message.texts[-1]
+        assert "есть что улучшить" in call.message.texts[-1] and "За неделю" in call.message.texts[-1]
 
         text, kb = await site_settings.sset_screen(await db.get_site(sid))
         assert "Проверяю обычно" in text and any("Для продвинутых" in b.text for r in kb.inline_keyboard for b in r)
