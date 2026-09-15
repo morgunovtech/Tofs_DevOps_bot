@@ -3,14 +3,18 @@ from monitors.base import (
     AvailabilityResult,
     DomainInfo,
     DomainResult,
+    LinkCheck,
+    LinksResult,
     SeoProblem,
     SeoResult,
     SslInfo,
     SslResult,
 )
 from reports.formatter import (
+    external_links_block,
     format_availability_alert,
     format_compact_status_report,
+    format_links_report,
     format_recovery_alert,
     format_seo_alert,
 )
@@ -68,3 +72,14 @@ def test_seo_texts_are_html_safe():
     report = build_seo_report([r], {"https://ex.com": "в индексе ✅"}, {})
     assert "&lt;title&gt;" in report and "&lt;h1&gt;" in report and "<title>" not in report
     assert "42 символа" in report
+
+
+def test_links_report_lists_external_links_too():
+    ext = [LinkCheck(url="https://other.test/a", status_code=404, ok=False),
+           LinkCheck(url="https://dead.test/b", status_code=None, ok=False, error="timeout")]
+    r = LinksResult(url="https://ex.com", site_id=1, total_links=52, broken_external=ext)
+    text = format_links_report(r)
+    assert "https://other.test/a — страница не найдена (ошибка 404)" in text
+    assert "https://dead.test/b — timeout" in text and "2 ссылки на ex.com" in text
+    block = external_links_block(ext)
+    assert block[0].startswith("ℹ️ 2 ссылки на чужие сайты не открываются")

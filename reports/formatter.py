@@ -16,7 +16,7 @@ from monitors.base import (
 from services import humanize
 from services.humanize import describe_error, explain, fmt_seconds, steps_block
 from utils.clock import now_local, to_local
-from utils.text import esc, fmt_duration, parse_sqlite_utc
+from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import host_of, is_http_url, registrable_domain, site_label
 
 
@@ -132,11 +132,27 @@ def format_links_report(r: LinksResult) -> str:
         lines.append("")
         lines.append(esc(steps_block(expl)))
         if external:
-            lines.append(f"\nℹ️ Ещё {len(external)} ссылок на чужие сайты не открываются — это обычно не твоя проблема.")
+            lines.append("")
+            lines += external_links_block(external)
     else:
-        lines.append(f"ℹ️ На {label} {len(external)} ссылок на чужие сайты не открываются. "
-                     "Чужие домены — обычно ничего делать не нужно.")
+        lines += external_links_block(external, label)
     return "\n".join(lines)
+
+
+def external_links_block(external: list, label: str | None = None) -> list[str]:
+    """Which links to other sites do not open, with the reason for each.
+    Someone else's outage is not our problem, but a dead link is a dead
+    link — the person wants to see WHICH ones."""
+    n = len(external)
+    where = f" на {label}" if label else ""
+    lines = [f"ℹ️ {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')}{where} на чужие сайты "
+             f"{'не открывается' if n % 10 == 1 and n % 100 != 11 else 'не открываются'}:"]
+    lines += [f"  • {esc(b.url)} — {esc(describe_error(b.reason))}" for b in external[:10]]
+    if n > 10:
+        lines.append(f"  … и ещё {n - 10}")
+    lines.append("Обычно это чужая поломка и ничего делать не нужно; если ссылка важна, "
+                 "проверь её в браузере и замени или убери.")
+    return lines
 
 
 def format_deep_alert(r) -> str:
