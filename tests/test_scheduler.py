@@ -8,8 +8,9 @@ from aiohttp.test_utils import TestServer
 
 from db.database import get_active_incidents, get_state, save_incident, set_state
 from monitors import host_checker
+from monitors.base import SslInfo, SslResult
 from reports import scheduler
-from services import settings
+from services import gsc, settings, sitestatus
 
 
 async def _site_server(status: int = 200):
@@ -107,11 +108,72 @@ async def test_reports_do_not_crash_on_empty_and_populated_db(bot, db, cfg, tmp_
     assert any(m.get("document") is not None for m in bot.sent)   # DB copy sent
 
 
+async def test_ssl_alert_rings_only_at_the_critical_level(bot, db, monkeypatch):
+    """The icon in the text and the way it arrives must agree: 🔴 rings,
+    🟠 is silent. A certificate that renewed by itself is not a message."""
+    sid = await db.activate_or_create_site("https://ex.test")
+
+    async def fake(urls, manage=True):
+        return [result]
+
+    monkeypatch.setattr(scheduler, "check_all_ssl", fake)
+    result = SslResult(url="https://ex.test", site_id=sid, status="warning", error="SSL expires in 10 days",
+                       ssl_info=SslInfo("ex.test", "LE", "", "", 10, "1"), incident_new=True, incident_id=1)
+    await scheduler.run_ssl_checks()
+    assert bot.sent[-1]["text"].startswith("🟠 ex.test") and bot.sent[-1]["silent"] is True
+    result = SslResult(url="https://ex.test", site_id=sid, status="critical", error="SSL expires in 1 days!",
+                       ssl_info=SslInfo("ex.test", "LE", "", "", 1, "1"), incident_new=True, incident_id=1)
+    await scheduler.run_ssl_checks()
+    assert bot.sent[-1]["text"].startswith("🔴 ex.test") and bot.sent[-1]["silent"] is False
+    n = len(bot.sent)
+    result = SslResult(url="https://ex.test", site_id=sid, ssl_info=SslInfo("ex.test", "LE", "", "", 80, "2"),
+                       renewed=True)
+    await scheduler.run_ssl_checks()
+    assert len(bot.sent) == n                                        # normal operation: silence
+
+
+async def test_index_checks_write_the_snapshot_and_alert_on_change(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    answer = {"verdict": "PASS", "coverage": "Submitted and indexed", "last_crawl": "2026-09-20T10:00:00Z"}
+
+    async def inspect(url):
+        return answer
+
+    monkeypatch.setattr(gsc, "available", lambda: True)
+    monkeypatch.setattr(gsc, "inspect_url", inspect)
+    n = len(bot.sent)
+    await scheduler.run_index_checks()
+    google = (await sitestatus.get(sid)).get("google")
+    assert google["verdict"] == "PASS" and google["at"] and len(bot.sent) == n    # first PASS: nothing to say
+    answer = {"verdict": "FAIL", "coverage": "Crawled - currently not indexed", "last_crawl": None}
+    await scheduler.run_index_checks()
+    assert bot.sent[-1]["text"].startswith("🔴 Google убрал ex.test из поиска") and bot.sent[-1]["silent"] is False
+    assert "«🔎 Поиск и ИИ»" in bot.sent[-1]["text"]
+    assert (await sitestatus.get(sid))["google"]["verdict"] == "FAIL"
+    n = len(bot.sent)
+    await scheduler.run_index_checks()                               # same state → no repeat
+    assert len(bot.sent) == n
+
+
+async def test_local_network_note_is_said_once_per_episode(bot, db):
+    sid = await db.activate_or_create_site("https://ext.test")
+    scheduler._ext_ok_noted.clear()
+    await scheduler._note_local_network_problem("https://ext.test", sid)
+    n = len(bot.sent)
+    assert "не открылся с моего сервера" in bot.sent[-1]["text"]
+    await scheduler._note_local_network_problem("https://ext.test", sid)
+    assert len(bot.sent) == n
+    scheduler._ext_ok_noted.discard(sid)                             # what an OK check does
+    await scheduler._note_local_network_problem("https://ext.test", sid)
+    assert len(bot.sent) == n + 1
+
+
 async def test_host_checks_disk_thresholds(bot, db, cfg, monkeypatch):
     monkeypatch.setattr(host_checker, "disk_usage_pct", lambda path="/": (96, 38.4, 40.0))
     cfg(auto_cleanup=False)
     await scheduler.run_host_checks()
     assert "заполнен на 96%" in bot.sent[-1]["text"] and bot.sent[-1]["silent"] is False
+    assert bot.sent[-1]["text"].startswith("🔴")                    # ≥95% rings, and looks like it
     n = len(bot.sent)
     await scheduler.run_host_checks()                      # already alerted
     assert len(bot.sent) == n

@@ -149,7 +149,7 @@ async def card_lines(site: dict) -> list[str]:
             lines.append("⏳ Сертификат: ещё не проверял")
         elif ssl.get("days_left") is not None:
             days = ssl["days_left"]
-            icon = "✅" if days > 14 else ("⚠️" if days > 3 else "🔴")
+            icon = "✅" if days > 14 else humanize.level_icon("warning" if days > 3 else "critical")
             issuer = f", выдан {esc(ssl['issuer'])}" if ssl.get("issuer") else ""
             lines.append(f"{icon} Сертификат действует ещё {days} дн. (до {fmt_date(ssl.get('not_after'))}){issuer}")
         else:
@@ -159,7 +159,7 @@ async def card_lines(site: dict) -> list[str]:
             lines.append("⏳ Домен: ещё не проверял")
         elif dom.get("days_left") is not None:
             days = dom["days_left"]
-            icon = "✅" if days > 30 else ("⚠️" if days > 7 else "🔴")
+            icon = "✅" if days > 30 else humanize.level_icon("warning" if days > 7 else "critical")
             registrar = (f", регистратор {esc(dom['registrar'])}"
                          if dom.get("registrar") not in (None, "", "Unknown") else "")
             lines.append(f"{icon} Домен оплачен до {fmt_date(dom.get('expiration'))} (ещё {days} дн.){registrar}")
@@ -173,16 +173,18 @@ async def card_lines(site: dict) -> list[str]:
                 lines.append(f"✅ Ссылки: все работают{_ago(links)}")
             elif links.get("status") == "warning":
                 n = links.get("internal") or 0
-                lines.append(f"⚠️ Ссылки: {n} {plural(n, 'ведёт', 'ведут', 'ведут')} в никуда{_ago(links)}")
+                lines.append(f"🟠 Ссылки: {n} {plural(n, 'ведёт', 'ведут', 'ведут')} в никуда{_ago(links)}")
             else:
                 lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
         seo = st.get("seo")
         if seo:
+            # Says what was measured: robots/noindex and page findings. Whether
+            # the site is IN an index is the «🔎 Поиск и ИИ» screen's job.
             n = seo.get("improve") or 0
-            verdict = {"ok": "✅ В поиске: всё в порядке",
-                       "warning": f"💡 В поиске: виден, есть что улучшить ({n})",
-                       "critical": "🔴 В поиске: сайт закрыт от поисковиков — жми «🔎 Поиск и ИИ»"}.get(
-                seo.get("status"), "⚠️ В поиске: не смог проверить")
+            verdict = {"ok": "✅ Поиск и ИИ: помех нет",
+                       "warning": f"🟠 Поиск и ИИ: {n} {plural(n, 'помеха', 'помехи', 'помех')}",
+                       "critical": "🔴 Поиск и ИИ: сайт закрыт от поисковиков"}.get(
+                seo.get("status"), "⚠️ Поиск и ИИ: не смог проверить")
             lines.append(f"{verdict}{_ago(seo)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
@@ -214,7 +216,8 @@ async def render_card(call: CallbackQuery, site: dict):
     problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
     if problems:
         lines.append("")
-        lines += [f"🔴 {esc(incident_line(inc))} <i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
+        lines += [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))} "
+                  f"<i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
     rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site_live:{sid}"),
              *pause_row[:1]]]
     if is_http_url(url):
@@ -315,9 +318,13 @@ async def msg_site_add(message: Message, state: FSMContext):
                      f"Я уже слежу и напишу, когда поднимется.")
     if is_http_url(url):
         ssl_r = await check_ssl(url, manage=False)
-        lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн." if ssl_r.ssl_info
-                     else f"⚠️ Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
-        lines.append("\nСрок домена, ссылки и видимость в поиске проверю в ближайшие часы сам.")
+        if ssl_r.ssl_info:
+            lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн.")
+        elif ssl_r.transient:
+            lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
+        else:
+            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
+        lines.append("\nСрок домена, ссылки, поиск и ИИ проверю в ближайшие часы сам.")
     if first_site:
         lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
@@ -407,7 +414,7 @@ async def cb_pause(call: CallbackQuery):
     if arg == "off":
         await maintenance.pause_site(sid, None)
         await ack(call, "Пауза снята")
-        await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём. Ничего делать не нужно.")
+        await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
         return
     if arg == "morning":
         target = local_at(settings.morning_hour())

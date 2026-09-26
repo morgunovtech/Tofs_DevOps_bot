@@ -61,6 +61,22 @@ async def test_flush_queue_keeps_undelivered_rows(bot, monkeypatch):
     assert await peek_notifications() == []
 
 
+async def test_priority_follows_the_level(bot, monkeypatch):
+    """🔴 rings, 🟠 is silent — and «будить только когда сайт лёг» turns a
+    🔴 that is not a downed site into a silent one, as documented."""
+    assert notifier.priority_for("critical") is Priority.CRITICAL
+    assert notifier.priority_for("warning") is Priority.NORMAL and notifier.priority_for(None) is Priority.NORMAL
+    await notifier.send("🔴 cert", notifier.priority_for("critical"))
+    assert bot.sent[-1]["silent"] is False
+    await notifier.send("🟠 cert", notifier.priority_for("warning"))
+    assert bot.sent[-1]["silent"] is True
+    monkeypatch.setattr(settings, "ring_only_down", lambda: True)
+    await notifier.send("🔴 cert", notifier.priority_for("critical"))
+    assert bot.sent[-1]["silent"] is True
+    await notifier.send("🔴 down", Priority.CRITICAL, always_ring=True)
+    assert bot.sent[-1]["silent"] is False
+
+
 def test_in_quiet_hours_windows(monkeypatch):
     monkeypatch.setattr(settings, "quiet_hours", lambda: (23, 8))
     assert notifier.in_quiet_hours(hour=23) and notifier.in_quiet_hours(hour=3)

@@ -14,7 +14,16 @@ from monitors.base import (
     SslResult,
 )
 from services import humanize, seo_fixes
-from services.humanize import describe_error, explain, fmt_seconds, link_reason, steps_block
+from services.humanize import (
+    UNCHECKED,
+    describe_error,
+    explain,
+    fmt_seconds,
+    level_icon,
+    link_reason,
+    steps_block,
+    worst_severity,
+)
 from utils.clock import now_local, to_local
 from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import host_of, is_http_url, registrable_domain, site_label
@@ -84,7 +93,7 @@ def format_ssl_alert(r: SslResult) -> str:
         return ""
     label = esc(site_label(r.url))
     expl = explain("ssl", r.error)
-    icon = "🔴" if r.severity == "critical" else "⚠️"
+    icon = level_icon(r.severity)
     what = esc(describe_error(r.error))
     header = f"{icon} {label}: {what}"
     note = " Автопродление не сработало: сертификат не менялся, хотя срок уже близко." if r.renewal_note else ""
@@ -97,7 +106,7 @@ def format_domain_alert(r: DomainResult) -> str:
         return ""
     label = esc(r.domain or site_label(r.url))
     expl = explain("domain", r.error)
-    icon = "🔴" if r.severity == "critical" else "⚠️"
+    icon = level_icon(r.severity)
     registrar = r.domain_info.registrar if r.domain_info and r.domain_info.registrar not in ("", "Unknown") else ""
     where = f" Продлевается у регистратора: {esc(registrar)}." if registrar else ""
     return (f"{icon} Домен {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
@@ -115,7 +124,7 @@ def format_links_report(r: LinksResult) -> str:
     if internal:
         expl = explain("links", "")
         n = len(internal)
-        lines.append(f"⚠️ На {label} {n} {'ссылка ведёт' if n % 10 == 1 and n % 100 != 11 else 'ссылок ведут'} в никуда")
+        lines.append(f"🟠 На {label} {n} {'ссылка ведёт' if n % 10 == 1 and n % 100 != 11 else 'ссылок ведут'} в никуда")
         lines.append(expl.meaning)
         lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in internal[:10]]
         if n > 10:
@@ -130,8 +139,8 @@ def format_links_report(r: LinksResult) -> str:
 
 def external_links_block(external: list, label: str | None = None) -> list[str]:
     """Which links to other sites do not open, with the reason for each.
-    Someone else's outage is not our problem, but a dead link is a dead
-    link — the person wants to see WHICH ones."""
+    Someone else's outage is not the owner's problem (ℹ️, never an alert),
+    but a dead link is a dead link — the person wants to see WHICH ones."""
     n = len(external)
     where = f" на {label}" if label else ""
     lines = [f"ℹ️ {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')}{where} на чужие сайты "
@@ -139,15 +148,14 @@ def external_links_block(external: list, label: str | None = None) -> list[str]:
     lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in external[:10]]
     if n > 10:
         lines.append(f"  … и ещё {n - 10}")
-    lines.append("Обычно это чужая поломка и ничего делать не нужно; если ссылка важна, "
-                 "проверь её в браузере и замени или убери.")
+    lines.append("Чужие сайты я не считаю проблемой. Если ссылка важна — замени или убери её.")
     return lines
 
 
 def format_deep_alert(r) -> str:
     expl = explain("deep", r.error)
     errors = "\n".join(f"  • {esc(u)} — {esc(describe_error(f'HTTP {code}'))}" for u, code in r.errors[:5])
-    return f"⚠️ {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}"
+    return f"🟠 {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}"
 
 
 def format_seo_alert(r: SeoResult) -> str:
@@ -173,7 +181,7 @@ def format_dns_change(change: DnsChange) -> str:
     kinds = {"A": "адрес сервера (запись A)", "AAAA": "адрес сервера IPv6 (запись AAAA)",
              "CNAME": "псевдоним адреса (запись CNAME)", "NS": "NS-серверы домена",
              "MX": "почтовые серверы (запись MX)"}
-    icon = "🔴" if change["critical"] else "⚠️"
+    icon = level_icon("critical" if change["critical"] else "warning")
     what = kinds.get(change["rtype"], change["rtype"])
     return (f"{icon} У {esc(change['host'])} изменились {what}\n{expl.meaning}\n\n"
             f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}\n\n"
@@ -183,26 +191,32 @@ def format_dns_change(change: DnsChange) -> str:
 # ── Status report (one line per site) ────────────────────────────────────────
 
 def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult | None) -> tuple[str, bool]:
+    """One line per site with the worst level among its notes: 🔴 / 🟠 by
+    the SSL and domain ladders, ⚠️ when something could not be checked."""
     label = esc(site_label(r.url))
     if not r.ok:
         return f"🔴 {label} — {esc(describe_error(r.error))}", False
-    warnings: list[str] = []
+    notes: list[tuple[str | None, str]] = []   # (severity or None = unchecked, words)
     if ssl is not None:
         if not ssl.ssl_info:
-            warnings.append("сертификат не удалось проверить")
+            notes.append((None, "сертификат не удалось проверить"))
         elif ssl.ssl_info.days_left < 0:
-            warnings.append(f"сертификат истёк {abs(ssl.ssl_info.days_left)} дн. назад")
+            notes.append(("critical", f"сертификат истёк {abs(ssl.ssl_info.days_left)} дн. назад"))
         elif ssl.ssl_info.days_left <= 14:
-            warnings.append(f"сертификат истекает через {ssl.ssl_info.days_left} дн.")
+            notes.append(("critical" if ssl.ssl_info.days_left <= 3 else "warning",
+                          f"сертификат истекает через {ssl.ssl_info.days_left} дн."))
     if dom is not None and not dom.unsupported:
         if not dom.domain_info or dom.domain_info.days_left is None:
-            warnings.append("срок домена не удалось проверить")
+            notes.append((None, "срок домена не удалось проверить"))
         elif dom.domain_info.days_left < 0:
-            warnings.append(f"домен истёк {abs(dom.domain_info.days_left)} дн. назад")
+            notes.append(("critical", f"домен истёк {abs(dom.domain_info.days_left)} дн. назад"))
         elif dom.domain_info.days_left <= 30:
-            warnings.append(f"домен истекает через {dom.domain_info.days_left} дн.")
-    if warnings:
-        return f"⚠️ {label} — открывается, но {'; '.join(warnings)}", False
+            notes.append(("critical" if dom.domain_info.days_left <= 7 else "warning",
+                          f"домен истекает через {dom.domain_info.days_left} дн."))
+    if notes:
+        worst = worst_severity(s for s, _ in notes)
+        icon = level_icon(worst) if worst else UNCHECKED
+        return f"{icon} {label} — открывается, но {'; '.join(w for _, w in notes)}", False
     return f"✅ {label} — в порядке, {humanize.speed(r.response_time_ms)}", True
 
 
@@ -227,8 +241,9 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         lines.append(line)
         all_ok &= ok
     if incidents:
-        lines += ["", f"🔴 Открытых проблем: {len(incidents)}"]
-        lines += [f"  • {esc(incident_line(inc))}" for inc in incidents[:5]]
+        worst = worst_severity(i.get("severity") for i in incidents)
+        lines += ["", f"{level_icon(worst)} Открытых проблем: {len(incidents)}"]
+        lines += [f"  {level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in incidents[:5]]
         if len(incidents) > 5:
             lines.append(f"  … и ещё {len(incidents) - 5}")
     elif all_ok:

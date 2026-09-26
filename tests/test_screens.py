@@ -1,6 +1,8 @@
 """Bot screens rendered against the test DB with fake Telegram objects —
 catches attribute errors in handlers without a Telegram connection."""
 
+from datetime import UTC, datetime, timedelta
+
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from conftest import FakeCall, FakeMessage, FakeState, buttons
@@ -10,6 +12,8 @@ from handlers import feedback, heartbeats, incidents, maintenance, menu, seo, se
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
+
+NOW = datetime.now(UTC).isoformat(timespec="seconds")
 
 
 async def test_main_menu_header_states(bot, db):
@@ -21,11 +25,33 @@ async def test_main_menu_header_states(bot, db):
     await maint_service.pause_site(sid, 30)
     header, kb = await menu.build_main_menu()
     first = header.split("\n")[0]
-    assert first.startswith("✅ 1/1 открывается · 🔴 проблем: 1") and "чинится" in header
-    assert "🔴 ex.test: expiring" in header                      # the problem is right on the main screen
+    # Before this review the same screen said «🔴 проблем: 1» for a warning.
+    assert first.startswith("✅ 1/1 открывается · 🟠 проблем: 1") and "чинится" in header
+    assert "🟠 ex.test: expiring" in header                      # the problem is right on the main screen
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert "🔴 Проблемы (1)" in labels and "🌍 Сайты" in labels and "⚙️ Настройки" in labels
+    assert "🟠 Проблемы (1)" in labels and "🌍 Сайты" in labels and "⚙️ Настройки" in labels
     await maint_service.pause_site(sid, None)
+    await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    await sitestatus.update(sid, "avail", status="error", ms=None, error="HTTP 502")
+    header, kb = await menu.build_main_menu()
+    assert header.startswith("🔴 0/1 открывается · 🔴 проблем: 2")
+    assert "🔴 Проблемы (2)" in [b.text for row in kb.inline_keyboard for b in row]
+
+
+async def test_main_menu_site_line_takes_the_worst_level(bot, db):
+    """A site that opens but has notes: 🟠 for «act, not today», 🔴 when one
+    of the notes is critical — and it still counts as opening."""
+    sid = await db.activate_or_create_site("https://notes.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    await sitestatus.update(sid, "ssl", days_left=10, issuer="LE", not_after=None, error=None)
+    await sitestatus.update(sid, "seo", status="warning", critical=0, improve=3, problems=[])
+    icon, state, _ = await menu.site_state(await db.get_site(sid))
+    assert icon == "🟠" and state == "сертификат через 10 дн., 3 помехи в поиске"
+    header, _ = await menu.build_main_menu()
+    assert header.startswith("🟠 1/1 открывается")
+    await sitestatus.update(sid, "seo", status="critical", critical=1, improve=0, problems=[])
+    icon, state, _ = await menu.site_state(await db.get_site(sid))
+    assert icon == "🔴" and state.endswith("закрыт от поиска")
 
 
 async def test_site_add_flow_and_detail_screen(bot, db):
@@ -55,7 +81,8 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
         assert "Ссылки: все работают" in call.message.texts[-1]
-        assert "есть что улучшить" in call.message.texts[-1] and "За неделю" in call.message.texts[-1]
+        assert "🟠 Поиск и ИИ: 2 помехи" in call.message.texts[-1] and "За неделю" in call.message.texts[-1]
+        assert "В поиске" not in call.message.texts[-1]          # the card never claims index status
 
         text, kb = await site_settings.sset_screen(await db.get_site(sid))
         assert "Проверяю обычно" in text and any("Для продвинутых" in b.text for r in kb.inline_keyboard for b in r)
@@ -96,12 +123,18 @@ async def _record(store, document, caption):
 
 async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, db):
     sid = await db.get_or_create_site("https://ex.test")
-    await save_incident(sid, "availability", "Site down: <b>", "critical")
+    inc_id, _ = await save_incident(sid, "availability", "Site down: <b>", "critical")
     call = FakeCall("menu_incidents")
     await incidents.cb_incidents(call)
     assert "&lt;b&gt;" in call.message.texts[-1] and "не открывается" in call.message.texts[-1]
+    assert call.message.texts[-1].startswith("🔴 Что сейчас не так (1)")
     assert any("Я чиню" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
     assert any("Что делать" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
+    call = FakeCall(f"inc_explain:{inc_id}")                       # the button used to have no handler at all
+    await incidents.cb_incident_explain(call)
+    text = call.message.texts[-1]
+    assert text.startswith("🔴 ex.test не открывается") and "Что делать:" in text and "&lt;b&gt;" in text
+    assert "🔧 Я чиню, час тишины" in buttons(call.message.reply_markup)
 
     call = FakeCall("menu_settings")
     await settings.cb_settings(call)
@@ -152,22 +185,29 @@ async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):
     sid = await db.activate_or_create_site("https://seo.test")
     await sitestatus.set_field(sid, "hosting", "cloudflare")
     await sitestatus.update(
-        sid, "seo", status="warning", critical=0, improve=4, pages=3, no_js_chars=60,
+        sid, "seo", status="warning", critical=0, improve=5, pages=3, no_js_chars=60,
         problems=[{"code": "no_js", "severity": "warning", "message": "без JavaScript на главной всего 60 символов текста"},
                   {"code": "soft404", "severity": "warning", "message": "несуществующий адрес ответил «всё хорошо» (HTTP 200)"},
                   {"code": "no_title", "severity": "warning", "message": "/about: нет заголовка <title>"},
-                  {"code": "no_title", "severity": "warning", "message": "/blog: нет заголовка <title>"}],
-        infos=[{"code": "og_image", "severity": "info", "message": "нет картинки для превью в мессенджерах (og:image)"}])
+                  {"code": "no_title", "severity": "warning", "message": "/blog: нет заголовка <title>"},
+                  {"code": "og_image", "severity": "warning", "message": "нет картинки для превью в мессенджерах (og:image)"}])
     call = FakeCall(f"seo_site:{sid}")
     await seo.cb_seo(call)
     text = call.message.texts[-1]
     assert len(call.message.texts) == 1                              # instant: no «Смотрю…» progress screen
-    assert "В поиске виден. 3 помехи" in text and "видят почти пустую страницу — 60 символов" in text
-    assert "1. 🤖" in text and "2. 🗑" in text and "3. 🏷" in text and "&lt;title&gt;" in text
+    # Says what was measured («открыт для поисковиков»), never «в поиске виден».
+    assert "🟠 Сайт открыт для поисковиков, но есть 4 помехи" in text and "В поиске виден" not in text
+    assert "видят почти пустую страницу — 60 символов" in text
+    assert "1. 🟠 <b>ИИ-ассистенты" in text and "2. 🟠" in text and "3. 🟠" in text and "&lt;title&gt;" in text
     assert "/about: " in text and "/blog: " in text                   # both pages under one numbered item
+    assert "4. 🟠 <b>Нет картинки для превью" in text                # og:image is an action now, not a «мелочь»
+    assert "Мелочи" not in text and "проверил 3 страницы" in text
+    assert "знают только Google и Яндекс" in text                     # no GSC/Webmaster → say so, don't pretend
     labels = buttons(call.message.reply_markup)
     assert labels[0].startswith("1. 💡") and labels[2] == "3. 💡 Добавить заголовок страницы"
-    assert "💡 Мелочи: что с ними делать" in labels and "🔄 Проверить снова" in labels
+    assert labels[3] == "4. 💡 Добавить картинку для превью"
+    assert "🔌 Подключить Google или Яндекс" in labels and "🔄 Проверить снова" in labels
+    assert not any("Мелочи" in label for label in labels)
 
     call = FakeCall(f"seo_fix:{sid}:soft404")
     await seo.cb_seo_fix(call)
@@ -176,12 +216,78 @@ async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):
     labels = buttons(call.message.reply_markup)
     assert "🔗 Открыть панель Cloudflare" in labels and "🔗 Открыть несуществующую страницу" in labels
 
-    call = FakeCall(f"seo_minor:{sid}")
-    await seo.cb_seo_minor(call)
-    assert "og:image" in call.message.texts[-1] and "1200×630" in call.message.texts[-1]
-
     lines = await sites.card_lines(await db.get_site(sid))
-    assert any("есть что улучшить (4)" in line for line in lines)
+    assert any(line.startswith("🟠 Поиск и ИИ: 5 помех") for line in lines)
+
+
+def _snap(status="ok", problems=(), **extra):
+    return {"seo": {"status": status, "critical": sum(p["severity"] == "critical" for p in problems),
+                    "improve": sum(p["severity"] != "critical" for p in problems),
+                    "problems": list(problems), "pages": 3, "no_js_chars": 500, "at": NOW}, **extra}
+
+
+def test_seo_headline_asserts_only_what_was_measured():
+    """Three cases from the task: no GSC/Webmaster, connected with fresh data,
+    connected with old data — plus the negative answers."""
+    url = "https://ex.test"
+    clean = seo.seo_text(url, _snap())
+    assert "✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет." in clean
+    assert "без JavaScript видно 500 символов" in clean and "🤖" not in clean   # a fact → caption, no icon
+    assert "знают только Google и Яндекс" in clean and "📇" not in clean
+    assert "остальное (🟠) не шлю" in clean
+
+    fresh = {"verdict": "PASS", "coverage": "Submitted and indexed", "last_crawl": "2026-09-20T10:00:00Z", "at": NOW}
+    text = seo.seo_text(url, _snap(google=fresh), google_on=True)
+    assert "📇 Google: главная в индексе (обход 20.09)" in text and "знают только" not in text
+    assert "✅ Сайт открыт для поисковиков" in text
+
+    gone = dict(fresh, verdict="FAIL", coverage="Crawled - currently not indexed")
+    text = seo.seo_text(url, _snap(google=gone), google_on=True)
+    assert "🔴 <b>В Google сайта нет</b>. С моей стороны помех нет" in text
+    assert "📇 Google: главной нет в индексе 🔴 (Crawled - currently not indexed)" in text
+
+    old = dict(gone, at=(datetime.now(UTC) - timedelta(days=4)).isoformat(timespec="seconds"))
+    text = seo.seo_text(url, _snap(google=old), google_on=True)
+    assert "✅ Сайт открыт" in text                                  # old data is dated, not asserted
+    assert f"📇 Google: по данным на {(datetime.now(UTC) - timedelta(days=4)).strftime('%d.%m')} главная не была в индексе 🔴" in text
+    assert "свежих нет" in text
+
+    text = seo.seo_text(url, _snap(), google_on=True, yandex_on=True)
+    assert "📇 Google: подключён, данные появятся после утренней проверки" in text
+    assert "📇 Яндекс: подключён, данные появятся" in text
+
+    yx = {"searchable_pages": 0, "sqi": 0, "alert_problems": {"FATAL": 1}, "at": NOW}
+    text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
+    assert "🔴 <b>В Яндексе сайта нет</b>" in text
+    assert "📇 Яндекс: в поиске 0 страниц 🔴, ИКС 0, 🔴 проблем в Вебмастере: 1" in text
+    yx = {"searchable_pages": 12, "sqi": 10, "alert_problems": {"CRITICAL": 2}, "at": NOW}
+    text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
+    assert "📇 Яндекс: 12 стр. в поиске, ИКС 10, 🟠 проблем в Вебмастере: 1" in text
+
+    hindered = [{"code": "sitemap_missing", "severity": "warning", "message": "нет карты сайта (sitemap.xml)"}]
+    text = seo.seo_text(url, _snap("warning", hindered, google=gone), google_on=True)
+    assert "🔴 <b>В Google сайта нет</b>. Есть 1 помеха — начни с неё." in text
+
+    closed = [{"code": "noindex_meta", "severity": "critical", "message": "главная: в коде стоит meta robots noindex"}]
+    text = seo.seo_text(url, _snap("critical", closed, google=fresh), google_on=True)
+    assert "🔴 <b>Сайт закрыт от поиска</b>" in text and "📇 Google: главная в индексе (обход 20.09)" in text
+
+    text = seo.seo_text(url, {"seo": {"status": "error", "problems": [], "at": NOW}})
+    assert "⚠️ Сайт не открывался, когда я проверял" in text
+
+
+async def test_explain_button_opens_the_level_matching_explanation(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    inc_id, _ = await save_incident(sid, "seo", "2 помехи в поиске, напр.: Нет карты сайта (sitemap.xml)", "warning")
+    call = FakeCall(f"inc_explain:{inc_id}")
+    await incidents.cb_incident_explain(call)
+    text = call.message.texts[-1]
+    assert text.startswith("🟠 ex.test: 2 помехи в поиске") and "Поисковикам ничего не мешает" in text
+    assert "исчезает из Google" not in text                            # warning is explained as a warning
+    assert "🔎 Поиск и ИИ" in buttons(call.message.reply_markup) and "✓ Закрыть" in buttons(call.message.reply_markup)
+    call = FakeCall("inc_explain:999")
+    await incidents.cb_incident_explain(call)
+    assert call.answers[-1] == "Этой проблемы уже нет в списке" and not call.message.texts
 
 
 async def test_timezone_ring_and_status_page_screens(bot, db):

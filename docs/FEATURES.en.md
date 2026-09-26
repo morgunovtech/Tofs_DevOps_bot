@@ -6,7 +6,7 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 
 ### 📡 Monitoring
 - **Availability** every 5 minutes — with a twist: before paging you, it re-checks from external nodes (check-host.net). If the site is up for the rest of the world, it won't cry wolf.
-- **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 → 0 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working.
+- **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 → 0 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working. A renewal that worked is normal operation: no message, just a line in the Sunday report.
 - **Domain expiry** via RDAP (the protocol that replaced WHOIS for gTLDs in 2025; IANA bootstrap + rdap.org, a tiny async WHOIS fallback for .ru/.su/.рф), with its own alert ladder.
 - **DNS changes** — snapshots A/AAAA/CNAME/NS/MX records hourly; a changed NS record (that's what a hijack looks like) is a critical alert.
 - **Broken links** — crawls your pages, separates *your* broken links (actionable) from dead external ones (noise).
@@ -21,8 +21,9 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **robots.txt** — blocking Googlebot/YandexBot is critical; blocking GPTBot/ClaudeBot/PerplexityBot is a warning (you *want* AI agents to see you).
 - **AI user-agent probes** — requests your pages as GPTBot/ClaudeBot/PerplexityBot and alerts on 403s (hello, accidentally enabled Cloudflare "block AI bots" toggle).
 - **No-JS content measurement** — AI crawlers don't execute JavaScript. If your page is an SPA with 60 chars of text before JS runs, AI agents see a blank page — the bot will tell you.
-- Title/description/canonical/h1/OpenGraph/JSON-LD checks, soft-404 detection, `llms.txt` presence.
-- **Real index status** (optional): Google Search Console API (homepage dropped out of the index → critical alert; weekly clicks/impressions) and Yandex.Webmaster API (searchable pages, SQI, site problems).
+- Title/description (present, sane length), canonical target, h1, OpenGraph, lang, JSON-LD checks, soft-404 detection. Every finding is an action (🟠) with steps; nothing is listed just to say it is fine (no robots.txt, closed port 80, `llms.txt` present or not).
+- **The screen says only what was measured**: «open to search engines and AI assistants» / «open, but N things in the way» / «🔴 closed to search». Whether the site is actually *in* an index only Search Console and Webmaster know — without them the screen says so and offers to connect them; with them it shows «📇 Google: homepage indexed (crawled 20.09)» from the daily index check, and marks data older than two days as «as of DD.MM».
+- **Real index status** (optional): Google Search Console API (homepage dropped out of the index → critical alert; weekly clicks/impressions) and Yandex.Webmaster API (searchable pages, SQI, site problems — FATAL rings, CRITICAL waits for the morning).
 
 ### 🔧 Self-healing (Cloudflare Pages friendly)
 - Alerts come with **one-tap action buttons**: re-check, trigger a Pages deploy hook, purge the Cloudflare cache, grab a live page screenshot.
@@ -32,7 +33,8 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **Container auto-restart** and **disk auto-cleanup** (docker prune) on the bot's host — off by default, enabled by mounting the docker socket.
 
 ### 📱 Managed entirely from the chat
-- **Three buttons.** The main screen answers "is everything OK?" by itself — one line per site from the last checks, open problems listed inline — and offers «🌍 Сайты», «🔎 Проверить всё сейчас», «⚙️ Настройки». A fourth, «🔴 Проблемы», appears only while something is broken. A site card holds everything about one site at once (availability, certificate, domain, links, search visibility, downtime, its problems with "what to do") plus «🔧 Я чиню», «🔎 Поиск и ИИ», «🔗 Ссылки» and the site's settings. Everything else lives under settings.
+- **Three buttons.** The main screen answers "is everything OK?" by itself — one line per site from the last checks, open problems listed inline with their level — and offers «🌍 Сайты», «🔎 Проверить всё сейчас», «⚙️ Настройки». A fourth, «Проблемы», appears only while something is open, with the worst open level as its icon. A site card holds everything about one site at once (availability, certificate, domain, links, search and AI, downtime, its problems with "what to do") plus «🔧 Я чиню», «🔎 Поиск и ИИ», «🔗 Ссылки» and the site's settings. Everything else lives under settings.
+- **One level dictionary** (`services/humanize.py`), the same in an alert, on the problems screen, in the menu, on the card and in the digests: 🔴 — act now (rings, bypasses mute and quiet hours); 🟠 — act, but not today (silent, listed in problems, on the card and in the digests); ✅ — back to normal; ⚠️ — could not check; ℹ️ — a fact that is not a problem. Facts of normal operation («3 pages checked», «certificate renewed by itself») are captions and digest lines — never counted, never alerted, never given a «what to do» button. The icon in the text always matches the delivery.
 - **Zero-config onboarding** — the first user to `/start` becomes the admin; an empty bot walks you through adding your first site and checks it immediately.
 - **Sites** — add/remove from the menu («🌍 Сайты»), with instant first-check feedback: the bot also suggests a phrase from the page to watch (catches "HTTP 200 with a blank page") and warns when the www twin behaves like a separate site. The DB is the source of truth; `.env` is just an optional first-run seed.
 - **Two-level settings** — how often to check and whether to watch a phrase, in words; the other eight dials are behind «🛠 Для продвинутых».
@@ -58,8 +60,8 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 
 ### 📊 Reports that respect your attention
 - **Morning digest** — one message: per-site status, 7-day uptime, upcoming SSL/domain expirations, heartbeat status, disk, SEO summary. Reads in 10 seconds.
-- **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), problems in plain words, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies — and exactly one suggestion with a button, never more.
-- **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔍 Поиск и ИИ» with a hint per line.
+- **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), everything open right now with its level (however old) and what was solved this week, certificates that renewed by themselves, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies — and exactly one suggestion with a button, never more.
+- **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔎 Поиск и ИИ» with a button per finding.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
 - **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
 - **Escalation** — a site that is still down re-alerts every 30 minutes and ignores mute. A dead site must not be forgettable (deliberately availability-only: half-hourly pages about an expiring cert would train you to ignore alerts).
@@ -88,7 +90,7 @@ A tiny embeddable JS widget for your sites — messages land in your Telegram (r
 📈 Uptime 7д: example.com 100% · app.example.com 99.98%
 💓 backup ✅ 7ч назад
 💾 Диск: ✅ 41% (16.4/40.0 GB)
-🔍 SEO: ✅ все сайты
+🔎 Поиск и ИИ: помех нет
 ```
 
 ```

@@ -2,7 +2,15 @@ from types import SimpleNamespace
 
 from handlers.filters import AdminFilter
 from handlers.sites import parse_site_input
+from handlers.start import HELP, rules_of_the_game
 from services import runtime
+
+
+def test_help_explains_the_levels():
+    """The legend the owner reads once: what each icon means and how it arrives."""
+    assert "🔴 — нужно действие сейчас" in HELP and "🟠 — нужно действие, но не сегодня" in HELP
+    assert "⚠️ — не смог проверить" in HELP and "✅ — снова работает" in HELP
+    assert "Пишу только если что-то сломалось" in rules_of_the_game()
 
 
 def test_parse_site_input():

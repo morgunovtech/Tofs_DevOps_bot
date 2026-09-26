@@ -54,7 +54,9 @@ def best_ms(status: dict) -> tuple[int | None, str | None]:
 
 async def site_state(site: dict) -> tuple[str, str, float | None]:
     """(icon, short state, minutes since the last availability check) from
-    the stored snapshot — no network, the menu must open instantly."""
+    the stored snapshot — no network, the menu must open instantly. The
+    icon is the worst level among the site's notes (🔴 / 🟠), ✅ when the
+    site is up and nothing needs action."""
     st = await sitestatus.get(site["id"])
     avail = st.get("avail")
     if not avail:
@@ -62,20 +64,28 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     age = sitestatus.age_minutes(avail)
     if avail.get("status") != "ok":
         return "🔴", humanize.describe_error(avail.get("error")), age
-    notes = []
+    notes: list[tuple[str, str]] = []   # (severity, words)
     ssl, dom = st.get("ssl") or {}, st.get("domain") or {}
-    if ssl.get("days_left") is not None and ssl["days_left"] <= 14:
-        notes.append("сертификат истёк" if ssl["days_left"] < 0 else f"сертификат через {ssl['days_left']} дн.")
-    if not dom.get("unsupported") and dom.get("days_left") is not None and dom["days_left"] <= 30:
-        notes.append("домен истёк" if dom["days_left"] < 0 else f"домен через {dom['days_left']} дн.")
+    days = ssl.get("days_left")
+    if days is not None and days <= 14:
+        notes.append(("critical" if days <= 3 else "warning",
+                      "сертификат истёк" if days < 0 else f"сертификат через {days} дн."))
+    days = dom.get("days_left")
+    if not dom.get("unsupported") and days is not None and days <= 30:
+        notes.append(("critical" if days <= 7 else "warning",
+                      "домен истёк" if days < 0 else f"домен через {days} дн."))
     links = st.get("links") or {}
     if links.get("internal"):
         n = links["internal"]
-        notes.append(f"{n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} в никуда")
-    if (st.get("seo") or {}).get("status") == "critical":
-        notes.append("закрыт от поиска")
+        notes.append(("warning", f"{n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} в никуда"))
+    seo = st.get("seo") or {}
+    if seo.get("status") == "critical":
+        notes.append(("critical", "закрыт от поиска"))
+    elif seo.get("status") == "warning" and seo.get("improve"):
+        n = seo["improve"]
+        notes.append(("warning", f"{n} {plural(n, 'помеха', 'помехи', 'помех')} в поиске"))
     if notes:
-        return "⚠️", ", ".join(notes), age
+        return humanize.level_icon(humanize.worst_severity(s for s, _ in notes)), ", ".join(w for _, w in notes), age
     word = humanize.speed_word(best_ms(st)[0])
     if await maintenance.is_paused(site["id"]):
         return "🔧", f"чинится, {word}", age
@@ -93,17 +103,22 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     states = [(s, *await site_state(s)) for s in sites]
     ages = [age for *_, age in states if age is not None]
-    ok = sum(1 for _, icon, *_ in states if icon in ("✅", "🔧"))
-    total = sum(1 for _, icon, *_ in states if icon != "⏳")
+    icons = [icon for _, icon, *_ in states]
+    total = sum(1 for icon in icons if icon != "⏳")
+    opening = sum(1 for icon in icons if icon in ("✅", "🔧", "🟠"))   # 🟠 sites are up, with a note
+    fine = sum(1 for icon in icons if icon in ("✅", "🔧"))
     incidents = await get_active_incidents()
+    inc_icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in incidents))
 
     if not total:
         headline = "⏳ Первая проверка через минуту"
-    elif incidents:
-        headline = (f"{'✅' if ok == total else '⚠️'} {ok}/{total} "
-                    f"{plural(total, 'открывается', 'открываются', 'открываются')} · 🔴 проблем: {len(incidents)}")
+    elif incidents or fine < total:
+        worst = "🔴" if "🔴" in icons else ("🟠" if "🟠" in icons else "✅")
+        headline = f"{worst} {opening}/{total} {plural(total, 'открывается', 'открываются', 'открываются')}"
+        if incidents:
+            headline += f" · {inc_icon} проблем: {len(incidents)}"
     else:
-        headline = f"{'✅' if ok == total else '⚠️'} {ok}/{total} в порядке"
+        headline = f"✅ {total}/{total} в порядке"
     if total and ages:
         ago = min(ages)
         headline += f" · проверял {fmt_duration(ago)} назад" if ago >= 1 else " · проверял только что"
@@ -115,7 +130,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     if incidents:
         lines.append("")
-        lines += [f"🔴 {esc(incident_line(inc))}" for inc in incidents[:3]]
+        lines += [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}" for inc in incidents[:3]]
         if len(incidents) > 3:
             lines.append(f"… и ещё {len(incidents) - 3}")
     chips = []
@@ -131,7 +146,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     rows = [[InlineKeyboardButton(text="🌍 Сайты", callback_data="menu_sites")]]
     if incidents:
-        rows.append([InlineKeyboardButton(text=f"🔴 Проблемы ({len(incidents)})", callback_data="menu_incidents")])
+        rows.append([InlineKeyboardButton(text=f"{inc_icon} Проблемы ({len(incidents)})", callback_data="menu_incidents")])
     rows.append([InlineKeyboardButton(text="🔎 Проверить всё сейчас", callback_data="run_full_check")])
     rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
@@ -227,10 +242,10 @@ async def cb_check_now(call: CallbackQuery):
     if failed:
         report += f"\n\n⚠️ Ссылки: не смог проверить {failed} из {len(links_results)} сайтов"
     elif internal:
-        report += (f"\n\n⚠️ {internal} {plural(internal, 'ссылка ведёт', 'ссылки ведут', 'ссылок ведут')} "
+        report += (f"\n\n🟠 {internal} {plural(internal, 'ссылка ведёт', 'ссылки ведут', 'ссылок ведут')} "
                    f"в никуда — подробности в карточке сайта («🌍 Сайты» → сайт → «🔗 Ссылки»)")
     elif external:
-        report += f"\n\n✅ Свои ссылки в порядке (не открываются {external} чужих — обычно не важно)"
+        report += f"\n\n✅ Ссылки: свои работают; чужих не открываются {external}"
     else:
-        report += "\n\n✅ Все ссылки в порядке"
+        report += "\n\n✅ Ссылки: все работают"
     await render(call, report, back_button())

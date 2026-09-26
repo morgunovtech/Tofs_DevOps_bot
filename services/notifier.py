@@ -43,6 +43,12 @@ class Priority(Enum):
     DIGEST = "digest"
 
 
+def priority_for(severity: str | None) -> Priority:
+    """Delivery class of an incident level: 🔴 (critical) rings, 🟠 is silent.
+    Keeps the icon in the text and the way it arrives in agreement."""
+    return Priority.CRITICAL if severity == "critical" else Priority.NORMAL
+
+
 _bot: Bot | None = None
 
 

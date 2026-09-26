@@ -26,6 +26,33 @@ def problem_type(check_type: str) -> str:
     return PROBLEM_TYPES.get(check_type, check_type)
 
 
+# ── Levels: the one dictionary behind every icon the bot draws ──────────────
+#
+#   critical  🔴  act now — rings, bypasses mute and quiet hours
+#   warning   🟠  act, but not today — silent, waits out quiet hours and mute
+#
+# Two more icons are not levels and never open an incident: ⚠️ means «I could
+# not measure this» (site unreachable during the audit, RDAP silent) and ℹ️ a
+# fact that is not a problem (the domain is an IP address). Facts of normal
+# operation carry no icon at all: they live in captions and digests.
+
+LEVEL_ICONS = {"critical": "🔴", "warning": "🟠"}
+UNCHECKED = "⚠️"
+
+
+def level_icon(severity: str | None) -> str:
+    """🔴 for critical, 🟠 for every other problem level."""
+    return LEVEL_ICONS.get(severity or "", LEVEL_ICONS["warning"])
+
+
+def worst_severity(severities) -> str | None:
+    """'critical' if any is critical, 'warning' if any is set, else None."""
+    found = {s for s in severities if s}
+    if "critical" in found:
+        return "critical"
+    return "warning" if found else None
+
+
 # ── Short phrases for technical error strings ────────────────────────────────
 
 def fmt_seconds(ms: int | float | None) -> str:
@@ -223,9 +250,11 @@ EXPLANATIONS: dict[str, Explanation] = {
                         "Проверить robots.txt: не должно быть Disallow: / для Googlebot и YandexBot.",
                         "После исправления переиндексация занимает от нескольких дней.")),
     "seo_warning": _E("seo_warning",
-                      "Сайт находится в поиске, но его можно показать лучше.",
-                      "мелкие недочёты разметки страниц",
-                      ("Открыть «🔍 Поиск и ИИ» в боте: там каждый пункт с пояснением.",)),
+                      "Поисковикам ничего не мешает, но часть страниц они поймут хуже, чем могли бы, "
+                      "а ИИ-ассистентам может быть нечего показать.",
+                      "недочёты разметки и настроек, которые накопились незаметно",
+                      ("Открыть «🔎 Поиск и ИИ» в боте: у каждого пункта кнопка «что делать» с шагами "
+                       "под твой хостинг.",)),
     "dns_change": _E("dns_change",
                      "Пока ничего не сломалось, но адрес сайта в DNS изменился.",
                      "ты или кто-то с доступом поменял DNS: переезд хостинга, настройка почты, или чужие руки",
@@ -288,8 +317,11 @@ def classify(check_type: str, message: str | None) -> str:
         return "ssl_expiring"
     if check_type == "domain":
         return "domain_expired" if ("expired" in msg or "истёк" in msg) else "domain_expiring"
-    return {"performance": "slow", "links": "links", "deep": "deep",
-            "seo": "seo_critical"}.get(check_type, "unknown")
+    if check_type == "seo":
+        # The incident text says which level it is: «закрыт от поиска — …»
+        # for noindex/robots, «N помех в поиске, напр.: …» for the rest.
+        return "seo_critical" if "закрыт от поиска" in msg else "seo_warning"
+    return {"performance": "slow", "links": "links", "deep": "deep"}.get(check_type, "unknown")
 
 
 def explain(check_type: str, message: str | None) -> Explanation:

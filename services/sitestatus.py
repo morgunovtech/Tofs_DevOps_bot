@@ -5,11 +5,13 @@ parsed string. Every monitor writes its section after a check, manage or
 not, because an observation is an observation.
 
     {"avail": {"status", "ms", "error", "at"},
-     "ssl": {"days_left", "issuer", "not_after", "error", "at"},
+     "ssl": {"days_left", "issuer", "not_after", "error", "renewed_at", "at"},
      "domain": {"days_left", "expiration", "registrar", "unsupported", "error", "at"},
      "links": {"status", "internal", "external", "at"},
      "seo": {"status", "critical", "improve", "problems": [{"code", "severity", "message"}],
-             "infos": [...], "pages", "no_js_chars", "at"},
+             "pages", "no_js_chars", "at"},
+     "google": {"verdict", "coverage", "last_crawl", "at"},     # Search Console: is the homepage indexed
+     "yandex": {"searchable_pages", "sqi", "alert_problems", "at"},
      "region": {"ms", "name", "at"},          # response time from the audience's region
      "hosting": "cloudflare"}
 """

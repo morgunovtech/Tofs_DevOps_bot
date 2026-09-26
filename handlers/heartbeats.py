@@ -41,7 +41,7 @@ async def _text() -> str:
         last = parse_sqlite_utc(beats.get(job))
         if last:
             ago = (now - last).total_seconds() / 60
-            icon = "✅" if ago <= interval * 1.25 else "⚠️"
+            icon = "✅" if ago <= interval * 1.25 else "🟠"   # late = act, not today (same as the alert)
             state_txt = f"отмечалась {fmt_duration(ago)} назад"
         else:
             icon, state_txt = "❓", "ещё ни разу не отмечалась"
