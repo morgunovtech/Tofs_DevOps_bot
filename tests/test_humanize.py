@@ -5,7 +5,9 @@ from services.humanize import (
     explain,
     fmt_seconds,
     incident_headline,
+    level_icon,
     speed,
+    worst_severity,
 )
 
 
@@ -40,6 +42,22 @@ def test_classify_and_explain():
     assert expl.meaning and expl.cause and len(expl.steps) >= 2
 
 
+def test_seo_explanation_matches_the_incident_level():
+    """Before: every SEO incident explained as «сайт исчезает из поиска», and
+    the warning text claimed «сайт находится в поиске» — which nobody measured."""
+    assert classify("seo", "закрыт от поиска — В коде страницы стоит запрет на индексацию") == "seo_critical"
+    assert classify("seo", "3 помехи в поиске, напр.: Нет карты сайта (sitemap.xml)") == "seo_warning"
+    warn = explain("seo", "3 помехи в поиске, напр.: Нет карты сайта")
+    assert warn.meaning.startswith("Поисковикам ничего не мешает") and "находится в поиске" not in warn.meaning
+    assert "🔎 Поиск и ИИ" in warn.steps[0]
+
+
+def test_levels_have_one_dictionary():
+    assert level_icon("critical") == "🔴" and level_icon("warning") == "🟠" and level_icon(None) == "🟠"
+    assert worst_severity(["warning", "critical", None]) == "critical"
+    assert worst_severity(["warning", None]) == "warning" and worst_severity([]) is None
+
+
 def test_downtime_and_speed():
     assert downtime(0, 0, 5) == "нет данных"
     assert downtime(100, 100, 5) == "без сбоев"
@@ -54,3 +72,5 @@ def test_incident_headline():
         "ex.com не открывается: хостинг отвечает ошибкой 502"
     assert incident_headline("performance", "Slow responses: ~3000ms", "ex.com") == "ex.com открывается за 3.0 с"
     assert incident_headline("ssl", "SSL expires in 3 days!", "ex.com") == "ex.com: сертификат истекает через 3 дн."
+    assert incident_headline("seo", "закрыт от поиска — Сайт закрыт от поисковиков в robots.txt", "ex.com") == \
+        "ex.com: закрыт от поиска — Сайт закрыт от поисковиков в robots.txt"

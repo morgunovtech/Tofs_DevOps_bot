@@ -81,10 +81,16 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
 
     details = r.error or (f"OK, {r.ssl_info.days_left} days left" if r.ssl_info else None)
     await save_check(site_id, "ssl", r.status, details=details)
+    # A renewal is a fact of normal operation: no message, just a date the
+    # weekly report can mention. Kept across snapshots until the next one.
+    renewed_at = ((await sitestatus.get(site_id)).get("ssl") or {}).get("renewed_at")
+    if r.renewed and manage:
+        renewed_at = datetime.now(UTC).isoformat(timespec="seconds")
     await sitestatus.update(site_id, "ssl", days_left=r.ssl_info.days_left if r.ssl_info else None,
                             issuer=r.ssl_info.issuer if r.ssl_info else None,
                             not_after=r.ssl_info.not_after if r.ssl_info else None,
-                            error=None if r.ssl_info else r.error, transient=r.transient)
+                            error=None if r.ssl_info else r.error, transient=r.transient,
+                            renewed_at=renewed_at)
     if manage and not r.transient:
         await apply_ladder(r, "ssl", r.ssl_info.days_left if r.ssl_info else None,
                            SSL_THRESHOLDS)

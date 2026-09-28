@@ -246,8 +246,9 @@ async def cb_checklist(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "menu_testalert")
 async def cb_test_alert(call: CallbackQuery):
     await ack(call, "Отправляю тестовый алерт…")
-    await notifier.send("🚨 ТЕСТОВЫЙ АЛЕРТ\nТак выглядит критическое уведомление — оно пробивает "
-                        "mute и тихие часы.\n\nЕсли ты это видишь — доставка работает. ✅",
+    await notifier.send("🔴 Тестовый алерт\nТак выглядит критическое (🔴) уведомление — оно звонит и "
+                        "пробивает mute и тихие часы. Остальное (🟠) приходит тихо.\n\n"
+                        "Если ты это видишь — доставка работает. ✅",
                         Priority.CRITICAL)
 
 

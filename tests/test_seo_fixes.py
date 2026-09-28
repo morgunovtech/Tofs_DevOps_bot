@@ -9,6 +9,18 @@ def test_every_fix_has_headline_cost_and_steps():
             assert steps and hosting in ("cloudflare", "vercel", "netlify", "github"), (code, hosting)
 
 
+def test_every_fix_is_an_action():
+    """No «nothing to do» entries: facts of normal operation (robots.txt
+    absent, port 80 closed, llms.txt present or not) are not findings."""
+    assert not {"robots_missing", "http_closed", "llms_ok", "llms_missing", "no_canonical"} & seo_fixes.FIXES.keys()
+    for code, f in seo_fixes.FIXES.items():
+        text = " ".join((f.why, *f.steps, *(s for steps in f.by_hosting.values() for s in steps)))
+        assert "Ничего делать не нужно" not in text and "не страшно" not in text, code
+    for code in ("title_len", "desc_len", "no_h1", "og_title", "og_image", "no_lang"):
+        f = seo_fixes.fix(code)
+        assert f.short and len(f.steps) >= 2 and "Проверить снова" in f.steps[-1], code
+
+
 def test_steps_follow_the_hosting_and_fill_placeholders():
     generic = seo_fixes.steps("soft404", None, "https://ex.com/")
     cf = seo_fixes.steps("soft404", "cloudflare", "https://ex.com/")

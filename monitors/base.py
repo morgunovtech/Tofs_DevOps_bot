@@ -128,7 +128,7 @@ class DeepResult(CheckResult):
 @dataclass
 class SeoProblem:
     code: str          # key into services.seo_fixes — headline, cost, steps
-    severity: str      # critical | warning | info
+    severity: str      # critical (the site drops out of search) | warning (act, not today)
     message: str       # the finding with its specifics (page, count), human words
 
     def as_dict(self) -> dict:
@@ -137,8 +137,8 @@ class SeoProblem:
 
 @dataclass
 class SeoResult(CheckResult):
-    problems: list[SeoProblem] = field(default_factory=list)   # critical + warning
-    infos: list[SeoProblem] = field(default_factory=list)      # severity == "info"
+    # Every entry needs an action; facts of normal operation are not listed.
+    problems: list[SeoProblem] = field(default_factory=list)
     pages_checked: int = 0
     no_js_chars: int | None = None
 
