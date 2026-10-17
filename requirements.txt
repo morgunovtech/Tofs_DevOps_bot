@@ -1,8 +1,8 @@
 aiogram==3.31.0
-aiohttp==3.14.4
+aiohttp==3.14.5
 aiosqlite==0.22.1
 apscheduler==3.11.3
 beautifulsoup4==4.15.0
 python-dotenv==1.2.4
 cryptography==50.0.2
-dnspython==2.8.0
+dnspython==2.9.0
