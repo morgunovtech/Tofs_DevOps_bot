@@ -59,7 +59,7 @@ async def test_a_body_that_arrives_in_pieces_is_read_whole():
         base = str(server.make_url("")).rstrip("/")
         async with aiohttp.ClientSession() as session:
             assert await sitemap_urls(session, base) == [f"{base}/p{i}" for i in range(5)]
-            status, html, _ = await _fetch(session, base + "/")
+            status, html, _, _ = await _fetch(session, base + "/")
     assert status == 200 and html.endswith("<h1>Заголовок</h1></body></html>")
 
 

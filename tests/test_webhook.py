@@ -54,12 +54,10 @@ async def test_heartbeat_secrets(bot):
         assert (await c.get("/api/heartbeat/wrong/backup")).status == 403
         assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200
         assert "backup" in await get_heartbeats()
-        # Legacy pings with the (public) webhook secret still count, with one warning.
-        n = len(bot.sent)
-        assert (await c.get(f"/api/heartbeat/{SECRET}/legacy")).status == 200
-        assert (await c.get(f"/api/heartbeat/{SECRET}/legacy")).status == 200
-        assert len(bot.sent) == n + 1 and "старым секретом" in bot.sent[-1]["text"]
-        assert HB in bot.sent[-1]["text"]
+        # The webhook secret is public (it is in every site's widget code):
+        # it must not keep a job alive.
+        assert (await c.get(f"/api/heartbeat/{SECRET}/backup2")).status == 403
+        assert "backup2" not in await get_heartbeats()
         # Recovery announcement clears the alerted flag.
         await set_state("hb_alerted:backup", "1")
         assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200

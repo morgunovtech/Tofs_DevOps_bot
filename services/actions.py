@@ -32,8 +32,8 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
                            hosting: str | None = None) -> InlineKeyboardMarkup:
     """Action buttons attached to availability alerts. The site is addressed
     by its DB id — stable across list edits and well under the 64-byte
-    callback_data limit. With an incident_id an «👀 не напоминать» row lets
-    the user snooze escalation without closing the incident."""
+    callback_data limit. «:a» on a button marks it as living on an alert:
+    its screen answers below instead of replacing the alert text."""
     http = is_http_url(url)
     rows = [[InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{site_id}"),
              InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
@@ -41,7 +41,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     if http:
         second.append(InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{site_id}"))
     if incident_id:
-        second.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}"))
+        second.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}:a"))
     if second:
         rows.append(second)
     extra = []
@@ -59,19 +59,21 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
 
 def explain_keyboard(incident_id: int | None, *extra_rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup | None:
     """«ℹ️ Что делать» for an incident, plus any extra rows (links etc.)."""
-    rows = [[InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}")]] if incident_id else []
+    rows = [[InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}:a")]] if incident_id else []
     rows += [row for row in extra_rows if row]
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False,
+def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False, on_alert: bool = False,
                      extra_rows: tuple[list[InlineKeyboardButton], ...] = ()) -> InlineKeyboardMarkup:
-    """One «💡 …» button per kind of search/AI finding → its steps screen."""
+    """One «💡 …» button per kind of search/AI finding → its steps screen
+    (answered below the message when the buttons sit on an alert)."""
+    tail = ":a" if on_alert else ""
     rows = []
     for i, code in enumerate(codes, 1):
         label = seo_fixes.button_label(code)
         rows.append([InlineKeyboardButton(text=f"{i}. {label}" if numbered else label,
-                                          callback_data=f"seo_fix:{site_id}:{code}")])
+                                          callback_data=f"seo_fix:{site_id}:{code}{tail}")])
     rows += [row for row in extra_rows if row]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -111,7 +113,7 @@ async def trigger_redeploy(url: str) -> str:
                 return f"❌ Cloudflare не принял команду пересборки (ошибка {resp.status})"
     except Exception as e:
         logger.warning("Deploy hook for %s failed: %s", url, e)
-        return f"❌ Не удалось запустить пересборку: {esc(e)}"
+        return f"❌ Не удалось запустить пересборку: {esc(str(e) or type(e).__name__)}"
 
 
 async def purge_cf_cache(url: str) -> str:
@@ -119,11 +121,18 @@ async def purge_cf_cache(url: str) -> str:
     Enterprise plan; purge_everything works everywhere)."""
     if not integrations.cf_purge_configured():
         return "❌ Cloudflare API token / zone id не настроены (🩺 Диагностика → Cloudflare)"
-    api = f"https://api.cloudflare.com/client/v4/zones/{integrations.cf_zone_id()}/purge_cache"
+    zone = f"https://api.cloudflare.com/client/v4/zones/{integrations.cf_zone_id()}"
+    auth = {"Authorization": f"Bearer {integrations.cf_api_token()}"}
+    host = host_of(url)
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
-            async with s.post(api, json={"purge_everything": True},
-                              headers={"Authorization": f"Bearer {integrations.cf_api_token()}"}) as resp:
+            # The configured zone is one domain: never purge it for a site
+            # that lives elsewhere (another zone, Vercel, …).
+            async with s.get(zone, headers=auth) as resp:
+                name = str(((await resp.json()).get("result") or {}).get("name") or "").lower()
+            if not name or not (host == name or host.endswith("." + name)):
+                return f"❌ {esc(host)} не в зоне Cloudflare {esc(name or '?')} — кэш не трогаю"
+            async with s.post(zone + "/purge_cache", json={"purge_everything": True}, headers=auth) as resp:
                 data = await resp.json()
                 if data.get("success"):
                     return "🧹 Кэш Cloudflare сброшен — посетители увидят свежую версию сайта"
@@ -131,4 +140,4 @@ async def purge_cf_cache(url: str) -> str:
                 return "❌ Cloudflare: " + esc(errs[0].get("message", "ошибка"))
     except Exception as e:
         logger.warning("CF cache purge failed: %s", e)
-        return f"❌ Не удалось сбросить кэш: {esc(e)}"
+        return f"❌ Не удалось сбросить кэш: {esc(str(e) or type(e).__name__)}"

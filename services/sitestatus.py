@@ -16,6 +16,7 @@ not, because an observation is an observation.
      "hosting": "cloudflare"}
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
@@ -35,20 +36,27 @@ async def get(site_id: int) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+# Monitors finish concurrently: without one lock around read-modify-write,
+# the SEO audit and the per-minute check overwrite each other's section.
+_lock = asyncio.Lock()
+
+
 async def update(site_id: int, section: str, **fields):
     """Replace one section (plus its timestamp) and keep the rest."""
-    data = await get(site_id)
-    data[section] = {**fields, "at": _now()}
-    await set_state(f"status:{site_id}", json.dumps(data, ensure_ascii=False))
+    async with _lock:
+        data = await get(site_id)
+        data[section] = {**fields, "at": _now()}
+        await set_state(f"status:{site_id}", json.dumps(data, ensure_ascii=False))
 
 
 async def set_field(site_id: int, key: str, value):
-    data = await get(site_id)
-    if value is None:
-        data.pop(key, None)
-    else:
-        data[key] = value
-    await set_state(f"status:{site_id}", json.dumps(data, ensure_ascii=False))
+    async with _lock:
+        data = await get(site_id)
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = value
+        await set_state(f"status:{site_id}", json.dumps(data, ensure_ascii=False))
 
 
 def age_minutes(section: dict | None) -> float | None:

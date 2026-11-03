@@ -11,7 +11,7 @@ import logging
 
 import aiohttp
 
-from monitors.second_opinion import _TIMEOUT, API, endpoint_for
+from monitors.second_opinion import API, TIMEOUT, endpoint_for
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ async def measure(url: str, country: str) -> tuple[int, str] | None:
         return None
     attempts = ({"host": url, "node": f"{country}1.node.check-host.net"}, {"host": url, "max_nodes": 1})
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT, headers={"Accept": "application/json"}) as session:
+        async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"Accept": "application/json"}) as session:
             for params in attempts:
                 async with session.get(f"{API}/check-http", params=params) as resp:
                     if resp.status != 200:

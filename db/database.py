@@ -177,7 +177,7 @@ async def get_last_check(site_id: int, check_type: str) -> dict | None:
     db = await get_db()
     cursor = await db.execute(
         """SELECT * FROM checks WHERE site_id = ? AND check_type = ?
-           ORDER BY id DESC LIMIT 1""", (site_id, check_type))
+           ORDER BY checked_at DESC, id DESC LIMIT 1""", (site_id, check_type))
     row = await cursor.fetchone()
     return dict(row) if row else None
 
@@ -188,19 +188,9 @@ async def get_recent_check_statuses(site_id: int, check_type: str,
     db = await get_db()
     cursor = await db.execute(
         """SELECT status FROM checks WHERE site_id = ? AND check_type = ?
-           ORDER BY id DESC LIMIT ?""", (site_id, check_type, limit))
+           ORDER BY checked_at DESC, id DESC LIMIT ?""", (site_id, check_type, limit))
     return [r[0] for r in await cursor.fetchall()]
 
-
-async def get_recent_response_times(site_id: int, limit: int = 12) -> list[int]:
-    """Last N successful availability response times, oldest first."""
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT response_time_ms FROM checks
-           WHERE site_id = ? AND check_type = 'availability'
-             AND status = 'ok' AND response_time_ms IS NOT NULL
-           ORDER BY id DESC LIMIT ?""", (site_id, limit))
-    return [r[0] for r in reversed(await cursor.fetchall())]
 
 
 async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
@@ -268,18 +258,31 @@ async def get_uptime_over_days(site_id: int, days: int) -> dict:
 
 # ── Incidents ────────────────────────────────────────────────────────────────
 
+_SEVERITY_RANK = {"critical": 2, "warning": 1}
+
+
 async def save_incident(site_id: int, check_type: str, message: str,
                         severity: str = "warning") -> tuple[int, bool]:
-    """Insert or reuse an open incident. Returns (incident_id, is_new)."""
+    """Insert or reuse an open incident. Returns (incident_id, is_new).
+
+    A reused incident takes the newest message and level, so lists and
+    digests never show yesterday's words; one that got WORSE (🟠 «нет
+    sitemap» → 🔴 noindex) counts as new, so its alert is sent."""
     db = await get_db()
     async with _write_lock:
         cursor = await db.execute(
-            """SELECT id FROM incidents
+            """SELECT id, message, severity FROM incidents
                WHERE site_id = ? AND check_type = ? AND resolved = 0""",
             (site_id, check_type))
         existing = await cursor.fetchone()
         if existing:
-            return existing[0], False
+            inc_id, old_message, old_severity = existing
+            if (old_message, old_severity) != (message, severity):
+                await db.execute("UPDATE incidents SET message = ?, severity = ? WHERE id = ?",
+                                 (message, severity, inc_id))
+                await db.commit()
+            worse = _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(old_severity, 0)
+            return inc_id, worse
         cursor = await db.execute(
             """INSERT INTO incidents (site_id, check_type, message, severity)
                VALUES (?, ?, ?, ?)""", (site_id, check_type, message, severity))
@@ -347,11 +350,16 @@ async def get_active_incidents() -> list[dict]:
 
 
 async def get_incidents_since(days: int = 7) -> list[dict]:
+    """Incidents that lived in the last N days: opened then, resolved then,
+    or still open — a problem opened three weeks ago and solved yesterday
+    belongs to «решено за неделю»."""
     db = await get_db()
     cursor = await db.execute(
         """SELECT i.*, s.url FROM incidents i JOIN sites s ON i.site_id = s.id
-           WHERE i.created_at >= datetime('now', ?) ORDER BY i.created_at""",
-        (f"-{days} days",))
+           WHERE i.created_at >= datetime('now', ?) OR i.resolved = 0
+              OR i.resolved_at >= datetime('now', ?)
+           ORDER BY i.created_at""",
+        (f"-{days} days", f"-{days} days"))
     return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -404,12 +412,6 @@ async def set_state(key: str, value: str | None):
         await db.commit()
 
 
-async def get_state_keys(prefix: str) -> dict[str, str]:
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT key, value FROM bot_state WHERE key LIKE ?", (prefix + "%",))
-    return {r[0]: r[1] for r in await cursor.fetchall()}
-
 
 # ── Heartbeats (dead-man switch) ─────────────────────────────────────────────
 
@@ -454,10 +456,12 @@ async def set_dns_state(host: str, rtype: str, value: str):
 
 # ── Deferred notifications (quiet hours / mute) ──────────────────────────────
 
-async def queue_notification(text: str):
+async def queue_notification(text: str, reply_markup: str | None = None):
+    """reply_markup: the keyboard as JSON, delivered with the text later."""
     db = await get_db()
     async with _write_lock:
-        await db.execute("INSERT INTO pending_notifications (text) VALUES (?)", (text,))
+        await db.execute("INSERT INTO pending_notifications (text, reply_markup) VALUES (?, ?)",
+                         (text, reply_markup))
         await db.commit()
 
 
@@ -465,7 +469,7 @@ async def peek_notifications() -> list[dict]:
     """Queued notifications (oldest first) WITHOUT removing them — delete
     explicitly after a successful send, or a failed send loses the digest."""
     db = await get_db()
-    cursor = await db.execute("SELECT id, text FROM pending_notifications ORDER BY id")
+    cursor = await db.execute("SELECT id, text, reply_markup FROM pending_notifications ORDER BY id")
     return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -522,34 +526,47 @@ async def rollup_old_checks(retention_days: int) -> int:
         count = (await cursor.fetchone())[0]
         if not count:
             return 0
-        await db.execute(
-            """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
-               SELECT site_id, check_type, date(checked_at), COUNT(*),
-                      SUM(status = 'ok'), COALESCE(SUM(response_time_ms), 0)
-               FROM checks WHERE checked_at < ?
-               GROUP BY site_id, check_type, date(checked_at)
-               ON CONFLICT(site_id, check_type, day) DO UPDATE SET
-                 total = total + excluded.total,
-                 ok = ok + excluded.ok,
-                 sum_ms = sum_ms + excluded.sum_ms""", (cutoff,))
-        await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
-        # Escalation/ack markers for long-resolved incidents are dead weight.
-        for prefix in ("escalated:", "ack:"):
-            await db.execute(
-                """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
-                       SELECT ? || id FROM incidents WHERE resolved = 0)""",
-                (prefix + "%", prefix))
-        await db.commit()
+        try:
+            await _rollup(db, cutoff)
+        except Exception:
+            # Half a rollup left open on the shared connection would be
+            # committed by the next save_check — and aggregated again the
+            # next night, doubling the 30/90-day numbers.
+            await db.rollback()
+            raise
         return count
 
 
+async def _rollup(db: aiosqlite.Connection, cutoff: str):
+    await db.execute(
+        """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
+           SELECT site_id, check_type, date(checked_at), COUNT(*),
+                  SUM(status = 'ok'), COALESCE(SUM(response_time_ms), 0)
+           FROM checks WHERE checked_at < ?
+           GROUP BY site_id, check_type, date(checked_at)
+           ON CONFLICT(site_id, check_type, day) DO UPDATE SET
+             total = total + excluded.total,
+             ok = ok + excluded.ok,
+             sum_ms = sum_ms + excluded.sum_ms""", (cutoff,))
+    await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
+    # Escalation/ack markers for long-resolved incidents are dead weight.
+    for prefix in ("escalated:", "ack:"):
+        await db.execute(
+            """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
+                   SELECT ? || id FROM incidents WHERE resolved = 0)""",
+            (prefix + "%", prefix))
+    await db.commit()
+
+
 async def backup_db(dest_path: str):
-    """Write a compact, consistent copy of the DB via VACUUM INTO."""
-    db = await get_db()
+    """Write a compact, consistent copy of the DB via VACUUM INTO — on its
+    own short-lived connection: on the shared one, any reader's unfinished
+    SELECT fails it with «cannot VACUUM - SQL statements in progress»."""
     async with _write_lock:
         if os.path.exists(dest_path):
             os.remove(dest_path)
-        await db.execute("VACUUM INTO ?", (dest_path,))
+        async with aiosqlite.connect(_db_path) as db:
+            await db.execute("VACUUM INTO ?", (dest_path,))
 
 
 async def restore_from_bytes(data: bytes) -> int:

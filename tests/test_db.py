@@ -1,6 +1,7 @@
 import sqlite3
 
 from db import database
+from db.migrations import MIGRATIONS
 
 
 async def test_legacy_schema_upgrades_in_place(tmp_path):
@@ -24,7 +25,7 @@ async def test_legacy_schema_upgrades_in_place(tmp_path):
     await database.init_db()
     db = await database.get_db()
     version = (await (await db.execute("PRAGMA user_version")).fetchone())[0]
-    assert version == 3
+    assert version == len(MIGRATIONS)
     cols = {r[1] for r in await (await db.execute("PRAGMA table_info(sites)")).fetchall()}
     assert {"check_interval_min", "slow_ms", "http_method"} <= cols
     assert "name" not in cols
@@ -104,3 +105,18 @@ async def test_deactivate_closes_incidents_and_keeps_history(db):
     assert await db.get_active_incidents() == []
     assert await db.get_active_site_urls() == []
     assert await db.activate_or_create_site("https://example.com") == sid
+
+
+async def test_an_open_incident_that_gets_worse_is_news(db):
+    """A 🟠 SEO incident was open; noindex arrived on top — the 🔴 alert
+    never went out and lists kept the old words."""
+    sid = await database.get_or_create_site("https://ex.test")
+    inc_id, new = await database.save_incident(sid, "seo", "1 помеха в поиске, напр.: Нет карты сайта", "warning")
+    assert new
+    same_id, new = await database.save_incident(sid, "seo", "2 помехи в поиске, напр.: Нет h1", "warning")
+    assert same_id == inc_id and not new
+    assert (await database.get_incident(inc_id))["message"].startswith("2 помехи")
+    same_id, new = await database.save_incident(sid, "seo", "закрыт от поиска — noindex", "critical")
+    assert same_id == inc_id and new and (await database.get_incident(inc_id))["severity"] == "critical"
+    _, new = await database.save_incident(sid, "seo", "1 помеха в поиске, напр.: Нет h1", "warning")
+    assert not new                                            # better is not news

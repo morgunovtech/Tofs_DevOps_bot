@@ -87,16 +87,19 @@ async def cb_incidents(call: CallbackQuery):
 async def cb_incident_explain(call: CallbackQuery):
     """The button lives on alerts too, so it must work for a closed incident
     and for a message the bot can no longer edit (then it answers below)."""
-    arg = call.data.split(":", 1)[1]
+    parts = call.data.split(":")
+    arg = parts[1] if len(parts) > 1 else ""
     inc = await get_incident(int(arg)) if arg.isdigit() else None
     if not inc:
         await ack(call, "Этой проблемы уже нет в списке", show_alert=True)
         return
     await ack(call)
     text, kb = explain_text(inc), await explain_keyboard(inc)
+    # «:a» marks a button on an alert; alerts sent before the marker are
+    # recognised by their «act:» buttons.
     markup = getattr(call.message, "reply_markup", None)
-    on_alert = bool(markup) and any((b.callback_data or "").startswith("act:")
-                                    for row in markup.inline_keyboard for b in row)
+    on_alert = parts[-1] == "a" or (bool(markup) and any((b.callback_data or "").startswith("act:")
+                                                         for row in markup.inline_keyboard for b in row))
     if on_alert:
         await call.message.answer(text, reply_markup=kb)   # keep the alert text and its buttons intact
     else:

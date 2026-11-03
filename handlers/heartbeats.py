@@ -20,8 +20,6 @@ from utils.text import esc, fmt_duration, parse_sqlite_utc
 router = Router(name="heartbeats")
 
 _INTERVALS = [("раз в час", 60), ("раз в 6 часов", 360), ("раз в сутки", 1440), ("раз в неделю", 10080)]
-_MAX_UI_JOBS = 12
-_ALLOWED = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
 class AddHeartbeatForm(StatesGroup):
@@ -57,7 +55,7 @@ def _kb() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="➕ Добавить задачу", callback_data="hb_add")]]
     rows += [[InlineKeyboardButton(text=f"🔗 {name}", callback_data=f"hb_show:{name}"),
               InlineKeyboardButton(text="🗑", callback_data=f"hb_del:{name}")]
-             for name in list(settings.ui_heartbeat_jobs())[:_MAX_UI_JOBS]]
+             for name in list(settings.ui_heartbeat_jobs())[:settings.MAX_HB_JOBS]]
     rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -117,15 +115,13 @@ async def cb_hb_add(call: CallbackQuery, state: FSMContext):
 @router.message(AddHeartbeatForm.name)
 async def msg_hb_name(message: Message, state: FSMContext):
     name = (message.text or "").strip().lower()
-    # ASCII only: a 20-char CJK name is 60 UTF-8 bytes and overflows the
-    # 64-byte callback_data limit, killing the whole keyboard.
-    if not name or len(name) > 20 or not set(name) <= _ALLOWED:
+    if not settings.valid_job_name(name):
         await message.answer("Только латиница, цифры и дефис, до 20 символов. Попробуй ещё раз:",
                              reply_markup=cancel_kb())
         return
-    if len(settings.ui_heartbeat_jobs()) >= _MAX_UI_JOBS:
+    if len(settings.ui_heartbeat_jobs()) >= settings.MAX_HB_JOBS:
         await state.clear()
-        await message.answer(f"Больше {_MAX_UI_JOBS} задач добавить нельзя — удали ненужные.",
+        await message.answer(f"Больше {settings.MAX_HB_JOBS} задач добавить нельзя — удали ненужные.",
                              reply_markup=back_button())
         return
     await state.update_data(hb_name=name)

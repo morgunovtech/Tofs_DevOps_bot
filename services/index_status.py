@@ -8,6 +8,7 @@ job and by «🔄 Проверить снова»; nothing here alerts."""
 from datetime import datetime
 
 from services import gsc, sitestatus, yandex_webmaster
+from utils.clock import to_local
 from utils.urls import short_host
 
 # Older than this and the screen says «по данным на DD.MM» instead of
@@ -47,7 +48,7 @@ def fmt_day(iso: str | None) -> str:
     if not iso:
         return ""
     try:
-        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%d.%m")
+        return to_local(datetime.fromisoformat(iso.replace("Z", "+00:00"))).strftime("%d.%m")
     except ValueError:
         return ""
 

@@ -94,18 +94,20 @@ async def report_startup_changes() -> bool:
 # ── Weekly: OSV + PRs waiting for a human ───────────────────────────────────
 
 async def _vulnerabilities(session: aiohttp.ClientSession,
-                           versions: dict[str, str]) -> dict[str, list[str]]:
+                           versions: dict[str, str]) -> dict[str, list[str]] | None:
+    """{name: [ids]} — None when OSV could not be asked: «unknown» must not
+    read as «no vulnerabilities» (that would send a false all-clear)."""
     names = list(versions)
     body = {"queries": [{"package": {"name": n, "ecosystem": "PyPI"},
                          "version": versions[n]} for n in names]}
     try:
         async with session.post(OSV_BATCH, json=body) as resp:
             if resp.status != 200:
-                return {}
+                return None
             data = await resp.json()
     except Exception as e:
         logger.debug("OSV query failed: %s", e)
-        return {}
+        return None
     out: dict[str, list[str]] = {}
     for name, result in zip(names, data.get("results", []), strict=False):
         ids = sorted(v["id"] for v in (result or {}).get("vulns", []) if v.get("id"))
@@ -137,6 +139,10 @@ def is_major_bump(title: str) -> bool:
 def short_bump(title: str) -> str:
     m = _BUMP.search(title)
     return f"{m.group(1)} {m.group(2)}{m.group(3)}→{m.group(4)}{m.group(5)}" if m else title[:60]
+
+
+class _Unknown(Exception):
+    """GitHub did not answer (rate limit on a shared IP, network)."""
 
 
 async def _gh_json(session: aiohttp.ClientSession, url: str, **params):
@@ -176,8 +182,8 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
 
 
 async def check_dependencies() -> dict:
-    """{"vulns": {name: [ids]}, "waiting_prs": [{number, title, url, major}],
-    "checked_at": iso} — network errors degrade to empty sections."""
+    """{"vulns": {name: [ids]} or None when OSV did not answer,
+    "waiting_prs": [{number, title, url, major}], "checked_at": iso}."""
     versions = installed_versions()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
         vulns = await _vulnerabilities(session, versions)
@@ -190,19 +196,27 @@ async def check_dependencies() -> dict:
 
 async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
     """{sha, title, url, log} of the newest commit on main when the hosting
-    reported a failed deploy for it and this bot still runs an older build."""
+    reported a failed deploy for it and this bot still runs an older build.
+    Raises _Unknown when GitHub did not answer."""
     slug, running = repo_slug(), config.app_commit
     if not slug or not running:
         return None
     head = await _gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
-    sha = str((head or {}).get("sha") or "")
+    if head is None:
+        raise _Unknown
+    sha = str(head.get("sha") or "")
     if not sha or sha.startswith(running):
         return None
     status = await _gh_json(session, GITHUB_STATUS.format(slug=slug, ref=sha))
-    failed = [st for st in (status or {}).get("statuses") or [] if st.get("state") in ("failure", "error")]
+    if status is None:
+        raise _Unknown
+    # Only a deploy status counts: a red status from some other integration
+    # on the same commit is not «the bot did not start».
+    failed = [st for st in status.get("statuses") or [] if st.get("state") in ("failure", "error")
+              and "deploy" in f"{st.get('description')} {st.get('context')}".lower()]
     if not failed:
         return None   # deployed, or still deploying
-    title = str((head.get("commit") or {}).get("message") or "").splitlines()[0][:80] if head else ""
+    title = str((head.get("commit") or {}).get("message") or "").splitlines()[0][:80]
     return {"sha": sha[:7], "title": title, "url": head.get("html_url") or "",
             "log": failed[0].get("target_url") or ""}
 
@@ -213,8 +227,11 @@ async def run_deploy_watch():
     and every next update fails the same way."""
     if not config.dependency_watch:
         return
-    async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-        failed = await failed_deploy(session)
+    try:
+        async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+            failed = await failed_deploy(session)
+    except _Unknown:
+        return   # could not check — the last known state stays as it was
     await set_state("deploy:failed", json.dumps(failed) if failed else None)
     if not failed or failed["sha"] == await get_state("deploy:failed_alerted"):
         return
@@ -248,6 +265,11 @@ async def run_dependency_watch():
     if not config.dependency_watch:
         return
     result = await check_dependencies()
+    if result["vulns"] is None:
+        # OSV did not answer: keep last week's verdict, say nothing new.
+        result["vulns"] = (await last_check() or {}).get("vulns") or {}
+        await set_state("deps:last_check", json.dumps(result))
+        return
     await set_state("deps:last_check", json.dumps(result))
     vuln_ids = sorted(i for ids in result["vulns"].values() for i in ids)
     signature = ",".join(vuln_ids)

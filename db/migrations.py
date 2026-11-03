@@ -149,7 +149,13 @@ async def m3_drop_dead_columns(db):
     await _drop_column(db, "heartbeats", "ping_count")
 
 
-MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns]
+async def m4_queued_buttons(db):
+    # A message deferred by mute / quiet hours keeps its buttons: its text
+    # often says «нажми «Подключить»», and without them it cannot be acted on.
+    await _add_columns(db, "pending_notifications", {"reply_markup": "TEXT"})
+
+
+MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons]
 
 
 async def migrate(db) -> int:

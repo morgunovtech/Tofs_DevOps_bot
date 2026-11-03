@@ -158,9 +158,24 @@ async def set_ring_only_down(on: bool):
     await set_state("cfg:ring_only_down", "1" if on else "0")
 
 
-async def add_heartbeat_job(name: str, interval_min: int):
+HB_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
+MAX_HB_JOBS = 12
+
+
+def valid_job_name(name: str) -> bool:
+    """Latin, digits, «-» and «_», up to 20: the name goes into the ping URL
+    and into 64-byte callback_data (20 CJK characters would be 60 bytes)."""
+    return bool(name) and len(name) <= 20 and set(name) <= HB_NAME_CHARS
+
+
+async def add_heartbeat_job(name: str, interval_min: int) -> bool:
+    """False for an invalid name or interval, or when the list is full."""
+    if (not valid_job_name(name) or interval_min <= 0
+            or (name not in _o.hb_jobs and len(_o.hb_jobs) >= MAX_HB_JOBS)):
+        return False
     _o.hb_jobs[name] = interval_min
     await set_state("cfg:hb_jobs", json.dumps(_o.hb_jobs))
+    return True
 
 
 async def remove_heartbeat_job(name: str) -> bool:

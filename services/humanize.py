@@ -9,24 +9,7 @@ what it usually is, and what to do. Pure functions, unit-tested.
 import re
 from dataclasses import dataclass
 
-from utils.text import plural
-
-# ── Problem types (incident check_type → words) ──────────────────────────────
-
-PROBLEM_TYPES = {
-    "availability": "не открывается",
-    "performance": "медленно отвечает",
-    "ssl": "сертификат",
-    "domain": "домен",
-    "links": "битые ссылки",
-    "deep": "ошибки на страницах",
-    "seo": "видимость в поиске",
-}
-
-
-def problem_type(check_type: str) -> str:
-    return PROBLEM_TYPES.get(check_type, check_type)
-
+from utils.text import fmt_duration, plural
 
 # ── Levels: the one dictionary behind every icon the bot draws ──────────────
 #
@@ -94,7 +77,10 @@ _RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"^Site down$"), lambda m: "не открывается"),
     (re.compile(r"^(?:Site down: )?HTTP (\d{3})$"), lambda m: _http(int(m.group(1)))),
     (re.compile(r"^(?:Site down: )?Timeout \((\d+)s\)$"), lambda m: f"не ответил за {m.group(1)} секунд"),
-    (re.compile(r"^(?:Site down|Bad content): (.+)$", re.S), lambda m: describe_error(m.group(1))),
+    (re.compile(r"^Site down: (.+)$", re.S), lambda m: describe_error(m.group(1))),
+    # The stop phrase is the site's own text («Connection refused» on a PHP
+    # error page) — never re-read it as a network error.
+    (re.compile(r"^Bad content: (.+)$", re.S), lambda m: m.group(1)),
     (re.compile(r"^SSL expired (\d+) days ago$"), lambda m: f"сертификат истёк {m.group(1)} дн. назад"),
     (re.compile(r"^SSL expires in (\d+) days!?$"), lambda m: f"сертификат истекает через {m.group(1)} дн."),
     (re.compile(r"^SSL certificate has expired$"), lambda m: "сертификат истёк"),
@@ -111,9 +97,12 @@ _RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"name or service not known|nodename nor servname|does not resolve|"
                 r"name resolution|хост не резолвится|Temporary failure in name", re.I),
      lambda m: "адрес сайта не находится (проблема с DNS)"),
+    # aiohttp wraps a bad certificate in «Cannot connect to host …» — the
+    # certificate is the cause, so it goes first.
+    (re.compile(r"certificate has expired", re.I), lambda m: "сертификат истёк"),
+    (re.compile(r"certificate verify failed|SSL: ", re.I), lambda m: "сертификат не прошёл проверку"),
     (re.compile(r"connection refused|Connect call failed", re.I), lambda m: "сервер отказал в соединении"),
     (re.compile(r"cannot connect to host", re.I), lambda m: "не удалось соединиться с сервером"),
-    (re.compile(r"certificate verify failed|SSL: ", re.I), lambda m: "сертификат не прошёл проверку"),
     (re.compile(r"хост не отвечает на ping"), lambda m: "не отвечает на ping"),
 ]
 
@@ -310,6 +299,8 @@ def classify(check_type: str, message: str | None) -> str:
             return "timeout"
         if any(s in msg for s in ("name or service", "nodename", "resolve", "name resolution", "dns")):
             return "dns"
+        if "certificate" in msg or "ssl: " in msg:
+            return "ssl_expired" if "expired" in msg else "ssl_invalid"
         if "refused" in msg or "отказал" in msg:
             return "refused"
         if "connect" in msg or "соедин" in msg:
@@ -347,14 +338,7 @@ def downtime(total: int, ok: int, interval_min: float) -> str:
     failed = max(0, total - ok)
     if not failed:
         return "без сбоев"
-    minutes = failed * interval_min
-    if minutes < 60:
-        return f"недоступен ≈{max(1, round(minutes))} мин"
-    hours, rest = divmod(round(minutes), 60)
-    if hours < 24:
-        return f"недоступен ≈{hours} ч" + (f" {rest} мин" if rest else "")
-    days, h = divmod(hours, 24)
-    return f"недоступен ≈{days} дн" + (f" {h} ч" if h else "")
+    return f"недоступен ≈{fmt_duration(max(1, failed * interval_min))}"
 
 
 def incident_headline(check_type: str, message: str | None, label: str) -> str:

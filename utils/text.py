@@ -2,6 +2,7 @@
 durations, sparklines. Pure functions, no project imports."""
 
 import html
+import re
 from datetime import UTC, datetime
 
 TG_MESSAGE_LIMIT = 4096
@@ -15,10 +16,29 @@ def esc(value) -> str:
     return html.escape(str(value), quote=False)
 
 
+_TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
+
+
 def clip(text: str, limit: int = SAFE_LIMIT) -> str:
+    """Cut to the limit without breaking Telegram HTML: a tag or an entity
+    cut in half is dropped and tags left open are closed — otherwise
+    Telegram rejects the whole message («can't parse entities»)."""
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + "\n… (обрезано)"
+    cut = text[:limit]
+    if cut.rfind("<") > cut.rfind(">"):
+        cut = cut[:cut.rfind("<")]
+    amp = cut.rfind("&")
+    if amp > cut.rfind(";") and len(cut) - amp < 10:
+        cut = cut[:amp]
+    open_tags: list[str] = []
+    for m in _TAG.finditer(cut):
+        name = m.group(2).lower()
+        if not m.group(1):
+            open_tags.append(name)
+        elif name in open_tags:
+            del open_tags[len(open_tags) - 1 - open_tags[::-1].index(name)]
+    return cut.rstrip() + "".join(f"</{t}>" for t in reversed(open_tags)) + "\n… (обрезано)"
 
 
 def chunks(text: str, limit: int = SAFE_LIMIT) -> list[str]:

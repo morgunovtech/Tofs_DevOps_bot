@@ -102,7 +102,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         await site_settings.msg_site_headers(headers_msg, state)
         assert "заголовков: 1" in headers_msg.texts[-1]
 
-        call = FakeCall(f"pause:{sid}:morning")
+        call = FakeCall(f"pause:{sid}:120")
         await sites.cb_pause(call)
         assert "чинится" in call.message.texts[-1]
         assert await maint_service.is_paused(sid)

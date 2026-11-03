@@ -75,8 +75,9 @@ async def weekly_recommendation() -> tuple[str, InlineKeyboardMarkup] | None:
     candidates = await _candidates()
     if not candidates:
         return None
+    keys = [c[0] for c in candidates]
     last = await get_state("recommend:last")
-    pick = next((c for c in candidates if c[0] != last), candidates[0])
+    pick = candidates[(keys.index(last) + 1) % len(keys)] if last in keys else candidates[0]
     await set_state("recommend:last", pick[0])
     _, text, buttons = pick
     return (f"💡 {text}", InlineKeyboardMarkup(inline_keyboard=[

@@ -21,7 +21,7 @@ from enum import Enum
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from db.database import (
     delete_notifications,
@@ -32,7 +32,7 @@ from db.database import (
 )
 from services import maintenance, runtime, settings
 from utils.clock import now_local
-from utils.text import SAFE_LIMIT, parse_iso_utc
+from utils.text import SAFE_LIMIT, clip, parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -112,13 +112,11 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
         logger.info("Site %s paused — dropping: %s", site_id, text[:60])
         return False
     if priority is not Priority.CRITICAL:
-        if await is_muted():
-            await queue_notification(text)
-            logger.info("Queued (muted): %s", text[:60])
-            return True
-        if priority is Priority.NORMAL and in_quiet_hours():
-            await queue_notification(text)
-            logger.info("Queued (quiet hours): %s", text[:60])
+        muted = await is_muted()
+        if muted or (priority is Priority.NORMAL and in_quiet_hours()):
+            markup = reply_markup.model_dump_json(exclude_none=True) if reply_markup is not None else None
+            await queue_notification(text, markup)
+            logger.info("Queued (%s): %s", "muted" if muted else "quiet hours", text[:60])
             return True
     try:
         # Informational messages arrive silently; only critical ones ring.
@@ -171,23 +169,51 @@ async def flush_queue():
     batch: list[dict] = []
     text = header
     for row in rows:
-        item = f"— {row['text']}"
-        candidate = f"{text}{item}\n\n" if batch else f"{text}{item}\n\n"
-        if batch and len(candidate) > SAFE_LIMIT:
+        markup = _markup(row.get("reply_markup"))
+        if markup is not None:
+            # A message with buttons goes alone, with them, in its place.
+            if batch:
+                if not await _deliver_batch(chat_id, text, batch):
+                    return
+                text, batch = "🌙 (продолжение)\n\n", []
+            if not await _deliver_batch(chat_id, row["text"], [row], markup):
+                return
+            continue
+        # Each item is cut HTML-safely to fit one message; a batch is never cut.
+        item = clip(f"— {row['text']}", SAFE_LIMIT - len(header) - 60) + "\n\n"
+        if batch and len(text) + len(item) > SAFE_LIMIT:
             if not await _deliver_batch(chat_id, text, batch):
                 return
             text, batch = "🌙 (продолжение)\n\n", []
-            candidate = f"{text}{item}\n\n"
-        text = candidate
+        text += item
         batch.append(row)
     if batch:
         await _deliver_batch(chat_id, text, batch)
 
 
-async def _deliver_batch(chat_id: str, text: str, batch: list[dict]) -> bool:
+def _markup(raw: str | None) -> InlineKeyboardMarkup | None:
+    if not raw:
+        return None
     try:
-        await _bot.send_message(chat_id=chat_id, text=text.rstrip()[:SAFE_LIMIT],
+        return InlineKeyboardMarkup.model_validate_json(raw)
+    except ValueError:
+        return None
+
+
+async def _deliver_batch(chat_id: str, text: str, batch: list[dict], markup=None) -> bool:
+    try:
+        await _bot.send_message(chat_id=chat_id, text=text.rstrip(), reply_markup=markup,
                                 disable_notification=True)
+    except TelegramBadRequest as e:
+        # A stored text Telegram cannot parse must not jam the queue forever:
+        # the same batch would fail every ten minutes. Deliver it as plain text.
+        logger.error("Quiet queue: Telegram rejected a batch (%s) — sending it as plain text", e)
+        try:
+            await _bot.send_message(chat_id=chat_id, text=text.rstrip(), reply_markup=markup,
+                                    parse_mode=None, disable_notification=True)
+        except Exception as e2:
+            logger.error("Failed to flush quiet queue: %s", e2)
+            return False
     except Exception as e:
         logger.error("Failed to flush quiet queue: %s", e)
         return False

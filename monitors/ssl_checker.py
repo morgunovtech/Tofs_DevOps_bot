@@ -98,4 +98,8 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
 
 
 async def check_all_ssl(urls: list[str], manage: bool = True) -> list[SslResult]:
-    return await gather_checks((check_ssl(u, manage=manage) for u in urls), "ssl")
+    """https:// sites only: on an http:// one port 443 answers with the
+    hosting's default certificate (a false «недействителен»), and on
+    http://host:8080 there is no TLS at all."""
+    https = [u for u in urls if u.lower().startswith("https://")]
+    return await gather_checks((check_ssl(u, manage=manage) for u in https), "ssl")

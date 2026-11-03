@@ -51,6 +51,14 @@ def is_admin(user_id: int | str | None) -> bool:
     return str(user_id) == (_user_id or _chat_id)
 
 
+async def persist():
+    """Write the current admin seat back: a restored database may lack it,
+    and after a restart the seat would be free for anyone's /start."""
+    if _chat_id:
+        await set_state("admin_chat_id", _chat_id)
+        await set_state("admin_user_id", _user_id or _chat_id)
+
+
 async def claim(chat_id: int, user_id: int) -> bool:
     """First-run: the first /start becomes admin. False if already claimed."""
     global _chat_id, _user_id

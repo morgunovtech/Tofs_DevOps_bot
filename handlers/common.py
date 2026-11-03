@@ -50,7 +50,10 @@ async def render(target: Message | CallbackQuery, text: str,
     an error — the screen is already right."""
     text = clip(text)
     editable = getattr(target, "message", None)   # CallbackQuery → its message
-    if editable is not None:
+    if editable is not None and not hasattr(editable, "edit_text"):
+        # InaccessibleMessage (too old to edit): answer below instead.
+        await editable.answer(text, reply_markup=kb)
+    elif editable is not None:
         try:
             await editable.edit_text(text, reply_markup=kb)
         except TelegramBadRequest as e:
@@ -129,9 +132,10 @@ async def on_handler_error(event: ErrorEvent):
         return True
     logger.exception("Handler error: %s", event.exception)
     try:
-        if call and (call.data or "").startswith(("act:", "ack:")):
-            # Action buttons live ON alert messages — never overwrite the
-            # alert text with an error screen; reply separately instead.
+        data = (call.data or "") if call else ""
+        if call and (data.startswith(("act:", "hb_how:", "hb_rm:")) or data.endswith(":a")):
+            # Buttons that live ON alert messages and digests — never
+            # overwrite that text with an error screen; reply separately.
             await call.message.answer("❌ Действие не удалось. Попробуй ещё раз чуть позже.")
         elif call and call.message:
             await call.message.edit_text(
@@ -146,6 +150,18 @@ async def on_handler_error(event: ErrorEvent):
             except Exception:
                 pass
     return True
+
+
+# ── Stale buttons ────────────────────────────────────────────────────────────
+
+stale_router = Router(name="stale")
+
+
+@stale_router.callback_query()
+async def stale_callback(call: CallbackQuery):
+    """A button no handler knows any more (an old alert, a removed feature):
+    say so instead of leaving the spinner hanging."""
+    await ack(call, "Кнопка устарела — открой /menu", show_alert=True)
 
 
 # ── Non-admins ───────────────────────────────────────────────────────────────

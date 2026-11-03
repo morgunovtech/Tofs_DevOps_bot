@@ -35,11 +35,11 @@ def _headers() -> dict:
 
 async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:
     async with session.get(BASE + path, headers=_headers()) as resp:
-        data = await resp.json()
         if resp.status != 200:
-            logger.warning("Yandex.Webmaster %s HTTP %s: %s", path, resp.status, data)
+            # A 5xx page is HTML: reading it as JSON would abort every host.
+            logger.warning("Yandex.Webmaster %s HTTP %s: %s", path, resp.status, (await resp.text())[:200])
             return None
-        return data
+        return await resp.json()
 
 
 async def get_summaries() -> dict[str, dict] | None:

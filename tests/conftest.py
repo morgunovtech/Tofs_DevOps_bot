@@ -39,7 +39,7 @@ class FakeBot:
         self.edited: list[dict] = []
         self.fail = False
 
-    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False):
+    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False, parse_mode=None):
         if self.fail:
             raise RuntimeError("telegram down")
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,

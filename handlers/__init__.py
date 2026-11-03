@@ -23,7 +23,7 @@ from handlers import (
     sites,
     start,
 )
-from handlers.common import deny_router, on_handler_error
+from handlers.common import deny_router, on_handler_error, stale_router
 from handlers.filters import AdminFilter
 
 router = Router(name="root")
@@ -37,6 +37,7 @@ admin.include_routers(
     menu.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router,
+    stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)
 router.include_router(deny_router)

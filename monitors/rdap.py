@@ -184,16 +184,33 @@ def parse_whois(text: str, domain: str) -> DomainInfo:
     )
 
 
+async def _read_until_eof(reader: asyncio.StreamReader, limit: int) -> bytes:
+    """reader.read(n) returns the first segment only — a WHOIS answer split
+    in two loses «paid-till». The server closes the connection when done."""
+    chunks: list[bytes] = []
+    size = 0
+    while size < limit:
+        chunk = await reader.read(limit - size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)
+
+
 async def whois_lookup(domain: str, server: str) -> DomainInfo:
+    writer = None
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(server, 43), timeout=10)
         writer.write(f"{domain}\r\n".encode())
         await writer.drain()
-        raw = await asyncio.wait_for(reader.read(64 * 1024), timeout=15)
-        writer.close()
+        raw = await asyncio.wait_for(_read_until_eof(reader, 64 * 1024), timeout=15)
     except (TimeoutError, OSError) as e:
         raise DomainLookupError(f"WHOIS {server}: {e}") from e
+    finally:
+        if writer is not None:
+            writer.close()
     return parse_whois(raw.decode("utf-8", errors="replace"), domain)
 
 

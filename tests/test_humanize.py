@@ -81,3 +81,12 @@ def test_incident_headline():
         "ex.com: нет главного заголовка (h1) и ещё 2 помехи"
     assert incident_headline("seo", "2 помехи в поиске, напр.: ИИ-ассистенты не видят сайт", "ex.com") == \
         "ex.com: ИИ-ассистенты не видят сайт и ещё 1 помеха"
+
+
+def test_certificate_and_stop_phrase_are_not_network_errors():
+    cert = ("Cannot connect to host ex.com:443 ssl:True [SSLCertVerificationError: (1, '[SSL: "
+            "CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1010)')]")
+    assert describe_error(cert) == "сертификат истёк" and classify("availability", cert) == "ssl_expired"
+    assert incident_headline("availability", f"Site down: {cert}", "ex.com") == "ex.com: сертификат истёк"
+    stop = "Bad content: на странице стоп-фраза «Connection refused»"
+    assert describe_error(stop) == "на странице стоп-фраза «Connection refused»"

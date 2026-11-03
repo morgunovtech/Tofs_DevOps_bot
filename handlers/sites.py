@@ -47,8 +47,8 @@ from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
 from reports.scheduler import reschedule_all, reset_site_schedule
-from services import humanize, integrations, maintenance, secrets, settings, sitestatus
-from utils.clock import fmt_local, local_at
+from services import humanize, integrations, maintenance, runtime, secrets, settings, sitestatus
+from utils.clock import fmt_local
 from utils.text import esc, fmt_date, fmt_duration, plural
 from utils.urls import is_http_url, short_host, site_label
 
@@ -416,15 +416,11 @@ async def cb_pause(call: CallbackQuery):
         await ack(call, "Пауза снята")
         await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
         return
-    if arg == "morning":
-        target = local_at(settings.morning_hour())
-        minutes = max(1, int((target - datetime.now(UTC)).total_seconds() / 60))
-    else:
-        minutes = int(arg) if arg.isdigit() else 60
+    minutes = int(arg) if arg.isdigit() else 60
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
-                              f"проверки идут. Раньше снять: «🌍 Мои сайты» → сайт.")
+                              f"проверки идут. Раньше снять: «🌍 Сайты» → сайт.")
 
 
 # ── Export / import ──────────────────────────────────────────────────────────
@@ -453,7 +449,7 @@ async def export_document() -> dict:
                                 | {"site_url": (await get_site(w["site_id"]) or {}).get("url") if w.get("site_id") else None}
                                 for w in maintenance.windows()],
         "heartbeat_jobs": settings.ui_heartbeat_jobs(),
-        "integrations": {k: integrations._values[k] for k in integrations.KEYS if integrations._values.get(k)},
+        "integrations": integrations.stored(),
     }
 
 
@@ -463,9 +459,20 @@ async def apply_document(doc: dict) -> dict:
     items = doc.get("sites", doc) if isinstance(doc, dict) else doc
     by_url: dict[str, int] = {}
     for item in list(items)[:MAX_SITES]:
-        url, _error = parse_site_input(str((item or {}).get("url", "")))
+        if not isinstance(item, dict):
+            counters["skipped"].append(str(item)[:60])
+            continue
+        url, _error = parse_site_input(str(item.get("url", "")))
         if not url:
-            counters["skipped"].append(str((item or {}).get("url", "?"))[:60])
+            counters["skipped"].append(str(item.get("url", "?"))[:60])
+            continue
+        try:
+            fields = {k: (str(v) if k in ("accepted_codes", "keyword", "keyword_mode",
+                                          "http_method", "http_headers", "http_body")
+                          else int(v)) for k, v in item.items()
+                      if k in SITE_SETTING_COLS and v not in (None, "")}
+        except (TypeError, ValueError):
+            counters["skipped"].append(f"{url} (неверные настройки)")
             continue
         existing = await get_all_sites()
         if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
@@ -474,24 +481,26 @@ async def apply_document(doc: dict) -> dict:
         was = url in {s["url"] for s in existing}
         site_id = await activate_or_create_site(url)
         by_url[url] = site_id
-        fields = {k: (str(v) if k in ("accepted_codes", "keyword", "keyword_mode",
-                                      "http_method", "http_headers", "http_body")
-                      else int(v)) for k, v in item.items()
-                  if k in SITE_SETTING_COLS and v not in (None, "")}
         if fields:
             await update_site_settings(site_id, **fields)
         reset_site_schedule(site_id)
         counters["updated" if was else "added"] += 1
-    if not isinstance(doc, dict) or doc.get("version", 1) < 2:
+    version = doc.get("version", 1) if isinstance(doc, dict) else 1
+    if not isinstance(version, int) or version < 2:
         return counters
-    st = doc.get("settings") or {}
-    if isinstance(st.get("morning_hour"), int):
+    st = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
+
+    def hour(v) -> bool:
+        # 24 or -1 would be saved, then crash CronTrigger at every start.
+        return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 23
+
+    if hour(st.get("morning_hour")):
         await settings.set_morning_hour(st["morning_hour"])
         counters["settings"] += 1
-    if "evening_hour" in st and (st["evening_hour"] is None or isinstance(st["evening_hour"], int)):
+    if "evening_hour" in st and (st["evening_hour"] is None or hour(st["evening_hour"])):
         await settings.set_evening_hour(st["evening_hour"])
         counters["settings"] += 1
-    if isinstance(st.get("weekly_hour"), int):
+    if hour(st.get("weekly_hour")):
         await settings.set_weekly_hour(st["weekly_hour"])
         counters["settings"] += 1
     if "quiet_hours" in st:
@@ -505,7 +514,7 @@ async def apply_document(doc: dict) -> dict:
     if isinstance(st.get("ring_only_down"), bool):
         await settings.set_ring_only_down(st["ring_only_down"])
         counters["settings"] += 1
-    for w in doc.get("maintenance_windows") or []:
+    for w in doc.get("maintenance_windows") if isinstance(doc.get("maintenance_windows"), list) else []:
         try:
             site_id = by_url.get(w.get("site_url")) if w.get("site_url") else None
             if w.get("site_url") and site_id is None:
@@ -515,11 +524,14 @@ async def apply_document(doc: dict) -> dict:
             counters["windows"] += 1
         except (KeyError, TypeError, ValueError):
             continue
-    for name, interval in (doc.get("heartbeat_jobs") or {}).items():
-        if isinstance(name, str) and str(interval).isdigit():
-            await settings.add_heartbeat_job(name[:20], int(interval))
+    jobs = doc.get("heartbeat_jobs") if isinstance(doc.get("heartbeat_jobs"), dict) else {}
+    for name, interval in jobs.items():
+        if str(interval).isdigit() and await settings.add_heartbeat_job(str(name).strip().lower(), int(interval)):
             counters["jobs"] += 1
-    for key, value in (doc.get("integrations") or {}).items():
+        else:
+            counters["skipped"].append(f"задача {str(name)[:20]}")
+    links = doc.get("integrations") if isinstance(doc.get("integrations"), dict) else {}
+    for key, value in links.items():
         if key in integrations.KEYS and isinstance(value, str):
             await integrations.set_value(key, value)
             counters["integrations"] += 1
@@ -552,8 +564,10 @@ async def cb_site_import(call: CallbackQuery, state: FSMContext):
 async def msg_site_import(message: Message, state: FSMContext):
     raw_bytes = (message.text or "").encode()
     if message.document:
-        if (message.document.file_size or 0) > 64 * 1024 * 1024:
-            await message.answer("Файл слишком большой (лимит 64 МБ).", reply_markup=cancel_kb())
+        # The cloud Bot API downloads files up to 20 MB, whatever we allow.
+        if (message.document.file_size or 0) > 20 * 1024 * 1024:
+            await message.answer("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).",
+                                 reply_markup=cancel_kb())
             return
         buf = await message.bot.download(message.document)
         raw_bytes = buf.read()
@@ -592,7 +606,9 @@ async def msg_site_import(message: Message, state: FSMContext):
 
 
 async def reload_services():
-    """After a database restore every in-memory cache must be re-read."""
+    """After a database restore every in-memory cache must be re-read — and
+    the admin seat written back, or the restored file may leave it free."""
+    await runtime.persist()
     await secrets.load()
     await settings.load()
     await maintenance.load()

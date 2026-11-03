@@ -53,7 +53,7 @@ def registrable_domain(host: str) -> str:
     parts = host.split(".")
     if len(parts) <= 2:
         return host
-    if ".".join(parts[-2:]) in _TWO_LEVEL_SUFFIXES and len(parts) >= 3:
+    if ".".join(parts[-2:]) in _TWO_LEVEL_SUFFIXES:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:])
 

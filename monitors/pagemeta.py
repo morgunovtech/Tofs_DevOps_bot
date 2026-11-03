@@ -4,7 +4,7 @@
 import aiohttp
 from bs4 import BeautifulSoup
 
-from monitors.base import read_capped
+from monitors.base import decode_body, read_capped
 from utils.urls import USER_AGENT, host_of, registrable_domain
 
 TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
@@ -12,16 +12,19 @@ MAX_BYTES = 512 * 1024
 
 
 async def suggest_keyword(url: str) -> str | None:
-    """h1 if it is a sensible phrase, else the title — 3..60 chars — or None."""
+    """h1 if it is a sensible phrase, else the title — 3..60 chars — or None.
+    Only a phrase that stands in the HTML exactly as written: the keyword
+    check searches the raw page, so «Студия <b>Морг</b>» or «&laquo;» in the
+    source would make a phrase that is never found — a false «пропала»."""
     try:
         async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as s:
             async with s.get(url, allow_redirects=True) as resp:
                 if resp.status != 200 or "html" not in (resp.content_type or ""):
                     return None
-                raw = await read_capped(resp, MAX_BYTES)
+                html = decode_body(await read_capped(resp, MAX_BYTES), resp.charset)
     except Exception:
         return None
-    soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
     candidates = []
     h1 = soup.find("h1")
     if h1:
@@ -29,7 +32,8 @@ async def suggest_keyword(url: str) -> str | None:
     if soup.title:
         candidates.append(" ".join(soup.title.get_text(" ", strip=True).split()))
     for text in candidates:
-        if 3 <= len(text) <= 60 and not text.lower().startswith(("http", "index", "untitled", "document")):
+        if (3 <= len(text) <= 60 and not text.lower().startswith(("http", "index", "untitled", "document"))
+                and text.casefold() in html.casefold()):
             return text
     return None
 
