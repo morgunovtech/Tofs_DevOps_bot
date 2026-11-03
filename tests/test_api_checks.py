@@ -18,7 +18,7 @@ from utils.urls import is_api_check, is_api_url, is_web_page, site_label
 
 GOOD_PASS = "https://good-pass.pages.dev"
 ANALYZE = "https://good-pass.pages.dev/api/v1/analyze"
-WHOAMI = "https://fingerprint-api.xfxrrpkvr5.workers.dev/api/whoami"
+WHOAMI = "https://fingerprint-api.example.workers.dev/api/whoami"
 
 
 def test_the_rule():
