@@ -172,6 +172,11 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
     await sitestatus.update(site_id, "links", status=r.status, broken=len(r.broken),
                             pending=len(r.pending), total=r.total_links)
     if not manage:
+        # Read-only, with one exception (as for search): a clean check — no
+        # dead link, nothing waiting for a recheck — closes the open links
+        # problem. The screen says «все открываются»; the list must agree.
+        if r.status == "ok" and not r.pending:
+            await resolve_incident(site_id, "links")
         return r
     if r.broken:
         r.incident_id, r.incident_new = await save_incident(
