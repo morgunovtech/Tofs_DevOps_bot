@@ -73,6 +73,9 @@ class FakeMessage:
         self.reply_markup = reply_markup
         return self
 
+    async def edit_reply_markup(self, reply_markup=None):
+        self.reply_markup = reply_markup
+
 
 class FakeCall:
     def __init__(self, data: str):

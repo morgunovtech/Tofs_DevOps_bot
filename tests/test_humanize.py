@@ -74,3 +74,10 @@ def test_incident_headline():
     assert incident_headline("ssl", "SSL expires in 3 days!", "ex.com") == "ex.com: сертификат истекает через 3 дн."
     assert incident_headline("seo", "закрыт от поиска — Сайт закрыт от поисковиков в robots.txt", "ex.com") == \
         "ex.com: закрыт от поиска — Сайт закрыт от поисковиков в robots.txt"
+    # A warning leads with what is wrong; «напр.» and the count go.
+    assert incident_headline("seo", "1 помеха в поиске, напр.: Нет карты сайта (sitemap.xml)", "ex.com") == \
+        "ex.com: нет карты сайта (sitemap.xml)"
+    assert incident_headline("seo", "3 помехи в поиске, напр.: Нет главного заголовка (h1)", "ex.com") == \
+        "ex.com: нет главного заголовка (h1) и ещё 2 помехи"
+    assert incident_headline("seo", "2 помехи в поиске, напр.: ИИ-ассистенты не видят сайт", "ex.com") == \
+        "ex.com: ИИ-ассистенты не видят сайт и ещё 1 помеха"

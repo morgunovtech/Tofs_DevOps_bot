@@ -15,6 +15,7 @@ from monitors.base import (
 )
 from reports.formatter import (
     external_links_block,
+    external_links_summary,
     format_availability_alert,
     format_compact_status_report,
     format_dns_change,
@@ -85,11 +86,14 @@ def test_compact_report_open_problems_carry_their_own_level():
                  "message": "3 broken link(s) found on https://ex.com"}]
     text = format_compact_status_report(avail, warnings)
     assert "🟠 Открытых проблем: 2" in text and "🔴" not in text
-    assert "  🟠 ex.com: 2 помехи в поиске" in text and "  🟠 ex.com: 3 ссылок ведут в никуда" in text
+    # No leading spaces (Telegram wraps them back to column 0); a search
+    # finding leads with what is wrong, the count after.
+    assert "\n🟠 ex.com: нет карты сайта и ещё 1 помеха" in text and "\n🟠 ex.com: 3 ссылок ведут в никуда" in text
+    assert "напр." not in text and "\n  " not in text
     mixed = warnings + [{"check_type": "availability", "severity": "critical", "url": "https://ex.com",
                          "message": "Site down: HTTP 502"}]
     text = format_compact_status_report(avail, mixed)
-    assert "🔴 Открытых проблем: 3" in text and "  🔴 ex.com не открывается" in text and "  🟠 ex.com: 2 помехи" in text
+    assert "🔴 Открытых проблем: 3" in text and "\n🔴 ex.com не открывается" in text and "\n🟠 ex.com: нет карты" in text
 
 
 def test_alert_icons_follow_the_level():
@@ -134,3 +138,19 @@ def test_links_report_lists_external_links_too():
     assert "https://dead.test/b — timeout" in text and "2 ссылки на ex.com" in text
     block = external_links_block(ext)
     assert block[0].startswith("ℹ️ 2 ссылки на чужие сайты не открываются")
+
+
+def test_manual_check_names_every_dead_external_link():
+    """Before: «✅ Ссылки: свои работают; чужих не открываются 3» — which,
+    where, why and what to do were all missing."""
+    r = LinksResult(url="https://s.ex", site_id=1, broken_external=[
+        LinkCheck("https://github.com/me/private-repo", 404, False),
+        LinkCheck("https://shop.example/go", 502, False)])
+    clean = LinksResult(url="https://b.ex", site_id=2)
+    lines = external_links_summary([r, clean])
+    text = "\n".join(lines)
+    assert lines[0].startswith("ℹ️ Свои ссылки работают") and "s.ex:" in text and "b.ex" not in text
+    assert "• https://github.com/me/private-repo — закрытый или удалённый репозиторий" in text
+    assert "• https://shop.example/go — " in text and "502" in text
+    assert lines[-1].startswith("Что сделать:")
+    assert external_links_summary([clean]) == []

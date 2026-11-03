@@ -1,4 +1,7 @@
-FROM python:3.15-slim
+# 3.14, not 3.15: aiogram 3.31 caps Python below 3.15 and the image does
+# not build there (the 3.15 bump of 01.11.2026 failed to deploy). CI builds
+# this image, so the next bump goes in only once it builds.
+FROM python:3.14-slim
 
 # iputils-ping powers ping:// monitors (ICMP needs the binary); everything
 # Python ships as wheels, so no compiler is needed.

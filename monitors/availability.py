@@ -21,7 +21,7 @@ from db.database import (
     save_incident,
     set_state,
 )
-from monitors.base import AvailabilityResult, gather_checks
+from monitors.base import AvailabilityResult, gather_checks, read_capped
 from monitors.second_opinion import second_opinion_up
 from services import hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
@@ -85,20 +85,6 @@ def request_options(site: dict) -> tuple[str, dict[str, str], str | None]:
     return method, headers, body
 
 
-async def _read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:
-    # StreamReader.read(n) returns whatever is buffered, NOT n bytes —
-    # accumulate explicitly up to the cap.
-    chunks: list[bytes] = []
-    remaining = limit
-    while remaining > 0:
-        chunk = await resp.content.read(remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
 async def _probe_http(url: str, site: dict, r: AvailabilityResult):
     keyword = (site.get("keyword") or "").strip()
     ranges = parse_accepted_codes(site.get("accepted_codes"))
@@ -116,7 +102,7 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                 elif keyword and method != "HEAD":
                     # The page loaded, but does it contain the page — or an
                     # error text? Catches "HTTP 200 with a white screen".
-                    raw = await _read_capped(resp, KEYWORD_BODY_LIMIT)
+                    raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
                     found = keyword.casefold() in decode_body(raw, resp.charset).casefold()
                     mode = site.get("keyword_mode") or "present"
                     if mode == "absent" and found:

@@ -11,7 +11,7 @@ import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
-from services import humanize, integrations, seo_fixes
+from services import humanize, integrations, seo_fixes, settings
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -74,6 +74,21 @@ def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False,
                                           callback_data=f"seo_fix:{site_id}:{code}")])
     rows += [row for row in extra_rows if row]
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def heartbeat_keyboard(jobs: list[str]) -> InlineKeyboardMarkup | None:
+    """Per silent task, the two ways out in one tap: «🔗 Подключить» (the
+    line for its schedule, answered below) and «🗑 Удалить» when there is no
+    such task. An .env task can only be removed from .env — no button."""
+    rows = []
+    for job in jobs[:3]:
+        if len(f"hb_how:{job}".encode()) > 64:   # an .env name may be anything
+            continue
+        row = [InlineKeyboardButton(text=f"🔗 Подключить {job}", callback_data=f"hb_how:{job}")]
+        if job in settings.ui_heartbeat_jobs():
+            row.append(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"hb_rm:{job}"))
+        rows.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def domain_keyboard(registrar: str | None, incident_id: int | None = None) -> InlineKeyboardMarkup | None:

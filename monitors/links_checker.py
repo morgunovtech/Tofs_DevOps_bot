@@ -9,7 +9,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
-from monitors.base import LinkCheck, LinksResult, gather_checks
+from monitors.base import LinkCheck, LinksResult, gather_checks, read_capped
 from services import sitestatus
 from utils.urls import USER_AGENT, host_of, same_site
 
@@ -48,7 +48,7 @@ async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str | None:
         async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
                                headers=DEFAULT_HEADERS) as resp:
             if resp.status == 200 and "text/html" in (resp.content_type or ""):
-                raw = await resp.content.read(MAX_PAGE_BYTES)
+                raw = await read_capped(resp, MAX_PAGE_BYTES)
                 return raw.decode(resp.charset or "utf-8", errors="replace")
     except Exception as e:
         logger.debug("Could not fetch %s: %s", url, e)

@@ -157,15 +157,15 @@ async def incidents_block() -> list[str]:
     lines: list[str] = []
     if active:
         lines.append(f"\nОткрыто сейчас ({len(active)}):")
-        lines += [f"  {humanize.level_icon(inc['severity'])} {_headline(inc)} — с {_day(inc['created_at'])}"
+        lines += [f"{humanize.level_icon(inc['severity'])} {_headline(inc)} — с {_day(inc['created_at'])}"
                   for inc in active[:5]]
         if len(active) > 5:
-            lines.append(f"  … и ещё {len(active) - 5}")
+            lines.append(f"… и ещё {len(active) - 5}")
     if solved:
         lines.append(f"\nРешено за неделю: {len(solved)}")
-        lines += [f"  ✓ {_day(inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
+        lines += [f"✓ {_day(inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
         if len(solved) > 5:
-            lines.append(f"  … и ещё {len(solved) - 5}")
+            lines.append(f"… и ещё {len(solved) - 5}")
     if not active and not solved:
         lines.append("\n🎉 За неделю ни одной проблемы")
     return lines

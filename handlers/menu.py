@@ -23,7 +23,7 @@ from monitors.availability import check_all
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
 from monitors.ssl_checker import check_all_ssl
-from reports.formatter import format_compact_status_report, incident_line
+from reports.formatter import external_links_summary, format_compact_status_report, incident_line
 from services import humanize, maintenance, notifier, sitestatus
 from utils.clock import to_local, utcnow
 from utils.text import clip, esc, fmt_duration, plural
@@ -245,7 +245,7 @@ async def cb_check_now(call: CallbackQuery):
         report += (f"\n\n🟠 {internal} {plural(internal, 'ссылка ведёт', 'ссылки ведут', 'ссылок ведут')} "
                    f"в никуда — подробности в карточке сайта («🌍 Сайты» → сайт → «🔗 Ссылки»)")
     elif external:
-        report += f"\n\n✅ Ссылки: свои работают; чужих не открываются {external}"
+        report += "\n\n" + "\n".join(external_links_summary(links_results))
     else:
         report += "\n\n✅ Ссылки: все работают"
     await render(call, report, back_button())

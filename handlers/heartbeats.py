@@ -3,9 +3,11 @@ dead-man switch: jobs ping the bot, silence longer than the interval is an
 alert. The words «cron» and «curl» appear only on the very last step,
 next to the ready-made line."""
 
+import contextlib
 from datetime import UTC, datetime
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -74,14 +76,34 @@ async def cb_hb(call: CallbackQuery):
     await render(call, await _text(), _kb())
 
 
-@router.callback_query(F.data.startswith("hb_show:"))
+def _job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
+    """The line for the schedule, and the way out when there is no such
+    task: a delete button for a UI job, the env variable for an .env one."""
+    rows = []
+    if name in settings.ui_heartbeat_jobs():
+        text = _how_to(name) + "\n\nЕсли такой задачи у тебя нет — удали её, и я перестану её ждать."
+        rows.append([InlineKeyboardButton(text="🗑 Удалить задачу", callback_data=f"hb_del:{name}")])
+    else:
+        text = (_how_to(name) + "\n\nЕсли такой задачи у тебя нет — убери её из переменной "
+                "<code>HEARTBEAT_JOBS</code> на сервере бота.")
+    rows.append([InlineKeyboardButton(text="← Контроль задач", callback_data="menu_hb")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("hb_show:") | F.data.startswith("hb_how:"))
 async def cb_hb_show(call: CallbackQuery):
-    name = call.data.split(":", 1)[1]
+    """hb_show: from the task list, edits it in place. hb_how: from the
+    morning digest or an alert — answers below and leaves that message as is."""
+    kind, name = call.data.split(":", 1)
     if name not in settings.heartbeat_jobs():
         await ack(call, "Задачи больше нет", show_alert=True)
         return
     await ack(call)
-    await render(call, _how_to(name), back_button("← Контроль задач", "menu_hb"))
+    text, kb = _job_screen(name)
+    if kind == "hb_how" and call.message is not None:
+        await call.message.answer(text, reply_markup=kb)
+    else:
+        await render(call, text, kb)
 
 
 @router.callback_query(F.data == "hb_add")
@@ -126,6 +148,21 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     await ack(call, "Добавил ✅")
     await render(call, f"✅ Задача «{esc(name)}» добавлена.\n\n{_how_to(name)}",
                  back_button("← Контроль задач", "menu_hb"))
+
+
+@router.callback_query(F.data.startswith("hb_rm:"))
+async def cb_hb_remove_here(call: CallbackQuery):
+    """«🗑 Удалить» under an alert or the digest: remove the task and drop its
+    buttons — the message itself stays as it was."""
+    name = call.data.split(":", 1)[1]
+    removed = await settings.remove_heartbeat_job(name)
+    await ack(call, f"Удалил «{name}» — больше не жду" if removed else "Эта задача из .env — убери её там")
+    markup = getattr(call.message, "reply_markup", None)
+    if removed and markup is not None:
+        rows = [row for row in markup.inline_keyboard
+                if not any((b.callback_data or "").split(":", 1)[-1] == name for b in row)]
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
 
 
 @router.callback_query(F.data.startswith("hb_del:"))

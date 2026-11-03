@@ -70,6 +70,7 @@ from services.actions import (
     deploy_hook_for,
     domain_keyboard,
     explain_keyboard,
+    heartbeat_keyboard,
     seo_fix_keyboard,
     trigger_redeploy,
 )
@@ -307,7 +308,9 @@ async def run_seo_checks():
         await check_all_seo([u for u in urls if u in fresh], manage=False)
     await _notify_transitions(
         await check_all_seo([u for u in urls if u not in fresh]), format_seo_alert,
-        lambda r: f"✅ {esc(site_label(r.url))} снова открыт для поисковиков. Ничего делать не нужно.",
+        # The closed incident may have been a 🟠 «нет sitemap», not a closed
+        # site — the recovery line must be true for both levels.
+        lambda r: f"✅ {esc(site_label(r.url))}: поисковикам больше ничего не мешает. Ничего делать не нужно.",
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical"))))
@@ -422,10 +425,19 @@ async def run_heartbeat_watch():
         alerted = await get_state(f"hb_alerted:{job}")
         if overdue and not alerted:
             expl = humanize.EXPLANATIONS["heartbeat"]
-            sent = await notifier.send(
-                f"🟠 Задача «{esc(job)}» не отчиталась: {detail}, ожидалось каждые "
-                f"{fmt_duration(interval_min)}.\n{expl.meaning}\n\n"
-                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
+            if last:
+                text = (f"🟠 Задача «{esc(job)}» не отчиталась: {detail}, ожидалось каждые "
+                        f"{fmt_duration(interval_min)}.\n{expl.meaning}\n\n"
+                        f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
+            else:
+                # Never marked at all: the task was added but not connected —
+                # nothing failed, so no «крон упал»; the fix is one tap.
+                text = (f"⚠️ Задача «{esc(job)}» ещё ни разу не отметилась — похоже, её не подключили.\n"
+                        f"Жду отметку каждые {fmt_duration(interval_min)}, но не получил ни одной и не могу "
+                        f"сказать, работает ли задача.\n\n"
+                        f"Задача есть — нажми «Подключить»: там одна строка для её расписания. "
+                        f"Такой задачи нет — «Удалить».")
+            sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
             if sent:
                 await set_state(f"hb_alerted:{job}", now.isoformat())
         elif not overdue and alerted:
@@ -571,18 +583,44 @@ async def send_db_backup_to_telegram():
 
 # ── Reports ──────────────────────────────────────────────────────────────────
 
-async def _morning_extras(ssl_results, domain_results) -> list[str]:
+async def _job_states() -> list[tuple[str, int, float | None]]:
+    """(task, expected interval, minutes since its last mark — None if it
+    never marked) for every task under ⏰ control."""
+    jobs = settings.heartbeat_jobs()
+    if not jobs:
+        return []
+    beats = await get_heartbeats()
+    now = datetime.now(UTC)
+    out = []
+    for job, interval_min in jobs.items():
+        last = parse_sqlite_utc(beats.get(job))
+        out.append((job, interval_min, (now - last).total_seconds() / 60 if last else None))
+    return out
+
+
+def _job_needs_you(interval_min: int, ago: float | None) -> bool:
+    return ago is None or ago > interval_min * 1.25   # 25% slack for a late cron, as in the watch
+
+
+async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) -> list[str]:
     extras: list[str] = []
     sites = await get_all_sites()
-    chips = []
+    # One phrase for a clean week; a list only of the sites that went down.
+    down, clean = [], 0
     for s in sites:
         stats = await get_uptime_over_days(s["id"], 7)
-        if stats["total_checks"]:
-            interval = s.get("check_interval_min") or config.check_interval_minutes
-            chips.append(f"{esc(site_label(s['url']))} "
-                         f"{humanize.downtime(stats['total_checks'], stats['ok_checks'], interval)}")
-    if chips:
-        extras.append("📈 За неделю: " + " · ".join(chips))
+        if not stats["total_checks"]:
+            continue
+        if stats["ok_checks"] >= stats["total_checks"]:
+            clean += 1
+            continue
+        interval = s.get("check_interval_min") or config.check_interval_minutes
+        down.append(f"• {esc(site_label(s['url']))} — "
+                    f"{humanize.downtime(stats['total_checks'], stats['ok_checks'], interval)}")
+    if down:
+        extras.append("📈 За неделю:\n" + "\n".join(down) + ("\n• остальные — без сбоев" if clean else ""))
+    elif clean:
+        extras.append("📈 За неделю: " + ("все сайты без сбоев" if clean > 1 else "без сбоев"))
 
     expiring = [f"сертификат {esc(short_host(r.url))} через {r.ssl_info.days_left} дн."
                 for r in ssl_results if r.ssl_info and r.ssl_info.days_left <= 14]
@@ -593,40 +631,42 @@ async def _morning_extras(ssl_results, domain_results) -> list[str]:
     if expiring:
         extras.append("🔜 Истекает: " + "; ".join(expiring))
 
-    jobs = settings.heartbeat_jobs()
-    if jobs:
-        beats = await get_heartbeats()
-        now = datetime.now(UTC)
-        hb = []
-        for job, interval_min in jobs.items():
-            last = parse_sqlite_utc(beats.get(job))
-            if last:
-                ago = (now - last).total_seconds() / 60
-                ok = ago <= interval_min * 1.25
-                hb.append(f"{esc(job)} {'✅' if ok else '🟠'} {fmt_duration(ago)} назад")
-            else:
-                hb.append(f"{esc(job)} ❓ ещё не отчитывалась")
-        extras.append("⏰ Задачи: " + " · ".join(hb))
+    # A task that marked on time is one short line; one that is silent says
+    # what to do, and the digest carries a «⏰ …: что делать» button for it.
+    states = await _job_states()
+    on_time = [f"{esc(job)} ({fmt_duration(ago)} назад)"
+               for job, interval_min, ago in states if not _job_needs_you(interval_min, ago)]
+    if on_time:
+        extras.append("⏰ Задачи в срок: " + ", ".join(on_time))
+    for job, interval_min, ago in states:
+        if ago is None:
+            extras.append(f"⏰ {esc(job)}: ⚠️ ни разу не отметилась — подключи её или удали: кнопки ниже")
+        elif _job_needs_you(interval_min, ago):
+            extras.append(f"⏰ {esc(job)}: 🟠 молчит {fmt_duration(ago)}, а должна отмечаться каждые "
+                          f"{fmt_duration(interval_min)} — проверь, запускается ли она")
 
-    # What the audit measured — never «в поиске»: whether the site is in an
-    # index only Search Console / Webmaster know.
-    seo_chips, seo_ok = [], True
+    # Search findings are open incidents and already listed above. This line
+    # says only what that list cannot: all clear, or which audits failed.
+    now = datetime.now(UTC)
+    first_audit = [s for s in sites if (added := parse_sqlite_utc(s.get("added_at")))
+                   and timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)]
+    listed = {i["site_id"] for i in incidents if i["check_type"] == "seo"} | {s["id"] for s in first_audit}
+    seo_chips, audited, all_clear = [], False, True
     for s in sites:
         last = await get_last_check(s["id"], "seo")
         if not last:
             continue
+        audited = True
         if last["status"] == "ok":
-            seo_chips.append(f"{esc(short_host(s['url']))} ✅")
-        else:
-            seo_ok = False
+            continue
+        all_clear = False
+        if s["id"] not in listed:
             seo_chips.append(f"{esc(short_host(s['url']))} {_seo_chip(last['status'], await sitestatus.get(s['id']))}")
     if seo_chips:
-        extras.append("🔎 Поиск и ИИ: " + ("помех нет" if seo_ok else " · ".join(seo_chips)))
-    now = datetime.now(UTC)
-    for s in sites:
-        added = parse_sqlite_utc(s.get("added_at"))
-        if not added or not (timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)):
-            continue
+        extras.append("🔎 Поиск и ИИ: " + " · ".join(seo_chips))
+    elif audited and all_clear:
+        extras.append("🔎 Поиск и ИИ: помех нет")
+    for s in first_audit:
         last = await get_last_check(s["id"], "seo")
         if last:
             n = ((await sitestatus.get(s["id"])).get("seo") or {}).get("improve") or 0
@@ -662,16 +702,19 @@ async def _status_snapshot(report_type: str, extras: bool):
     availability = await check_all(urls, manage=False)
     ssl_results = await check_all_ssl(http_urls, manage=False)
     domain_results = await check_all_domains(http_urls, manage=False)
+    incidents = await get_active_incidents()
     return format_compact_status_report(
-        availability=availability, incidents=await get_active_incidents(),
+        availability=availability, incidents=incidents,
         ssl_results=ssl_results, domain_results=domain_results, report_type=report_type,
-        extras=await _morning_extras(ssl_results, domain_results) if extras else None)
+        extras=await _morning_extras(ssl_results, domain_results, incidents) if extras else None)
 
 
 async def send_morning_report():
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
-    await notifier.send(clip(await _status_snapshot("morning", extras=True)), Priority.DIGEST)
+    text = clip(await _status_snapshot("morning", extras=True))
+    silent_jobs = [job for job, interval_min, ago in await _job_states() if _job_needs_you(interval_min, ago)]
+    await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
 
 
 async def send_evening_report():
@@ -789,6 +832,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
     job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
     job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
+    job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
     # Nightly maintenance.
     job(run_retention, _cron(**specs["retention"]), "retention")

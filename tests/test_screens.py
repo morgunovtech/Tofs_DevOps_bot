@@ -12,6 +12,7 @@ from handlers import feedback, heartbeats, incidents, maintenance, menu, seo, se
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
+from services.actions import heartbeat_keyboard
 
 NOW = datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -159,7 +160,24 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     call = FakeCall("hb_show:backup")
     await heartbeats.cb_hb_show(call)
     assert "unit-test-heartbeat-secret" in call.message.texts[-1] and "curl -fsS" in call.message.texts[-1]
-    await settings_service.remove_heartbeat_job("backup")
+    assert "hb_del:backup" in [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row]
+    # From the morning digest: the answer goes below, the digest stays as it was.
+    call = FakeCall("hb_how:backup")
+
+    async def no_edit(*a, **kw):
+        raise AssertionError("the digest must not be overwritten")
+
+    call.message.edit_text = no_edit
+    await heartbeats.cb_hb_show(call)
+    assert "curl -fsS" in call.message.texts[-1] and "удали её" in call.message.texts[-1]
+    # «🗑 Удалить» under the alert: the task goes, its buttons go, the text stays.
+    call = FakeCall("hb_rm:backup")
+    call.message.text = "⚠️ Задача «backup» ещё ни разу не отметилась"
+    call.message.reply_markup = heartbeat_keyboard(["backup"])
+    call.message.edit_text = no_edit
+    await heartbeats.cb_hb_remove_here(call)
+    assert "backup" not in settings_service.heartbeat_jobs() and call.message.reply_markup is None
+    assert any(a and a.startswith("Удалил «backup»") for a in call.answers)
 
     await save_feedback("https://ex.test", "https://ex.test/p", "typo <here>", "", "1.1.1.1")
     call = FakeCall("menu_feedback:0")
@@ -282,7 +300,7 @@ async def test_explain_button_opens_the_level_matching_explanation(bot, db):
     call = FakeCall(f"inc_explain:{inc_id}")
     await incidents.cb_incident_explain(call)
     text = call.message.texts[-1]
-    assert text.startswith("🟠 ex.test: 2 помехи в поиске") and "Поисковикам ничего не мешает" in text
+    assert text.startswith("🟠 ex.test: нет карты сайта (sitemap.xml) и ещё 1 помеха") and "Поисковикам ничего не мешает" in text
     assert "исчезает из Google" not in text                            # warning is explained as a warning
     assert "🔎 Поиск и ИИ" in buttons(call.message.reply_markup) and "✓ Закрыть" in buttons(call.message.reply_markup)
     call = FakeCall("inc_explain:999")
@@ -329,9 +347,26 @@ async def test_timezone_ring_and_status_page_screens(bot, db):
     await settings.cb_settings_pick(FakeCall("set_sp:off"))
 
 
-async def test_declined_keyword_is_not_suggested_again(bot, db):
+async def test_declined_keyword_is_not_suggested_again(bot, db, monkeypatch):
+    """The idea names the phrase the bot read itself and takes one tap;
+    without a phrase there is no idea at all."""
     sid = await db.activate_or_create_site("https://kw.test")
-    assert "keyword" in [c[0] for c in await recommend._candidates()]
+
+    async def phrase(url):
+        return "Семён Моргунов"
+
+    async def nothing(url):
+        return None
+
+    monkeypatch.setattr(recommend, "suggest_keyword", nothing)
+    assert "keyword" not in [c[0] for c in await recommend._candidates()]
+    monkeypatch.setattr(recommend, "suggest_keyword", phrase)
+    idea = next(c for c in await recommend._candidates() if c[0] == "keyword")
+    assert "«Семён Моргунов»" in idea[1] and idea[2] == [("✅ Да, следить", f"kwok:{sid}"), ("Не надо", f"kwno:{sid}")]
+    call = FakeCall(f"kwok:{sid}")
+    await sites.cb_keyword_accept(call)
+    assert "Слежу" in call.message.texts[-1] and (await db.get_site_by_url("https://kw.test"))["keyword"] == "Семён Моргунов"
+    await db.update_site_settings(sid, keyword="")
     call = FakeCall(f"kwno:{sid}")
     await sites.cb_keyword_decline(call, FakeState())
     assert any(a and a.startswith("Ок") for a in call.answers) and call.message.texts   # back on the main screen

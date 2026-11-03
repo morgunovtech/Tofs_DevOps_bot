@@ -139,7 +139,7 @@ async def test_seo_grace_skips_alerts_for_fresh_sites(bot, db, monkeypatch):
 async def test_weekly_recommendation_rotates(bot, db):
     await db.activate_or_create_site("https://ex.test")
     first = await recommend.weekly_recommendation()
-    assert first and first[0].startswith("💡 Одна идея на неделю") and first[1].inline_keyboard
+    assert first and first[0].startswith("💡 ") and "Одна идея" not in first[0] and first[1].inline_keyboard
     second = await recommend.weekly_recommendation()
     assert second and second[0] != first[0]                               # not the same twice in a row
     await settings.set_status_page(True)
