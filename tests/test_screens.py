@@ -8,8 +8,20 @@ from aiohttp.test_utils import TestServer
 from conftest import FakeCall, FakeMessage, FakeState, buttons
 
 from db.database import get_active_incidents, save_feedback, save_incident
-from handlers import feedback, heartbeats, incidents, maintenance, menu, seo, settings, site_settings, sites
-from monitors.base import SeoResult
+from handlers import (
+    feedback,
+    heartbeats,
+    incidents,
+    links,
+    maintenance,
+    menu,
+    seo,
+    settings,
+    site_settings,
+    sites,
+)
+from monitors import links_checker
+from monitors.base import LinkCheck, SeoResult
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
@@ -397,4 +409,27 @@ async def test_a_clean_live_audit_closes_a_stale_search_finding(bot, db, monkeyp
     assert await get_active_incidents()                                      # could not check → stays
     status["value"] = "ok"
     await seo.cb_seo_live(FakeCall(f"seo_live:{sid}"))
+    assert await get_active_incidents() == []
+
+
+async def test_a_clean_manual_link_check_closes_the_links_alert(bot, db, monkeypatch):
+    """03.11.2026: the sites were fixed, «🔗 Ссылки» said all links open, and
+    the 🟠 stayed in «Проблемы» until the next six-hourly crawl."""
+    sid = await db.activate_or_create_site("https://ex.test")
+    page = {"html": '<a href="https://gone.test/x">x</a>'}
+
+    async def fetch(session, url):
+        return page["html"]
+
+    async def link(session, url, base):
+        return LinkCheck(url, 404 if "gone" in url else 200, "gone" not in url)
+
+    monkeypatch.setattr(links_checker, "_fetch_page", fetch)
+    monkeypatch.setattr(links_checker, "_check_link", link)
+    await links_checker.check_links("https://ex.test")                       # the crawl opens it
+    assert [i["check_type"] for i in await get_active_incidents()] == ["links"]
+    await links.cb_check_links(FakeCall(f"check_links:{sid}"))               # still broken → stays
+    assert await get_active_incidents()
+    page["html"] = '<a href="https://ok.test/y">y</a>'
+    await links.cb_check_links(FakeCall(f"check_links:{sid}"))
     assert await get_active_incidents() == []
