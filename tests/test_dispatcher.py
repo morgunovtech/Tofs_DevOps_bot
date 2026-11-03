@@ -60,7 +60,7 @@ async def test_admin_is_routed_and_strangers_are_denied(bot, db, monkeypatch):
     await DP.feed_raw_update(tg, _message(777, "/start", 1))
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
     assert any("Привет" in m.text for m in sent)
-    assert any("Сайтов пока нет" in m.text for m in sent)          # the main menu came right after
+    assert any("Пока ни за чем не слежу" in m.text for m in sent)   # the main menu came right after
 
     session.calls.clear()
     await DP.feed_raw_update(tg, _message(999, "/start", 2))
@@ -80,5 +80,5 @@ async def test_admin_is_routed_and_strangers_are_denied(bot, db, monkeypatch):
     session.calls.clear()
     await DP.feed_raw_update(tg, _message(777, "📱 Меню", 5))
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
-    assert sent and "Сайтов пока нет" in sent[-1].text
+    assert sent and "Пока ни за чем не слежу" in sent[-1].text
     await tg.session.close()

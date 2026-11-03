@@ -1,7 +1,8 @@
 """The main screen answers «is everything OK?» by itself: one line per
-site from the last checks, problems listed inline when there are any, and
-three buttons — sites, check now, settings. A fourth («🔴 Проблемы»)
-appears only while something is broken."""
+site and per task or bot from the last checks, problems listed inline
+when there are any — and each of them is a button straight to its card.
+Below: check now, add, settings; «🔴 Проблемы» appears only while
+something is broken."""
 
 
 from datetime import timedelta
@@ -20,6 +21,7 @@ from db.database import (
     get_all_sites,
 )
 from handlers.common import ack, back_button, render
+from handlers.heartbeats import job_states
 from monitors.availability import check_all
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
@@ -97,31 +99,53 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     return "✅", word, age
 
 
+def job_lines(jobs: list[tuple[str, str, str]]) -> list[str]:
+    """The «⏰ Задачи и боты» block: one line per task, as on the main screen."""
+    return ["⏰ Задачи и боты:", *(f"{icon} {esc(name)} · {esc(state)}" for name, icon, state in jobs)]
+
+
+def _item_rows(items: list[InlineKeyboardButton]) -> list[list[InlineKeyboardButton]]:
+    """A few items get a full row each, so long names are not cut; more
+    go two to a row — twenty sites stay one screen."""
+    per_row = 1 if len(items) <= 5 else 2
+    return [items[i:i + per_row] for i in range(0, len(items), per_row)]
+
+
 async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     sites = await get_all_sites()
-    if not sites:
+    jobs = await job_states()
+    if not sites and not jobs:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить первый сайт", callback_data="site_add")],
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")]])
-        return ("👋 Сайтов пока нет. Добавь первый — и я начну проверять его каждые "
-                f"{config.check_interval_minutes} мин и напишу, только если что-то сломается.", kb)
+        return ("👋 Пока ни за чем не слежу. Добавь первый сайт — и я начну проверять его каждые "
+                f"{config.check_interval_minutes} мин и напишу, только если что-то сломается. Там же "
+                "можно добавить бота или задачу по расписанию: скажу, если перестанет отмечаться.", kb)
 
     states = [(s, *await site_state(s)) for s in sites]
     ages = [age for *_, age in states if age is not None]
-    icons = [icon for _, icon, *_ in states]
+    site_icons = [icon for _, icon, *_ in states]
+    icons = site_icons + [icon for _, icon, _ in jobs]
     total = sum(1 for icon in icons if icon != "⏳")
-    opening = sum(1 for icon in icons if icon in ("✅", "🔧", "🟠"))   # 🟠 sites are up, with a note
+    sites_total = sum(1 for icon in site_icons if icon != "⏳")
+    opening = sum(1 for icon in site_icons if icon in ("✅", "🔧", "🟠"))   # 🟠 sites are up, with a note
     fine = sum(1 for icon in icons if icon in ("✅", "🔧"))
+    silent = [name for name, icon, _ in jobs if icon in ("🟠", humanize.UNCHECKED)]
     incidents = await get_active_incidents()
     inc_icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in incidents))
 
     if not total:
-        headline = "⏳ Первая проверка через минуту"
+        headline = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой отметки"
     elif incidents or fine < total:
-        worst = "🔴" if "🔴" in icons else ("🟠" if "🟠" in icons else "✅")
-        headline = f"{worst} {opening}/{total} {plural(total, 'открывается', 'открываются', 'открываются')}"
+        worst = next((i for i in ("🔴", "🟠", humanize.UNCHECKED) if i in icons), "✅")
+        parts = []
+        if sites_total:
+            parts.append(f"{opening}/{sites_total} {plural(sites_total, 'открывается', 'открываются', 'открываются')}")
+        if silent:
+            parts.append(f"⏰ {esc(silent[0])} молчит" if len(silent) == 1 else f"⏰ молчат: {len(silent)}")
         if incidents:
-            headline += f" · {inc_icon} проблем: {len(incidents)}"
+            parts.append(f"{inc_icon} проблем: {len(incidents)}")
+        headline = f"{worst} " + " · ".join(parts)
     else:
         headline = f"✅ {total}/{total} в порядке"
     if total and ages:
@@ -132,6 +156,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
         lines.append(f"{icon} {esc(site_label(s['url']))} · {esc(state)}")
     if len(states) > 10:
         lines.append(f"… и ещё {len(states) - 10}")
+    if jobs:
+        lines += ["", *job_lines(jobs)]
 
     if incidents:
         lines.append("")
@@ -149,11 +175,17 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     if chips:
         lines += ["", " · ".join(chips)]
 
-    rows = [[InlineKeyboardButton(text="🌍 Сайты", callback_data="menu_sites")]]
-    if incidents:
+    items = [InlineKeyboardButton(text=f"{icon} {site_label(s['url'])}", callback_data=f"check_site:{s['id']}")
+             for s, icon, *_ in states]
+    items += [InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"hb_show:{name}")
+              for name, icon, _ in jobs if len(f"hb_show:{name}".encode()) <= 64]   # an .env name may be anything
+    rows = []
+    if incidents:   # first: on a bad day this is the button that matters
         rows.append([InlineKeyboardButton(text=f"{inc_icon} Проблемы ({len(incidents)})", callback_data="menu_incidents")])
+    rows += _item_rows(items)
     rows.append([InlineKeyboardButton(text="🔎 Проверить всё сейчас", callback_data="run_full_check")])
-    rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")])
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="site_add"),
+                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -169,9 +201,10 @@ async def cmd_menu(message: Message, state: FSMContext):
     await send_main_menu(message)
 
 
-# Old buttons from earlier layouts still land somewhere sensible.
-_LEGACY_MAIN = {"menu_main", "menu_more", "menu_health", "menu_connections",
-                "menu_uptime", "menu_ssl", "menu_domains", "menu_links", "menu_seo", "menu_status"}
+# Old buttons from earlier layouts still land somewhere sensible: the
+# «🌍 Сайты» list and «⏰ Контроль задач» are the main screen now.
+_LEGACY_MAIN = {"menu_main", "menu_more", "menu_health", "menu_connections", "menu_sites", "menu_check_site",
+                "menu_hb", "menu_uptime", "menu_ssl", "menu_domains", "menu_links", "menu_seo", "menu_status"}
 
 
 @router.callback_query(F.data.in_(_LEGACY_MAIN))
@@ -190,7 +223,7 @@ async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
 
 # ── Check everything now ─────────────────────────────────────────────────────
 
-_NO_SITES = "Сайтов пока нет — добавь через 📱 Меню → «🌍 Сайты»."
+_NO_SITES = "Сайтов пока нет — добавь через 📱 Меню → «➕ Добавить»."
 
 
 @router.message(Command("status"))
@@ -208,22 +241,27 @@ async def cmd_status(message: Message, state: FSMContext):
 
 @router.message(Command("sites"))
 async def cmd_sites(message: Message):
-    urls = await get_active_site_urls()
-    if not urls:
+    urls, jobs = await get_active_site_urls(), await job_states()
+    if not urls and not jobs:
         await message.answer(_NO_SITES)
         return
-    await message.answer("🌍 Слежу за:\n" + "\n".join(f"  • {esc(u)}" for u in urls))
+    lines = ["🌍 Слежу за:", *(f"  • {esc(u)}" for u in urls)] if urls else []
+    if jobs:
+        lines += ([""] if lines else []) + job_lines(jobs)
+    await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data == "run_full_check")
 async def cb_check_now(call: CallbackQuery):
     """Availability first (fast), then certificates, domains and links are
-    folded into the same message as they arrive."""
+    folded into the same message as they arrive. Tasks and bots cannot be
+    asked — they report themselves — so their last marks close the report."""
     await ack(call)
-    urls = await get_active_site_urls()
+    urls, jobs = await get_active_site_urls(), await job_states()
+    tail = "\n\n" + "\n".join(job_lines(jobs)) if jobs else ""
     if not urls:
-        await render(call, "Сайтов пока нет — сначала добавь хотя бы один.", InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")],
+        await render(call, tail.strip() or "Сайтов пока нет — сначала добавь хотя бы один.", InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="site_add")],
                              [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]]))
         return
     host_urls, page_urls = await get_active_host_urls(), await get_active_page_urls()
@@ -233,14 +271,14 @@ async def cb_check_now(call: CallbackQuery):
     incidents = await get_active_incidents()
     quick = format_compact_status_report(availability, incidents)
     if not host_urls:
-        await render(call, quick, back_button())
+        await render(call, quick + tail, back_button())
         return
     await render(call, quick + "\n\n▰▱▱ Проверяю сертификаты и домены...")
     ssl_results = await check_all_ssl(host_urls, manage=False)
     domain_results = await check_all_domains(host_urls, manage=False)
     report = format_compact_status_report(availability, incidents, ssl_results, domain_results)
     if not page_urls:
-        await render(call, report, back_button())
+        await render(call, report + tail, back_button())
         return
     await render(call, report + "\n\n▰▰▱ Проверяю ссылки на страницах...")
     links_results = await check_all_links(page_urls, manage=False)
@@ -256,4 +294,4 @@ async def cb_check_now(call: CallbackQuery):
     if pending:
         report += (f"\n\n⚠️ {pending} {plural(pending, 'ссылка', 'ссылки', 'ссылок')} не открылись с первого "
                    f"раза — перепроверю при следующем обходе")
-    await render(call, report, back_button())
+    await render(call, report + tail, back_button())
