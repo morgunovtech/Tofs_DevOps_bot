@@ -30,10 +30,6 @@ def status_page_url() -> str:
     return base_url() + _status_path()
 
 
-def status_json_url() -> str:
-    return base_url() + _status_path() + ".json"
-
-
 def badge_url(site_id: int) -> str:
     """Shields-style SVG uptime badge for embedding in a README."""
     return f"{base_url()}{_status_path()}/badge/{site_id}.svg"

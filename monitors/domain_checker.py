@@ -49,10 +49,9 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
             r.status, r.error = "warning", f"Domain expires in {days} days"
     except rdap.RdapUnsupported as e:
         r.unsupported, r.error = True, str(e)
-    except rdap.DomainLookupError as e:
-        # Lookup failures are flaky — log, don't manage incidents on them.
-        r.status, r.error, r.transient = "warning", f"Lookup failed: {e}", True
     except Exception as e:
+        # Lookup failures are flaky (DomainLookupError or anything else) —
+        # log, don't manage incidents on them.
         r.status, r.error, r.transient = "warning", f"Lookup failed: {e}", True
 
     if r.domain_info and r.domain_info.days_left is not None:

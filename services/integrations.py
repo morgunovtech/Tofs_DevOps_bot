@@ -37,6 +37,11 @@ async def set_value(key: str, value: str | None):
     await set_state(f"int:{key}", value or None)
 
 
+def stored() -> dict[str, str]:
+    """What was entered in the chat (not .env) — for export and rollback."""
+    return {k: v for k, v in _values.items() if k in KEYS and v}
+
+
 def source(key: str) -> str | None:
     """'bot' when entered in the chat, 'env' when it comes from .env, None."""
     if _values.get(key):
@@ -102,7 +107,7 @@ def valid_gsc_key(raw: str) -> dict | None:
 # ── Cloudflare ───────────────────────────────────────────────────────────────
 
 def deploy_hooks() -> dict[str, str]:
-    hooks = dict(config.deploy_hooks)
+    hooks = {str(k).lower(): v for k, v in config.deploy_hooks.items()}
     raw = _values.get("deploy_hooks")
     if raw:
         try:

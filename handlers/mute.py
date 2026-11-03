@@ -1,5 +1,7 @@
 """/mute, /unmute and the 🔕 inline menu."""
 
+from datetime import timedelta
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -15,8 +17,13 @@ _USAGE = ("Использование: /mute &lt;время&gt;\n"
           "Примеры: /mute 1h, /mute 8h, /mute 30m, /mute 1d\nПо умолчанию: 8h")
 
 
+MAX_MUTE = timedelta(days=7)
+
+
 async def _mute(arg: str) -> str | None:
     duration = parse_duration(arg)
+    if duration and duration > MAX_MUTE:
+        return "Максимум — 7 дней: дольше тишина уже не пауза, а выключенный мониторинг."
     if not duration:
         return None
     deadline = await notifier.set_mute(duration)

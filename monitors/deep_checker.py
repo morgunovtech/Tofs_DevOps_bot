@@ -8,7 +8,13 @@ import logging
 import aiohttp
 
 from config import config
-from db.database import get_or_create_site, resolve_incident, save_check, save_incident
+from db.database import (
+    get_or_create_site,
+    get_recent_check_statuses,
+    resolve_incident,
+    save_check,
+    save_incident,
+)
 from monitors.base import DeepResult, gather_checks
 from monitors.sitemap import TIMEOUT, pick_sample, sitemap_urls
 from utils.urls import USER_AGENT
@@ -22,10 +28,11 @@ async def check_deep(url: str) -> DeepResult:
     async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT},
                                      connector=aiohttp.TCPConnector(limit=5)) as session:
         pages = await sitemap_urls(session, url)
+        if pages is None:
+            return r   # sitemap unreadable right now: no verdict either way
         if not pages:
-            r.skipped = True
             # A previously opened deep incident must not stay open forever
-            # just because the sitemap disappeared.
+            # just because the sitemap is gone (the site said 404).
             if await resolve_incident(site_id, "deep"):
                 r.recovered = True
             return r
@@ -52,8 +59,12 @@ async def check_deep(url: str) -> DeepResult:
         r.status = "error"
         r.error = f"5xx на {len(r.errors)} из {r.sampled} проверенных страниц"
         preview = ", ".join(f"{u} ({code})" for u, code in r.errors[:5])
+        previous = await get_recent_check_statuses(site_id, "deep", 1)
         await save_check(site_id, "deep", "error", details=preview)
-        r.incident_id, r.incident_new = await save_incident(site_id, "deep", r.error, severity="warning")
+        # Anti-flapping: an hour of 5xx can be a deploy in progress — the
+        # incident opens on the second run in a row.
+        if previous[:1] == ["error"]:
+            r.incident_id, r.incident_new = await save_incident(site_id, "deep", r.error, severity="warning")
     else:
         n = len(r.errors)
         await save_check(site_id, "deep", "ok", details=(

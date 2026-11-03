@@ -33,7 +33,7 @@ from bs4 import BeautifulSoup
 
 from config import config
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
-from monitors.base import SeoProblem, SeoResult, gather_checks, read_capped
+from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, read_capped
 from monitors.sitemap import pick_sample, sitemap_urls
 from services import seo_fixes, sitestatus
 from utils.text import plural
@@ -93,13 +93,16 @@ def analyze_page(html: str, page_url: str,
     page = _page(path)
     headers = {k.lower(): v for k, v in (headers or {}).items()}
 
+    # noindex on the homepage takes the site out of search (🔴); on an inner
+    # page it is often deliberate (/privacy) — worth a look, not a 3 a.m. call.
+    level = "critical" if path == "/" else "warning"
     if "noindex" in headers.get("x-robots-tag", "").lower():
-        problems.append(_p("noindex_header", "critical", f"{page}: сервер отдаёт X-Robots-Tag: noindex"))
+        problems.append(_p("noindex_header", level, f"{page}: сервер отдаёт X-Robots-Tag: noindex"))
 
     soup = BeautifulSoup(html, "html.parser")
     robots_meta = soup.find("meta", attrs={"name": "robots"})
     if robots_meta and "noindex" in (robots_meta.get("content") or "").lower():
-        problems.append(_p("noindex_meta", "critical", f"{page}: в коде стоит meta robots noindex"))
+        problems.append(_p("noindex_meta", level, f"{page}: в коде стоит meta robots noindex"))
 
     title = soup.title.get_text(strip=True) if soup.title else ""
     if not title:
@@ -151,20 +154,20 @@ def analyze_page(html: str, page_url: str,
 # ── Fetch + orchestrate ──────────────────────────────────────────────────────
 
 async def _fetch(session: aiohttp.ClientSession, url: str,
-                 ua: str = USER_AGENT) -> tuple[int | None, str, dict]:
-    """(status, body_text, headers) — status None on network error."""
+                 ua: str = USER_AGENT) -> tuple[int | None, str, dict, str]:
+    """(status, body_text, headers, final_url after redirects) — status None
+    on network error."""
     try:
         async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
                                headers={"User-Agent": ua}) as resp:
-            raw = await read_capped(resp, MAX_PAGE_BYTES)
-            body = raw.decode(resp.charset or "utf-8", errors="replace")
+            body = decode_body(await read_capped(resp, MAX_PAGE_BYTES), resp.charset)
             # Join duplicate headers (two X-Robots-Tag lines) instead of
             # keeping only the last one.
             headers = {k: ", ".join(resp.headers.getall(k)) for k in set(resp.headers.keys())}
-            return resp.status, body, headers
+            return resp.status, body, headers, str(resp.url)
     except Exception as e:
         logger.debug("seo: fetch %s failed: %s", url, e)
-        return None, "", {}
+        return None, "", {}, url
 
 
 async def check_seo(url: str, manage: bool = True) -> SeoResult:
@@ -175,42 +178,41 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
     problems = r.problems
 
     async with aiohttp.ClientSession() as session:
-        # Unreachable right now → every check below would produce false
-        # findings and a bogus SEO incident. Availability is another
-        # monitor's job — bail out as transient.
-        probe_status, _, _ = await _fetch(session, base + "/")
-        if probe_status is None:
+        # Unreachable, down (5xx) or blocking this server (401/403/451) →
+        # every check below would produce false findings and a bogus SEO
+        # incident. Availability is another monitor's job — skip as transient.
+        probe_status, _, _, _ = await _fetch(session, base + "/")
+        if probe_status is None or probe_status >= 500 or probe_status in BLOCKED_CODES:
             r.status, r.transient = "error", True
-            await save_check(site_id, "seo", "error", details="site unreachable, audit skipped")
+            await save_check(site_id, "seo", "error", details=f"homepage {probe_status or 'unreachable'}, audit skipped")
             await sitestatus.update(site_id, "seo", status="error", critical=0, improve=0, problems=[])
             return r
 
         # A missing robots.txt means «everything allowed» — nothing to act
-        # on, so nothing to say. Only a present file can block, and only an
-        # erroring one can stall Google's crawl.
-        status, robots_text, _ = await _fetch(session, f"{base}/robots.txt")
+        # on, so nothing to say. Google reads any 4xx the same way; only a
+        # 5xx or a 429 stalls its crawl.
+        status, robots_text, _, _ = await _fetch(session, f"{base}/robots.txt")
         declared: list[str] = []
         if status == 200:
             robot_problems, declared = analyze_robots(robots_text, base)
             problems.extend(robot_problems)
-        elif status is not None and status != 404:
+        elif status is not None and (status >= 500 or status == 429):
             problems.append(_p("robots_http_error", "warning", f"robots.txt отвечает ошибкой HTTP {status}"))
 
+        # [] is the site's own answer (404, no pages); None — could not read,
+        # which is not a finding.
         pages = await sitemap_urls(session, base)
-        if not pages and not declared:
-            # Only a definite answer is a finding: a timeout or a 5xx says
-            # nothing about whether the sitemap exists — skip, not «нет».
-            sm_status, _, _ = await _fetch(session, f"{base}/sitemap.xml")
-            if sm_status is not None and sm_status < 500:
-                problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
+        if pages == [] and not declared:
+            problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
         sample = [base + "/"] + pick_sample(
-            [p for p in pages if p.rstrip("/") != base], max(0, config.seo_pages_sample - 1))
+            [p for p in pages or [] if p.rstrip("/") != base], max(0, config.seo_pages_sample - 1))
         for page in sample:
-            status, html, headers = await _fetch(session, page)
-            if status != 200 or not html:
-                continue
+            status, html, headers, final = await _fetch(session, page)
+            ctype = {k.lower(): v for k, v in headers.items()}.get("content-type", "")
+            if status != 200 or not html or (ctype and "html" not in ctype):
+                continue   # an XML or a PDF in the sitemap is not a page to audit
             r.pages_checked += 1
-            p, text_len = analyze_page(html, page, headers)
+            p, text_len = analyze_page(html, final, headers)
             problems.extend(p)
             if page == sample[0]:
                 r.no_js_chars = text_len
@@ -221,14 +223,14 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
 
         blocked_bots = []
         for bot, ua in AI_BOTS.items():
-            status, _, _ = await _fetch(session, base + "/", ua=ua)
+            status, _, _, _ = await _fetch(session, base + "/", ua=ua)
             if status in BLOCKED_CODES:
                 blocked_bots.append(f"{bot} (HTTP {status})")
             await asyncio.sleep(0.3)
         if blocked_bots:
             problems.append(_p("ai_blocked", "warning", "доступ запрещён для " + ", ".join(blocked_bots)))
 
-        status, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
+        status, _, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
             problems.append(_p("soft404", "warning", "несуществующий адрес ответил «всё хорошо» (HTTP 200)"))
 

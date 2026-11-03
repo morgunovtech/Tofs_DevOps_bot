@@ -9,7 +9,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
-from monitors.base import LinkCheck, LinksResult, gather_checks, read_capped
+from monitors.base import LinkCheck, LinksResult, decode_body, gather_checks, read_capped
 from services import sitestatus
 from utils.urls import USER_AGENT, host_of, same_site
 
@@ -48,8 +48,7 @@ async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str | None:
         async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
                                headers=DEFAULT_HEADERS) as resp:
             if resp.status == 200 and "text/html" in (resp.content_type or ""):
-                raw = await read_capped(resp, MAX_PAGE_BYTES)
-                return raw.decode(resp.charset or "utf-8", errors="replace")
+                return decode_body(await read_capped(resp, MAX_PAGE_BYTES), resp.charset)
     except Exception as e:
         logger.debug("Could not fetch %s: %s", url, e)
     return None
@@ -64,7 +63,7 @@ async def _check_link(session: aiohttp.ClientSession, url: str, base_url: str) -
     path = urlparse(url).path or ""
     if (host in SKIP_HOSTS or host in ALWAYS_OK_HOSTS
             or any(path.startswith(p) for p in SKIP_PATH_PREFIXES)):
-        return LinkCheck(url=url, status_code=None, ok=True, skipped=True)
+        return LinkCheck(url=url, status_code=None, ok=True)
 
     headers = {**DEFAULT_HEADERS, "Range": "bytes=0-0"}
     ssl_arg = same_site(url, base_url)
@@ -93,6 +92,10 @@ def extract_links(html: str, base_url: str) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
     links = set()
     for tag in soup.find_all(["a", "link", "script", "img"]):
+        # preconnect / dns-prefetch name an origin, not a page: its root may
+        # well answer 404 and is not a link anyone follows.
+        if tag.name == "link" and {"preconnect", "dns-prefetch"} & set(tag.get("rel") or []):
+            continue
         href = tag.get("href") or tag.get("src")
         if not href or href.startswith(("mailto:", "tel:", "javascript:", "#", "data:")):
             continue
@@ -123,7 +126,15 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
         for c in await asyncio.gather(*(guarded(link) for link in links)):
             if c.ok:
                 continue
-            (r.broken_internal if same_site(c.url, url) else r.broken_external).append(c)
+            if same_site(c.url, url):
+                # Own page that only timed out twice: not a verdict (the
+                # availability check owns «the site is slow/down»). An HTTP
+                # error or a bad certificate is.
+                if c.status_code is None and "certificate" not in (c.error or "").lower():
+                    continue
+                r.broken_internal.append(c)
+            else:
+                r.broken_external.append(c)
 
     if r.broken_internal:
         r.status = "warning"

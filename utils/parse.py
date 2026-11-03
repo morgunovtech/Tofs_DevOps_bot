@@ -29,12 +29,15 @@ def parse_duration(arg: str | None) -> timedelta | None:
             num = int(arg[:-1])
         except ValueError:
             return None
-        return timedelta(seconds=num * units[arg[-1]]) if num > 0 else None
+        seconds = num * units[arg[-1]]
+        # «/mute 99999999999d» must not crash timedelta: a year is the most
+        # anything here could mean.
+        return timedelta(seconds=seconds) if 0 < seconds <= 366 * 86400 else None
     try:
         minutes = int(arg)
     except ValueError:
         return None
-    return timedelta(minutes=minutes) if minutes > 0 else None
+    return timedelta(minutes=minutes) if 0 < minutes <= 366 * 24 * 60 else None
 
 
 def parse_time_window(raw: str) -> tuple[int, int] | None:

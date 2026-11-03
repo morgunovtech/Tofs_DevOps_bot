@@ -249,8 +249,6 @@ async def cb_site_setting_value(call: CallbackQuery):
         await update_site_settings(site["id"], fail_threshold=value)
     elif kind == "s":
         await update_site_settings(site["id"], slow_ms=value)
-    elif kind == "c":
-        await update_site_settings(site["id"], accepted_codes=None)
     elif kind == "k":
         await update_site_settings(site["id"], keyword=None, keyword_mode=None)
     else:
@@ -316,7 +314,7 @@ async def msg_site_codes(message: Message, state: FSMContext):
     else:
         await update_site_settings(site["id"], accepted_codes=raw)
     await state.clear()
-    await _show(message, site["id"])
+    await _show(message, site["id"], advanced=True)   # codes live on the advanced screen
 
 
 @router.message(SiteKeywordForm.keyword)

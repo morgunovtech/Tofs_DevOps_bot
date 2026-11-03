@@ -31,9 +31,12 @@ def test_analyze_page_flags_noindex_and_missing_meta():
     assert all(p.message.startswith("/page: ") for p in problems if p.code != "noindex_header")
     assert text_len == len("Hello world text here")
     # Every finding is either critical or an action for later — no «info» bucket,
-    # and a missing canonical is not reported (it would be a guess).
-    assert {p.severity for p in problems} == {"critical", "warning"}
+    # and a missing canonical is not reported (it would be a guess). noindex on
+    # an inner page is often deliberate (/privacy): 🟠, not a 3 a.m. call.
+    assert {p.severity for p in problems} == {"warning"}
     assert "no_canonical" not in codes
+    home, _ = analyze_page(html, "https://example.com/", {"X-Robots-Tag": "noindex"})
+    assert {p.severity for p in home if p.code.startswith("noindex")} == {"critical"}
 
 
 def test_page_level_findings_are_warnings_with_an_action():

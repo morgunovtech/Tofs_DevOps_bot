@@ -3,7 +3,8 @@ import json
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from monitors.availability import check_availability, code_accepted, decode_body, request_options
+from monitors.availability import check_availability, code_accepted, request_options
+from monitors.base import decode_body
 
 
 def test_code_accepted_and_decode():

@@ -141,7 +141,8 @@ async def run_availability_checks():
         elif r.external_ok is True:
             await _note_local_network_problem(r.url, r.site_id)
         elif r.recovered:
-            await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id, always_ring=True)
+            # Rings by default; with «будить только когда сайт лёг» only the fall does.
+            await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
         if r.ok:
             _ext_ok_noted.discard(r.site_id)
             await _track_slow(r, site.get("slow_ms") or config.slow_response_ms)
@@ -314,7 +315,7 @@ async def run_seo_checks():
         lambda r: f"✅ {esc(site_label(r.url))}: поисковикам больше ничего не мешает. Ничего делать не нужно.",
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
-            r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical"))))
+            r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
 
 
 def rerun_seo_after_update(minutes: int = 3):
@@ -382,14 +383,15 @@ async def run_index_checks():
                     if prev and prev_verdict != "PASS":
                         sent = await notifier.send(
                             f"✅ Google снова показывает {esc(site_label(url))} в поиске. Ничего делать не нужно."
-                            + _tech_line(google["coverage"]))
+                            + _tech_line(google["coverage"]), site_id=site["id"])
                 elif prev_verdict != google["verdict"]:
                     sent = await notifier.send(
                         f"🔴 Google убрал {esc(site_label(url))} из поиска\n"
                         f"Люди больше не найдут сайт через Google.\n\n"
                         f"Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
                         f"написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
-                        f"проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]), Priority.CRITICAL)
+                        f"проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]), Priority.CRITICAL,
+                        site_id=site["id"])
                 if sent:
                     await set_state(key, current)
         if yandex:
@@ -483,17 +485,24 @@ async def run_host_checks():
 
 
 async def run_container_watch():
+    """A container that stays broken is said once (🔴 rings through mute):
+    the watch runs every 10 minutes, as often as the restart throttle allows,
+    so without a flag it would page all night about the same thing."""
     for e in await watch_containers():
+        key = f"container_alerted:{e['name']}"
         if e["restarted"] and e["ok_after"]:
+            await set_state(key, None)
             await notifier.send(f"✅ Сервис «{esc(e['name'])}» на сервере бота был {esc(e['problem'])} — "
                                 f"перезапустил сам, работает. Ничего делать не нужно.")
-        else:
+        elif not await get_state(key):
             expl = humanize.EXPLANATIONS["container"]
-            await notifier.send(
+            sent = await notifier.send(
                 f"🔴 Сервис «{esc(e['name'])}» на сервере бота {esc(e['problem'])}. "
                 + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
                    else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{esc(humanize.steps_block(expl))}",
                 Priority.CRITICAL)
+            if sent:
+                await set_state(key, "1")
 
 
 # ── Escalation ───────────────────────────────────────────────────────────────
@@ -502,7 +511,7 @@ async def run_escalation_watch():
     """Re-alert about an unresolved DOWN site every N minutes — bypasses
     mute: a dead site must not be forgettable. Availability only: paging
     every 30 minutes about an expiring cert would train the user to ignore
-    alerts. «👀 Видел» snoozes a specific incident."""
+    alerts. «🔧 Я чиню» snoozes it for two hours."""
     repeat_min = config.escalation_repeat_min
     if not repeat_min:
         return
@@ -632,12 +641,12 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
     elif clean:
         extras.append("📈 За неделю: " + ("все сайты без сбоев" if clean > 1 else "без сбоев"))
 
-    expiring = [f"сертификат {esc(short_host(r.url))} через {r.ssl_info.days_left} дн."
-                for r in ssl_results if r.ssl_info and r.ssl_info.days_left <= 14]
-    expiring += [f"домен {esc(r.domain)} через {r.domain_info.days_left} дн."
-                 for r in domain_results
-                 if r.domain_info and r.domain_info.days_left is not None
-                 and r.domain_info.days_left <= 60]
+    # A certificate within 14 days and a domain within 30 are already on the
+    # site line above; this line is only the early heads-up for domains.
+    expiring = [f"домен {esc(r.domain)} через {r.domain_info.days_left} дн."
+                for r in domain_results
+                if r.domain_info and r.domain_info.days_left is not None
+                and 30 < r.domain_info.days_left <= 60]
     if expiring:
         extras.append("🔜 Истекает: " + "; ".join(expiring))
 
@@ -731,7 +740,7 @@ async def send_evening_report():
     """Evening report — only if there's something to worry about."""
     if settings.evening_hour() is None or not await get_active_incidents():
         return
-    await notifier.send(clip(await _status_snapshot("evening", extras=False)))
+    await notifier.send(clip(await _status_snapshot("evening", extras=False)), Priority.DIGEST)
 
 
 def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
@@ -805,13 +814,12 @@ def reschedule_all():
             _scheduler.reschedule_job(job_id, trigger=_cron(**spec))
 
 
-reschedule_report_jobs = reschedule_all
-
-
 def setup_scheduler() -> AsyncIOScheduler:
     global _started_at, _scheduler
     _started_at = datetime.now(UTC)
-    scheduler = AsyncIOScheduler(timezone=local_tz())
+    # APScheduler's default grace is 1 s: an event loop busy parsing a page at
+    # 09:00:00 would silently skip that day's morning report.
+    scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})
     _scheduler = scheduler
 
     def job(fn, trigger, job_id, **kwargs):

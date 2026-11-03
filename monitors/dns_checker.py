@@ -55,14 +55,20 @@ async def _check_record(host: str, rtype: str) -> dict | None:
             "critical": rtype == "NS"}
 
 
+async def _host_rtypes(host: str) -> tuple[str, ...]:
+    """Behind a CNAME the A/AAAA answers are the provider's rotating pool
+    (CloudFront, ELB, Cloudflare) — the CNAME target is what the owner
+    controls, so it is the only thing watched there."""
+    cname = await asyncio.to_thread(_resolve_sync, host, "CNAME")
+    return ("CNAME",) if cname else HOST_RTYPES
+
+
 async def check_all_dns(urls: list[str]) -> list[dict]:
-    hosts, domains = [], set()
-    for url in urls:
-        host = host_of(url)
-        if host:
-            hosts.append(host)
-            domains.add(registrable_domain(host))
-    tasks = [_check_record(h, t) for h in hosts for t in HOST_RTYPES]
+    # A set: http:// and https:// of one host must not report a change twice.
+    hosts = sorted({h for h in (host_of(u) for u in urls) if h})
+    domains = {registrable_domain(h) for h in hosts}
+    rtypes = await asyncio.gather(*(_host_rtypes(h) for h in hosts))
+    tasks = [_check_record(h, t) for h, types in zip(hosts, rtypes, strict=True) for t in types]
     tasks += [_check_record(d, t) for d in sorted(domains) for t in DOMAIN_RTYPES]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     changes = []

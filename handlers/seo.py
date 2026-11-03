@@ -12,7 +12,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_site, resolve_incident
-from handlers.common import ack, cb_args, render, site_by_cb, with_running_bar
+from handlers.common import ack, render, site_by_cb, with_running_bar
 from monitors.seo_checker import check_all_seo
 from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
 from services import hosting as hosting_svc
@@ -246,7 +246,10 @@ async def cb_seo_live(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("seo_fix:"))
 async def cb_seo_fix(call: CallbackQuery):
-    args = cb_args(call, 2)
+    """seo_fix:<site>:<code>[:a] — «:a» when the button sits on an alert."""
+    parts = call.data.split(":")
+    args = parts[1:3] if len(parts) in (3, 4) else None
+    on_alert = len(parts) == 4 and parts[3] == "a"
     site = await get_site(int(args[0])) if args and args[0].isdigit() else None
     if not site:
         await ack(call, "Сайт не найден", show_alert=True)
@@ -254,5 +257,9 @@ async def cb_seo_fix(call: CallbackQuery):
     await ack(call)
     snap = await sitestatus.get(site["id"])
     code = args[1]
-    await render(call, fix_text(site["url"], code, snap.get("seo") or {}, snap.get("hosting")),
-                 fix_keyboard(site["id"], site["url"], code, snap.get("hosting")))
+    text = fix_text(site["url"], code, snap.get("seo") or {}, snap.get("hosting"))
+    kb = fix_keyboard(site["id"], site["url"], code, snap.get("hosting"))
+    if on_alert and call.message is not None:
+        await call.message.answer(text, reply_markup=kb)   # the 🔴 alert stays as it was
+    else:
+        await render(call, text, kb)

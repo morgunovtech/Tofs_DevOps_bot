@@ -1,5 +1,5 @@
-"""Typed results shared by every monitor, plus the gather() and
-read_capped() helpers.
+"""Typed results shared by every monitor, plus the gather(), read_capped()
+and decode_body() helpers.
 
 `manage=False` on a check means read-only: the check row is still saved
 (it feeds uptime and sparklines) but incidents and alert state are NOT
@@ -9,6 +9,7 @@ monitor should fire.
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TypedDict
 
@@ -107,7 +108,6 @@ class LinkCheck:
     status_code: int | None
     ok: bool
     error: str | None = None
-    skipped: bool = False
 
     @property
     def reason(self) -> str:
@@ -125,7 +125,6 @@ class LinksResult(CheckResult):
 class DeepResult(CheckResult):
     sampled: int = 0
     errors: list[tuple[str, int]] = field(default_factory=list)  # (url, code)
-    skipped: bool = False
 
 
 @dataclass
@@ -148,6 +147,25 @@ class SeoResult(CheckResult):
     @property
     def has_critical(self) -> bool:
         return any(p.severity == "critical" for p in self.problems)
+
+
+_META_CHARSET_RE = re.compile(rb'charset=["\']?([a-zA-Z0-9_-]{2,20})')
+
+
+def decode_body(raw: bytes, header_charset: str | None) -> str:
+    """Header charset first; <meta charset=…> sniffed from the first bytes
+    (classic windows-1251 sites); utf-8 as the last resort."""
+    enc = header_charset
+    if not enc:
+        m = _META_CHARSET_RE.search(raw[:4096])
+        if m:
+            enc = m.group(1).decode("ascii", errors="replace")
+    if enc:
+        try:
+            return raw.decode(enc, errors="replace")
+        except (LookupError, ValueError):
+            pass
+    return raw.decode("utf-8", errors="replace")
 
 
 async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:

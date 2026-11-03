@@ -21,7 +21,7 @@ from db.database import (
     save_incident,
     set_state,
 )
-from monitors.base import AvailabilityResult, gather_checks, read_capped
+from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
 from monitors.second_opinion import second_opinion_up
 from services import hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
@@ -48,23 +48,6 @@ def code_accepted(status: int, ranges: list[tuple[int, int]] | None) -> bool:
     return any(lo <= status <= hi for lo, hi in ranges)
 
 
-_META_CHARSET_RE = re.compile(rb'charset=["\']?([a-zA-Z0-9_-]{2,20})')
-
-
-def decode_body(raw: bytes, header_charset: str | None) -> str:
-    """Header charset first; <meta charset=…> sniffed from the first bytes
-    (classic windows-1251 sites); utf-8 as the last resort."""
-    enc = header_charset
-    if not enc:
-        m = _META_CHARSET_RE.search(raw[:4096])
-        if m:
-            enc = m.group(1).decode("ascii", errors="replace")
-    if enc:
-        try:
-            return raw.decode(enc, errors="replace")
-        except (LookupError, ValueError):
-            pass
-    return raw.decode("utf-8", errors="replace")
 
 
 def request_options(site: dict) -> tuple[str, dict[str, str], str | None]:

@@ -7,6 +7,7 @@ steps are buttons too. Optional integrations are entered from the chat and
 stored in the DB (services.integrations); .env stays a fallback.
 """
 
+import contextlib
 import json
 import platform
 import re
@@ -298,12 +299,17 @@ async def cb_regen_heartbeat(call: CallbackQuery):
                  back_button("← К диагностике", "setup:check"))
 
 
+async def _forget(message: Message):
+    """A token, key or hook URL must not stay in the chat history."""
+    with contextlib.suppress(Exception):
+        await message.delete()
+
+
 # ── Guides ───────────────────────────────────────────────────────────────────
 
 def _guide_kb(*buttons: tuple[str, str]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=t, callback_data=c)] for t, c in buttons]
-    rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check"),
-                 InlineKeyboardButton(text="← Назад", callback_data="setup:check")])
+    rows.append([InlineKeyboardButton(text="← К диагностике", callback_data="setup:check")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -377,6 +383,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
         await message.answer("Нужна https-ссылка. Попробуй ещё раз:", reply_markup=cancel_kb())
         return
     await state.clear()
+    await _forget(message)
     if not await _watchdog_ping(url):
         await message.answer("❌ По этой ссылке сторож не ответил. Проверь, что скопировал её целиком.",
                              reply_markup=_watchdog_kb())
@@ -441,7 +448,8 @@ async def msg_yx_token(message: Message, state: FSMContext):
         await message.answer("Не похоже на токен. Попробуй ещё раз:", reply_markup=cancel_kb())
         return
     await state.clear()
-    previous = integrations._values.get("yandex_token")
+    await _forget(message)
+    previous = integrations.stored().get("yandex_token")
     await integrations.set_value("yandex_token", token)
     hosts = await _yandex_probe()
     if hosts is None:
@@ -541,6 +549,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
+    await _forget(message)
     await integrations.set_value("gsc_key", json.dumps(creds))
     gsc.reset_token_cache()
     if not integrations.gsc_property():
@@ -616,6 +625,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
+    await _forget(message)
     await integrations.set_deploy_hook(host, url)
     await message.answer(f"✅ Deploy hook для {esc(host)} сохранён.\n{esc(_cf_state_line())}",
                          reply_markup=_cf_kb())
@@ -635,6 +645,7 @@ async def msg_cf_token(message: Message, state: FSMContext):
         await message.answer("Не похоже на API-токен Cloudflare.", reply_markup=cancel_kb())
         return
     await state.clear()
+    await _forget(message)
     await integrations.set_value("cf_api_token", token)
     await message.answer(f"✅ Токен сохранён.\n{esc(_cf_state_line())}", reply_markup=_cf_kb())
 

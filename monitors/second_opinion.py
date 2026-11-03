@@ -19,7 +19,7 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 API = "https://check-host.net"
-_TIMEOUT = aiohttp.ClientTimeout(total=20)
+TIMEOUT = aiohttp.ClientTimeout(total=20)
 
 
 def _is_private_host(host: str | None) -> bool:
@@ -72,7 +72,7 @@ async def second_opinion_up(url: str) -> bool | None:
         return None
     endpoint, host_param = target
     try:
-        async with aiohttp.ClientSession(timeout=_TIMEOUT,
+        async with aiohttp.ClientSession(timeout=TIMEOUT,
                                          headers={"Accept": "application/json"}) as session:
             async with session.get(f"{API}/{endpoint}",
                                    params={"host": host_param, "max_nodes": 3}) as resp:

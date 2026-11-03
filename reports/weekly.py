@@ -16,7 +16,8 @@ from db.database import (
     get_uptime_over_days,
 )
 from services import gsc, humanize, index_status, sitestatus, updates, yandex_webmaster
-from utils.text import bar, esc, parse_iso_utc, plural
+from utils.clock import to_local
+from utils.text import bar, esc, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_http_url, short_host, site_label
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,10 @@ async def build_weekly_report() -> tuple[str, list[str]]:
 
 
 def _day(sqlite_dt: str | None) -> str:
-    return f"{(sqlite_dt or '')[8:10]}.{(sqlite_dt or '')[5:7]}"
+    """'03.11' in the owner's timezone (SQLite stores UTC: an evening in
+    Moscow is still «yesterday» there)."""
+    dt = parse_sqlite_utc(sqlite_dt)
+    return to_local(dt).strftime("%d.%m") if dt else ""
 
 
 def _headline(inc: dict) -> str:
@@ -163,7 +167,7 @@ async def incidents_block() -> list[str]:
             lines.append(f"… и ещё {len(active) - 5}")
     if solved:
         lines.append(f"\nРешено за неделю: {len(solved)}")
-        lines += [f"✓ {_day(inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
+        lines += [f"✓ {_day(inc.get('resolved_at') or inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
         if len(solved) > 5:
             lines.append(f"… и ещё {len(solved) - 5}")
     if not active and not solved:

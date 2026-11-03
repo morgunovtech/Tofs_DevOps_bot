@@ -193,7 +193,7 @@ def test_setup_scheduler_registers_jobs(db):
     assert {"availability_checks", "ssl_checks", "domain_checks", "seo_checks", "links_checks",
             "dns_checks", "deep_checks", "heartbeat_watch", "escalation_watch", "quiet_flush",
             "retention", "db_backup", "morning_report", "evening_report", "weekly_report"} <= ids
-    scheduler.reschedule_report_jobs()   # works on a not-yet-started scheduler too
+    scheduler.reschedule_all()   # works on a not-yet-started scheduler too
 
 
 async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):

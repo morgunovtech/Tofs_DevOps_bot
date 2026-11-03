@@ -76,3 +76,15 @@ def test_urls():
     assert site_label("tcp://mail.example.com:25") == "mail.example.com:25"
     assert site_label("ping://10.0.0.1") == "ping 10.0.0.1"
     assert site_label("https://example.com/") == "example.com"
+
+
+def test_clip_never_cuts_telegram_html_in_half():
+    """A cut inside <a href=…> or &amp; made Telegram reject the whole
+    message — the deferred queue then jammed on it forever."""
+    text = "<b>" + "x" * 50 + '</b> <a href="https://ex.com/a">ссылка</a> Tom &amp; Jerry'
+    for limit in range(40, len(text)):
+        out = clip(text, limit)
+        body = out.removesuffix("\n… (обрезано)")
+        assert body.count("<b>") == body.count("</b>") and body.count("<a ") == body.count("</a>")
+        assert "&am\n" not in out and not body.rstrip().endswith(("<", "&", "&amp"))
+    assert parse_duration("99999999999d") is None and parse_duration("999999999999") is None

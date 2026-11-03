@@ -1,20 +1,20 @@
-"""One-tap actions attached to alert messages: act:<action>:<site_id> and
-ack:<incident_id>:<minutes>. Results go out as replies — the alert text
-itself stays intact and the buttons remain usable."""
+"""One-tap actions attached to alert messages: act:<action>:<site_id>.
+Results go out as replies — the alert text itself stays intact and the
+buttons remain usable."""
 
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery
 
-from db.database import get_active_incidents, get_incident, set_state
+from db.database import get_active_incidents, set_state
 from handlers.common import ack, cb_args, site_by_cb
 from monitors.availability import check_availability
 from services import humanize, maintenance
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
-from utils.text import esc, fmt_duration
+from utils.text import esc
 from utils.urls import is_http_url, short_host, site_label
 
 router = Router(name="alerts")
@@ -62,7 +62,7 @@ async def cb_alert_action(call: CallbackQuery):
         if image:
             await call.message.answer_photo(
                 BufferedInputFile(image, filename="screenshot.png"),
-                caption=f"📸 {short_host(url)} · {now_local().strftime('%d.%m %H:%M')}")
+                caption=f"📸 {esc(short_host(url))} · {now_local().strftime('%d.%m %H:%M')}")
         else:
             await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
     elif action == "redeploy":
@@ -73,22 +73,3 @@ async def cb_alert_action(call: CallbackQuery):
         await call.message.answer(await purge_cf_cache(url))
     else:
         await ack(call, "Неизвестное действие", show_alert=True)
-
-
-@router.callback_query(F.data.startswith("ack:"))
-async def cb_ack(call: CallbackQuery):
-    """Snooze escalation for one incident without closing it."""
-    args = cb_args(call, 2)
-    if not args or not all(a.isdigit() for a in args):
-        await ack(call, "Не понял", show_alert=True)
-        return
-    incident_id, minutes = int(args[0]), max(5, min(int(args[1]), 24 * 60))
-    inc = await get_incident(incident_id)
-    if not inc or inc["resolved"]:
-        await ack(call, "Инцидент уже закрыт", show_alert=True)
-        return
-    until = datetime.now(UTC) + timedelta(minutes=minutes)
-    await set_state(f"ack:{incident_id}", until.isoformat())
-    await ack(call, f"Ок, не напоминаю {fmt_duration(minutes)}")
-    await call.message.answer(f"👀 {esc(short_host(inc['url']))}: эскалация на паузе на "
-                              f"{fmt_duration(minutes)}. Инцидент открыт, проверки идут.")

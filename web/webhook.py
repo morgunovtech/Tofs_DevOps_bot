@@ -19,7 +19,7 @@ from aiohttp import web
 from config import config
 from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import integrations, notifier, public_urls, secrets, settings
+from services import integrations, notifier, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -120,27 +120,16 @@ async def handle_feedback(request: web.Request) -> web.Response:
 async def handle_heartbeat(request: web.Request) -> web.Response:
     """Dead-man switch ping: GET/POST /api/heartbeat/<secret>/<job>.
     The token lives in the path, healthchecks.io-style, so a plain
-    `curl <url>` at the end of a cron line is the whole integration."""
+    `curl <url>` at the end of a cron line is the whole integration.
+    Only the heartbeat secret: the webhook secret sits in every site's widget
+    code, and accepting it would let any visitor keep a dead job «alive»."""
     token = request.match_info.get("token", "")
     job = request.match_info.get("job", "")[:64]
-    legacy = False
     if not _secret_ok(token, secrets.heartbeat_secret()):
-        # Installations older than the split secrets pinged with the
-        # webhook secret. Keep them alive, but nag once per job.
-        if _secret_ok(token, secrets.webhook_secret()):
-            legacy = True
-        else:
-            return web.Response(status=403, text="Forbidden")
+        return web.Response(status=403, text="Forbidden")
     if not job:
         return web.Response(status=400, text="job name required")
     await heartbeat_ping(job)
-    if legacy and not await get_state(f"hb_legacy_warned:{job}"):
-        sent = await notifier.send(
-            f"⚠️ Heartbeat «{esc(job)}» пришёл со старым секретом (WEBHOOK_SECRET, "
-            f"который виден всем посетителям сайта). Замени URL в кроне на:\n"
-            f"<code>{esc(public_urls.heartbeat_url(job))}</code>", Priority.NORMAL)
-        if sent:
-            await set_state(f"hb_legacy_warned:{job}", "1")
     if await get_state(f"hb_alerted:{job}"):
         await set_state(f"hb_alerted:{job}", None)
         await notifier.send(f"💚 Heartbeat «{esc(job)}» снова подаёт сигналы", Priority.NORMAL)
@@ -226,7 +215,9 @@ def create_app() -> web.Application:
 
 
 async def start_web_server() -> web.AppRunner:
-    runner = web.AppRunner(create_app())
+    # No access log: request lines carry the heartbeat secret and the status
+    # page slug in the path, and stdout ends up in the hosting's logs.
+    runner = web.AppRunner(create_app(), access_log=None)
     await runner.setup()
     await web.TCPSite(runner, host="0.0.0.0", port=config.webhook_port).start()
     logger.info("Web server running on port %s", config.webhook_port)

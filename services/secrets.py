@@ -24,7 +24,6 @@ PLACEHOLDERS = frozenset({
 
 _webhook: str = ""
 _heartbeat: str = ""
-_generated: list[str] = []
 
 
 def _usable(value: str) -> bool:
@@ -40,7 +39,6 @@ async def _resolve(name: str, env_value: str) -> str:
         return stored
     value = _secrets.token_urlsafe(24)
     await set_state(key, value)
-    _generated.append(name)
     logger.warning("%s secret was empty or a placeholder — generated one and "
                    "stored it in the DB (see 🩺 Диагностика).", name)
     return value
@@ -78,7 +76,3 @@ def webhook_secret() -> str:
 def heartbeat_secret() -> str:
     return _heartbeat
 
-
-def generated() -> list[str]:
-    """Names of secrets generated at this boot (for diagnostics)."""
-    return list(_generated)
