@@ -9,14 +9,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
-from db.database import get_site, update_site_settings
+from db.database import get_active_page_urls, get_site, update_site_settings
 from handlers.common import ack, back_button, cancel_kb, cb_args, render, site_by_cb
 from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS
-from reports.scheduler import reset_site_schedule
+from reports.scheduler import PAGE_CHECKS, close_inapplicable, reset_site_schedule
 from services import public_urls, settings
 from utils.parse import parse_accepted_codes, parse_header_lines
 from utils.text import esc
-from utils.urls import is_http_url, site_label
+from utils.urls import is_api_check, is_http_url, site_label
 
 router = Router(name="site_settings")
 
@@ -58,7 +58,7 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         kw = (site.get("keyword") or "").strip()
         if kw:
             mode = ("не должна появляться (стоп-фраза)" if site.get("keyword_mode") == "absent"
-                    else "должна быть на странице")
+                    else f"должна быть {_where(site)}")
             lines.append(f"🔍 Фраза: «{esc(kw)}» — {mode}")
         else:
             lines.append("🔍 Ключевая фраза: не задана")
@@ -74,6 +74,8 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         if site.get("http_body"):
             req += f", тело {len(site['http_body'])} симв."
         lines.append(req)
+        if is_api_check(site["url"], site.get("http_method")):
+            lines.append("🔌 Это API-проверка: только ответ — без поиска, ссылок и SEO.")
     if settings.status_page_enabled():
         lines.append(f"🏷 Бейдж аптайма:\n<code>{esc(public_urls.badge_url(sid))}</code>")
     rows = [[InlineKeyboardButton(text="⏱ Интервал", callback_data=f"ssp:i:{sid}"),
@@ -92,10 +94,15 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
 _SIMPLE_INTERVALS = {1: "чаще (раз в минуту)", 5: "обычно (раз в 5 минут)", 15: "реже (раз в 15 минут)"}
 
 
+def _where(site: dict) -> str:
+    return "в ответе" if is_api_check(site["url"], site.get("http_method")) else "на странице"
+
+
 async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     """Two things a person actually decides: how often to check and
     whether to watch a phrase on the page. Everything else is advanced."""
     sid, http = site["id"], is_http_url(site["url"])
+    api = is_api_check(site["url"], site.get("http_method"))
     interval = site.get("check_interval_min") or config.check_interval_minutes
     how_often = _SIMPLE_INTERVALS.get(interval, f"раз в {interval} мин")
     lines = [f"⚙️ {esc(site_label(site['url']))}\n",
@@ -103,18 +110,23 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     if http:
         kw = (site.get("keyword") or "").strip()
         if kw:
-            mode = ("не должно появляться" if site.get("keyword_mode") == "absent" else "должно быть на странице")
+            mode = "не должно появляться" if site.get("keyword_mode") == "absent" else f"должно быть {_where(site)}"
             lines.append(f"🔍 Слежу за фразой «{esc(kw)}» — {mode}.")
+        elif api:
+            lines.append("🔍 За фразой в ответе не слежу. Задай слово, без которого ответ неправильный "
+                         "(например, имя поля из JSON), — замечу «HTTP 200, а внутри ошибка».")
         else:
             lines.append("🔍 За фразой на странице не слежу. Это ловит случай «сайт открывается, "
                          "но показывает пустую страницу или ошибку».")
+    if api:
+        lines.append("🔌 Это API-проверка: слежу только за ответом, поиск, ссылки и SEO к ней не относятся.")
     rows = [[InlineKeyboardButton(text="⏱ Чаще", callback_data=f"ssv:i:{sid}:1"),
              InlineKeyboardButton(text="⏱ Обычно", callback_data=f"ssv:i:{sid}:0"),
              InlineKeyboardButton(text="⏱ Реже", callback_data=f"ssv:i:{sid}:15")]]
     if http:
         rows.append([InlineKeyboardButton(text="🔍 Следить за фразой", callback_data=f"ssp:k:{sid}")])
     extra = [InlineKeyboardButton(text="🛠 Для продвинутых", callback_data=f"ssetx:{sid}")]
-    if http:
+    if http and not api:
         extra.insert(0, InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{sid}"))
     rows.append(extra)
     rows.append([InlineKeyboardButton(text="🗑 Убрать из мониторинга", callback_data=f"delsite:{sid}")])
@@ -193,26 +205,36 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
                            "• <code>default</code> — вернуть правило по умолчанию (любой &lt; 400)",
                      cancel_kb())
     elif kind == "k":
-        rows = [[InlineKeyboardButton(text="✅ Фраза должна быть на странице",
+        rows = [[InlineKeyboardButton(text=f"✅ Фраза должна быть {_where(site)}",
                                       callback_data=f"sskw:{sid}:present")],
                 [InlineKeyboardButton(text="🚫 Стоп-фраза (не должна появляться)",
                                       callback_data=f"sskw:{sid}:absent")]]
         if (site.get("keyword") or "").strip():
             rows.append([InlineKeyboardButton(text="🗑 Убрать фразу", callback_data=f"ssv:k:{sid}:0")])
         rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"sset:{sid}")])
-        await render(call, f"🔍 Слежка за фразой на {label}: сайт может «открываться», но показывать "
-                           f"пустую страницу или ошибку вместо себя. Фраза это ловит.\n\n"
-                           f"• «должна быть» — например, название компании из шапки: пропала — значит "
-                           f"вместо сайта что-то другое\n"
-                           f"• «стоп-фраза» — например, «Fatal error»: появилась — значит сломалось\n\n"
-                           f"Регистр не важен.",
-                     InlineKeyboardMarkup(inline_keyboard=rows))
+        if is_api_check(site["url"], site.get("http_method")):
+            text = (f"🔍 Фраза в ответе {label}: API может ответить «200», а внутри — ошибка. Фраза это "
+                    f"ловит.\n\n"
+                    f"• «должна быть» — например, имя поля из правильного ответа: <code>scoreLabel</code>\n"
+                    f"• «стоп-фраза» — например, <code>\"error\"</code>: появилась — значит сломалось\n\n"
+                    f"Регистр не важен.")
+        else:
+            text = (f"🔍 Слежка за фразой на {label}: сайт может «открываться», но показывать "
+                    f"пустую страницу или ошибку вместо себя. Фраза это ловит.\n\n"
+                    f"• «должна быть» — например, название компании из шапки: пропала — значит "
+                    f"вместо сайта что-то другое\n"
+                    f"• «стоп-фраза» — например, «Fatal error»: появилась — значит сломалось\n\n"
+                    f"Регистр не важен.")
+        await render(call, text, InlineKeyboardMarkup(inline_keyboard=rows))
     elif kind == "m":
         rows = [[InlineKeyboardButton(text=m, callback_data=f"ssm:{sid}:{m}") for m in HTTP_METHODS[:4]],
                 [InlineKeyboardButton(text=m, callback_data=f"ssm:{sid}:{m}") for m in HTTP_METHODS[4:]],
                 [InlineKeyboardButton(text="← Назад", callback_data=f"sset:{sid}")]]
         await render(call, f"📡 Каким методом проверять {label}?\n(HEAD дешевле, но не умеет "
-                           f"проверять фразу; POST/PUT отправляют тело, если задано)",
+                           f"проверять фразу; POST/PUT отправляют тело, если задано — тело в JSON "
+                           f"уходит с Content-Type: application/json)\n\n"
+                           f"Любой метод, кроме GET и HEAD, делает проверку API-проверкой: слежу только "
+                           f"за ответом, поиск, ссылки и SEO для неё не проверяю.",
                      InlineKeyboardMarkup(inline_keyboard=rows))
     elif kind == "h":
         await state.set_state(SiteHeadersForm.headers)
@@ -266,6 +288,9 @@ async def cb_site_method(call: CallbackQuery):
         await ack(call, "Не понял", show_alert=True)
         return
     await update_site_settings(site["id"], http_method=None if args[1] == "GET" else args[1])
+    # A POST endpoint is not a page any more: its old search/links findings
+    # close now rather than at the next audit.
+    await close_inapplicable(PAGE_CHECKS, await get_active_page_urls())
     await ack(call, "Сохранено ✅")
     await _show(call, site["id"], advanced=True)
 
@@ -280,7 +305,7 @@ async def cb_site_keyword_mode(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SiteKeywordForm.keyword)
     await state.update_data(sset_site_id=site["id"], kw_mode=args[1])
-    what = ("которая должна быть на странице" if args[1] == "present"
+    what = (f"которая должна быть {_where(site)}" if args[1] == "present"
             else "при появлении которой нужен алерт (стоп-фраза)")
     await render(call, f"🔍 Пришли фразу, {what}.\nОт 2 до 100 символов, регистр не важен.", cancel_kb())
 

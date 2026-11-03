@@ -25,6 +25,7 @@ from db.database import get_all_sites, set_state
 from handlers.common import ack, back_button, cancel_kb, render
 from services import (
     docker_api,
+    github,
     gsc,
     integrations,
     notifier,
@@ -51,6 +52,8 @@ class SetupForm(StatesGroup):
     cf_token = State()
     cf_zone = State()
     watchdog_url = State()
+    gh_token = State()
+    gh_owner = State()
 
 
 @dataclass
@@ -174,6 +177,17 @@ async def build_items() -> list[Item]:
         items.append(Item("cloudflare", "off", "☁️ Cloudflare",
                           "кнопки «передеплой» и «сброс кэша» в алертах, автопередеплой при падении",
                           ("☁️ Подключить Cloudflare", "setup:cf")))
+
+    if github.available():
+        login = await github.viewer_login()
+        items.append(Item("github", "ok" if login else "warn", "GitHub",
+                          "токен есть, но GitHub его не принимает: истёк, отозван или скопирован не целиком",
+                          ("🐙 GitHub: проверить", "setup:gh")))
+    else:
+        items.append(Item("github", "off", "🐙 GitHub",
+                          "по воскресеньям — что прибрать в репозиториях: старые PR, лишние ветки, "
+                          "красный CI, пропавшие репозитории",
+                          ("🐙 Подключить GitHub", "setup:gh")))
 
     if not config.on_railway:
         if docker_api.docker_available():
@@ -674,4 +688,94 @@ async def cb_cf_off(call: CallbackQuery):
     for key in ("deploy_hooks", "cf_api_token", "cf_zone_id"):
         await integrations.set_value(key, None)
     await ack(call, "Сброшено")
+    await show_checklist(call)
+
+
+# ── GitHub wizard ────────────────────────────────────────────────────────────
+
+def _gh_kb() -> InlineKeyboardMarkup:
+    buttons = [("🔑 Ввести токен", "setup:gh_token"), ("👤 Чьи репозитории", "setup:gh_owner")]
+    if any(integrations.source(k) == "bot" for k in ("github_token", "github_owner")):
+        buttons.append(("🗑 Отключить", "setup:gh_off"))
+    return _guide_kb(*buttons)
+
+
+def _gh_state_line() -> str:
+    src = integrations.source("github_token")
+    token = {"bot": "токен введён в боте", "env": "токен из .env"}.get(src, "токена нет")
+    owner = integrations.github_owner()
+    return f"{token} · репозитории: {esc(owner) if owner else 'владельца токена'}"
+
+
+@router.callback_query(F.data == "setup:gh")
+async def cb_guide_github(call: CallbackQuery):
+    await ack(call)
+    await render(call, ("🐙 GitHub\n\n"
+                        f"{_gh_state_line()}\n\n"
+                        "Раз в неделю, в воскресном отчёте — что прибрать в репозиториях: PR старше недели, "
+                        "лишние ветки, выключенное удаление веток после мержа, красный CI на основной "
+                        "ветке, репозитории, которые пропали, уязвимости от Dependabot. Только чтение; "
+                        "когда всё в порядке, раздела нет.\n\n"
+                        "1. <a href=\"https://github.com/settings/personal-access-tokens/new\">GitHub → "
+                        "Settings → Developer settings → Fine-grained tokens → Generate new token</a>.\n"
+                        "2. Repository access: <b>All repositories</b>. Permissions → Repository, всё "
+                        "<b>Read-only</b>: Metadata, Contents, Pull requests, Commit statuses; по желанию "
+                        "Dependabot alerts.\n"
+                        "3. «🔑 Ввести токен» — пришли его сюда, я проверю живым запросом и удалю "
+                        "сообщение.\n\n"
+                        "Репозитории организации: выбери её в Resource owner при создании токена и "
+                        "укажи её в «👤 Чьи репозитории»."), _gh_kb())
+
+
+@router.callback_query(F.data == "setup:gh_token")
+async def cb_gh_token(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(SetupForm.gh_token)
+    await render(call, "🔑 Пришли токен GitHub одним сообщением (начинается с <code>github_pat_</code>).",
+                 cancel_kb())
+
+
+@router.message(SetupForm.gh_token)
+async def msg_gh_token(message: Message, state: FSMContext):
+    token = (message.text or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_]{30,255}", token):
+        await message.answer("Не похоже на токен GitHub. Попробуй ещё раз:", reply_markup=cancel_kb())
+        return
+    await state.clear()
+    await _forget(message)
+    login = await github.viewer_login(token)
+    if not login:
+        await message.answer("❌ GitHub не принял токен. Проверь, что он скопирован целиком и не истёк.",
+                             reply_markup=_gh_kb())
+        return
+    await integrations.set_value("github_token", token)
+    await message.answer(f"✅ GitHub подключён: аккаунт {esc(login)}. Первый раздел придёт в воскресном "
+                         f"отчёте — если будет что прибрать.",
+                         reply_markup=back_button("← К диагностике", "setup:check"))
+
+
+@router.callback_query(F.data == "setup:gh_owner")
+async def cb_gh_owner(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(SetupForm.gh_owner)
+    await render(call, "👤 Пришли логин пользователя или организации, чьи репозитории смотреть. "
+                       "<code>-</code> — репозитории владельца токена.", cancel_kb())
+
+
+@router.message(SetupForm.gh_owner)
+async def msg_gh_owner(message: Message, state: FSMContext):
+    owner = (message.text or "").strip().lstrip("@")
+    if owner != "-" and not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", owner):
+        await message.answer("Логин GitHub — латиница, цифры и дефис, до 39 символов.", reply_markup=cancel_kb())
+        return
+    await state.clear()
+    await integrations.set_value("github_owner", None if owner == "-" else owner)
+    await message.answer(f"✅ Сохранено: {_gh_state_line()}", reply_markup=_gh_kb())
+
+
+@router.callback_query(F.data == "setup:gh_off")
+async def cb_gh_off(call: CallbackQuery):
+    for key in ("github_token", "github_owner"):
+        await integrations.set_value(key, None)
+    await ack(call, "Отключено")
     await show_checklist(call)

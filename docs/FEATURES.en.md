@@ -12,7 +12,8 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **Broken links** — a link that does not open is a dead end for your visitor wherever it points, so own and external links are one list. What decides is certainty, not the domain: a 4xx or a vanished domain counts at once, a timeout or 5xx only if it repeats on the next crawl, a bot block (401/403/429) never.
 - **Deep 5xx probe** — samples pages from `sitemap.xml` hourly, catching "homepage is fine but half the site is erroring".
 - **Keyword / stop-phrase check** — per site: alert when a phrase disappears from the page, or when a bad one appears («Fatal error»). Catches the classic "HTTP 200 with a white screen".
-- **Custom HTTP requests** — per site: method (GET/HEAD/POST…), headers (`Authorization: Bearer …`) and a request body, so an API behind a token or a POST-only health endpoint is a first-class monitor.
+- **Custom HTTP requests** — per site: method (GET/HEAD/POST…), headers (`Authorization: Bearer …`) and a request body (a JSON body goes out as `application/json` unless you set the header), so an API behind a token or a POST-only health endpoint is a first-class monitor.
+- **API checks — watch what the site actually does**: `POST https://good-pass.pages.dev/api/v1/analyze` with a JSON body, expecting `scoreLabel` in the answer; `GET …/api/whoami`. One rule (`utils/urls.py`, `is_api_check`): an http(s) monitor is an API check when its method is not GET/HEAD, **or** its path is `/api` or under `/api/`, **or** its host is `api.…`. An API check gets availability only — status code, the phrase in the response, response time, fail threshold and anti-flap — and no SEO audit, link crawl, sitemap 5xx sampling, page meta, AI-crawler probes, screenshot or regional timing (a GET to a POST endpoint is a 405, not an outage). Certificate, domain and DNS are checked once per host: when a regular site lives on the same host, the API check has none of its own (one alert, not two) and its card points to the site's card. The external second opinion (check-host sends a bare GET) is asked only for GET/HEAD requests without custom headers. An `/api/` address keeps its path and query when added; the card says «🔌 API-проверка: POST, …», the status page tags it API and never shows the query.
 - **TCP and ping monitors** — `tcp://mail.example.com:25`, `ping://10.0.0.1`: non-HTTP services (mail, SSH, databases) get the same incident pipeline, anti-flap and external second opinion.
 - **Bot-host health** — disk usage and docker containers on the server the bot runs on.
 
@@ -46,7 +47,7 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **⏰ Task control (heartbeats)** — added from the chat with a ready-to-paste `curl` line for your cron.
 - **⏸ Per-site pause** — deploying something big? Pause alerts for 1h or until morning; checks keep running silently.
 - **🌐 Public status page** — one toggle serves an Uptime-Kuma-style page at `/status` (current state, 24h/7d/30d/90d uptime, anonymised incident history, maintenance banner), a `/status.json` twin for your own dashboards, and SVG uptime badges for your README. Off by default; an optional secret slug makes the URL private-by-obscurity.
-- **🩺 Diagnostics as a setup checklist** — three groups: works / needs attention / can be connected. Every non-green line carries a button that either fixes it on the spot (enable the status page, regenerate the heartbeat secret, toggle the second opinion) or opens a two-three step wizard. Google Search Console, Yandex.Webmaster and Cloudflare are connected **from the chat**: paste the token or send the JSON key, the bot validates it with a live request and stores it. `.env` remains a fallback; lines that cannot apply (docker socket on Railway) are hidden, and the public URL is picked up from Railway's domain automatically.
+- **🩺 Diagnostics as a setup checklist** — three groups: works / needs attention / can be connected. Every non-green line carries a button that either fixes it on the spot (enable the status page, regenerate the heartbeat secret, toggle the second opinion) or opens a two-three step wizard. Google Search Console, Yandex.Webmaster, Cloudflare and GitHub are connected **from the chat**: paste the token or send the JSON key, the bot validates it with a live request and stores it. `.env` remains a fallback; lines that cannot apply (docker socket on Railway) are hidden, and the public URL is picked up from Railway's domain automatically.
 - **🔔 Test alert** — see what a critical alert looks like and trust the pipeline before you need it.
 
 ### 💓 Dead-man switch
@@ -60,7 +61,8 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 
 ### 📊 Reports that respect your attention
 - **Morning digest** — one message: per-site status, open problems, 7-day downtime (one phrase when the week was clean), upcoming SSL/domain expirations, heartbeat status with a «what to do» button for a silent task, disk, and a search/AI line that never repeats an open problem. Reads in 10 seconds.
-- **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), everything open right now with its level (however old) and what was solved this week, certificates that renewed by themselves, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies — and exactly one suggestion with a button, never more.
+- **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), everything open right now with its level (however old) and what was solved this week, certificates that renewed by themselves, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies, GitHub hygiene — and exactly one suggestion with a button, never more. A long report is split into several messages, never cut.
+- **GitHub hygiene** (optional: `GITHUB_TOKEN`, or «🩺 Диагностика → 🐙 GitHub») — a section of the Sunday report. One GraphQL query over the owner's repositories (`GITHUB_OWNER`, defaults to the token's account) and only what needs a hand: repositories gone since last week (the list is kept in the DB), open PRs older than 7 days, extra branches (not the default, not an open PR's head; `gh-pages` is fine), «Automatically delete head branches» switched off, a red CI on the default branch's latest commit, open Dependabot alerts when the token may read them. Archived repos and forks are watched for disappearance only. All tidy — no section at all; GitHub down or the token rejected — one «⚠️ не смог проверить» line, and the report arrives as usual. The bot's own Dependabot PRs are not repeated: the dependency line already names them.
 - **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔎 Поиск и ИИ» with a button per finding.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
 - **Silent delivery** — informational messages arrive without a sound; only critical alerts ring. Silence-by-default, literally.
@@ -155,6 +157,7 @@ the optional integrations below (documented in [.env.example](.env.example)):
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Google index status | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Yandex index status | `YANDEX_WEBMASTER_TOKEN` |
+| GitHub hygiene in the weekly report | `GITHUB_TOKEN`, `GITHUB_OWNER` (optional) |
 | Container restart / disk cleanup | `AUTORESTART_CONTAINERS` + docker.sock mount |
 | External watchdog | `SELF_HEARTBEAT_URL` |
 
@@ -167,7 +170,8 @@ main.py                 entry point: DB → services → web server → schedule
 ├── services/           notifier (the one door for every message: priorities,
 │                       mute, quiet hours, pauses), settings, maintenance,
 │                       secrets, runtime (admin), updates (dependency watch),
-│                       cloudflare actions, docker API, screenshots, GSC, Yandex
+│                       cloudflare actions, docker API, screenshots, GSC, Yandex,
+│                       GitHub hygiene
 ├── reports/            scheduler (19 jobs), formatters, ASCII weekly report
 ├── handlers/           one router per screen behind a single AdminFilter
 ├── web/                aiohttp: feedback API, heartbeats, status page + JSON
@@ -189,7 +193,7 @@ A note on the feedback widget's security model: the widget's "secret" ships to e
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 ruff check .          # lint + import order
-pytest -q             # ~70 tests, no network, no Telegram
+pytest -q             # ~150 tests, no network, no Telegram
 pip-audit -r requirements.txt
 ```
 

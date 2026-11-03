@@ -1,6 +1,8 @@
-"""Availability: http(s):// pages (status code against per-site accepted
-codes, optional keyword/stop-phrase, custom method/headers/body),
-tcp://host:port (port connect) and ping://host (ICMP echo)."""
+"""Availability: http(s):// pages and API checks (status code against
+per-site accepted codes, optional keyword/stop-phrase, custom
+method/headers/body), tcp://host:port (port connect) and ping://host
+(ICMP echo). For an API check (utils.urls.is_api_check) this is the only
+monitor that runs."""
 
 import asyncio
 import contextlib
@@ -22,10 +24,10 @@ from db.database import (
     set_state,
 )
 from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
-from monitors.second_opinion import second_opinion_up
+from monitors.second_opinion import repeatable, second_opinion_up
 from services import hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
-from utils.urls import USER_AGENT
+from utils.urls import USER_AGENT, is_api_check
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,21 @@ def request_options(site: dict) -> tuple[str, dict[str, str], str | None]:
         except ValueError:
             pass
     body = site.get("http_body") if method in _BODY_METHODS else None
+    if body and not any(k.lower() == "content-type" for k in headers) and _is_json(body):
+        # aiohttp sends a str as text/plain, and a JSON API answers that with
+        # 400 «expected an object» — a false outage.
+        headers["Content-Type"] = "application/json"
     return method, headers, body
+
+
+def _is_json(body: str) -> bool:
+    if not body.lstrip().startswith(("{", "[")):
+        return False
+    try:
+        json.loads(body)
+    except ValueError:
+        return False
+    return True
 
 
 async def _probe_http(url: str, site: dict, r: AvailabilityResult):
@@ -84,16 +100,18 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                     r.status, r.error = "error", f"HTTP {resp.status}"
                 elif keyword and method != "HEAD":
                     # The page loaded, but does it contain the page — or an
-                    # error text? Catches "HTTP 200 with a white screen".
+                    # error text? Catches "HTTP 200 with a white screen"
+                    # (and an API answering 200 with an error object).
                     raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
                     found = keyword.casefold() in decode_body(raw, resp.charset).casefold()
                     mode = site.get("keyword_mode") or "present"
+                    where = "в ответе" if r.api else "на странице"
                     if mode == "absent" and found:
                         r.status, r.keyword_failed = "error", True
-                        r.error = f"на странице стоп-фраза «{keyword}»"
+                        r.error = f"{where} стоп-фраза «{keyword}»"
                     elif mode != "absent" and not found:
                         r.status, r.keyword_failed = "error", True
-                        r.error = f"на странице нет фразы «{keyword}»"
+                        r.error = f"{where} нет фразы «{keyword}»"
     except TimeoutError:
         r.status, r.error = "error", f"Timeout ({int(TIMEOUT.total)}s)"
         r.response_time_ms = int((time.monotonic() - start) * 1000)
@@ -172,7 +190,7 @@ async def _probe_ping(url: str, r: AvailabilityResult):
 
 async def check_availability(url: str, manage: bool = True) -> AvailabilityResult:
     site = await get_site_by_url(url)
-    r = AvailabilityResult(url=url, site_id=site["id"])
+    r = AvailabilityResult(url=url, site_id=site["id"], api=is_api_check(url, site.get("http_method")))
     scheme = urlparse(url).scheme
     try:
         if scheme == "tcp":
@@ -214,8 +232,9 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         return r  # a single flap is normal on the public internet
     # Second opinion from external nodes before paging: reachable from
     # outside means the problem is on our side. Skipped for keyword
-    # failures — our own fetch succeeded, so the content problem is real.
-    if integrations.second_opinion_enabled() and not r.keyword_failed:
+    # failures — our own fetch succeeded, so the content problem is real —
+    # and for a request check-host cannot repeat (a POST, own headers).
+    if integrations.second_opinion_enabled() and not r.keyword_failed and repeatable(site):
         r.external_ok = await second_opinion_up(url)
     if r.external_ok is True:
         logger.warning("%s: down from here but UP externally — skipping incident", url)

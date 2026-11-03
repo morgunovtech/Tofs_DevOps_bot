@@ -17,8 +17,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config import config
 from db.database import (
     backup_db,
-    get_active_http_site_urls,
+    get_active_host_urls,
     get_active_incidents,
+    get_active_page_urls,
     get_active_site_urls,
     get_all_sites,
     get_heartbeats,
@@ -39,6 +40,7 @@ from monitors.dns_checker import check_all_dns
 from monitors.domain_checker import check_all_domains
 from monitors.host_checker import check_disk, watch_containers
 from monitors.links_checker import check_all_links
+from monitors.second_opinion import repeatable
 from monitors.seo_checker import check_all_seo
 from monitors.ssl_checker import check_all_ssl
 from reports.formatter import (
@@ -55,6 +57,7 @@ from reports.formatter import (
 )
 from reports.weekly import build_weekly_report
 from services import (
+    github,
     gsc,
     humanize,
     index_status,
@@ -77,8 +80,8 @@ from services.actions import (
 )
 from services.notifier import Priority
 from utils.clock import local_tz
-from utils.text import SAFE_LIMIT, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
-from utils.urls import is_http_url, short_host, site_label
+from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
+from utils.urls import is_api_check, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +133,10 @@ async def run_availability_checks():
     for r in await check_all(due):
         site = by_url.get(r.url, {})
         if r.incident_new:
-            msg = format_availability_alert(r, integrations.second_opinion_enabled())
+            msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site))
             if config.auto_redeploy and deploy_hook_for(r.url):
                 msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
-            kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting)
+            kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
             sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
                                        always_ring=True)
             if isinstance(sent, Message):
@@ -253,33 +256,55 @@ def _by_level(r: CheckResult) -> Priority:
     return notifier.priority_for(r.severity)
 
 
+PAGE_CHECKS = ("links", "deep", "seo")
+
+
+async def close_inapplicable(check_types: tuple[str, ...], urls: list[str]):
+    """A monitor that left a check's input — it became an API check (POST,
+    an /api/ address), or its host is now covered by a site — keeps no open
+    finding of that check: nothing would ever close it. Silently: nothing
+    was fixed, the question stopped applying."""
+    keep = set(urls)
+    for inc in await get_active_incidents():
+        if inc["check_type"] in check_types and inc["url"] not in keep:
+            await resolve_incident(inc["site_id"], inc["check_type"])
+
+
 async def run_ssl_checks():
     """Expiry ladder alerts only. A certificate that renewed by itself is
     normal operation: no message — the date goes into the snapshot and the
     weekly report mentions it."""
+    urls = await get_active_host_urls()
+    await close_inapplicable(("ssl",), urls)
     await _notify_transitions(
-        await check_all_ssl(await get_active_http_site_urls()), format_ssl_alert,
+        await check_all_ssl(urls), format_ssl_alert,
         lambda r: f"✅ Сертификат {esc(site_label(r.url))} обновлён, всё в порядке. Ничего делать не нужно.",
         priority=_by_level)
 
 
 async def run_domain_checks():
+    urls = await get_active_host_urls()
+    await close_inapplicable(("domain",), urls)
     await _notify_transitions(
-        await check_all_domains(await get_active_http_site_urls()), format_domain_alert,
+        await check_all_domains(urls), format_domain_alert,
         lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.",
         priority=_by_level,
         keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None, r.incident_id))
 
 
 async def run_links_checks():
+    urls = await get_active_page_urls()
+    await close_inapplicable(("links",), urls)
     await _notify_transitions(
-        await check_all_links(await get_active_http_site_urls()), format_links_report,
+        await check_all_links(urls), format_links_report,
         lambda r: f"✅ На {esc(site_label(r.url))} все ссылки снова работают.")
 
 
 async def run_deep_checks():
+    urls = await get_active_page_urls()
+    await close_inapplicable(("deep",), urls)
     await _notify_transitions(
-        await check_all_deep(await get_active_http_site_urls()), format_deep_alert,
+        await check_all_deep(urls), format_deep_alert,
         lambda r: f"✅ На {esc(site_label(r.url))} все страницы снова отвечают без ошибок.",
         keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id, r.incident_id))
 
@@ -304,7 +329,8 @@ async def run_seo_checks():
     now, so they bypass mute. Improvements wait for the weekly report.
     A site added today is audited quietly: its first findings arrive in
     the next morning digest, not as ten separate alerts."""
-    urls = await get_active_http_site_urls()
+    urls = await get_active_page_urls()
+    await close_inapplicable(("seo",), urls)
     fresh = await _recently_added()
     if fresh:
         await check_all_seo([u for u in urls if u in fresh], manage=False)
@@ -339,7 +365,7 @@ async def run_region_checks():
         return
     country = region.country_for_timezone(settings.timezone())
     for site in await get_all_sites():
-        if not is_http_url(site["url"]):
+        if not is_web_page(site["url"], site.get("http_method")):
             continue
         snap = await sitestatus.get(site["id"])
         if (snap.get("avail") or {}).get("status") not in (None, "ok"):
@@ -353,7 +379,7 @@ async def run_region_checks():
 async def run_dns_checks():
     """The new baseline is committed only after the alert is delivered or
     queued — otherwise a failed send would swallow the change forever."""
-    for change in await check_all_dns(await get_active_http_site_urls()):
+    for change in await check_all_dns(await get_active_host_urls()):
         sent = await notifier.send(format_dns_change(change),
                                    Priority.CRITICAL if change["critical"] else Priority.NORMAL)
         if sent:
@@ -369,7 +395,7 @@ async def run_index_checks():
     yx = await yandex_webmaster.get_summaries() if yandex_webmaster.available() else None
     for site in await get_all_sites():
         url = site["url"]
-        if not is_http_url(url):
+        if not is_web_page(url, site.get("http_method")):
             continue
         google, yandex = await index_status.refresh(site["id"], url, yx)
         if google:
@@ -535,7 +561,8 @@ async def run_escalation_watch():
             f"«🔧 Я чиню», и я замолчу на два часа.",
             Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
             reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
-                                                hosting=await get_state(f"hosting:{inc['site_id']}")))
+                                                hosting=await get_state(f"hosting:{inc['site_id']}"),
+                                                api=is_api_check(inc["url"], inc.get("http_method"))))
         if sent:
             await set_state(f"escalated:{inc['id']}", now.isoformat())
 
@@ -666,12 +693,14 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
 
     # Search findings are open incidents and already listed above. This line
     # says only what that list cannot: all clear, or which audits failed.
+    # API checks are not audited — a stale audit from before must not speak.
     now = datetime.now(UTC)
-    first_audit = [s for s in sites if (added := parse_sqlite_utc(s.get("added_at")))
+    pages = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
+    first_audit = [s for s in pages if (added := parse_sqlite_utc(s.get("added_at")))
                    and timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)]
     listed = {i["site_id"] for i in incidents if i["check_type"] == "seo"} | {s["id"] for s in first_audit}
     seo_chips, audited, all_clear = [], False, True
-    for s in sites:
+    for s in pages:
         last = await get_last_check(s["id"], "seo")
         if not last:
             continue
@@ -717,10 +746,10 @@ async def _status_snapshot(report_type: str, extras: bool):
     """manage=False: a report is a read-only observer — it must never
     consume incident transitions that belong to the scheduled monitors."""
     urls = await get_active_site_urls()
-    http_urls = await get_active_http_site_urls()
+    host_urls = await get_active_host_urls()
     availability = await check_all(urls, manage=False)
-    ssl_results = await check_all_ssl(http_urls, manage=False)
-    domain_results = await check_all_domains(http_urls, manage=False)
+    ssl_results = await check_all_ssl(host_urls, manage=False)
+    domain_results = await check_all_domains(host_urls, manage=False)
     incidents = await get_active_incidents()
     return format_compact_status_report(
         availability=availability, incidents=incidents,
@@ -759,15 +788,23 @@ def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
 
 
 async def send_weekly_report():
-    """Sunday: dependency check, weekly digest, ASCII response-time chart,
-    off-host DB copy."""
+    """Sunday: dependency check, GitHub hygiene, weekly digest, ASCII
+    response-time chart, off-host DB copy. A failed side check never
+    stops the digest."""
     try:
         await updates.run_dependency_watch()
     except Exception as e:
         logger.error("Dependency watch failed: %s", e)
     try:
+        await github.run_watch()
+    except Exception as e:
+        logger.error("GitHub hygiene check failed: %s", e)
+    try:
         text, chart_blocks = await build_weekly_report()
-        await notifier.send(clip(text), Priority.DIGEST)
+        # Split, not clipped: the sections at the end (dependencies, GitHub)
+        # are the ones a long site list would cut off.
+        for part in chunks(text):
+            await notifier.send(part, Priority.DIGEST)
         if chart_blocks:
             for msg in pack_blocks(["⏱ Как быстро открывались сайты по дням:", *chart_blocks]):
                 await notifier.send(msg, Priority.DIGEST)

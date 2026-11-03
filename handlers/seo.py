@@ -19,7 +19,7 @@ from services import hosting as hosting_svc
 from services.actions import seo_fix_keyboard
 from services.humanize import level_icon
 from utils.text import esc, fmt_duration, plural
-from utils.urls import is_http_url, site_label
+from utils.urls import is_web_page, site_label
 
 router = Router(name="seo")
 
@@ -218,12 +218,23 @@ async def run_live(call: CallbackQuery, site: dict):
     await show_seo(call, site)
 
 
+async def _auditable(call: CallbackQuery, site: dict | None) -> bool:
+    """Search and AI visibility is a question about web pages only — an old
+    button on a monitor that became an API check answers so instead."""
+    if not site:
+        await ack(call, "Сайт не найден", show_alert=True)
+        return False
+    if not is_web_page(site["url"], site.get("http_method")):
+        await ack(call, "Это API-проверка или порт: поиск и ИИ к ним не относятся", show_alert=True)
+        return False
+    return True
+
+
 @router.callback_query(F.data.startswith("seo_site:"))
 async def cb_seo(call: CallbackQuery):
     """Instant when the daily audit is fresh, live otherwise."""
     site = await site_by_cb(call.data.split(":", 1)[1])
-    if not site or not is_http_url(site["url"]):
-        await ack(call, "Сайт не найден", show_alert=True)
+    if not await _auditable(call, site):
         return
     await ack(call)
     seo = (await sitestatus.get(site["id"])).get("seo") or {}
@@ -237,8 +248,7 @@ async def cb_seo(call: CallbackQuery):
 @router.callback_query(F.data.startswith("seo_live:"))
 async def cb_seo_live(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":", 1)[1])
-    if not site or not is_http_url(site["url"]):
-        await ack(call, "Сайт не найден", show_alert=True)
+    if not await _auditable(call, site):
         return
     await ack(call, "Проверяю…")
     await run_live(call, site)

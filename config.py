@@ -116,6 +116,11 @@ class Config:
     gsc_property: str = os.getenv("GSC_PROPERTY", "").strip()
     yandex_webmaster_token: str = os.getenv("YANDEX_WEBMASTER_TOKEN", "").strip()
 
+    # ── GitHub hygiene in the weekly report (optional) ───────────────────────
+    # Read-only token; the owner defaults to the token's own account.
+    github_token: str = os.getenv("GITHUB_TOKEN", "").strip()
+    github_owner: str = os.getenv("GITHUB_OWNER", "").strip().lstrip("@")
+
     # ── SEO/GEO monitor ──────────────────────────────────────────────────────
     seo_pages_sample: int = _int("SEO_PAGES_SAMPLE", 5)
     seo_min_text_chars: int = _int("SEO_MIN_TEXT_CHARS", 400)

@@ -26,6 +26,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Статус индексации Google | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |
+| Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
 | Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
 
@@ -38,7 +39,8 @@ main.py                 точка входа: БД → сервисы → ве�
 ├── services/           notifier (единственная дверь для сообщений: приоритеты,
 │                       mute, тихие часы, паузы), settings, maintenance, secrets,
 │                       runtime (админ), updates (контроль зависимостей),
-│                       действия Cloudflare, Docker API, скриншоты, GSC, Яндекс
+│                       действия Cloudflare, Docker API, скриншоты, GSC, Яндекс,
+│                       порядок в GitHub
 ├── reports/            планировщик (19 джоб), форматтеры, ASCII-недельный отчёт
 ├── handlers/           по роутеру на экран за одним AdminFilter
 ├── web/                aiohttp: API фидбека, heartbeat, статус-страница + JSON
@@ -60,8 +62,8 @@ main.py                 точка входа: БД → сервисы → ве�
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 ruff check .          # линтер + порядок импортов
-pytest -q             # ~70 тестов, без сети и без Telegram
+pytest -q             # ~150 тестов, без сети и без Telegram
 pip-audit -r requirements.txt
 ```
 
-CI гоняет те же три команды на каждый push и PR (Python 3.12 и 3.13). Dependabot по субботам открывает один сгруппированный PR; `.github/workflows/dependabot-automerge.yml` автоматически вливает минорные и патч-обновления после зелёного CI — включи **Allow auto-merge** в настройках репозитория и защити `main` правилом с обязательной проверкой «lint · test · audit», иначе мерж не будет ждать тестов. Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.
+CI гоняет те же три команды на каждый push и PR (Python 3.12, 3.13 и 3.14). Dependabot по субботам открывает один сгруппированный PR; `.github/workflows/dependabot-automerge.yml` автоматически вливает минорные и патч-обновления после зелёного CI — включи **Allow auto-merge** в настройках репозитория и защити `main` правилом с обязательной проверкой «lint · test · audit», иначе мерж не будет ждать тестов. Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.

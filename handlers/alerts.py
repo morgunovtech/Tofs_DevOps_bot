@@ -15,7 +15,7 @@ from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
 from utils.text import esc
-from utils.urls import is_http_url, short_host, site_label
+from utils.urls import is_web_page, short_host, site_label
 
 router = Router(name="alerts")
 
@@ -38,7 +38,7 @@ async def cb_alert_action(call: CallbackQuery):
         r = await check_availability(url, manage=False)
         speed = f", {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
         if r.ok:
-            text = (f"✅ {label} сейчас открывается{speed}." if is_http_url(url)
+            text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
                     else f"✅ {label} сейчас отвечает{speed}.")
         else:
             text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
@@ -53,6 +53,10 @@ async def cb_alert_action(call: CallbackQuery):
         await call.message.answer(f"🔧 Понял, ты чинишь {label}. Час не пишу про него, проверки "
                                   f"продолжаются, напишу, когда поднимется.")
     elif action == "shot":
+        if not is_web_page(url, site.get("http_method")):
+            await ack(call, "Здесь нет страницы, которую можно сфотографировать: это API или порт",
+                      show_alert=True)
+            return
         await ack(call, "Делаю скрин… (~15 сек)")
         try:
             await call.bot.send_chat_action(call.message.chat.id, "upload_photo")

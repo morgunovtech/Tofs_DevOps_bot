@@ -29,16 +29,17 @@ def deploy_hook_for(url: str) -> str | None:
 
 
 def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = None,
-                           hosting: str | None = None) -> InlineKeyboardMarkup:
+                           hosting: str | None = None, api: bool = False) -> InlineKeyboardMarkup:
     """Action buttons attached to availability alerts. The site is addressed
     by its DB id — stable across list edits and well under the 64-byte
     callback_data limit. «:a» on a button marks it as living on an alert:
-    its screen answers below instead of replacing the alert text."""
+    its screen answers below instead of replacing the alert text. An API
+    check has no page to photograph."""
     http = is_http_url(url)
     rows = [[InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{site_id}"),
              InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
     second = []
-    if http:
+    if http and not api:
         second.append(InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{site_id}"))
     if incident_id:
         second.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{incident_id}:a"))

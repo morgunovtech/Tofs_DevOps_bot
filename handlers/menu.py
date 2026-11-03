@@ -13,8 +13,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import (
-    get_active_http_site_urls,
+    get_active_host_urls,
     get_active_incidents,
+    get_active_page_urls,
     get_active_site_urls,
     get_all_sites,
 )
@@ -27,7 +28,7 @@ from reports.formatter import format_compact_status_report, incident_line, links
 from services import humanize, maintenance, notifier, sitestatus
 from utils.clock import to_local, utcnow
 from utils.text import clip, esc, fmt_duration, plural
-from utils.urls import site_label
+from utils.urls import is_api_check, site_label
 
 router = Router(name="menu")
 
@@ -56,7 +57,8 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     """(icon, short state, minutes since the last availability check) from
     the stored snapshot — no network, the menu must open instantly. The
     icon is the worst level among the site's notes (🔴 / 🟠), ✅ when the
-    site is up and nothing needs action."""
+    site is up and nothing needs action. An API check speaks only of its
+    answer — and of its certificate and domain when no site shares them."""
     st = await sitestatus.get(site["id"])
     avail = st.get("avail")
     if not avail:
@@ -64,6 +66,9 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     age = sitestatus.age_minutes(avail)
     if avail.get("status") != "ok":
         return "🔴", humanize.describe_error(avail.get("error")), age
+    if is_api_check(site["url"], site.get("http_method")):
+        own_host = site["url"] in await get_active_host_urls()
+        st = {k: v for k, v in st.items() if k in ("avail", "region") or (own_host and k in ("ssl", "domain"))}
     notes: list[tuple[str, str]] = []   # (severity, words)
     ssl, dom = st.get("ssl") or {}, st.get("domain") or {}
     days = ssl.get("days_left")
@@ -221,21 +226,24 @@ async def cb_check_now(call: CallbackQuery):
             inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")],
                              [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]]))
         return
-    http_urls = await get_active_http_site_urls()
+    host_urls, page_urls = await get_active_host_urls(), await get_active_page_urls()
     # manage=False everywhere: interactive checks are read-only observers.
     await render(call, "▱▱▱ Проверяю, открываются ли сайты...")
     availability = await check_all(urls, manage=False)
     incidents = await get_active_incidents()
     quick = format_compact_status_report(availability, incidents)
-    if not http_urls:
+    if not host_urls:
         await render(call, quick, back_button())
         return
     await render(call, quick + "\n\n▰▱▱ Проверяю сертификаты и домены...")
-    ssl_results = await check_all_ssl(http_urls, manage=False)
-    domain_results = await check_all_domains(http_urls, manage=False)
+    ssl_results = await check_all_ssl(host_urls, manage=False)
+    domain_results = await check_all_domains(host_urls, manage=False)
     report = format_compact_status_report(availability, incidents, ssl_results, domain_results)
+    if not page_urls:
+        await render(call, report, back_button())
+        return
     await render(call, report + "\n\n▰▰▱ Проверяю ссылки на страницах...")
-    links_results = await check_all_links(http_urls, manage=False)
+    links_results = await check_all_links(page_urls, manage=False)
     failed = sum(1 for r in links_results if r.status == "error")
     pending = sum(len(r.pending) for r in links_results)
     broken = links_summary(links_results)

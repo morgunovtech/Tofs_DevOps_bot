@@ -4,7 +4,7 @@ stays the fallback so existing deployments keep working unchanged.
 
 Keys: yandex_token, gsc_property, gsc_key (service-account JSON text),
 deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id,
-second_opinion ("on"/"off").
+second_opinion ("on"/"off"), github_token, github_owner.
 """
 
 import json
@@ -14,7 +14,8 @@ from config import config
 from db.database import get_state, set_state
 
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
-        "cf_api_token", "cf_zone_id", "second_opinion", "self_heartbeat_url", "status_page_slug")
+        "cf_api_token", "cf_zone_id", "second_opinion", "self_heartbeat_url", "status_page_slug",
+        "github_token", "github_owner")
 _values: dict[str, str] = {}
 
 
@@ -55,6 +56,8 @@ def source(key: str) -> str | None:
         "cf_zone_id": config.cf_zone_id,
         "self_heartbeat_url": config.self_heartbeat_url,
         "status_page_slug": config.status_page_slug,
+        "github_token": config.github_token,
+        "github_owner": config.github_owner,
     }.get(key)
     return "env" if env else None
 
@@ -152,6 +155,17 @@ def self_heartbeat_url() -> str:
 
 def status_page_slug() -> str:
     return _values.get("status_page_slug") or config.status_page_slug
+
+
+# ── GitHub ───────────────────────────────────────────────────────────────────
+
+def github_token() -> str:
+    return _values.get("github_token") or config.github_token
+
+
+def github_owner() -> str:
+    """'' means «the token's own account»."""
+    return _values.get("github_owner") or config.github_owner
 
 
 # ── Second opinion ───────────────────────────────────────────────────────────

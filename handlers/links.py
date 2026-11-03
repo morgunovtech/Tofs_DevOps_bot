@@ -8,7 +8,7 @@ from monitors.links_checker import check_links
 from reports.formatter import format_links_report, pending_note
 from services import humanize
 from utils.text import esc
-from utils.urls import site_label
+from utils.urls import is_web_page, site_label
 
 router = Router(name="links")
 
@@ -22,6 +22,10 @@ async def cb_check_links(call: CallbackQuery):
                      back_button())
         return
     url = site["url"]
+    if not is_web_page(url, site.get("http_method")):
+        await render(call, f"🔌 {esc(site_label(url))} — API-проверка: страниц со ссылками у неё нет.",
+                     back_button("← К сайту", f"check_site:{site['id']}"))
+        return
     base = f"Проверяю все ссылки на {esc(site_label(url))}…\n(это занимает до 30 секунд)"
     await render(call, f"▰▱▱ {base}")
     r = await with_running_bar(call.message, base, check_links(url, manage=False))

@@ -19,6 +19,9 @@ os.environ.update({
     "SITES": "",
     "HEARTBEAT_JOBS": "",
     "TRUST_PROXY": "0",
+    # A developer's shell often exports a GitHub token for gh/git.
+    "GITHUB_TOKEN": "",
+    "GITHUB_OWNER": "",
 })
 
 from types import SimpleNamespace  # noqa: E402

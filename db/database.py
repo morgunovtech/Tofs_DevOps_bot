@@ -15,7 +15,7 @@ import aiosqlite
 
 from config import config
 from db.migrations import migrate
-from utils.urls import is_http_url
+from utils.urls import host_key, is_api_check, is_http_url, is_web_page
 
 _conn: aiosqlite.Connection | None = None
 _conn_lock = asyncio.Lock()
@@ -96,10 +96,33 @@ async def get_active_site_urls() -> list[str]:
     return [r[0] for r in await cursor.fetchall()]
 
 
-async def get_active_http_site_urls() -> list[str]:
-    """Active sites that are real web pages — the input for every monitor
-    that only makes sense over HTTP (SSL, domains, DNS, links, SEO, deep)."""
-    return [u for u in await get_active_site_urls() if is_http_url(u)]
+async def _active_monitors() -> list[tuple[str, str | None]]:
+    """(url, http_method) of active sites, oldest first."""
+    db = await get_db()
+    cursor = await db.execute("SELECT url, http_method FROM sites WHERE active = 1 ORDER BY id")
+    return [(r[0], r[1]) for r in await cursor.fetchall()]
+
+
+async def get_active_page_urls() -> list[str]:
+    """Active sites that are web pages — the input for every page-oriented
+    monitor (links, deep 5xx, SEO/GEO, sitemap, index, region). API checks
+    and tcp/ping monitors are not pages: utils.urls.is_web_page is the rule."""
+    return [u for u, method in await _active_monitors() if is_web_page(u, method)]
+
+
+async def get_active_host_urls() -> list[str]:
+    """Input for the per-host monitors (SSL, domain, DNS): every web page,
+    plus an API check only when no page — and no earlier API check — sits
+    at the same scheme://host:port. One certificate, one alert."""
+    monitors = [(u, m) for u, m in await _active_monitors() if is_http_url(u)]
+    pages = [u for u, m in monitors if is_web_page(u, m)]
+    seen = {host_key(u) for u in pages}
+    extra = []
+    for u, m in monitors:
+        if is_api_check(u, m) and host_key(u) not in seen:
+            seen.add(host_key(u))
+            extra.append(u)
+    return pages + extra
 
 
 async def count_sites_total() -> int:
@@ -344,7 +367,7 @@ async def get_incident(incident_id: int) -> dict | None:
 async def get_active_incidents() -> list[dict]:
     db = await get_db()
     cursor = await db.execute(
-        """SELECT i.*, s.url FROM incidents i JOIN sites s ON i.site_id = s.id
+        """SELECT i.*, s.url, s.http_method FROM incidents i JOIN sites s ON i.site_id = s.id
            WHERE i.resolved = 0 ORDER BY i.created_at DESC""")
     return [dict(r) for r in await cursor.fetchall()]
 

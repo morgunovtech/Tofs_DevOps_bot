@@ -9,9 +9,10 @@ Made for people who have never heard of DNS or a 502. Three buttons: **is everyt
 ## What you get
 
 - **Uptime, SSL, domain, DNS, broken links, deep 5xx** — one incident pipeline: anti-flap, a second opinion from outside before waking you, an alert ladder instead of daily nagging, downtime in minutes rather than percent.
+- **API checks** — watch what the site actually does (`POST /api/v1/analyze` must answer with `scoreLabel`): an `/api/` address or a non-GET method gets status, phrase and timing only — no SEO or link noise, no second certificate alert next to its site.
 - **Search & AI visibility** — noindex, robots.txt, AI-bot blocks, empty no-JS pages, soft-404, sitemap. Each finding is a numbered item with «what it costs you» and steps for your hosting.
 - **Self-healing** — Cloudflare Pages redeploy and cache purge, container restart and disk cleanup on your own server, with a report of what was already done.
-- **Reports that respect your attention** — one morning line, a Sunday digest with ASCII charts, quiet hours, «I'm fixing it» silence, your timezone, full export/import and database restore from the chat. One level dictionary everywhere: 🔴 act now (rings), 🟠 act but not today (silent), and what is fine is a caption, never a message.
+- **Reports that respect your attention** — one morning line, a Sunday digest with ASCII charts (and, with a read-only GitHub token, what to tidy in your repositories: stale PRs, extra branches, red CI, repos that vanished), quiet hours, «I'm fixing it» silence, your timezone, full export/import and database restore from the chat. One level dictionary everywhere: 🔴 act now (rings), 🟠 act but not today (silent), and what is fine is a caption, never a message.
 
 ## Quick start — 5 minutes, no server
 
