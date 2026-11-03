@@ -24,3 +24,9 @@ jobs:
       # Known vulnerabilities in the pinned dependencies fail the build —
       # that is the point: a Dependabot bump is the fix.
       - run: pip-audit -r requirements.txt --strict --progress-spinner off
+      # The image itself, on a leg that branch protection requires: tests pass
+      # on the runner's Python, but a Dependabot bump of the base image (or a
+      # package without wheels for it) only breaks here — and must not be
+      # auto-merged into a deploy that fails.
+      - if: matrix.python == '3.13'
+        run: docker build --quiet --tag devops-bot-ci .

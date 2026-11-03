@@ -59,7 +59,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 …and the bot alerts you when the job goes silent longer than its interval. Recovery is announced automatically.
 
 ### 📊 Reports that respect your attention
-- **Morning digest** — one message: per-site status, 7-day uptime, upcoming SSL/domain expirations, heartbeat status, disk, SEO summary. Reads in 10 seconds.
+- **Morning digest** — one message: per-site status, open problems, 7-day downtime (one phrase when the week was clean), upcoming SSL/domain expirations, heartbeat status with a «what to do» button for a silent task, disk, and a search/AI line that never repeats an open problem. Reads in 10 seconds.
 - **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), everything open right now with its level (however old) and what was solved this week, certificates that renewed by themselves, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies — and exactly one suggestion with a button, never more.
 - **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔎 Поиск и ИИ» with a button per finding.
 - **Quiet hours** — non-critical alerts queue up overnight and arrive as one morning digest. "Site down" always gets through.
@@ -71,7 +71,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 - Old raw checks roll up into daily aggregates nightly — the SQLite DB stays small forever.
 - Nightly DB backups with rotation + a weekly off-host copy sent straight to your Telegram chat.
 - Self-heartbeat to an external watchdog (healthchecks.io) — who watches the watchman.
-- **Keeps its dependencies fresh without you**: Dependabot opens a weekly PR, CI (ruff + pytest + pip-audit) tests it, the auto-merge workflow merges minor/patch bumps, the host redeploys — and the bot announces «🔄 Бот обновился: aiohttp 3.10 → 3.14» on its next start. A weekly check against PyPI and the OSV vulnerability database reports anything outdated or vulnerable.
+- **Keeps its dependencies fresh without you**: Dependabot opens a weekly PR, CI (ruff + pytest + pip-audit) tests it, the auto-merge workflow merges minor/patch bumps, the host redeploys — and the bot announces «🔄 Бот обновился: aiohttp 3.10 → 3.14» on its next start. A newer version on PyPI is therefore not news; the bot reports only what needs a human — vulnerable packages (OSV), major PRs, minor PRs stuck for over two days (red CI) — and, hourly, a newest commit that failed to deploy while the bot still runs the old build. CI also builds the Docker image, so a base-image bump that does not build is never auto-merged.
 - Secrets take care of themselves: an empty or placeholder `WEBHOOK_SECRET`/`HEARTBEAT_SECRET` is replaced by a generated one stored in the DB. The two are always different — the webhook secret is public by design (it ships in the widget), the heartbeat one is not.
 
 ### 📩 Bonus: feedback widget
@@ -82,15 +82,15 @@ A tiny embeddable JS widget for your sites — messages land in your Telegram (r
 ```
 🌅 Доброе утро · 29.07 09:00
 
-✅ example.com — 96ms
-✅ app.example.com — 137ms
+✅ example.com — в порядке, быстро (0.10 с)
+✅ app.example.com — в порядке, быстро (0.14 с)
 
 Всё спокойно 🐕
 
-📈 Uptime 7д: example.com 100% · app.example.com 99.98%
-💓 backup ✅ 7ч назад
-💾 Диск: ✅ 41% (16.4/40.0 GB)
+📈 За неделю: все сайты без сбоев
+⏰ Задачи в срок: backup (7 ч назад)
 🔎 Поиск и ИИ: помех нет
+💾 Диск сервера: ✅ занято 41%
 ```
 
 ```
@@ -193,4 +193,4 @@ pytest -q             # ~70 tests, no network, no Telegram
 pip-audit -r requirements.txt
 ```
 
-CI runs the same three on every push and PR (Python 3.12 and 3.13). Dependabot files a grouped PR every Saturday; `.github/workflows/dependabot-automerge.yml` auto-merges minor/patch updates once CI is green — enable **Allow auto-merge** in the repository settings and protect `main` with the «lint · test · audit» check required, otherwise the merge does not wait for tests. The container runs as an unprivileged user; `entrypoint.sh` fixes the data volume's ownership first.
+CI runs the same three on every push and PR (Python 3.12, 3.13 and 3.14) and builds the Docker image on the 3.13 leg. Dependabot files a grouped PR every Saturday; `.github/workflows/dependabot-automerge.yml` auto-merges minor/patch updates once CI is green — enable **Allow auto-merge** in the repository settings and protect `main` with the «lint · test · audit» check required, otherwise the merge does not wait for tests. The container runs as an unprivileged user; `entrypoint.sh` fixes the data volume's ownership first.

@@ -84,7 +84,11 @@ async def test_heartbeat_watch_and_recovery_flag(bot, db, monkeypatch):
     await settings.add_heartbeat_job("backup", 60)
     monkeypatch.setattr(scheduler, "_started_at", datetime.now(UTC) - timedelta(hours=2))
     await scheduler.run_heartbeat_watch()
-    assert "не отчиталась" in bot.sent[-1]["text"] and await get_state("hb_alerted:backup")
+    # Never marked = not connected: no «крон упал», and both ways out are one tap.
+    assert bot.sent[-1]["text"].startswith("⚠️ Задача «backup» ещё ни разу не отметилась") and await get_state("hb_alerted:backup")
+    assert "крон" not in bot.sent[-1]["text"]
+    buttons = [b.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row]
+    assert buttons == ["hb_how:backup", "hb_rm:backup"]
     await db.heartbeat_ping("backup")
     await scheduler.run_heartbeat_watch()
     assert await get_state("hb_alerted:backup") is None
@@ -189,3 +193,42 @@ def test_setup_scheduler_registers_jobs(db):
             "dns_checks", "deep_checks", "heartbeat_watch", "escalation_watch", "quiet_flush",
             "retention", "db_backup", "morning_report", "evening_report", "weekly_report"} <= ids
     scheduler.reschedule_report_jobs()   # works on a not-yet-started scheduler too
+
+
+async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
+    """A search finding that is an open incident is not repeated in the
+    «🔎 Поиск и ИИ» line; a clean week is one phrase; a task that never
+    marked says what to do and brings a button for it."""
+    a = await db.activate_or_create_site("https://a.test")
+    b = await db.activate_or_create_site("https://b.test")
+    for sid in (a, b):
+        await db.save_check(sid, "availability", "ok", response_time_ms=100)
+    await db.save_check(a, "seo", "warning", details="2 проблемы")
+    await save_incident(a, "seo", "2 помехи в поиске, напр.: Нет карты сайта (sitemap.xml)", "warning")
+    await db.save_check(b, "seo", "ok")
+    await settings.add_heartbeat_job("backup", 1440)
+    extras = await scheduler._morning_extras([], [], await get_active_incidents())
+    text = "\n".join(extras)
+    assert "📈 За неделю: все сайты без сбоев" in text
+    assert "Поиск и ИИ" not in text                                 # a.test is in «Открытых проблем»
+    assert "⏰ backup: ⚠️ ни разу не отметилась — подключи её или удали: кнопки ниже" in text
+
+    await db.save_check(b, "availability", "error", details="Timeout (15s)")
+    await db.save_check(b, "seo", "error", details="site unreachable, audit skipped")
+    text = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    assert "📈 За неделю:\n• b.test — недоступен" in text and "\n• остальные — без сбоев" in text
+    assert "🔎 Поиск и ИИ: b.test ⚠️" in text and "a.test" not in text.split("Поиск и ИИ")[1]
+
+    async def snapshot(report_type, extras):
+        return "🌅 Доброе утро"
+
+    monkeypatch.setattr(scheduler, "_status_snapshot", snapshot)
+    await scheduler.send_morning_report()
+    buttons = [btn.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for btn in row]
+    assert buttons == ["hb_how:backup", "hb_rm:backup"]
+    await db.heartbeat_ping("backup")
+    text = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    assert "⏰ Задачи в срок: backup (" in text and "ни разу не отметилась" not in text
+    await scheduler.send_morning_report()
+    assert bot.sent[-1]["reply_markup"] is None
+    await settings.remove_heartbeat_job("backup")

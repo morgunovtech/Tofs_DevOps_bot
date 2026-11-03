@@ -6,23 +6,27 @@ What it CAN do:
 
   * on startup, notice that its installed packages or git commit changed
     since the last boot and say so («🔄 Бот обновился: aiohttp 3.10 → 3.14»);
-  * once a week, compare installed versions with PyPI and the OSV
-    vulnerability database and report what is outdated or vulnerable.
+  * every hour, notice that the newest commit on main failed to deploy while
+    the bot still runs an older build — then every next update fails too;
+  * once a week, ask OSV about known vulnerabilities and list the Dependabot
+    PRs that wait for a human.
 
 The actual upgrades arrive as Dependabot pull requests (.github/dependabot.yml)
-that CI tests and auto-merges; the hosting platform redeploys from main.
+that CI tests and auto-merges; the hosting platform redeploys from main. A
+newer version on PyPI is therefore not news: it installs itself on Saturday.
+Only what that pipeline cannot do alone is reported.
 """
 
-import asyncio
 import json
 import logging
 import os
 import platform
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import metadata
 
 import aiohttp
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import config
 from db.database import get_state, set_state
@@ -37,7 +41,11 @@ PACKAGES = (
     "python-dotenv", "cryptography", "dnspython",
 )
 GITHUB_PULLS = "https://api.github.com/repos/{slug}/pulls"
-PYPI_SIMPLE = "https://pypi.org/simple/{name}/"
+GITHUB_COMMIT = "https://api.github.com/repos/{slug}/commits/{ref}"
+GITHUB_STATUS = "https://api.github.com/repos/{slug}/commits/{ref}/status"
+_GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "TofsDevOps"}
+# A minor/patch PR still open after this long did not auto-merge: CI is red.
+STUCK_AFTER = timedelta(days=2)
 OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 
@@ -50,15 +58,6 @@ def installed_versions() -> dict[str, str]:
         except metadata.PackageNotFoundError:
             continue
     return out
-
-
-def _version_key(v: str) -> tuple[int, ...] | None:
-    """Sort key for stable versions only; pre-releases and oddities → None."""
-    parts = v.split(".")
-    try:
-        return tuple(int(p) for p in parts)
-    except ValueError:
-        return None
 
 
 # ── Startup: "what changed since last boot?" ─────────────────────────────────
@@ -90,21 +89,7 @@ async def report_startup_changes():
         await notifier.send("🔄 Бот обновился:\n" + "\n".join(lines), Priority.NORMAL)
 
 
-# ── Weekly: PyPI + OSV ───────────────────────────────────────────────────────
-
-async def _latest(session: aiohttp.ClientSession, name: str) -> str | None:
-    try:
-        async with session.get(PYPI_SIMPLE.format(name=name), headers={
-            "Accept": "application/vnd.pypi.simple.v1+json"}) as resp:
-            if resp.status != 200:
-                return None
-            data = await resp.json()
-    except Exception as e:
-        logger.debug("PyPI lookup for %s failed: %s", name, e)
-        return None
-    stable = [(k, v) for v in data.get("versions", []) if (k := _version_key(v))]
-    return max(stable)[1] if stable else None
-
+# ── Weekly: OSV + PRs waiting for a human ───────────────────────────────────
 
 async def _vulnerabilities(session: aiohttp.ClientSession,
                            versions: dict[str, str]) -> dict[str, list[str]]:
@@ -152,48 +137,107 @@ def short_bump(title: str) -> str:
     return f"{m.group(1)} {m.group(2)}{m.group(3)}→{m.group(4)}{m.group(5)}" if m else title[:60]
 
 
-async def open_major_prs(session: aiohttp.ClientSession) -> list[dict]:
-    """Dependabot PRs that CI does not auto-merge (major bumps) and that
-    are waiting for a human — public repositories only, no token needed."""
+async def _gh_json(session: aiohttp.ClientSession, url: str, **params):
+    """GitHub REST without a token (public repositories): JSON or None."""
+    try:
+        async with session.get(url, params=params or None, headers=_GH_HEADERS) as resp:
+            return await resp.json() if resp.status == 200 else None
+    except Exception as e:
+        logger.debug("GitHub %s: %s", url, e)
+        return None
+
+
+async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
+    """Dependabot PRs that wait for a human: major bumps (never auto-merged)
+    and minor ones still open after STUCK_AFTER (auto-merge waits for a
+    green CI, so the tests failed)."""
     slug = repo_slug()
     if not slug:
         return []
-    try:
-        async with session.get(GITHUB_PULLS.format(slug=slug), params={"state": "open", "per_page": "50"},
-                               headers={"Accept": "application/vnd.github+json",
-                                        "User-Agent": "TofsDevOps"}) as resp:
-            if resp.status != 200:
-                return []
-            data = await resp.json()
-    except Exception as e:
-        logger.debug("open PRs of %s: %s", slug, e)
-        return []
+    data = await _gh_json(session, GITHUB_PULLS.format(slug=slug), state="open", per_page="50")
+    now = datetime.now(UTC)
     out = []
     for pr in data if isinstance(data, list) else []:
         login = str(((pr or {}).get("user") or {}).get("login") or "")
         title = str((pr or {}).get("title") or "")
-        if login.startswith("dependabot") and is_major_bump(title):
-            out.append({"number": pr.get("number"), "title": title, "url": pr.get("html_url") or ""})
+        if not login.startswith("dependabot"):
+            continue
+        major = is_major_bump(title)
+        try:
+            opened = datetime.fromisoformat(str(pr.get("created_at")).replace("Z", "+00:00"))
+        except ValueError:
+            opened = now
+        if major or now - opened > STUCK_AFTER:
+            out.append({"number": pr.get("number"), "title": title, "url": pr.get("html_url") or "",
+                        "major": major})
     return out
 
 
 async def check_dependencies() -> dict:
-    """{"outdated": [[name, installed, latest], …], "vulns": {name: [ids]},
-    "major_prs": [{number, title, url}], "checked_at": iso} — network
-    errors degrade to empty sections."""
+    """{"vulns": {name: [ids]}, "waiting_prs": [{number, title, url, major}],
+    "checked_at": iso} — network errors degrade to empty sections."""
     versions = installed_versions()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-        latest = dict(zip(versions, await asyncio.gather(
-            *(_latest(session, n) for n in versions)), strict=True))
         vulns = await _vulnerabilities(session, versions)
-        major_prs = await open_major_prs(session)
-    outdated = [
-        [name, ver, latest[name]] for name, ver in versions.items()
-        if latest.get(name) and _version_key(ver) and _version_key(latest[name])
-        and _version_key(latest[name]) > _version_key(ver)
-    ]
-    return {"outdated": outdated, "vulns": vulns, "major_prs": major_prs,
+        prs = await waiting_prs(session)
+    return {"vulns": vulns, "waiting_prs": prs,
             "checked_at": datetime.now(UTC).isoformat(timespec="minutes")}
+
+
+# ── Hourly: did the newest version deploy? ───────────────────────────────────
+
+async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
+    """{sha, title, url, log} of the newest commit on main when the hosting
+    reported a failed deploy for it and this bot still runs an older build."""
+    slug, running = repo_slug(), config.app_commit
+    if not slug or not running:
+        return None
+    head = await _gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
+    sha = str((head or {}).get("sha") or "")
+    if not sha or sha.startswith(running):
+        return None
+    status = await _gh_json(session, GITHUB_STATUS.format(slug=slug, ref=sha))
+    failed = [st for st in (status or {}).get("statuses") or [] if st.get("state") in ("failure", "error")]
+    if not failed:
+        return None   # deployed, or still deploying
+    title = str((head.get("commit") or {}).get("message") or "").splitlines()[0][:80] if head else ""
+    return {"sha": sha[:7], "title": title, "url": head.get("html_url") or "",
+            "log": failed[0].get("target_url") or ""}
+
+
+async def run_deploy_watch():
+    """Say once per commit that the newest version did not deploy: the bot
+    keeps working on the old build, so nothing else would ever show it —
+    and every next update fails the same way."""
+    if not config.dependency_watch:
+        return
+    async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+        failed = await failed_deploy(session)
+    await set_state("deploy:failed", json.dumps(failed) if failed else None)
+    if not failed or failed["sha"] == await get_state("deploy:failed_alerted"):
+        return
+    rows = [[InlineKeyboardButton(text="📄 Лог сборки", url=failed["log"])]] if failed["log"].startswith("https://") else []
+    if failed["url"].startswith("https://"):
+        rows.append([InlineKeyboardButton(text="🔗 Что в этой версии", url=failed["url"])])
+    sent = await notifier.send(
+        f"🟠 Новая версия бота не запустилась\n"
+        f"Хостинг не смог собрать «{esc(failed['title'])}» ({esc(failed['sha'])}). Я работаю на прежней "
+        f"версии ({esc(config.app_commit[:7])}), но и следующие обновления не встанут, пока сборка падает.\n\n"
+        f"Что делать: открой лог сборки — обычно там видно, какой пакет не поставился. "
+        f"Быстрый выход — откатить этот коммит в GitHub (Revert).",
+        notifier.priority_for("warning"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
+    if sent:
+        await set_state("deploy:failed_alerted", failed["sha"])
+
+
+async def deploy_problem() -> dict | None:
+    """The last failed deploy seen by run_deploy_watch, for the diagnostics."""
+    raw = await get_state("deploy:failed")
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
 
 
 async def run_dependency_watch():
@@ -235,23 +279,27 @@ async def last_check() -> dict | None:
         return None
 
 
+def _pr_links(prs: list[dict]) -> str:
+    return ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(short_bump(p.get("title") or ""))}</a>'
+                     for p in prs[:4])
+
+
 def summary_lines(result: dict | None) -> list[str]:
-    """Lines for the weekly report from a stored check_dependencies() result."""
+    """Lines for the weekly report from a stored check_dependencies() result:
+    only what needs a human. Updates that install themselves are not news."""
     if not result:
         return []
     lines: list[str] = []
     if result.get("vulns"):
         names = ", ".join(sorted(result["vulns"]))
-        lines.append(f"🛡 Уязвимые пакеты: {esc(names)} — жду PR от Dependabot")
-    if result.get("outdated"):
-        items = ", ".join(f"{n} {cur}→{new}" for n, cur, new in result["outdated"][:6])
-        lines.append(f"📦 Есть обновления: {esc(items)}")
-    if result.get("major_prs"):
-        prs = result["major_prs"]
-        items = ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(short_bump(p.get("title") or ""))}</a>'
-                          for p in prs[:4])
-        lines.append(f"🔀 Ждут твоего решения: {len(prs)} PR с крупным обновлением — {items}. "
+        lines.append(f"🛡 Уязвимые пакеты: {esc(names)} — исправление придёт с Dependabot и встанет само")
+    prs = result.get("waiting_prs") or [{**p, "major": True} for p in result.get("major_prs") or []]
+    stuck = [p for p in prs if not p.get("major")]
+    major = [p for p in prs if p.get("major")]
+    if stuck:
+        lines.append(f"🟠 Обновление не встало само — тесты не прошли: {_pr_links(stuck)}. "
+                     f"Открой PR и посмотри, что упало.")
+    if major:
+        lines.append(f"🔀 Ждут твоего решения: {len(major)} PR с крупным обновлением — {_pr_links(major)}. "
                      f"Такие сами не вливаются: открой, прочитай «что поменялось» и нажми Merge.")
-    if not lines:
-        lines.append("📦 Зависимости актуальны, уязвимостей нет")
     return lines

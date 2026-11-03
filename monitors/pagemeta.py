@@ -4,6 +4,7 @@
 import aiohttp
 from bs4 import BeautifulSoup
 
+from monitors.base import read_capped
 from utils.urls import USER_AGENT, host_of, registrable_domain
 
 TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
@@ -17,7 +18,7 @@ async def suggest_keyword(url: str) -> str | None:
             async with s.get(url, allow_redirects=True) as resp:
                 if resp.status != 200 or "html" not in (resp.content_type or ""):
                     return None
-                raw = await resp.content.read(MAX_BYTES)
+                raw = await read_capped(resp, MAX_BYTES)
     except Exception:
         return None
     soup = BeautifulSoup(raw.decode("utf-8", errors="replace"), "html.parser")

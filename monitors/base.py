@@ -1,4 +1,5 @@
-"""Typed results shared by every monitor, plus the one gather() helper.
+"""Typed results shared by every monitor, plus the gather() and
+read_capped() helpers.
 
 `manage=False` on a check means read-only: the check row is still saved
 (it feeds uptime and sparklines) but incidents and alert state are NOT
@@ -10,6 +11,8 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import TypedDict
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +148,21 @@ class SeoResult(CheckResult):
     @property
     def has_critical(self) -> bool:
         return any(p.severity == "critical" for p in self.problems)
+
+
+async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:
+    """The body up to `limit` bytes. StreamReader.read(n) returns whatever
+    is buffered, NOT n bytes: one call hands back a random prefix of the
+    page (a missing h1, an empty sitemap) — accumulate explicitly."""
+    chunks: list[bytes] = []
+    remaining = limit
+    while remaining > 0:
+        chunk = await resp.content.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 async def gather_checks(coros, label: str) -> list:

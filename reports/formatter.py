@@ -126,7 +126,7 @@ def format_links_report(r: LinksResult) -> str:
         n = len(internal)
         lines.append(f"🟠 На {label} {n} {'ссылка ведёт' if n % 10 == 1 and n % 100 != 11 else 'ссылок ведут'} в никуда")
         lines.append(expl.meaning)
-        lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in internal[:10]]
+        lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in internal[:10]]
         if n > 10:
             lines.append(f"  … и ещё {n - 10}")
         if external:
@@ -145,10 +145,28 @@ def external_links_block(external: list, label: str | None = None) -> list[str]:
     where = f" на {label}" if label else ""
     lines = [f"ℹ️ {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')}{where} на чужие сайты "
              f"{'не открывается' if n % 10 == 1 and n % 100 != 11 else 'не открываются'}:"]
-    lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error))}" for b in external[:10]]
+    lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in external[:10]]
     if n > 10:
         lines.append(f"  … и ещё {n - 10}")
     lines.append("Чужие сайты я не считаю проблемой. Если ссылка важна — замени или убери её.")
+    return lines
+
+
+def external_links_summary(results: list[LinksResult]) -> list[str]:
+    """For the manual check: every link to another site that does not open,
+    grouped by the page it is on, with the reason and what to do — instead
+    of a bare count."""
+    hit = [r for r in results if r.broken_external]
+    if not hit:
+        return []
+    lines = ["ℹ️ Свои ссылки работают. Не открываются ссылки на чужие сайты:"]
+    for r in hit:
+        lines.append(f"{esc(site_label(r.url))}:")
+        lines += [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in r.broken_external[:10]]
+        if len(r.broken_external) > 10:
+            lines.append(f"… и ещё {len(r.broken_external) - 10}")
+    lines.append("Что сделать: если страница переехала — поставь новый адрес; пропала — убери ссылку "
+                 "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")
     return lines
 
 
@@ -243,9 +261,11 @@ def format_compact_status_report(availability: list[AvailabilityResult],
     if incidents:
         worst = worst_severity(i.get("severity") for i in incidents)
         lines += ["", f"{level_icon(worst)} Открытых проблем: {len(incidents)}"]
-        lines += [f"  {level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in incidents[:5]]
+        # No leading spaces: Telegram wraps a long line back to column 0,
+        # and the indent only makes the wrap look crooked.
+        lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in incidents[:5]]
         if len(incidents) > 5:
-            lines.append(f"  … и ещё {len(incidents) - 5}")
+            lines.append(f"… и ещё {len(incidents) - 5}")
     elif all_ok:
         lines += ["", "Всё спокойно 🐕"]
     if extras:

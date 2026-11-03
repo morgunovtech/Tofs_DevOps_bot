@@ -6,7 +6,8 @@ import re
 
 import aiohttp
 
-from utils.urls import host_of
+from monitors.base import read_capped
+from utils.urls import USER_AGENT, host_of
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,10 @@ async def fetch_text(session: aiohttp.ClientSession, url: str,
                      limit: int = MAX_SITEMAP_BYTES) -> str | None:
     """Body text of a 200 response, capped at `limit` bytes; None otherwise."""
     try:
-        async with session.get(url, timeout=TIMEOUT) as resp:
+        async with session.get(url, timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as resp:
             if resp.status != 200:
                 return None
-            raw = await resp.content.read(limit)
+            raw = await read_capped(resp, limit)
             return raw.decode(resp.charset or "utf-8", errors="replace")
     except Exception as e:
         logger.debug("sitemap: could not fetch %s: %s", url, e)

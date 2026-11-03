@@ -191,43 +191,58 @@ async def build_items() -> list[Item]:
     return items
 
 
-async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
-    items = await build_items()
-    ok = [i for i in items if i.status == "ok"]
-    warn = [i for i in items if i.status == "warn"]
-    off = [i for i in items if i.status == "off"]
-    lines = ["🩺 Диагностика и настройка\n"]
-    if ok:
-        lines.append("✅ Работает: " + " · ".join(esc(i.title) for i in ok))
-    if warn:
-        lines.append("\n⚠️ Требует внимания:")
-        lines += [f"• {esc(i.title)}: {esc(i.detail)}" for i in warn]
-    if off:
-        lines.append("\n➕ Можно подключить (необязательно):")
-        lines += [f"• {esc(i.title)} — {esc(i.detail)}" for i in off]
-    if not warn and not off:
-        lines.append("\nВсё подключено 🐕")
-    versions = updates.installed_versions()
-    footer = (f"Python {platform.python_version()} · aiogram {versions.get('aiogram', '?')} · "
-              f"aiohttp {versions.get('aiohttp', '?')}"
-              + (f" · сборка {esc(config.app_commit)}" if config.app_commit else "")
-              + f" · скриншоты {esc(host_of(config.screenshot_template) or '?')}")
-    lines += ["", f"<i>{footer}</i>"]
-    lines += [f"<i>{line}</i>" for line in updates.summary_lines(await updates.last_check())]
-
+def _button_rows(items: list[Item]) -> list[list[InlineKeyboardButton]]:
     rows, row = [], []
-    for i in warn + off:
+    for i in items:
         if i.button:
             row.append(InlineKeyboardButton(text=i.button[0], callback_data=i.button[1]))
             if len(row) == 2:
                 rows.append(row)
                 row = []
-    if row:
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check"),
-                 InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert")])
-    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
+    return rows + [row] if row else rows
+
+
+async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
+    """What works is one line, not a list of components; what is broken
+    comes with its fix; what could be connected waits behind one button."""
+    items = await build_items()
+    warn = [i for i in items if i.status == "warn"]
+    off = [i for i in items if i.status == "off"]
+    deploy = await updates.deploy_problem()
+    if warn or deploy:
+        lines = ["🩺 Боту нужна твоя помощь\n"]
+        lines += [f"⚠️ {esc(i.title)}: {esc(i.detail)}" for i in warn]
+        if deploy:
+            lines.append(f"🟠 Новая версия ({esc(deploy['sha'])}) не запустилась — работаю на прежней. "
+                         f"Лог сборки — в сообщении «Новая версия бота не запустилась».")
+    else:
+        lines = ["🩺 Бот работает, всё в порядке."]
+    lines.append(f"\n<i>Python {platform.python_version()}"
+                 + (f" · сборка {esc(config.app_commit[:7])}" if config.app_commit else "") + "</i>")
+
+    rows = _button_rows(warn)
+    if warn:
+        rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
+    if off:
+        rows.append([InlineKeyboardButton(text=f"➕ Подключить ещё ({len(off)})", callback_data="setup:more")])
+    rows.append([InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert"),
+                 InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "setup:more")
+async def cb_more(call: CallbackQuery):
+    """Optional integrations — each with what it gives and one button."""
+    await ack(call)
+    off = [i for i in await build_items() if i.status == "off"]
+    if not off:
+        await render(call, "Всё уже подключено.", back_button("← К диагностике", "setup:check"))
+        return
+    lines = ["➕ Можно подключить — всё необязательно:\n"]
+    lines += [f"• {esc(i.title)} — {esc(i.detail)}" for i in off]
+    rows = _button_rows(off)
+    rows.append([InlineKeyboardButton(text="← К диагностике", callback_data="setup:check")])
+    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 async def show_checklist(target):

@@ -33,7 +33,7 @@ from bs4 import BeautifulSoup
 
 from config import config
 from db.database import get_or_create_site, resolve_incident, save_check, save_incident
-from monitors.base import SeoProblem, SeoResult, gather_checks
+from monitors.base import SeoProblem, SeoResult, gather_checks, read_capped
 from monitors.sitemap import pick_sample, sitemap_urls
 from services import seo_fixes, sitestatus
 from utils.text import plural
@@ -156,7 +156,7 @@ async def _fetch(session: aiohttp.ClientSession, url: str,
     try:
         async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
                                headers={"User-Agent": ua}) as resp:
-            raw = await resp.content.read(MAX_PAGE_BYTES)
+            raw = await read_capped(resp, MAX_PAGE_BYTES)
             body = raw.decode(resp.charset or "utf-8", errors="replace")
             # Join duplicate headers (two X-Robots-Tag lines) instead of
             # keeping only the last one.
@@ -189,14 +189,20 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         # on, so nothing to say. Only a present file can block, and only an
         # erroring one can stall Google's crawl.
         status, robots_text, _ = await _fetch(session, f"{base}/robots.txt")
+        declared: list[str] = []
         if status == 200:
-            problems.extend(analyze_robots(robots_text, base)[0])
+            robot_problems, declared = analyze_robots(robots_text, base)
+            problems.extend(robot_problems)
         elif status is not None and status != 404:
             problems.append(_p("robots_http_error", "warning", f"robots.txt отвечает ошибкой HTTP {status}"))
 
         pages = await sitemap_urls(session, base)
-        if not pages:
-            problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
+        if not pages and not declared:
+            # Only a definite answer is a finding: a timeout or a 5xx says
+            # nothing about whether the sitemap exists — skip, not «нет».
+            sm_status, _, _ = await _fetch(session, f"{base}/sitemap.xml")
+            if sm_status is not None and sm_status < 500:
+                problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
         sample = [base + "/"] + pick_sample(
             [p for p in pages if p.rstrip("/") != base], max(0, config.seo_pages_sample - 1))
         for page in sample:

@@ -9,6 +9,8 @@ what it usually is, and what to do. Pure functions, unit-tested.
 import re
 from dataclasses import dataclass
 
+from utils.text import plural
+
 # ── Problem types (incident check_type → words) ──────────────────────────────
 
 PROBLEM_TYPES = {
@@ -116,8 +118,12 @@ _RULES: list[tuple[re.Pattern, object]] = [
 ]
 
 
-def link_reason(status_code: int | None, error: str | None) -> str:
-    """Why one link is broken: '404' → 'страница не найдена (ошибка 404)'."""
+def link_reason(status_code: int | None, error: str | None, url: str = "") -> str:
+    """Why one link is broken: '404' → 'страница не найдена (ошибка 404)'.
+    GitHub answers 404 for a private repository: the owner opens it fine,
+    everyone else does not — say that, it is the usual cause."""
+    if status_code == 404 and re.match(r"https?://(www\.)?github\.com/[^/]+/[^/]+", url or "", re.I):
+        return "закрытый или удалённый репозиторий — у посетителей ошибка 404"
     if status_code:
         return _http(status_code)
     return describe_error(error)
@@ -365,8 +371,23 @@ def incident_headline(check_type: str, message: str | None, label: str) -> str:
     if check_type == "deep":
         return f"{label}: {what}"
     if check_type == "seo":
+        # «2 помехи в поиске, напр.: Нет карты сайта» → «нет карты сайта и ещё
+        # 1 помеха»: what is wrong first, the count after, no «напр.».
+        m = _SEO_SUMMARY.match(what)
+        if m:
+            rest = int(m.group(1)) - 1
+            more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest > 0 else ""
+            return f"{label}: {_lower_first(m.group(2))}{more}"
         return f"{label}: {what}"
     return f"{label}: {what}"
+
+
+_SEO_SUMMARY = re.compile(r"^(\d+) \S+ в поиске, напр\.: (.+)$")
+
+
+def _lower_first(text: str) -> str:
+    """«Нет карты сайта» → «нет карты сайта»; «JSON-LD …» stays as is."""
+    return text[0].lower() + text[1:] if len(text) > 1 and not text[1].isupper() else text
 
 
 # ── Registrar panels (from RDAP registrar names) ─────────────────────────────
