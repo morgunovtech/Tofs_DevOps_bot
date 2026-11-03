@@ -19,7 +19,8 @@ def test_describe_error_covers_the_common_cases():
     assert describe_error("SSL expired 3 days ago") == "сертификат истёк 3 дн. назад"
     assert describe_error("Domain expires in 12 days") == "домен истекает через 12 дн."
     assert describe_error("Slow responses: ~5000ms") == "открывается за 5.0 с"
-    assert describe_error("3 broken link(s) found on https://x") == "3 ссылок ведут в никуда"
+    assert describe_error("3 broken link(s) found on https://x") == "3 ссылки не открываются"
+    assert describe_error("1 broken link(s) found on https://x") == "1 ссылка не открывается"
     assert describe_error("5xx на 3 из 10 проверенных страниц") == "3 из 10 проверенных страниц отдают ошибку"
     assert describe_error("Cannot connect to host x:443 ssl:default [Name or service not known]") \
         == "адрес сайта не находится (проблема с DNS)"

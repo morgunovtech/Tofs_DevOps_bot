@@ -1,14 +1,25 @@
-"""Broken-link crawl of one page: internal broken links are actionable
-(incident), external unreachable ones are informational."""
+"""Broken-link crawl of one page. A link that does not open is a dead end
+for the visitor wherever it points, and the owner can always fix it (a new
+address, an archive copy, or remove it) — so own and other sites' links are
+one list and one 🟠 problem.
+
+What decides is how sure the answer is, not the domain:
+  * definite — a 4xx (page gone), a domain that does not resolve, a bad
+    certificate: a problem at once;
+  * maybe temporary — a timeout, a 5xx, a refused connection: a problem
+    only when the same link failed on the previous scheduled crawl too;
+  * a bot block (401/403/429…, ALWAYS_OK_HOSTS) is not an answer at all.
+"""
 
 import asyncio
+import json
 import logging
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
 
-from db.database import get_or_create_site, resolve_incident, save_check, save_incident
+from db.database import get_or_create_site, get_state, resolve_incident, save_check, save_incident, set_state
 from monitors.base import LinkCheck, LinksResult, decode_body, gather_checks, read_capped
 from services import sitestatus
 from utils.urls import USER_AGENT, host_of, same_site
@@ -105,6 +116,19 @@ def extract_links(html: str, base_url: str) -> list[str]:
     return sorted(links)
 
 
+_DNS_GONE = ("name or service not known", "nodename nor servname", "no address associated",
+             "name does not resolve", "temporary failure in name")
+
+
+def is_definite(c: LinkCheck) -> bool:
+    """The far end answered for sure: the page or the domain is gone, or
+    its certificate is bad. Timeouts and 5xx may pass by themselves."""
+    if c.status_code is not None:
+        return 400 <= c.status_code < 500
+    err = (c.error or "").lower()
+    return "certificate" in err or any(s in err for s in _DNS_GONE)
+
+
 async def check_links(url: str, manage: bool = True) -> LinksResult:
     site_id = await get_or_create_site(url)
     r = LinksResult(url=url, site_id=site_id)
@@ -113,7 +137,7 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
         if not html:
             r.status, r.error, r.transient = "error", "Could not fetch page", True
             await save_check(site_id, "links", "error", details=r.error)
-            await sitestatus.update(site_id, "links", status="error", internal=0, external=0)
+            await sitestatus.update(site_id, "links", status="error", broken=0, pending=0)
             return r
         links = extract_links(html, url)
         r.total_links = len(links)
@@ -123,37 +147,35 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
             async with sem:
                 return await _check_link(session, link, url)
 
-        for c in await asyncio.gather(*(guarded(link) for link in links)):
-            if c.ok:
-                continue
-            if same_site(c.url, url):
-                # Own page that only timed out twice: not a verdict (the
-                # availability check owns «the site is slow/down»). An HTTP
-                # error or a bad certificate is.
-                if c.status_code is None and "certificate" not in (c.error or "").lower():
-                    continue
-                r.broken_internal.append(c)
-            else:
-                r.broken_external.append(c)
+        failed = [c for c in await asyncio.gather(*(guarded(link) for link in links)) if not c.ok]
 
-    if r.broken_internal:
+    # A maybe-temporary failure becomes a problem on the second crawl in a
+    # row; the list of such links is alert state, kept by the scheduler only.
+    key = f"links_suspect:{site_id}"
+    try:
+        suspects = set(json.loads(await get_state(key) or "[]"))
+    except ValueError:
+        suspects = set()
+    flaky = [c for c in failed if not is_definite(c)]
+    for c in failed:
+        (r.broken if is_definite(c) or c.url in suspects else r.pending).append(c)
+    if manage:
+        await set_state(key, json.dumps(sorted(c.url for c in flaky)) if flaky else None)
+
+    if r.broken:
         r.status = "warning"
-        preview = "\n".join(f"  - {b.url} ({b.reason})" for b in r.broken_internal[:10])
-        r.error = (f"{len(r.broken_internal)} broken internal link(s)"
-                   + (f" (+{len(r.broken_external)} external unreachable)"
-                      if r.broken_external else "") + f":\n{preview}")
+        preview = "\n".join(f"  - {b.url} ({b.reason})" for b in r.broken[:10])
+        r.error = f"{len(r.broken)} broken link(s):\n{preview}"
     details = r.error or (f"All {r.total_links} links OK"
-                          + (f" ({len(r.broken_external)} external unreachable, ignored)"
-                             if r.broken_external else ""))
+                          + (f" ({len(r.pending)} failed once, rechecking)" if r.pending else ""))
     await save_check(site_id, "links", r.status, details=details)
-    await sitestatus.update(site_id, "links", status=r.status, internal=len(r.broken_internal),
-                            external=len(r.broken_external), total=r.total_links)
+    await sitestatus.update(site_id, "links", status=r.status, broken=len(r.broken),
+                            pending=len(r.pending), total=r.total_links)
     if not manage:
         return r
-    if r.broken_internal:
+    if r.broken:
         r.incident_id, r.incident_new = await save_incident(
-            site_id, "links", f"{len(r.broken_internal)} broken link(s) found on {url}",
-            severity="warning")
+            site_id, "links", f"{len(r.broken)} broken link(s) found on {url}", severity="warning")
     elif await resolve_incident(site_id, "links"):
         r.recovered = True
     return r

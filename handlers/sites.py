@@ -170,10 +170,10 @@ async def card_lines(site: dict) -> list[str]:
         links = st.get("links")
         if links:
             if links.get("status") == "ok":
-                lines.append(f"✅ Ссылки: все работают{_ago(links)}")
+                lines.append(f"✅ Ссылки: все открываются{_ago(links)}")
             elif links.get("status") == "warning":
-                n = links.get("internal") or 0
-                lines.append(f"🟠 Ссылки: {n} {plural(n, 'ведёт', 'ведут', 'ведут')} в никуда{_ago(links)}")
+                n = links.get("broken", links.get("internal")) or 0
+                lines.append(f"🟠 Ссылки: {n} не {plural(n, 'открывается', 'открываются', 'открываются')}{_ago(links)}")
             else:
                 lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
         seo = st.get("seo")

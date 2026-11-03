@@ -9,7 +9,7 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **SSL certificates** — an alert ladder (14 → 7 → 3 → 1 → 0 days) instead of daily nagging, plus a *renewal watch*: it tracks the certificate serial and warns when auto-renewal (Cloudflare/certbot) silently stops working. A renewal that worked is normal operation: no message, just a line in the Sunday report.
 - **Domain expiry** via RDAP (the protocol that replaced WHOIS for gTLDs in 2025; IANA bootstrap + rdap.org, a tiny async WHOIS fallback for .ru/.su/.рф), with its own alert ladder.
 - **DNS changes** — snapshots A/AAAA/CNAME/NS/MX records hourly; a changed NS record (that's what a hijack looks like) is a critical alert.
-- **Broken links** — crawls your pages, separates *your* broken links (actionable) from dead external ones (noise).
+- **Broken links** — a link that does not open is a dead end for your visitor wherever it points, so own and external links are one list. What decides is certainty, not the domain: a 4xx or a vanished domain counts at once, a timeout or 5xx only if it repeats on the next crawl, a bot block (401/403/429) never.
 - **Deep 5xx probe** — samples pages from `sitemap.xml` hourly, catching "homepage is fine but half the site is erroring".
 - **Keyword / stop-phrase check** — per site: alert when a phrase disappears from the page, or when a bad one appears («Fatal error»). Catches the classic "HTTP 200 with a white screen".
 - **Custom HTTP requests** — per site: method (GET/HEAD/POST…), headers (`Authorization: Bearer …`) and a request body, so an API behind a token or a POST-only health endpoint is a first-class monitor.

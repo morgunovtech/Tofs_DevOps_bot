@@ -14,8 +14,6 @@ from monitors.base import (
     SslResult,
 )
 from reports.formatter import (
-    external_links_block,
-    external_links_summary,
     format_availability_alert,
     format_compact_status_report,
     format_dns_change,
@@ -23,6 +21,7 @@ from reports.formatter import (
     format_recovery_alert,
     format_seo_alert,
     format_ssl_alert,
+    links_summary,
 )
 
 NOW = datetime.now(UTC).isoformat(timespec="seconds")
@@ -88,7 +87,7 @@ def test_compact_report_open_problems_carry_their_own_level():
     assert "🟠 Открытых проблем: 2" in text and "🔴" not in text
     # No leading spaces (Telegram wraps them back to column 0); a search
     # finding leads with what is wrong, the count after.
-    assert "\n🟠 ex.com: нет карты сайта и ещё 1 помеха" in text and "\n🟠 ex.com: 3 ссылок ведут в никуда" in text
+    assert "\n🟠 ex.com: нет карты сайта и ещё 1 помеха" in text and "\n🟠 ex.com: 3 ссылки не открываются" in text
     assert "напр." not in text and "\n  " not in text
     mixed = warnings + [{"check_type": "availability", "severity": "critical", "url": "https://ex.com",
                          "message": "Site down: HTTP 502"}]
@@ -129,28 +128,21 @@ def test_seo_texts_are_html_safe():
     assert "Чем грозит" in steps and "1. WordPress" in steps and "&lt;title&gt;" in steps
 
 
-def test_links_report_lists_external_links_too():
-    ext = [LinkCheck(url="https://other.test/a", status_code=404, ok=False),
-           LinkCheck(url="https://dead.test/b", status_code=None, ok=False, error="timeout")]
-    r = LinksResult(url="https://ex.com", site_id=1, total_links=52, broken_external=ext)
+def test_a_dead_link_is_a_problem_wherever_it_points():
+    """Owner, 03.11.2026: «неработающая ссылка = неработающая ссылка» — own
+    and other sites' links are one list, one 🟠, with the reason and a fix."""
+    broken = [LinkCheck(url="https://ex.com/old", status_code=404, ok=False),
+              LinkCheck(url="https://github.com/me/private-repo", status_code=404, ok=False),
+              LinkCheck(url="https://gone.example/", status_code=None, ok=False,
+                        error="Cannot connect to host gone.example:443 [Name or service not known]")]
+    r = LinksResult(url="https://ex.com", site_id=1, total_links=52, broken=broken)
     text = format_links_report(r)
-    assert "https://other.test/a — страница не найдена (ошибка 404)" in text
-    assert "https://dead.test/b — timeout" in text and "2 ссылки на ex.com" in text
-    block = external_links_block(ext)
-    assert block[0].startswith("ℹ️ 2 ссылки на чужие сайты не открываются")
-
-
-def test_manual_check_names_every_dead_external_link():
-    """Before: «✅ Ссылки: свои работают; чужих не открываются 3» — which,
-    where, why and what to do were all missing."""
-    r = LinksResult(url="https://s.ex", site_id=1, broken_external=[
-        LinkCheck("https://github.com/me/private-repo", 404, False),
-        LinkCheck("https://shop.example/go", 502, False)])
-    clean = LinksResult(url="https://b.ex", site_id=2)
-    lines = external_links_summary([r, clean])
-    text = "\n".join(lines)
-    assert lines[0].startswith("ℹ️ Свои ссылки работают") and "s.ex:" in text and "b.ex" not in text
+    assert text.startswith("🟠 На ex.com 3 ссылки не открываются")
+    assert "• https://ex.com/old — страница не найдена (ошибка 404)" in text
     assert "• https://github.com/me/private-repo — закрытый или удалённый репозиторий" in text
-    assert "• https://shop.example/go — " in text and "502" in text
-    assert lines[-1].startswith("Что сделать:")
-    assert external_links_summary([clean]) == []
+    assert "адрес сайта не находится" in text and "чужих" not in text and "не считаю проблемой" not in text
+    assert text.splitlines()[-1].startswith("Что сделать:")
+    clean = LinksResult(url="https://b.ex", site_id=2)
+    lines = links_summary([r, clean])
+    assert lines[0] == "🟠 3 ссылки не открываются:" and "ex.com:" in lines and "b.ex:" not in lines
+    assert links_summary([clean]) == [] and format_links_report(clean) == ""

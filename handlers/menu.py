@@ -23,7 +23,7 @@ from monitors.availability import check_all
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
 from monitors.ssl_checker import check_all_ssl
-from reports.formatter import external_links_summary, format_compact_status_report, incident_line
+from reports.formatter import format_compact_status_report, incident_line, links_summary
 from services import humanize, maintenance, notifier, sitestatus
 from utils.clock import to_local, utcnow
 from utils.text import clip, esc, fmt_duration, plural
@@ -75,9 +75,9 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
         notes.append(("critical" if days <= 7 else "warning",
                       "домен истёк" if days < 0 else f"домен через {days} дн."))
     links = st.get("links") or {}
-    if links.get("internal"):
-        n = links["internal"]
-        notes.append(("warning", f"{n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} в никуда"))
+    n = links.get("broken", links.get("internal"))   # «internal»: snapshots from before 11.2026
+    if n:
+        notes.append(("warning", f"{n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"))
     seo = st.get("seo") or {}
     if seo.get("status") == "critical":
         notes.append(("critical", "закрыт от поиска"))
@@ -236,16 +236,16 @@ async def cb_check_now(call: CallbackQuery):
     report = format_compact_status_report(availability, incidents, ssl_results, domain_results)
     await render(call, report + "\n\n▰▰▱ Проверяю ссылки на страницах...")
     links_results = await check_all_links(http_urls, manage=False)
-    internal = sum(len(r.broken_internal) for r in links_results)
-    external = sum(len(r.broken_external) for r in links_results)
     failed = sum(1 for r in links_results if r.status == "error")
+    pending = sum(len(r.pending) for r in links_results)
+    broken = links_summary(links_results)
+    if broken:
+        report += "\n\n" + "\n".join(broken)
+    elif not failed and not pending:
+        report += "\n\n✅ Ссылки: все открываются"
     if failed:
         report += f"\n\n⚠️ Ссылки: не смог проверить {failed} из {len(links_results)} сайтов"
-    elif internal:
-        report += (f"\n\n🟠 {internal} {plural(internal, 'ссылка ведёт', 'ссылки ведут', 'ссылок ведут')} "
-                   f"в никуда — подробности в карточке сайта («🌍 Сайты» → сайт → «🔗 Ссылки»)")
-    elif external:
-        report += "\n\n" + "\n".join(external_links_summary(links_results))
-    else:
-        report += "\n\n✅ Ссылки: все работают"
+    if pending:
+        report += (f"\n\n⚠️ {pending} {plural(pending, 'ссылка', 'ссылки', 'ссылок')} не открылись с первого "
+                   f"раза — перепроверю при следующем обходе")
     await render(call, report, back_button())

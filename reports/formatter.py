@@ -115,58 +115,48 @@ def format_domain_alert(r: DomainResult) -> str:
 
 # ── Links / deep / SEO / DNS ─────────────────────────────────────────────────
 
-def format_links_report(r: LinksResult) -> str:
-    internal, external = r.broken_internal, r.broken_external
-    if not internal and not external:
-        return ""
-    label = esc(site_label(r.url))
-    lines: list[str] = []
-    if internal:
-        expl = explain("links", "")
-        n = len(internal)
-        lines.append(f"🟠 На {label} {n} {'ссылка ведёт' if n % 10 == 1 and n % 100 != 11 else 'ссылок ведут'} в никуда")
-        lines.append(expl.meaning)
-        lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in internal[:10]]
-        if n > 10:
-            lines.append(f"  … и ещё {n - 10}")
-        if external:
-            lines.append("")
-            lines += external_links_block(external)
-    else:
-        lines += external_links_block(external, label)
-    return "\n".join(lines)
+LINK_FIX = ("Что сделать: если страница переехала — поставь новый адрес; пропала — убери ссылку "
+            "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")
 
 
-def external_links_block(external: list, label: str | None = None) -> list[str]:
-    """Which links to other sites do not open, with the reason for each.
-    Someone else's outage is not the owner's problem (ℹ️, never an alert),
-    but a dead link is a dead link — the person wants to see WHICH ones."""
-    n = len(external)
-    where = f" на {label}" if label else ""
-    lines = [f"ℹ️ {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')}{where} на чужие сайты "
-             f"{'не открывается' if n % 10 == 1 and n % 100 != 11 else 'не открываются'}:"]
-    lines += [f"  • {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in external[:10]]
-    if n > 10:
-        lines.append(f"  … и ещё {n - 10}")
-    lines.append("Чужие сайты я не считаю проблемой. Если ссылка важна — замени или убери её.")
+def link_lines(links: list, limit: int = 10) -> list[str]:
+    """«• url — why» for each link, own site or not alike."""
+    lines = [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in links[:limit]]
+    if len(links) > limit:
+        lines.append(f"… и ещё {len(links) - limit}")
     return lines
 
 
-def external_links_summary(results: list[LinksResult]) -> list[str]:
-    """For the manual check: every link to another site that does not open,
-    grouped by the page it is on, with the reason and what to do — instead
-    of a bare count."""
-    hit = [r for r in results if r.broken_external]
+def format_links_report(r: LinksResult) -> str:
+    """The alert and the «🔗 Ссылки» screen: every link that does not open,
+    wherever it points — a dead end for the visitor is the owner's to fix."""
+    if not r.broken:
+        return ""
+    n = len(r.broken)
+    lines = [f"🟠 На {esc(site_label(r.url))} {n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}",
+             explain("links", "").meaning, *link_lines(r.broken), LINK_FIX]
+    return "\n".join(lines)
+
+
+def pending_note(pending: list) -> str:
+    n = len(pending)
+    return (f"⚠️ Ещё {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} не {plural(n, 'открылась', 'открылись', 'открылись')} "
+            f"с первого раза (таймаут или ошибка сервера) — перепроверю при следующем обходе и скажу, "
+            f"если так и останется.")
+
+
+def links_summary(results: list[LinksResult]) -> list[str]:
+    """For the manual check: every link that does not open, grouped by the
+    page it is on, with the reason and what to do — not a bare count."""
+    hit = [r for r in results if r.broken]
     if not hit:
         return []
-    lines = ["ℹ️ Свои ссылки работают. Не открываются ссылки на чужие сайты:"]
+    n = sum(len(r.broken) for r in hit)
+    lines = [f"🟠 {n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}:"]
     for r in hit:
         lines.append(f"{esc(site_label(r.url))}:")
-        lines += [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in r.broken_external[:10]]
-        if len(r.broken_external) > 10:
-            lines.append(f"… и ещё {len(r.broken_external) - 10}")
-    lines.append("Что сделать: если страница переехала — поставь новый адрес; пропала — убери ссылку "
-                 "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")
+        lines += link_lines(r.broken)
+    lines.append(LINK_FIX)
     return lines
 
 

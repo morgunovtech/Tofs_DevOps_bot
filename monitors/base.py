@@ -117,8 +117,8 @@ class LinkCheck:
 @dataclass
 class LinksResult(CheckResult):
     total_links: int = 0
-    broken_internal: list[LinkCheck] = field(default_factory=list)
-    broken_external: list[LinkCheck] = field(default_factory=list)
+    broken: list[LinkCheck] = field(default_factory=list)    # a problem: own or other site alike
+    pending: list[LinkCheck] = field(default_factory=list)   # failed once (timeout/5xx), rechecking
 
 
 @dataclass
