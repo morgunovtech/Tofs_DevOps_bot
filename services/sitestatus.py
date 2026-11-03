@@ -7,7 +7,7 @@ not, because an observation is an observation.
     {"avail": {"status", "ms", "error", "at"},
      "ssl": {"days_left", "issuer", "not_after", "error", "renewed_at", "at"},
      "domain": {"days_left", "expiration", "registrar", "unsupported", "error", "at"},
-     "links": {"status", "internal", "external", "at"},
+     "links": {"status", "broken", "pending", "total", "at"},
      "seo": {"status", "critical", "improve", "problems": [{"code", "severity", "message"}],
              "pages", "no_js_chars", "at"},
      "google": {"verdict", "coverage", "last_crawl", "at"},     # Search Console: is the homepage indexed

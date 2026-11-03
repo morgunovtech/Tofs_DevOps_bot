@@ -90,7 +90,8 @@ _RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"^Domain expires in (\d+) days!?$"), lambda m: f"домен истекает через {m.group(1)} дн."),
     (re.compile(r"^Lookup failed: .+$", re.S), lambda m: "не удалось узнать срок домена"),
     (re.compile(r"^Slow responses: ~(\d+)ms$"), lambda m: f"открывается за {fmt_seconds(int(m.group(1)))}"),
-    (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"), lambda m: f"{m.group(1)} ссылок ведут в никуда"),
+    (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"),
+     lambda m: f"{m.group(1)} {plural(int(m.group(1)), 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"),
     (re.compile(r"^5xx на (\d+) из (\d+) проверенных страниц$"),
      lambda m: f"{m.group(1)} из {m.group(2)} проверенных страниц отдают ошибку"),
     (re.compile(r"^Could not fetch page$"), lambda m: "страница не загрузилась"),
@@ -112,7 +113,7 @@ def link_reason(status_code: int | None, error: str | None, url: str = "") -> st
     GitHub answers 404 for a private repository: the owner opens it fine,
     everyone else does not — say that, it is the usual cause."""
     if status_code == 404 and re.match(r"https?://(www\.)?github\.com/[^/]+/[^/]+", url or "", re.I):
-        return "закрытый или удалённый репозиторий — у посетителей ошибка 404"
+        return "закрытый или удалённый репозиторий (у посетителей ошибка 404)"
     if status_code:
         return _http(status_code)
     return describe_error(error)
@@ -227,10 +228,12 @@ EXPLANATIONS: dict[str, Explanation] = {
                 "Если продолжится — посмотреть нагрузку в панели хостинга или написать в поддержку.",
                 "Если так всегда — поставить сайт за Cloudflare или перейти на тариф побольше.")),
     "links": _E("links",
-                "Часть ссылок на сайте ведёт на «страница не найдена».",
-                "страницы переименовали или удалили, а ссылки на них остались",
+                "Посетитель нажмёт — и упрётся в ошибку. Неважно, ведёт ссылка на твой сайт или на чужой: "
+                "чинить её на твоей странице.",
+                "страницу переименовали или удалили, чужой сайт закрылся или репозиторий стал закрытым",
                 ("Открыть перечисленные ссылки и исправить их или убрать.",
-                 "Если страницы переехали — настроить редирект со старого адреса на новый.")),
+                 "Если страница пропала насовсем — дать копию из web.archive.org.",
+                 "Если свои страницы переехали — настроить редирект со старого адреса на новый.")),
     "deep": _E("deep",
                "Главная работает, но часть страниц отдаёт ошибку.",
                "сломан раздел сайта, база данных или один из сервисов",

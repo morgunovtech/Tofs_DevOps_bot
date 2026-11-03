@@ -78,11 +78,11 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         call = FakeCall(f"check_site_live:{sid}")
         await sites.cb_check_site_live(call)              # live: domain gets checked
         assert "Домен: это IP-адрес" in call.message.texts[-1]          # one screen, no pointer elsewhere
-        await sitestatus.update(sid, "links", status="ok", internal=0, external=0)
+        await sitestatus.update(sid, "links", status="ok", broken=0, pending=0)
         await sitestatus.update(sid, "seo", status="warning", critical=0, improve=2)
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
-        assert "Ссылки: все работают" in call.message.texts[-1]
+        assert "Ссылки: все открываются" in call.message.texts[-1]
         assert "🟠 Поиск и ИИ: 2 помехи" in call.message.texts[-1] and "За неделю" in call.message.texts[-1]
         assert "В поиске" not in call.message.texts[-1]          # the card never claims index status
 

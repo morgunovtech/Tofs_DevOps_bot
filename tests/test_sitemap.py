@@ -4,6 +4,8 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from monitors.base import LinkCheck
+from monitors.links_checker import check_links, is_definite
 from monitors.seo_checker import _fetch, check_seo
 from monitors.sitemap import pick_sample, sitemap_urls
 
@@ -83,3 +85,32 @@ async def test_sitemap_is_missing_only_when_the_site_says_so(db):
         answer["status"] = 404
         codes = [p.code for p in (await check_seo(base, manage=False)).problems]
         assert "sitemap_missing" in codes
+
+
+async def test_links_are_judged_by_how_sure_the_answer_is(db):
+    """A 404 is a problem at once, own site or not; a 502 only when it
+    repeats on the next crawl; a bot block (403) never."""
+    other = web.Application()
+    other.router.add_get("/gone", lambda r: web.Response(status=404))
+    other.router.add_get("/flaky", lambda r: web.Response(status=502))
+    other.router.add_get("/blocked", lambda r: web.Response(status=403))
+    async with TestServer(other) as ext:
+        ext_base = str(ext.make_url("")).rstrip("/").replace("127.0.0.1", "localhost")
+        page = (f'<html><body><a href="{ext_base}/gone">a</a><a href="{ext_base}/flaky">b</a>'
+                f'<a href="{ext_base}/blocked">c</a><link rel="preconnect" href="{ext_base}/"></body></html>')
+        site = web.Application()
+        site.router.add_get("/", lambda r: web.Response(text=page, content_type="text/html"))
+        async with TestServer(site) as own:
+            base = str(own.make_url("")).rstrip("/")
+            first = await check_links(base)
+            assert [b.url for b in first.broken] == [f"{ext_base}/gone"]
+            assert [p.url for p in first.pending] == [f"{ext_base}/flaky"] and first.incident_new
+            # A menu tap sees it failing again after the crawl — that is the
+            # second time in a row — but it writes no state of its own.
+            ui = await check_links(base, manage=False)
+            assert sorted(b.url for b in ui.broken) == [f"{ext_base}/flaky", f"{ext_base}/gone"]
+            second = await check_links(base)
+            assert sorted(b.url for b in second.broken) == [f"{ext_base}/flaky", f"{ext_base}/gone"]
+            assert second.pending == []
+    assert is_definite(LinkCheck("https://x", None, False, error="[SSL: CERTIFICATE_VERIFY_FAILED] certificate"))
+    assert not is_definite(LinkCheck("https://x", None, False, error="timeout"))
