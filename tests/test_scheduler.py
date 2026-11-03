@@ -1,6 +1,7 @@
 """Scheduler jobs run end-to-end against a local HTTP server and the test
 DB — the paths tests of pure functions cannot reach."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from aiohttp import web
@@ -10,7 +11,7 @@ from db.database import get_active_incidents, get_state, save_incident, set_stat
 from monitors import host_checker
 from monitors.base import SslInfo, SslResult
 from reports import scheduler
-from services import gsc, settings, sitestatus
+from services import gsc, settings, sitestatus, updates
 
 
 async def _site_server(status: int = 200):
@@ -232,3 +233,20 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     await scheduler.send_morning_report()
     assert bot.sent[-1]["reply_markup"] is None
     await settings.remove_heartbeat_job("backup")
+
+
+async def test_an_update_reruns_the_seo_audit_soon(bot, db, cfg, monkeypatch):
+    """A new build that fixes a check should not leave yesterday's findings
+    until 07:30: the start after an update queues one SEO audit."""
+    assert await updates.report_startup_changes() is False          # first boot: nothing to compare
+    assert await updates.report_startup_changes() is False          # same build
+    snap = json.loads(await get_state("deps:snapshot"))
+    snap["commit"] = "c370117c0c25"
+    await set_state("deps:snapshot", json.dumps(snap))
+    cfg(app_commit="a03ef0ccbc5c")
+    sched = scheduler.setup_scheduler()
+    monkeypatch.setattr(scheduler, "_scheduler", sched)
+    if await updates.report_startup_changes():
+        scheduler.rerun_seo_after_update()
+    job = sched.get_job("seo_after_update")
+    assert job is not None and job.func is scheduler.run_seo_checks

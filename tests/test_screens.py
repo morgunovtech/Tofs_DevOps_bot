@@ -7,8 +7,9 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from conftest import FakeCall, FakeMessage, FakeState, buttons
 
-from db.database import save_feedback, save_incident
+from db.database import get_active_incidents, save_feedback, save_incident
 from handlers import feedback, heartbeats, incidents, maintenance, menu, seo, settings, site_settings, sites
+from monitors.base import SeoResult
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
@@ -371,3 +372,29 @@ async def test_declined_keyword_is_not_suggested_again(bot, db, monkeypatch):
     await sites.cb_keyword_decline(call, FakeState())
     assert any(a and a.startswith("Ок") for a in call.answers) and call.message.texts   # back on the main screen
     assert "keyword" not in [c[0] for c in await recommend._candidates()]
+
+
+async def test_a_clean_live_audit_closes_a_stale_search_finding(bot, db, monkeypatch):
+    """3 Nov 2026: the fixed audit said «помех нет» on the screen while the
+    false incident from the morning stayed in «Проблемы» until next 07:30."""
+    sid = await db.activate_or_create_site("https://ex.test")
+    await save_incident(sid, "seo", "1 помеха в поиске, напр.: Нет карты сайта (sitemap.xml)", "warning")
+    status = {"value": "warning"}
+
+    async def audit(urls, manage=True):
+        assert manage is False                       # still a read-only observer otherwise
+        return [SeoResult(url=urls[0], site_id=sid, status=status["value"])]
+
+    async def no_index(site_id, url):
+        return None
+
+    monkeypatch.setattr(seo, "check_all_seo", audit)
+    monkeypatch.setattr(seo.index_status, "refresh", no_index)
+    await seo.cb_seo_live(FakeCall(f"seo_live:{sid}"))
+    assert [i["check_type"] for i in await get_active_incidents()] == ["seo"]   # findings remain → stays
+    status["value"] = "error"
+    await seo.cb_seo_live(FakeCall(f"seo_live:{sid}"))
+    assert await get_active_incidents()                                      # could not check → stays
+    status["value"] = "ok"
+    await seo.cb_seo_live(FakeCall(f"seo_live:{sid}"))
+    assert await get_active_incidents() == []

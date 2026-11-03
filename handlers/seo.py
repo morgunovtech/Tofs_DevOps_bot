@@ -11,7 +11,7 @@ live audit (~30 s) and refreshes the index data too."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import get_site
+from db.database import get_site, resolve_incident
 from handlers.common import ack, cb_args, render, site_by_cb, with_running_bar
 from monitors.seo_checker import check_all_seo
 from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
@@ -206,7 +206,12 @@ async def run_live(call: CallbackQuery, site: dict):
     await render(call, f"▰▱▱ {base}")
 
     async def audit():
-        await check_all_seo([site["url"]], manage=False)
+        results = await check_all_seo([site["url"]], manage=False)
+        # Read-only, with one exception: a clean audit closes an open search
+        # finding — the screen says «помех нет», the list must not disagree.
+        # A new finding still waits for the daily audit to become an incident.
+        if results and results[0].status == "ok":
+            await resolve_incident(site["id"], "seo")
         await index_status.refresh(site["id"], site["url"])
 
     await with_running_bar(call.message, base, audit())
