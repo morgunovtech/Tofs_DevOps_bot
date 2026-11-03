@@ -62,7 +62,8 @@ def installed_versions() -> dict[str, str]:
 
 # ── Startup: "what changed since last boot?" ─────────────────────────────────
 
-async def report_startup_changes():
+async def report_startup_changes() -> bool:
+    """True when the build, Python or a package changed since the last boot."""
     current = {
         "commit": config.app_commit,
         "python": platform.python_version(),
@@ -71,11 +72,11 @@ async def report_startup_changes():
     prev_raw = await get_state("deps:snapshot")
     await set_state("deps:snapshot", json.dumps(current))
     if not prev_raw:
-        return
+        return False
     try:
         prev = json.loads(prev_raw)
     except ValueError:
-        return
+        return False
     lines = []
     if prev.get("commit") != current["commit"] and current["commit"]:
         lines.append(f"  • сборка {esc(prev.get('commit') or '?')} → {esc(current['commit'])}")
@@ -87,6 +88,7 @@ async def report_startup_changes():
             lines.append(f"  • {name} {esc(old_pkgs[name])} → {esc(ver)}")
     if lines:
         await notifier.send("🔄 Бот обновился:\n" + "\n".join(lines), Priority.NORMAL)
+    return bool(lines)
 
 
 # ── Weekly: OSV + PRs waiting for a human ───────────────────────────────────

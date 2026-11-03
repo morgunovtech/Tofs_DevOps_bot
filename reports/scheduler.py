@@ -11,6 +11,7 @@ import aiohttp
 from aiogram.types import FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from config import config
@@ -314,6 +315,15 @@ async def run_seo_checks():
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical"))))
+
+
+def rerun_seo_after_update(minutes: int = 3):
+    """A new build may have fixed a check. Yesterday's findings — maybe
+    false ones — must not wait for 07:30: audit again a few minutes after
+    the start, with incidents, so stale ones close and say so."""
+    if _scheduler is not None:
+        _scheduler.add_job(run_seo_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes)),
+                           id="seo_after_update", replace_existing=True, misfire_grace_time=600)
 
 
 REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
