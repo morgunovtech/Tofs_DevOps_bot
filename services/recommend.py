@@ -8,7 +8,7 @@ from db.database import get_all_sites, get_state, set_state
 from monitors.pagemeta import suggest_keyword
 from services import gsc, integrations, settings, yandex_webmaster
 from utils.text import esc
-from utils.urls import is_http_url, site_label
+from utils.urls import is_web_page, site_label
 
 Buttons = list[tuple[str, str]]   # (label, callback_data)
 
@@ -37,7 +37,7 @@ async def _keyword_idea(http_sites: list[dict]) -> tuple[str, str, Buttons] | No
 async def _candidates() -> list[tuple[str, str, Buttons]]:
     """(key, text, buttons) in priority order."""
     sites = await get_all_sites()
-    http_sites = [s for s in sites if is_http_url(s["url"])]
+    http_sites = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
     out = []
     idea = await _keyword_idea(http_sites)
     if idea:

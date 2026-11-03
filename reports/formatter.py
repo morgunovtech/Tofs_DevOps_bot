@@ -43,11 +43,11 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
     label = esc(site_label(r.url))
     expl = explain("availability", r.error)
     if r.keyword_failed:
-        header = f"🔴 {label} открывается, но показывает не то"
+        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то"
         what = esc(describe_error(r.error))
         situation = f"{expl.meaning} Сейчас {what}."
     else:
-        noun = "не открывается" if is_http_url(r.url) else "не отвечает"
+        noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
         header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
         situation = expl.meaning
         if r.external_ok is False:
@@ -75,7 +75,7 @@ def incident_duration_line(incident: dict | None) -> str | None:
 
 def format_recovery_alert(r: AvailabilityResult) -> str:
     label = esc(site_label(r.url))
-    verb = "снова открывается" if is_http_url(r.url) else "снова отвечает"
+    verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
     lines = [f"✅ {label} {verb}"]
     duration = incident_duration_line(r.resolved_incident)
     cause = describe_error((r.resolved_incident or {}).get("message"))
@@ -224,7 +224,8 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     if notes:
         worst = worst_severity(s for s, _ in notes)
         icon = level_icon(worst) if worst else UNCHECKED
-        return f"{icon} {label} — открывается, но {'; '.join(w for _, w in notes)}", False
+        verb = "отвечает" if r.api else "открывается"
+        return f"{icon} {label} — {verb}, но {'; '.join(w for _, w in notes)}", False
     return f"✅ {label} — в порядке, {humanize.speed(r.response_time_ms)}", True
 
 
@@ -239,13 +240,18 @@ def format_compact_status_report(availability: list[AvailabilityResult],
               "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
     ssl_by_url = {r.url: r for r in (ssl_results or [])}
     domain_by_root = {registrable_domain(host_of(r.url)): r for r in (domain_results or [])}
+    domain_urls = {r.url for r in (domain_results or [])}
     lines: list[str] = [header, ""]
     all_ok = True
     for r in availability:
         http = is_http_url(r.url)
-        line, ok = _site_line(
-            r, ssl_by_url.get(r.url) if (ssl_results is not None and http) else None,
-            domain_by_root.get(registrable_domain(host_of(r.url))) if (domain_results is not None and http) else None)
+        # An API check carries the certificate and domain notes only when it
+        # was checked for its host itself — next to its site they would be
+        # the same notes twice.
+        dom = domain_by_root.get(registrable_domain(host_of(r.url))) if (domain_results is not None and http) else None
+        if r.api and r.url not in domain_urls:
+            dom = None
+        line, ok = _site_line(r, ssl_by_url.get(r.url) if (ssl_results is not None and http) else None, dom)
         lines.append(line)
         all_ok &= ok
     if incidents:

@@ -52,6 +52,8 @@ class AvailabilityResult(CheckResult):
     keyword_failed: bool = False
     # Hosting guessed from response headers (services.hosting key).
     hosting: str | None = None
+    # An API check (utils.urls.is_api_check): «отвечает», not «открывается».
+    api: bool = False
 
 
 @dataclass

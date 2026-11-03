@@ -26,7 +26,7 @@ from db.database import (
 from services import maintenance
 from utils.clock import to_local
 from utils.text import fmt_duration, parse_sqlite_utc
-from utils.urls import site_label
+from utils.urls import is_api_check, site_label
 
 _CACHE_TTL_SEC = 30
 _cache: tuple[float, dict] | None = None
@@ -63,7 +63,9 @@ async def build_payload() -> dict:
         else:
             state, any_down = "down", True
         sites.append({
+            # host (+ path for an API endpoint; never the query — it may hold a token)
             "label": site_label(s["url"]),
+            "api": is_api_check(s["url"], s.get("http_method")),
             "state": state,
             "ms": (last or {}).get("response_time_ms"),
             "up24": (await get_uptime_stats(s["id"], hours=24))["uptime_pct"],
@@ -128,7 +130,8 @@ def render(p: dict) -> str:
             for k, lbl in (("up24", "24ч"), ("up7d", "7д"), ("up30d", "30д"), ("up90d", "90д")))
         rows.append(
             f'<div class="site"><div class="site-head"><span class="dot {dot_cls}"></span>'
-            f'<span class="site-name">{html.escape(s["label"])}</span>'
+            f'<span class="site-name">{html.escape(s["label"])}'
+            f'{"<span class=site-kind>API</span>" if s.get("api") else ""}</span>'
             f'<span class="site-state">{state_txt} · {ms}</span></div>'
             f'<div class="uptime">{spans}</div></div>')
 

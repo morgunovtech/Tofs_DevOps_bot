@@ -21,6 +21,7 @@ from db.database import (
     SITE_SETTING_COLS,
     activate_or_create_site,
     deactivate_site,
+    get_active_host_urls,
     get_active_incidents,
     get_all_sites,
     get_site,
@@ -50,7 +51,7 @@ from reports.scheduler import reschedule_all, reset_site_schedule
 from services import humanize, integrations, maintenance, runtime, secrets, settings, sitestatus
 from utils.clock import fmt_local
 from utils.text import esc, fmt_date, fmt_duration, plural
-from utils.urls import is_http_url, short_host, site_label
+from utils.urls import host_key, is_api_check, is_api_url, is_http_url, is_web_page, site_label
 
 router = Router(name="sites")
 
@@ -74,9 +75,17 @@ def _valid_lengths(host: str) -> bool:
     return len(host) <= 253 and all(len(label) <= 63 for label in host.split("."))
 
 
+API_PATH_LIMIT = 300
+
+
 def parse_site_input(raw: str) -> tuple[str | None, str | None]:
-    """User text → canonical monitor URL, or (None, error message)."""
-    raw = (raw or "").strip().lower()
+    """User text → canonical monitor URL, or (None, error message). A web
+    page means its site: a pasted https://example.com/blog/post is
+    example.com. An API address (utils.urls.is_api_url: /api/… or an api.*
+    host) keeps its path and query exactly as typed — that endpoint is what
+    is watched, and paths are case-sensitive."""
+    typed = (raw or "").strip()
+    raw = typed.lower()
     if raw.startswith(("tcp://", "ping://")):
         try:
             parsed = urlparse(raw)
@@ -91,13 +100,24 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
             return f"tcp://{host}:{port}", None
         return f"ping://{host}", None
     if not raw.startswith(("http://", "https://")):
-        raw = "https://" + raw
-    parsed = urlparse(raw)
-    host = parsed.hostname or ""
+        raw, typed = "https://" + raw, "https://" + typed
+    try:
+        parsed = urlparse(raw)
+        host, port_n = parsed.hostname or "", parsed.port
+    except ValueError:
+        return None, "Не похоже на адрес. Пришли что-то вроде example.com"
     if not _DOMAIN_RE.fullmatch(host) or not _valid_lengths(host):
         return None, "Не похоже на домен. Пришли что-то вроде example.com"
-    port = f":{parsed.port}" if parsed.port and parsed.port not in (80, 443) else ""
-    return f"{parsed.scheme}://{host}{port}", None
+    port = f":{port_n}" if port_n and port_n not in (80, 443) else ""
+    site = f"{parsed.scheme}://{host}{port}"
+    if not is_api_url(site + parsed.path):
+        return site, None
+    as_typed = urlparse(typed)
+    path = "" if as_typed.path in ("", "/") else as_typed.path
+    tail = path + (f"?{as_typed.query}" if as_typed.query else "")
+    if re.search(r"\s", tail) or len(tail) > API_PATH_LIMIT:
+        return None, f"Адрес API — без пробелов и не длиннее {API_PATH_LIMIT} символов после домена."
+    return site + tail, None
 
 
 # ── Detail screen ────────────────────────────────────────────────────────────
@@ -128,22 +148,51 @@ def _ago(section: dict | None) -> str:
     return " · только что" if age < 1 else f" · {fmt_duration(age)} назад"
 
 
+def api_line(site: dict) -> str:
+    """What an API check sends and expects — one line on its card."""
+    method = (site.get("http_method") or "GET").upper()
+    kw = (site.get("keyword") or "").strip()
+    expect = ""
+    if kw:
+        expect = (f", в ответе не должно быть «{esc(kw)}»" if site.get("keyword_mode") == "absent"
+                  else f", в ответе должно быть «{esc(kw)}»")
+    return (f"🔌 API-проверка: {method}{expect}. Слежу только за ответом — поиск, ссылки и SEO "
+            f"к API не относятся.")
+
+
+async def host_checked_by(site: dict) -> str | None:
+    """URL of the monitor whose certificate and domain checks cover this
+    site's host — itself for a page; None for tcp/ping."""
+    url = site["url"]
+    if not is_http_url(url):
+        return None
+    hosts = await get_active_host_urls()
+    if url in hosts:
+        return url
+    return next((u for u in hosts if host_key(u) == host_key(url)), None)
+
+
 async def card_lines(site: dict) -> list[str]:
     """Everything about one site from the stored snapshot — instant."""
     st = await sitestatus.get(site["id"])
     http = is_http_url(site["url"])
-    lines: list[str] = []
+    api = is_api_check(site["url"], site.get("http_method"))
+    lines: list[str] = [api_line(site)] if api else []
     avail = st.get("avail")
     if not avail:
         lines.append("⏳ Ещё не проверял — первая проверка в течение минуты")
     elif avail.get("status") == "ok":
         ms, region = best_ms(st)
-        verb = "Открывается" if http else "Отвечает"
+        verb = "Открывается" if http and not api else "Отвечает"
         lines.append(f"✅ {verb}, {humanize.speed(ms, region)}{_ago(avail)}")
     else:
-        verb = "Не открывается" if http else "Не отвечает"
+        verb = "Не открывается" if http and not api else "Не отвечает"
         lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
-    if http:
+    covered_by = await host_checked_by(site)
+    if covered_by and covered_by != site["url"]:
+        lines.append(f"🔒 Сертификат и домен — на карточке {esc(site_label(covered_by))}: "
+                     f"проверяю их один раз на адрес")
+    if covered_by == site["url"]:
         ssl = st.get("ssl")
         if not ssl:
             lines.append("⏳ Сертификат: ещё не проверял")
@@ -156,7 +205,8 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl.get('error')))}")
         dom = st.get("domain")
         if not dom:
-            lines.append("⏳ Домен: ещё не проверял")
+            if not api:   # an api.* host shares the registration with its site
+                lines.append("⏳ Домен: ещё не проверял")
         elif dom.get("days_left") is not None:
             days = dom["days_left"]
             icon = "✅" if days > 30 else humanize.level_icon("warning" if days > 7 else "critical")
@@ -167,7 +217,9 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"ℹ️ Домен: {esc(dom.get('error') or 'срок не сообщается')}")
         else:
             lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
-        links = st.get("links")
+        # Page findings only: an API check is never crawled or audited, and a
+        # snapshot left from when it was a page must not speak for it.
+        links = st.get("links") if not api else None
         if links:
             if links.get("status") == "ok":
                 lines.append(f"✅ Ссылки: все открываются{_ago(links)}")
@@ -176,7 +228,7 @@ async def card_lines(site: dict) -> list[str]:
                 lines.append(f"🟠 Ссылки: {n} не {plural(n, 'открывается', 'открываются', 'открываются')}{_ago(links)}")
             else:
                 lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
-        seo = st.get("seo")
+        seo = st.get("seo") if not api else None
         if seo:
             # Says what was measured: robots/noindex and page findings. Whether
             # the site is IN an index is the «🔎 Поиск и ИИ» screen's job.
@@ -220,7 +272,7 @@ async def render_card(call: CallbackQuery, site: dict):
                   f"<i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
     rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site_live:{sid}"),
              *pause_row[:1]]]
-    if is_http_url(url):
+    if is_web_page(url, site.get("http_method")):
         rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}"),
                      InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
     last_row = []
@@ -246,8 +298,8 @@ async def cb_check_single_site(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("check_site_live:"))
 async def cb_check_site_live(call: CallbackQuery):
-    """«🔍 Проверить сейчас»: fresh availability, certificate and domain,
-    then the same card."""
+    """«🔍 Проверить сейчас»: fresh availability, certificate and domain
+    (when this site is the one they are checked for), then the same card."""
     await ack(call, "Проверяю…")
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
@@ -256,7 +308,7 @@ async def cb_check_site_live(call: CallbackQuery):
     url = site["url"]
     await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
     await check_availability(url, manage=False)
-    if is_http_url(url):
+    if await host_checked_by(site) == url:
         await render(call, "▰▱▱ Смотрю сертификат...")
         await check_ssl(url, manage=False)
         await render(call, "▰▰▱ Узнаю срок домена...")
@@ -279,7 +331,7 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
 
 def _add_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛠 Продвинутое: порты и ping", callback_data="site_add_adv")],
+        [InlineKeyboardButton(text="🛠 Продвинутое: API, порты и ping", callback_data="site_add_adv")],
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
 
 
@@ -288,6 +340,10 @@ async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(AddSiteForm.url)
     await render(call, "🛠 Кроме сайтов я умею следить за сервисами без веб-страницы:\n\n"
+                       "• <code>example.com/api/health</code> — главная функция сайта, его API: "
+                       "код ответа, время и фраза в ответе. Адрес под <code>/api/</code> или на "
+                       "<code>api.</code>-домене я считаю API и не проверяю у него поиск, ссылки и SEO; "
+                       "метод POST, заголовки и тело задаются в настройках после добавления\n"
                        "• <code>tcp://mail.example.com:25</code> — отвечает ли порт "
                        "(почта, SSH, база данных)\n"
                        "• <code>ping://10.0.0.1</code> — отвечает ли хост на ping\n\n"
@@ -309,14 +365,21 @@ async def msg_site_add(message: Message, state: FSMContext):
     # incidents and alert ladders; a manage=True check here would silently
     # consume the SSL alert for a nearly-expired certificate.
     r = await check_availability(url, manage=False)
+    site = await get_site(site_id)
+    page = is_web_page(url, site.get("http_method"))
     lines = [f"✅ {esc(label)} под присмотром.\n"]
     if r.ok:
-        lines.append(f"✅ Открывается, {humanize.speed(r.response_time_ms)}" if is_http_url(url)
-                     else f"✅ Отвечает, {humanize.speed(r.response_time_ms)}")
+        lines.append(f"✅ {'Открывается' if page else 'Отвечает'}, {humanize.speed(r.response_time_ms)}")
     else:
-        lines.append(f"🔴 Сейчас не открывается: {esc(humanize.describe_error(r.error))}. "
-                     f"Я уже слежу и напишу, когда поднимется.")
-    if is_http_url(url):
+        lines.append(f"🔴 Сейчас {'не открывается' if page else 'не отвечает'}: "
+                     f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда поднимется.")
+    if r.api:
+        lines.append("\n🔌 Это API: слежу только за ответом — код, время и фраза в ответе. Поиск, ссылки "
+                     "и SEO к API не относятся.")
+        lines.append("Нужен POST, токен или тело запроса — «📡 Настроить запрос»: там метод, заголовки, "
+                     "тело и фраза, которая должна быть в ответе."
+                     + ("" if r.ok else " Ошибка выше уйдёт, когда запрос станет правильным."))
+    if await host_checked_by(site) == url:
         ssl_r = await check_ssl(url, manage=False)
         if ssl_r.ssl_info:
             lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн.")
@@ -324,12 +387,17 @@ async def msg_site_add(message: Message, state: FSMContext):
             lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
         else:
             lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
-        lines.append("\nСрок домена, ссылки, поиск и ИИ проверю в ближайшие часы сам.")
+        lines.append("\nСрок домена, ссылки, поиск и ИИ проверю в ближайшие часы сам." if page
+                     else "\nСрок домена проверю в ближайшие часы сам.")
     if first_site:
         lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
     kb = back_button()
-    if is_http_url(url) and r.ok:
+    if r.api:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📡 Настроить запрос", callback_data=f"ssetx:{site_id}")],
+            *back_button().inline_keyboard])
+    if page and r.ok:
         note = await alt_host_note(url)
         if note:
             lines.append("\n" + note)
@@ -381,7 +449,7 @@ async def cb_site_del_confirm(call: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Да, убрать", callback_data=f"delok:{site['id']}")],
         [InlineKeyboardButton(text="← Отмена", callback_data=f"sset:{site['id']}")]])
-    await render(call, f"Убрать {esc(short_host(site['url']))} из мониторинга?\n"
+    await render(call, f"Убрать {esc(site_label(site['url']))} из мониторинга?\n"
                        "Открытые инциденты по нему закроются, история останется.", kb)
 
 
@@ -392,7 +460,7 @@ async def cb_site_del_do(call: CallbackQuery):
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])
         reset_site_schedule(site["id"])
-        await render(call, f"🗑 {esc(short_host(site['url']))} больше не под присмотром. История сохранилась.",
+        await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась.",
                      back_button("← Сайты", "menu_sites"))
     else:
         await render(call, "Сайт уже убран.", back_button())
@@ -410,7 +478,7 @@ async def cb_pause(call: CallbackQuery):
     if not site:
         await ack(call, "Сайт не найден", show_alert=True)
         return
-    sid, arg, host = site["id"], args[1], short_host(site["url"])
+    sid, arg, host = site["id"], args[1], site_label(site["url"])
     if arg == "off":
         await maintenance.pause_site(sid, None)
         await ack(call, "Пауза снята")

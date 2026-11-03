@@ -15,10 +15,10 @@ from db.database import (
     get_incidents_since,
     get_uptime_over_days,
 )
-from services import gsc, humanize, index_status, sitestatus, updates, yandex_webmaster
+from services import github, gsc, humanize, index_status, sitestatus, updates, yandex_webmaster
 from utils.clock import to_local
 from utils.text import bar, esc, parse_iso_utc, parse_sqlite_utc, plural
-from utils.urls import is_http_url, short_host, site_label
+from utils.urls import is_http_url, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +119,15 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         icon = "✅" if ok == total else "📉"
         week_txt = humanize.downtime(total, ok, interval)
         month_txt = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        verb = "Открывается" if is_web_page(s["url"], s.get("http_method")) else "Отвечает"
         lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
-                     f"Открывается {humanize.speed(avg_ms)}.")
+                     f"{verb} {humanize.speed(avg_ms)}.")
 
     chart = render_ascii_chart(series)
 
     try:
         search_lines = await search_metrics_lines(
-            [s["url"] for s in sites if is_http_url(s["url"])])
+            [s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))])
         if search_lines:
             lines += ["", *search_lines]
     except Exception as e:
@@ -138,6 +139,12 @@ async def build_weekly_report() -> tuple[str, list[str]]:
     deps = updates.summary_lines(await updates.last_check())
     if deps:
         lines += ["", *deps]
+    try:
+        hygiene = github.summary_lines(await github.last_report())
+        if hygiene:
+            lines += ["", *hygiene]
+    except Exception as e:
+        logger.error("GitHub section for weekly report failed: %s", e)
     return "\n".join(lines), chart
 
 
@@ -179,12 +186,12 @@ async def renewals_block(sites: list[dict]) -> list[str]:
     """Certificates that renewed by themselves this week — a fact of normal
     operation, so it is said here and nowhere else."""
     since = datetime.now(UTC) - timedelta(days=7)
-    chips = []
+    chips: dict[str, str] = {}   # one chip per host: a site and its API share the certificate
     for s in sites:
         if not is_http_url(s["url"]):
             continue
         ssl = (await sitestatus.get(s["id"])).get("ssl") or {}
         at = parse_iso_utc(ssl.get("renewed_at"))
         if at and at >= since:
-            chips.append(f"{esc(short_host(s['url']))} ({at.strftime('%d.%m')})")
-    return ["\n🔒 Сертификаты продлились сами: " + ", ".join(chips)] if chips else []
+            chips.setdefault(short_host(s["url"]), f"{esc(short_host(s['url']))} ({at.strftime('%d.%m')})")
+    return ["\n🔒 Сертификаты продлились сами: " + ", ".join(chips.values())] if chips else []

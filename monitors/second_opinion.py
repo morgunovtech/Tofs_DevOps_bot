@@ -11,15 +11,35 @@ unreachable (fail open: alert, but mark as unconfirmed).
 
 import asyncio
 import ipaddress
+import json
 import logging
 from urllib.parse import urlparse
 
 import aiohttp
 
+from utils.urls import PAGE_METHODS, is_http_url
+
 logger = logging.getLogger(__name__)
 
 API = "https://check-host.net"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
+
+
+def repeatable(site: dict) -> bool:
+    """check-host.net sends a bare GET. Its verdict means something only for
+    a monitor whose own request is a GET/HEAD without headers of its own: a
+    POST to an API, or a request with a token, cannot be repeated from
+    outside (a GET there answers 405 or 401, «down» for a working API) — so
+    no second opinion for it; the fail threshold still filters flaps."""
+    if not is_http_url(site.get("url") or ""):
+        return True                      # tcp/ping are repeated as they are
+    if (site.get("http_method") or "GET").upper() not in PAGE_METHODS:
+        return False
+    try:
+        headers = json.loads(site.get("http_headers") or "{}")
+    except ValueError:
+        headers = {}
+    return not headers
 
 
 def _is_private_host(host: str | None) -> bool:
