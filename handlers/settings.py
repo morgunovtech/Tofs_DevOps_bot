@@ -1,6 +1,8 @@
-"""⚙️ Settings: the hub for everything that is not «is my site OK» —
-digests and quiet hours, mute, maintenance windows, status page,
-connections, task control, feedback, export/import, test alert."""
+"""⚙️ Settings: the hub for everything that is not «is it OK» — digests
+and quiet hours, mute, timezone, maintenance windows, diagnostics and
+connections (the test alert lives there), status page, feedback,
+export/import. What is watched — sites, tasks and bots — is on the main
+screen, not here."""
 
 import secrets as _secrets
 
@@ -48,21 +50,22 @@ async def hub_text() -> str:
             f"{'🔕 тихо до ' + mute if mute else '🔔 алерты включены'} · будить: {ring}\n"
             f"🕐 Часовой пояс: {esc(settings.timezone())}, сейчас {now_local().strftime('%H:%M')}\n"
             f"🗓 Плановые работы: {len(maintenance.windows()) or 'нет'} · "
-            f"🌐 Статус-страница: {esc(sp)}")
+            f"🌐 Статус-страница: {esc(sp)}\n\n"
+            f"<i>Сайты, боты и задачи — на главном экране, новые — через «➕ Добавить».</i>")
 
 
 def hub_kb() -> InlineKeyboardMarkup:
+    """Grouped by question: when to message me, is the bot itself fine,
+    what others see, my data."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌅 Сводки и тихие часы", callback_data="menu_reports"),
          InlineKeyboardButton(text="🔕 Заглушить на время", callback_data="menu_mute")],
-        [InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="menu_tz"),
-         InlineKeyboardButton(text="🗓 Плановые работы", callback_data="menu_maint")],
-        [InlineKeyboardButton(text="🌐 Статус-страница", callback_data="menu_statuspage")],
-        [InlineKeyboardButton(text="🩺 Диагностика и подключения", callback_data="menu_diag"),
-         InlineKeyboardButton(text="⏰ Контроль задач", callback_data="menu_hb")],
-        [InlineKeyboardButton(text="📩 Обратная связь", callback_data="menu_feedback:0"),
-         InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert")],
-        [InlineKeyboardButton(text="📤 Экспорт сайтов", callback_data="site_export"),
+        [InlineKeyboardButton(text="🗓 Плановые работы", callback_data="menu_maint"),
+         InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="menu_tz")],
+        [InlineKeyboardButton(text="🩺 Диагностика и подключения", callback_data="menu_diag")],
+        [InlineKeyboardButton(text="🌐 Статус-страница", callback_data="menu_statuspage"),
+         InlineKeyboardButton(text="📩 Обратная связь", callback_data="menu_feedback:0")],
+        [InlineKeyboardButton(text="📤 Экспорт", callback_data="site_export"),
          InlineKeyboardButton(text="📥 Импорт", callback_data="site_import")],
         [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]])
 

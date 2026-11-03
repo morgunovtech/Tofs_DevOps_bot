@@ -32,7 +32,7 @@ NOW = datetime.now(UTC).isoformat(timespec="seconds")
 
 async def test_main_menu_header_states(bot, db):
     header, kb = await menu.build_main_menu()
-    assert "Сайтов пока нет" in header
+    assert "Пока ни за чем не слежу" in header
     sid = await db.activate_or_create_site("https://ex.test")
     await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
     await save_incident(sid, "ssl", "expiring", "warning")
@@ -43,7 +43,9 @@ async def test_main_menu_header_states(bot, db):
     assert first.startswith("✅ 1/1 открывается · 🟠 проблем: 1") and "чинится" in header
     assert "🟠 ex.test: expiring" in header                      # the problem is right on the main screen
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert "🟠 Проблемы (1)" in labels and "🌍 Сайты" in labels and "⚙️ Настройки" in labels
+    # «Проблемы» first, then the site itself — one tap to its card.
+    assert labels[:2] == ["🟠 Проблемы (1)", "🔧 ex.test"] and "⚙️ Настройки" in labels
+    assert kb.inline_keyboard[1][0].callback_data == f"check_site:{sid}"
     await maint_service.pause_site(sid, None)
     await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
     await sitestatus.update(sid, "avail", status="error", ms=None, error="HTTP 502")
@@ -154,7 +156,9 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await settings.cb_settings(call)
     assert "недельная вс 11:00" in call.message.texts[-1]
     labels = [b.text for row in call.message.reply_markup.inline_keyboard for b in row]
-    assert "🩺 Диагностика и подключения" in labels and "⏰ Контроль задач" in labels
+    assert "🩺 Диагностика и подключения" in labels and "на главном экране" in call.message.texts[-1]
+    # Tasks moved to the main screen; the test alert lives in diagnostics — no twins here.
+    assert "⏰ Контроль задач" not in labels and "🔔 Тест алерта" not in labels
     call = FakeCall("set_w:18")
     await settings.cb_settings_pick(call)
     assert settings_service.weekly_hour() == 18
@@ -163,16 +167,12 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await maintenance.cb_mw_time(call)
     assert "Окно добавлено" in call.message.texts[-1] and "будни" in call.message.texts[-1]
 
-    call = FakeCall("menu_hb")
-    await heartbeats.cb_hb(call)
-    assert "ни одной задачи" in call.message.texts[-1]
     await settings_service.add_heartbeat_job("backup", 1440)
-    call = FakeCall("menu_hb")
-    await heartbeats.cb_hb(call)
-    assert "backup" in call.message.texts[-1] and "ожидаю каждые" in call.message.texts[-1]
     call = FakeCall("hb_show:backup")
     await heartbeats.cb_hb_show(call)
-    assert "unit-test-heartbeat-secret" in call.message.texts[-1] and "curl -fsS" in call.message.texts[-1]
+    text = call.message.texts[-1]
+    assert text.startswith("⏰ backup\n⏳ Ждёт первой отметки · жду раз в сутки")
+    assert "unit-test-heartbeat-secret" in text and "curl -fsS" in text and "Бот или сервис" in text
     assert "hb_del:backup" in [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row]
     # From the morning digest: the answer goes below, the digest stays as it was.
     call = FakeCall("hb_how:backup")
@@ -209,7 +209,74 @@ async def test_main_menu_header_is_short_when_all_is_well(bot, db):
     assert lines[0].startswith("✅ 3/3 в порядке") and len(lines) == 4
     assert all(line.endswith("· быстро") for line in lines[1:])
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    assert labels == ["🌍 Сайты", "🔎 Проверить всё сейчас", "⚙️ Настройки"]   # no «Проблемы» on a good day
+    # A button per site straight to its card; no «Проблемы» on a good day.
+    assert labels == ["✅ ok0.test", "✅ ok1.test", "✅ ok2.test",
+                      "🔎 Проверить всё сейчас", "➕ Добавить", "⚙️ Настройки"]
+    assert [len(row) for row in kb.inline_keyboard] == [1, 1, 1, 1, 2]       # few items: a full row each
+
+
+async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
+    """03.11.2026: SocialBot was added to «⏰ Контроль задач» and the owner
+    could not find it — the main screen showed sites only."""
+    sid = await db.activate_or_create_site("https://ok.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    await settings_service.add_heartbeat_job("socialbot", 1440)
+    header, kb = await menu.build_main_menu()
+    lines = header.split("\n")
+    # Not marked yet and not alerted: waiting, not counted, not a problem.
+    assert lines[0].startswith("✅ 1/1 в порядке") and lines[-2:] == ["⏰ Задачи и боты:", "⏳ socialbot · ждёт первой отметки"]
+    assert "hb_show:socialbot" in [b.callback_data for row in kb.inline_keyboard for b in row]
+
+    await db.heartbeat_ping("socialbot")
+    header, kb = await menu.build_main_menu()
+    assert header.startswith("✅ 2/2 в порядке") and "✅ socialbot · отметка только что" in header
+    assert "✅ socialbot" in buttons(kb)
+
+    conn = await db.get_db()
+    await conn.execute("UPDATE heartbeats SET last_ping = datetime('now', '-31 hours') WHERE job = 'socialbot'")
+    await conn.commit()
+    header, kb = await menu.build_main_menu()
+    assert header.startswith("🟠 1/1 открывается · ⏰ socialbot молчит") and "🟠 socialbot · молчит 1 дн 7 ч" in header
+    call = FakeCall("hb_show:socialbot")
+    await heartbeats.cb_hb_show(call)
+    assert "🟠 Молчит 1 дн 7 ч · жду раз в сутки" in call.message.texts[-1]
+
+    await settings_service.add_heartbeat_job("backup", 60)
+    await db.set_state("hb_alerted:backup", NOW)                 # the watch already said «never marked»
+    header, _ = await menu.build_main_menu()
+    assert header.startswith("🟠 1/1 открывается · ⏰ молчат: 2") and "⚠️ backup · ни одной отметки" in header
+
+    # Only tasks, no sites: still a dashboard, not the «add your first site» greeting.
+    await db.deactivate_site(sid)
+    header, kb = await menu.build_main_menu()
+    assert "Пока ни за чем не слежу" not in header and "⏰ Задачи и боты:" in header
+    assert "1/1 открывается" not in header
+
+
+async def test_add_offers_every_kind_and_old_screens_land_on_main(bot, db):
+    call = FakeCall("site_add")
+    state = FakeState()
+    await sites.cb_site_add(call, state)
+    assert "адрес сайта" in call.message.texts[-1]
+    assert [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row] == [
+        "site_add_adv", "hb_add", "fsm_cancel"]
+    call = FakeCall("hb_add")
+    await heartbeats.cb_hb_add(call, state)
+    assert state.state == heartbeats.AddHeartbeatForm.name and "socialbot" in call.message.texts[-1]
+    msg = FakeMessage("SocialBot")
+    await heartbeats.msg_hb_name(msg, state)
+    call = FakeCall("hbint:1440")
+    await heartbeats.cb_hb_interval(call, state)
+    assert settings_service.ui_heartbeat_jobs() == {"socialbot": 1440}
+    assert "на главном экране" in call.message.texts[-1]
+    call = FakeCall("hb_del:socialbot")
+    await heartbeats.cb_hb_del(call)
+    assert not settings_service.heartbeat_jobs() and "больше не жду" in call.message.texts[-1]
+
+    for old in ("menu_sites", "menu_hb"):                     # buttons on messages sent before this layout
+        call = FakeCall(old)
+        await menu.cb_main_menu(call, FakeState())
+        assert "Пока ни за чем не слежу" in call.message.texts[-1]
 
 
 async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):

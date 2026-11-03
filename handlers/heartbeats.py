@@ -1,7 +1,8 @@
-"""⏰ Task control: «tell me if the backup did not run». Under the hood a
-dead-man switch: jobs ping the bot, silence longer than the interval is an
-alert. The words «cron» and «curl» appear only on the very last step,
-next to the ready-made line."""
+"""⏰ Tasks and bots: «tell me if the backup — or another bot — went
+silent». Under the hood a dead-man switch: jobs ping the bot, silence
+longer than the interval is an alert. They sit on the main screen next to
+the sites, each with a card; the words «cron» and «curl» appear only on
+that card, next to the ready-made line."""
 
 import contextlib
 from datetime import UTC, datetime
@@ -12,9 +13,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from db.database import get_heartbeats
+from db.database import get_heartbeats, get_state
 from handlers.common import ack, back_button, cancel_kb, render
-from services import public_urls, settings
+from services import humanize, public_urls, settings
 from utils.text import esc, fmt_duration, parse_sqlite_utc
 
 router = Router(name="heartbeats")
@@ -26,78 +27,78 @@ class AddHeartbeatForm(StatesGroup):
     name = State()
 
 
-async def _text() -> str:
+def every(interval: int) -> str:
+    """«раз в сутки» for a preset interval, «каждые 3 ч» for any other."""
+    return next((label for label, mins in _INTERVALS if mins == interval), f"каждые {fmt_duration(interval)}")
+
+
+async def job_states() -> list[tuple[str, str, str]]:
+    """(name, icon, short state) for every task under watch, from the stored
+    marks — no network. Late is the watch's own verdict (25% past the
+    interval, 🟠); never marked is ⏳ until the watch has said so, then ⚠️
+    like its alert."""
     jobs = settings.heartbeat_jobs()
     if not jobs:
-        return ("⏰ Контроль задач\n\n"
-                "У тебя есть что-то по расписанию — бэкап, выгрузка, синхронизация? Самая коварная "
-                "поломка такой задачи — тишина: она молча перестаёт запускаться, и никто не замечает.\n\n"
-                "Добавь задачу сюда, и она будет отмечаться у меня после каждого запуска. Если отметка "
-                "не придёт вовремя — я напишу.\n\nПока ни одной задачи.")
+        return []
     beats = await get_heartbeats()
     now = datetime.now(UTC)
-    lines = ["⏰ Контроль задач:\n"]
+    out = []
     for job, interval in jobs.items():
         last = parse_sqlite_utc(beats.get(job))
         if last:
             ago = (now - last).total_seconds() / 60
-            icon = "✅" if ago <= interval * 1.25 else "🟠"   # late = act, not today (same as the alert)
-            state_txt = f"отмечалась {fmt_duration(ago)} назад"
+            if ago > interval * 1.25:
+                out.append((job, "🟠", f"молчит {fmt_duration(ago)}"))
+            else:
+                out.append((job, "✅", "отметка только что" if ago < 1 else f"отметка {fmt_duration(ago)} назад"))
+        elif await get_state(f"hb_alerted:{job}"):
+            out.append((job, humanize.UNCHECKED, "ни одной отметки — не подключили?"))
         else:
-            icon, state_txt = "❓", "ещё ни разу не отмечалась"
-        src = "" if job in settings.ui_heartbeat_jobs() else " (из .env)"
-        lines.append(f"{icon} {esc(job)} — {state_txt}, ожидаю каждые {fmt_duration(interval)}{src}")
-    lines.append("\nНажми на задачу, чтобы увидеть строку для её расписания.")
-    return "\n".join(lines)
-
-
-def _kb() -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="➕ Добавить задачу", callback_data="hb_add")]]
-    rows += [[InlineKeyboardButton(text=f"🔗 {name}", callback_data=f"hb_show:{name}"),
-              InlineKeyboardButton(text="🗑", callback_data=f"hb_del:{name}")]
-             for name in list(settings.ui_heartbeat_jobs())[:settings.MAX_HB_JOBS]]
-    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+            out.append((job, "⏳", "ждёт первой отметки"))
+    return out
 
 
 def _how_to(name: str) -> str:
-    return (f"Чтобы задача «{esc(name)}» отмечалась, допиши в конец её команды в расписании "
-            f"(crontab, планировщик хостинга, GitHub Actions) одну строку:\n\n"
+    return (f"Как подключить «{esc(name)}» — одна строка:\n\n"
             f"<code>&& curl -fsS {esc(public_urls.heartbeat_url(name))}</code>\n\n"
-            f"Смысл: когда задача отработала без ошибок, она открывает этот адрес, и я это вижу. "
-            f"Если отметка не придёт вовремя — напишу.")
+            f"• Задача по расписанию (crontab, планировщик хостинга, GitHub Actions): допиши строку "
+            f"в конец её команды.\n"
+            f"• Бот или сервис: дай ему адрес из строки как ссылку для сторожа (healthcheck) — пусть "
+            f"открывает её после каждого удачного запуска.\n\n"
+            f"Отметка не придёт вовремя — напишу.")
 
 
-@router.callback_query(F.data == "menu_hb")
-async def cb_hb(call: CallbackQuery):
-    await ack(call)
-    await render(call, await _text(), _kb())
-
-
-def _job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
-    """The line for the schedule, and the way out when there is no such
-    task: a delete button for a UI job, the env variable for an .env one."""
+async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
+    """The card: when it last marked, the line that connects it, and the
+    way out when there is no such task — a delete button for a UI job, the
+    env variable for an .env one."""
+    interval = settings.heartbeat_jobs()[name]
+    _, icon, state = next(s for s in await job_states() if s[0] == name)
+    lines = [f"⏰ {esc(name)}", f"{icon} {esc(state[:1].upper() + state[1:])} · жду {every(interval)}", "",
+             _how_to(name)]
     rows = []
+    marked = icon in ("✅", "🟠")
     if name in settings.ui_heartbeat_jobs():
-        text = _how_to(name) + "\n\nЕсли такой задачи у тебя нет — удали её, и я перестану её ждать."
-        rows.append([InlineKeyboardButton(text="🗑 Удалить задачу", callback_data=f"hb_del:{name}")])
+        if not marked:
+            lines += ["", "Если такой задачи у тебя нет — удали её, и я перестану её ждать."]
+        rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"hb_del:{name}")])
     else:
-        text = (_how_to(name) + "\n\nЕсли такой задачи у тебя нет — убери её из переменной "
-                "<code>HEARTBEAT_JOBS</code> на сервере бота.")
-    rows.append([InlineKeyboardButton(text="← Контроль задач", callback_data="menu_hb")])
-    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+        lines += ["", "Задана в переменной <code>HEARTBEAT_JOBS</code> на сервере бота — убрать её можно "
+                      "только там."]
+    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data.startswith("hb_show:") | F.data.startswith("hb_how:"))
 async def cb_hb_show(call: CallbackQuery):
-    """hb_show: from the task list, edits it in place. hb_how: from the
+    """hb_show: from the main screen, edits it in place. hb_how: from the
     morning digest or an alert — answers below and leaves that message as is."""
     kind, name = call.data.split(":", 1)
     if name not in settings.heartbeat_jobs():
         await ack(call, "Задачи больше нет", show_alert=True)
         return
     await ack(call)
-    text, kb = _job_screen(name)
+    text, kb = await job_screen(name)
     if kind == "hb_how" and call.message is not None:
         await call.message.answer(text, reply_markup=kb)
     else:
@@ -108,8 +109,12 @@ async def cb_hb_show(call: CallbackQuery):
 async def cb_hb_add(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(AddHeartbeatForm.name)
-    await render(call, "Как назвать задачу? Латиницей, коротко: например <code>backup</code> "
-                       "или <code>sync-photos</code>.", cancel_kb())
+    await render(call, "⏰ Бот или задача по расписанию\n\n"
+                       "Самая коварная поломка бэкапа, выгрузки или другого бота — тишина: он молча "
+                       "перестаёт работать, и никто не замечает. Добавь его сюда — он будет отмечаться "
+                       "у меня после каждого запуска, а если отметка не придёт вовремя, я напишу.\n\n"
+                       "Как назвать? Латиницей, коротко: например <code>backup</code> или "
+                       "<code>socialbot</code>.", cancel_kb())
 
 
 @router.message(AddHeartbeatForm.name)
@@ -129,7 +134,7 @@ async def msg_hb_name(message: Message, state: FSMContext):
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in _INTERVALS[:2]],
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in _INTERVALS[2:]],
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
-    await message.answer(f"Как часто «{esc(name)}» должна запускаться?", reply_markup=kb)
+    await message.answer(f"Как часто ждать отметку от «{esc(name)}»?", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("hbint:"))
@@ -138,12 +143,12 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     await state.clear()
     arg = call.data.split(":", 1)[1]
     if not name or not arg.isdigit():
-        await ack(call, "Начни заново: ⏰ Контроль задач → ➕", show_alert=True)
+        await ack(call, "Начни заново: 📱 Меню → ➕ Добавить", show_alert=True)
         return
     await settings.add_heartbeat_job(name, int(arg))
     await ack(call, "Добавил ✅")
-    await render(call, f"✅ Задача «{esc(name)}» добавлена.\n\n{_how_to(name)}",
-                 back_button("← Контроль задач", "menu_hb"))
+    await render(call, f"✅ «{esc(name)}» под присмотром и уже на главном экране.\n\n{_how_to(name)}",
+                 back_button())
 
 
 @router.callback_query(F.data.startswith("hb_rm:"))
@@ -163,6 +168,9 @@ async def cb_hb_remove_here(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("hb_del:"))
 async def cb_hb_del(call: CallbackQuery):
-    removed = await settings.remove_heartbeat_job(call.data.split(":", 1)[1])
-    await ack(call, "Удалил" if removed else "Эта задача из .env — убери её там")
-    await render(call, await _text(), _kb())
+    name = call.data.split(":", 1)[1]
+    if not await settings.remove_heartbeat_job(name):
+        await ack(call, "Эта задача из .env — убери её там", show_alert=True)
+        return
+    await ack(call, "Удалил")
+    await render(call, f"🗑 «{esc(name)}» больше не жду.", back_button())

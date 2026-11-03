@@ -144,11 +144,11 @@ async def build_items() -> list[Item]:
                           ("🌐 Включить вторую точку", "setup:so:on")))
 
     if settings.heartbeat_jobs():
-        items.append(Item("heartbeats", "ok", "контроль задач"))
+        items.append(Item("heartbeats", "ok", "задачи и боты"))
     else:
-        items.append(Item("heartbeats", "off", "⏰ Контроль задач",
-                          "скажу, если бэкап или другая задача по расписанию не отработала",
-                          ("⏰ Добавить задачу", "hb_add")))
+        items.append(Item("heartbeats", "off", "⏰ Задачи и боты",
+                          "скажу, если бэкап, другой бот или задача по расписанию перестанет отмечаться",
+                          ("⏰ Добавить задачу или бота", "hb_add")))
 
     if gsc.available():
         ok = await _gsc_probe()

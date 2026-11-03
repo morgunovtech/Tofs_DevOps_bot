@@ -1,4 +1,5 @@
-"""🌍 Sites: detail screen, add/remove, pause, export/import."""
+"""🌍 Sites: the card (opened from the main screen), add/remove, pause,
+export/import."""
 
 import json
 import re
@@ -40,7 +41,7 @@ from handlers.common import (
     render,
     site_by_cb,
 )
-from handlers.menu import best_ms, cb_main_menu, site_state
+from handlers.menu import best_ms, cb_main_menu
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
@@ -120,26 +121,7 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
     return site + tail, None
 
 
-# ── Detail screen ────────────────────────────────────────────────────────────
-
-@router.callback_query(F.data.in_({"menu_sites", "menu_check_site"}))
-async def cb_sites_list(call: CallbackQuery, state: FSMContext):
-    await ack(call)
-    await state.clear()
-    sites_ = await get_all_sites()
-    lines = ["🌍 Сайты — тап по сайту открывает карточку со всем сразу:\n"]
-    rows = []
-    for site in sites_:
-        icon, state_txt, _ = await site_state(site)
-        lines.append(f"{icon} {esc(site_label(site['url']))} · {esc(state_txt)}")
-        rows.append([InlineKeyboardButton(text=f"{icon} {site_label(site['url'])}",
-                                          callback_data=f"check_site:{site['id']}")])
-    if not sites_:
-        lines.append("Пока ни одного.")
-    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add")])
-    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
-    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
-
+# ── Card ─────────────────────────────────────────────────────────────────────
 
 def _ago(section: dict | None) -> str:
     age = sitestatus.age_minutes(section)
@@ -280,7 +262,7 @@ async def render_card(call: CallbackQuery, site: dict):
         last_row.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}"))
     last_row.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}"))
     rows.append(last_row)
-    rows.append([InlineKeyboardButton(text="← Сайты", callback_data="menu_sites")])
+    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -290,8 +272,7 @@ async def cb_check_single_site(call: CallbackQuery):
     await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
-        await render(call, "Сайт не найден — список сайтов изменился. Открой меню заново.",
-                     back_button("← Сайты", "menu_sites"))
+        await render(call, "Сайт не найден — список сайтов изменился.", back_button())
         return
     await render_card(call, site)
 
@@ -303,7 +284,7 @@ async def cb_check_site_live(call: CallbackQuery):
     await ack(call, "Проверяю…")
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
-        await render(call, "Сайт не найден.", back_button("← Сайты", "menu_sites"))
+        await render(call, "Сайт не найден.", back_button())
         return
     url = site["url"]
     await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
@@ -320,18 +301,26 @@ async def cb_check_site_live(call: CallbackQuery):
 
 @router.callback_query(F.data == "site_add")
 async def cb_site_add(call: CallbackQuery, state: FSMContext):
+    """«➕ Добавить» — one door for everything that can be watched: a site
+    is just typed in, the other two kinds are a button away."""
     await ack(call)
     if len(await get_all_sites()) >= MAX_SITES:
-        await render(call, f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга.",
-                     back_button())
+        await render(call, f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга. Бота или задачу "
+                           f"по расписанию добавить можно.", InlineKeyboardMarkup(inline_keyboard=[
+                               [_HB_BUTTON], *back_button().inline_keyboard]))
         return
     await state.set_state(AddSiteForm.url)
-    await render(call, "➕ Пришли адрес сайта, например <code>example.com</code>.", _add_kb())
+    await render(call, "➕ Пришли адрес сайта, например <code>example.com</code>.\n\n"
+                       "Не сайт? Выбери ниже.", _add_kb())
+
+
+_HB_BUTTON = InlineKeyboardButton(text="⏰ Бот или задача по расписанию", callback_data="hb_add")
 
 
 def _add_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛠 Продвинутое: API, порты и ping", callback_data="site_add_adv")],
+        [InlineKeyboardButton(text="🛠 API, порт или ping", callback_data="site_add_adv")],
+        [_HB_BUTTON],
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
 
 
@@ -461,7 +450,7 @@ async def cb_site_del_do(call: CallbackQuery):
         await maintenance.remove_windows_for_site(site["id"])
         reset_site_schedule(site["id"])
         await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась.",
-                     back_button("← Сайты", "menu_sites"))
+                     back_button())
     else:
         await render(call, "Сайт уже убран.", back_button())
 
@@ -488,7 +477,7 @@ async def cb_pause(call: CallbackQuery):
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
-                              f"проверки идут. Раньше снять: «🌍 Сайты» → сайт.")
+                              f"проверки идут. Раньше снять: 📱 Меню → {esc(host)}.")
 
 
 # ── Export / import ──────────────────────────────────────────────────────────
@@ -615,7 +604,7 @@ async def cb_site_export(call: CallbackQuery):
     await call.message.answer_document(
         BufferedInputFile(data, filename="tofsdevops-export.json"),
         caption=(f"📤 {len(doc['sites'])} сайтов с настройками, сводки, тихие часы, плановые работы, "
-                 f"контроль задач и подключения. В файле есть токены — храни его как пароль. "
+                 f"задачи и боты, подключения. В файле есть токены — храни его как пароль. "
                  f"Восстановить: «⚙️ Настройки» → 📥."))
 
 
