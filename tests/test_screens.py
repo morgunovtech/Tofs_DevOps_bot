@@ -1,6 +1,7 @@
 """Bot screens rendered against the test DB with fake Telegram objects —
 catches attribute errors in handlers without a Telegram connection."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from aiohttp import web
@@ -22,6 +23,7 @@ from handlers import (
 )
 from monitors import links_checker
 from monitors.base import LinkCheck, SeoResult
+from services import heartbeats as heartbeats_service
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
@@ -251,6 +253,26 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     header, kb = await menu.build_main_menu()
     assert "Пока ни за чем не слежу" not in header and "⏰ Задачи и боты:" in header
     assert "1/1 открывается" not in header
+
+
+async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
+    """The watchdog closes the «⏰ Задачи и боты» block; one that does not
+    take the marks spoils the headline like a silent task."""
+    sid = await db.activate_or_create_site("https://a.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=100)
+    header, _ = await menu.build_main_menu()
+    assert "сторож" not in header                                   # none connected: the checklist says so
+    await integrations.set_value("self_heartbeat_url", "https://hc-ping.com/abc")
+    await heartbeats_service.record_watchdog(None)
+    header, _ = await menu.build_main_menu()
+    assert header.startswith("✅ 2/2 в порядке") and header.endswith(
+        "⏰ Задачи и боты:\n✅ сторож healthchecks.io · на связи")
+    await db.set_state("watchdog", json.dumps({"ok_at": NOW, "error": "отвечает ошибкой 404",
+                                               "fail_since": (datetime.now(UTC) - timedelta(minutes=40)).isoformat()}))
+    header, _ = await menu.build_main_menu()
+    assert header.startswith("🟠 1/1 открывается · 🛡 сторож не на связи")
+    assert "🟠 сторож healthchecks.io · не принимает отметки 40 мин (отвечает ошибкой 404)" in header
+    await integrations.set_value("self_heartbeat_url", None)
 
 
 async def test_add_offers_every_kind_and_old_screens_land_on_main(bot, db):

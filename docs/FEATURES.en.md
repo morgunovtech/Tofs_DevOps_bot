@@ -60,7 +60,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 …and the bot alerts you when the job goes silent longer than its interval. Recovery is announced automatically.
 
 ### 📊 Reports that respect your attention
-- **Morning digest** — one message: per-site status, open problems, 7-day downtime (one phrase when the week was clean), upcoming SSL/domain expirations, heartbeat status with a «what to do» button for a silent task, disk, and a search/AI line that never repeats an open problem. Reads in 10 seconds.
+- **Morning digest** — one message: per-site status, open problems, 7-day downtime (one phrase when the week was clean), upcoming SSL/domain expirations, disk, and right under the sites a line per bot or scheduled task (✅ works, with its expected rhythm; a silent one brings «connect / delete» buttons) and one for the bot's own watchdog — ✅ only while it actually takes the marks, and a search/AI line that never repeats an open problem. Reads in 10 seconds.
 - **Weekly report** (Sundays) — downtime in minutes for the week and the month (raw checks + nightly rollups, so it stays honest past retention), everything open right now with its level (however old) and what was solved this week, certificates that renewed by themselves, an ASCII response-time chart (monospace, zero image libraries), Google/Yandex search metrics week-over-week, the state of the bot's own dependencies, GitHub hygiene — and exactly one suggestion with a button, never more. A long report is split into several messages, never cut.
 - **GitHub hygiene** (optional: `GITHUB_TOKEN`, or «🩺 Диагностика → 🐙 GitHub») — a section of the Sunday report. One GraphQL query over the owner's repositories (`GITHUB_OWNER`, defaults to the token's account) and only what needs a hand: repositories gone since last week (the list is kept in the DB), open PRs older than 7 days, extra branches (not the default, not an open PR's head; `gh-pages` is fine), «Automatically delete head branches» switched off, a red CI on the default branch's latest commit, open Dependabot alerts when the token may read them. Archived repos and forks are watched for disappearance only. All tidy — no section at all; GitHub down or the token rejected — one «⚠️ не смог проверить» line, and the report arrives as usual. The bot's own Dependabot PRs are not repeated: the dependency line already names them.
 - **Quiet first day** — a freshly added site is audited silently; its first SEO findings arrive in the next morning digest instead of ten separate alerts. Only findings that take the site out of search are ever alerted; the rest waits in «🔎 Поиск и ИИ» with a button per finding.
@@ -72,7 +72,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<secret>/backup
 ### 🧹 It maintains itself
 - Old raw checks roll up into daily aggregates nightly — the SQLite DB stays small forever.
 - Nightly DB backups with rotation + a weekly off-host copy sent straight to your Telegram chat.
-- Self-heartbeat to an external watchdog (healthchecks.io) — who watches the watchman.
+- Self-heartbeat to an external watchdog (healthchecks.io) — who watches the watchman. The bot reads the answer, not only the status code (healthchecks.io says «OK (not found)» with HTTP 200 for a deleted check), shows the watchdog on the main screen and in the digest, and says once if it has refused the marks for half an hour.
 - **Keeps its dependencies fresh without you**: Dependabot opens a weekly PR, CI (ruff + pytest + pip-audit) tests it, the auto-merge workflow merges minor/patch bumps, the host redeploys — and the bot announces «🔄 Бот обновился: aiohttp 3.10 → 3.14» on its next start. A newer version on PyPI is therefore not news; the bot reports only what needs a human — vulnerable packages (OSV), major PRs, minor PRs stuck for over two days (red CI) — and, hourly, a newest commit that failed to deploy while the bot still runs the old build. CI also builds the Docker image, so a base-image bump that does not build is never auto-merged.
 - Secrets take care of themselves: an empty or placeholder `WEBHOOK_SECRET`/`HEARTBEAT_SECRET` is replaced by a generated one stored in the DB. The two are always different — the webhook secret is public by design (it ships in the widget), the heartbeat one is not.
 
@@ -87,10 +87,12 @@ A tiny embeddable JS widget for your sites — messages land in your Telegram (r
 ✅ example.com — в порядке, быстро (0.10 с)
 ✅ app.example.com — в порядке, быстро (0.14 с)
 
+✅ backup — работает, отметка 7 ч назад (жду раз в сутки)
+✅ Сторож healthchecks.io — на связи: если я упаду, он сообщит
+
 Всё спокойно 🐕
 
 📈 За неделю: все сайты без сбоев
-⏰ Задачи в срок: backup (7 ч назад)
 🔎 Поиск и ИИ: помех нет
 💾 Диск сервера: ✅ занято 41%
 ```

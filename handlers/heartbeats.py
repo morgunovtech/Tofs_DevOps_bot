@@ -5,7 +5,6 @@ the sites, each with a card; the words «cron» and «curl» appear only on
 that card, next to the ready-made line."""
 
 import contextlib
-from datetime import UTC, datetime
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -13,49 +12,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from db.database import get_heartbeats, get_state
 from handlers.common import ack, back_button, cancel_kb, render
-from services import humanize, public_urls, settings
-from utils.text import esc, fmt_duration, parse_sqlite_utc
+from services import public_urls, settings
+from services.heartbeats import INTERVALS, every, job_states
+from utils.text import esc
 
 router = Router(name="heartbeats")
-
-_INTERVALS = [("раз в час", 60), ("раз в 6 часов", 360), ("раз в сутки", 1440), ("раз в неделю", 10080)]
 
 
 class AddHeartbeatForm(StatesGroup):
     name = State()
-
-
-def every(interval: int) -> str:
-    """«раз в сутки» for a preset interval, «каждые 3 ч» for any other."""
-    return next((label for label, mins in _INTERVALS if mins == interval), f"каждые {fmt_duration(interval)}")
-
-
-async def job_states() -> list[tuple[str, str, str]]:
-    """(name, icon, short state) for every task under watch, from the stored
-    marks — no network. Late is the watch's own verdict (25% past the
-    interval, 🟠); never marked is ⏳ until the watch has said so, then ⚠️
-    like its alert."""
-    jobs = settings.heartbeat_jobs()
-    if not jobs:
-        return []
-    beats = await get_heartbeats()
-    now = datetime.now(UTC)
-    out = []
-    for job, interval in jobs.items():
-        last = parse_sqlite_utc(beats.get(job))
-        if last:
-            ago = (now - last).total_seconds() / 60
-            if ago > interval * 1.25:
-                out.append((job, "🟠", f"молчит {fmt_duration(ago)}"))
-            else:
-                out.append((job, "✅", "отметка только что" if ago < 1 else f"отметка {fmt_duration(ago)} назад"))
-        elif await get_state(f"hb_alerted:{job}"):
-            out.append((job, humanize.UNCHECKED, "ни одной отметки — не подключили?"))
-        else:
-            out.append((job, "⏳", "ждёт первой отметки"))
-    return out
 
 
 def _how_to(name: str) -> str:
@@ -72,9 +38,9 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
     """The card: when it last marked, the line that connects it, and the
     way out when there is no such task — a delete button for a UI job, the
     env variable for an .env one."""
-    interval = settings.heartbeat_jobs()[name]
-    _, icon, state = next(s for s in await job_states() if s[0] == name)
-    lines = [f"⏰ {esc(name)}", f"{icon} {esc(state[:1].upper() + state[1:])} · жду {every(interval)}", "",
+    job = next(j for j in await job_states() if j.name == name)
+    icon, state = job.icon, job.state
+    lines = [f"⏰ {esc(name)}", f"{icon} {esc(state[:1].upper() + state[1:])} · жду {every(job.interval)}", "",
              _how_to(name)]
     rows = []
     marked = icon in ("✅", "🟠")
@@ -131,8 +97,8 @@ async def msg_hb_name(message: Message, state: FSMContext):
         return
     await state.update_data(hb_name=name)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in _INTERVALS[:2]],
-        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in _INTERVALS[2:]],
+        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[:2]],
+        [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[2:]],
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
     await message.answer(f"Как часто ждать отметку от «{esc(name)}»?", reply_markup=kb)
 

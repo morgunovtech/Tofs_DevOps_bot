@@ -8,6 +8,7 @@ from handlers import setup
 from services import (
     docker_api,
     gsc,
+    heartbeats,
     integrations,
     public_urls,
     runtime,
@@ -211,17 +212,18 @@ async def test_watchdog_wizard(bot, db, monkeypatch):
     assert "https-ссылка" in msg.texts[-1]
 
     async def fake_ping(url):
-        return url.endswith("/good")
-    monkeypatch.setattr(setup, "_watchdog_ping", fake_ping)
+        return None if url.endswith("/good") else "check не найден"
+    monkeypatch.setattr(heartbeats, "ping_watchdog", fake_ping)
     msg = FakeMessage("https://hc-ping.com/bad")
     await setup.msg_watchdog_url(msg, state)
-    assert "не ответил" in msg.texts[-1] and not integrations.self_heartbeat_url()
+    assert "не принял отметку: check не найден" in msg.texts[-1] and not integrations.self_heartbeat_url()
     msg = FakeMessage("https://hc-ping.com/good")
     await setup.msg_watchdog_url(msg, state)
-    assert "Сторож подключён" in msg.texts[-1]
+    assert "Сторож подключён" in msg.texts[-1] and (await heartbeats.watchdog()).icon == "✅"
     assert integrations.self_heartbeat_url() == "https://hc-ping.com/good" and integrations.source("self_heartbeat_url") == "bot"
     call = FakeCall("setup:watchdog")
     await setup.cb_guide_watchdog(call)
     assert "ссылка введена в боте" in call.message.texts[-1] and "🗑 Отключить" in buttons(call.message.reply_markup)
     await setup.cb_watchdog_off(FakeCall("setup:watchdog_off"))
-    assert not integrations.self_heartbeat_url()
+    assert not integrations.self_heartbeat_url() and await heartbeats.watchdog() is None
+    assert await db.get_state("watchdog") is None
