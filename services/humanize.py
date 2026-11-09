@@ -264,6 +264,33 @@ EXPLANATIONS: dict[str, Explanation] = {
                     "перенос домена к другому провайдеру или взлом аккаунта регистратора",
                     ("Если это не ты — срочно зайти в аккаунт регистратора, сменить пароль и вернуть NS-серверы.",
                      "Включить двухфакторную защиту у регистратора.")),
+    "mx_change": _E("mx_change",
+                    "Письма на домен теперь принимает другой сервер.",
+                    "ты перешёл на другой почтовый сервис — или кто-то с доступом к DNS перенаправил почту",
+                    ("Если это ты — ничего делать не нужно, я запомнил новое значение.",
+                     "Если нет — срочно вернуть записи MX в DNS и сменить пароль там, где правят DNS: "
+                     "иначе твою почту читает чужой сервер.")),
+    "mx_gone": _E("mx_gone",
+                  "Письма на домен больше не доходят: у него не осталось почтовых серверов.",
+                  "записи MX удалили — случайно при правке DNS или при переезде",
+                  ("Если почта на домене больше не нужна — ничего делать не нужно.",
+                   "Если нужна — вернуть записи MX в DNS: точные значения есть в настройках почтового сервиса.")),
+    "mail_down": _E("mail_down",
+                    "Письма на твой домен сейчас не доходят: серверы отправителей будут пробовать ещё несколько "
+                    "дней, потом вернут письмо с ошибкой.",
+                    "сбой у почтового сервиса или сломались записи MX в DNS",
+                    ("Открыть страницу статуса почтового сервиса: если сбой у них — ждать, я напишу, когда "
+                     "почта заработает.",
+                     "Если у них всё в порядке — проверить записи MX в DNS: они должны вести на твой почтовый "
+                     "сервис.",
+                     "Письма, отправленные во время сбоя, обычно доходят сами, когда почта поднимется.")),
+    "mail_auth": _E("mail_auth",
+                    "Почта работает, но письма с твоего домена могут попадать в спам, а подделать твой адрес "
+                    "проще.",
+                    "запись SPF, DKIM или DMARC в DNS отсутствует или с ошибкой — часто остаётся после смены "
+                    "почтового сервиса",
+                    ("Открыть «✉️ Почта» в боте: там готовые записи, которые нужно вставить в DNS.",
+                     "Изменения в DNS доходят за 5–30 минут — потом нажать «Перепроверить».")),
     "heartbeat": _E("heartbeat",
                     "Бот или задача по расписанию вовремя не вышли на связь.",
                     "крон не запустился, скрипт упал или сервер задачи выключен",
@@ -321,7 +348,8 @@ def classify(check_type: str, message: str | None) -> str:
         # The incident text says which level it is: «закрыт от поиска — …»
         # for noindex/robots, «N помех в поиске, напр.: …» for the rest.
         return "seo_critical" if "закрыт от поиска" in msg else "seo_warning"
-    return {"performance": "slow", "links": "links", "deep": "deep"}.get(check_type, "unknown")
+    return {"performance": "slow", "links": "links", "deep": "deep", "mail": "mail_down",
+            "mail_auth": "mail_auth"}.get(check_type, "unknown")
 
 
 def explain(check_type: str, message: str | None) -> Explanation:
@@ -364,7 +392,7 @@ def incident_headline(check_type: str, message: str | None, label: str) -> str:
         if m:
             rest = int(m.group(1)) - 1
             more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest > 0 else ""
-            return f"{label}: {_lower_first(m.group(2))}{more}"
+            return f"{label}: {lower_first(m.group(2))}{more}"
         return f"{label}: {what}"
     return f"{label}: {what}"
 
@@ -372,7 +400,7 @@ def incident_headline(check_type: str, message: str | None, label: str) -> str:
 _SEO_SUMMARY = re.compile(r"^(\d+) \S+ в поиске, напр\.: (.+)$")
 
 
-def _lower_first(text: str) -> str:
+def lower_first(text: str) -> str:
     """«Нет карты сайта» → «нет карты сайта»; «JSON-LD …» stays as is."""
     return text[0].lower() + text[1:] if len(text) > 1 and not text[1].isupper() else text
 
