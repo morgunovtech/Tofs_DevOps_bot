@@ -64,15 +64,18 @@ class FakeMessage:
         self.text = text
         self.document = None
         self.texts: list[str] = []
+        self.markups: list = []      # the keyboard of each text, in step with self.texts
         self.chat = SimpleNamespace(id=1)
         self.reply_markup = None
 
     async def edit_text(self, text, reply_markup=None):
         self.texts.append(text)
+        self.markups.append(reply_markup)
         self.reply_markup = reply_markup
 
     async def answer(self, text, reply_markup=None):
         self.texts.append(text)
+        self.markups.append(reply_markup)
         self.reply_markup = reply_markup
         return self
 

@@ -4,7 +4,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import SendMessage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import peek_notifications, queue_notification
+from db.database import OUTBOX_MAX, outbox_peek, peek_notifications, queue_notification
 from services import maintenance, notifier, settings
 from services.notifier import Priority
 
@@ -116,3 +116,44 @@ async def test_a_batch_telegram_rejects_does_not_jam_the_queue(bot, monkeypatch)
     monkeypatch.setattr(bot, "send_message", picky)
     await notifier.flush_queue()
     assert await peek_notifications() == [] and "<b>broken" in bot.sent[-1]["text"]
+
+
+async def test_a_message_telegram_did_not_take_comes_later(bot, monkeypatch):
+    """No network or a 5xx: the message waits in the outbox and arrives with
+    the time it should have come — a lost «сайт лёг» would never come back,
+    the incident is already open. Silent ones still respect quiet hours."""
+    bot.fail = True
+    assert await notifier.send("🔴 a.test не открывается", Priority.CRITICAL) is True   # kept, so flags are set
+    assert await notifier.send("🟠 b.test медленно", Priority.NORMAL) is True
+    assert bot.sent == []
+    await notifier.flush_outbox()                                   # still down: nothing lost
+    assert len(await outbox_peek()) == 2
+
+    bot.fail = False
+    monkeypatch.setattr(notifier, "in_quiet_hours", lambda hour=None: True)
+    await notifier.flush_outbox()
+    assert bot.sent[-1]["text"].startswith("⏳ Не дошло в ") and "a.test не открывается" in bot.sent[-1]["text"]
+    assert bot.sent[-1]["silent"] is False                          # 🔴 still rings
+    assert len(bot.sent) == 1 and await outbox_peek() == []
+    assert "b.test медленно" in (await peek_notifications())[-1]["text"]   # 🟠 waits for the morning
+
+
+async def test_text_telegram_cannot_parse_still_arrives(bot, monkeypatch):
+    original = bot.send_message
+
+    async def picky(*args, **kwargs):
+        if "parse_mode" not in kwargs:
+            raise TelegramBadRequest(SendMessage(chat_id=1, text="x"), "can't parse entities")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(bot, "send_message", picky)
+    assert await notifier.send("🔴 <b>broken", Priority.CRITICAL)
+    assert bot.sent[-1]["text"] == "🔴 <b>broken" and await outbox_peek() == []
+
+
+async def test_outbox_keeps_only_the_newest(bot):
+    bot.fail = True
+    for i in range(OUTBOX_MAX + 5):
+        await notifier.send(f"m{i}", Priority.CRITICAL)
+    rows = await outbox_peek()
+    assert len(rows) == OUTBOX_MAX and rows[0]["text"] == "m5"

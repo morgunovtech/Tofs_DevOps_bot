@@ -506,6 +506,36 @@ async def delete_notifications(ids: list[int]):
         await db.commit()
 
 
+# ── Undelivered messages (Telegram did not take them) ────────────────────────
+
+OUTBOX_MAX = 50
+
+
+async def outbox_add(text: str, reply_markup: str | None, priority: str):
+    """Keep a message for a retry; only the newest OUTBOX_MAX survive a
+    long outage."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("INSERT INTO outbox (text, reply_markup, priority) VALUES (?, ?, ?)",
+                         (text, reply_markup, priority))
+        await db.execute("DELETE FROM outbox WHERE id NOT IN "
+                         "(SELECT id FROM outbox ORDER BY id DESC LIMIT ?)", (OUTBOX_MAX,))
+        await db.commit()
+
+
+async def outbox_peek() -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute("SELECT id, text, reply_markup, priority, created_at FROM outbox ORDER BY id")
+    return [dict(r) for r in await cursor.fetchall()]
+
+
+async def outbox_delete(row_id: int):
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("DELETE FROM outbox WHERE id = ?", (row_id,))
+        await db.commit()
+
+
 # ── Feedback from the site widget ────────────────────────────────────────────
 
 async def save_feedback(site_url: str, page_url: str, message: str,

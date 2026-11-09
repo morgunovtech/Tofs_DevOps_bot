@@ -7,6 +7,7 @@ steps are buttons too. Optional integrations are entered from the chat and
 stored in the DB (services.integrations); .env stays a fallback.
 """
 
+import asyncio
 import contextlib
 import json
 import platform
@@ -21,7 +22,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
-from db.database import get_all_sites, set_state
+from db.database import get_all_sites, get_state, set_state
 from handlers.common import ack, back_button, cancel_kb, render
 from services import (
     docker_api,
@@ -279,13 +280,86 @@ async def cb_checklist(call: CallbackQuery, state: FSMContext):
     await show_checklist(call)
 
 
-@router.callback_query(F.data == "menu_testalert")
+# ── Will an alert actually ring? ─────────────────────────────────────────────
+#
+# The bot cannot see a muted chat or a phone in «Не беспокоить» — and then
+# a fallen site rings nobody. The test comes in a minute: Telegram keeps the
+# phone quiet while you sit in it on any device, so a test sent right after
+# the tap would not ring even when everything is fine.
+
+RING_DELAY_S = 60
+RING_TEST = ("🔴 Пробная тревога\n"
+             "Так придёт сообщение, если сайт ляжет: со звуком, даже ночью и когда остальное "
+             "приглушено.\n\nТелефон зазвонил?")
+NO_RING_HELP = ("🔕 Тревога пришла без звука. Что обычно мешает:\n\n"
+                "1. Звук выключен у этого чата: нажми моё имя вверху чата → «Уведомления» → включить.\n"
+                "2. Уведомления Telegram на телефоне: настройки Telegram → «Уведомления и звуки» → "
+                "«Личные чаты» включены.\n"
+                "3. Режим «Не беспокоить» или «Фокусирование» на телефоне глушит всё — добавь Telegram "
+                "в разрешённые приложения.\n"
+                "4. Открыт Telegram на компьютере: пока ты там, телефон молчит. Это нормально — "
+                "уйдёшь, и тревоги снова будут звонить на телефоне.\n\n"
+                "Поправь и попробуй ещё раз.")
+_ring_tasks: set[asyncio.Task] = set()
+
+
+def _ring_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, зазвонил", callback_data="ring:yes"),
+        InlineKeyboardButton(text="🔕 Нет", callback_data="ring:no")]])
+
+
+async def _ring_later():
+    await asyncio.sleep(RING_DELAY_S)
+    await notifier.send(RING_TEST, Priority.CRITICAL, reply_markup=_ring_kb(), always_ring=True)
+
+
+def schedule_ring_test() -> asyncio.Task:
+    task = asyncio.get_running_loop().create_task(_ring_later())
+    _ring_tasks.add(task)
+    task.add_done_callback(_ring_tasks.discard)
+    return task
+
+
+@router.callback_query(F.data.in_({"menu_testalert", "ring:test"}))
 async def cb_test_alert(call: CallbackQuery):
-    await ack(call, "Отправляю тестовый алерт…")
-    await notifier.send("🔴 Тестовый алерт\nТак выглядит критическое (🔴) уведомление — оно звонит и "
-                        "пробивает mute и тихие часы. Остальное (🟠) приходит тихо.\n\n"
-                        "Если ты это видишь — доставка работает. ✅",
-                        Priority.CRITICAL)
+    schedule_ring_test()
+    await ack(call, "Через минуту пришлю пробную тревогу. Сверни Telegram везде — на телефоне и на "
+                    "компьютере — и жди звонка.", show_alert=True)
+
+
+@router.callback_query(F.data == "ring:yes")
+async def cb_ring_yes(call: CallbackQuery):
+    await ack(call)
+    await set_state("ring_ok", "1")
+    await render(call, "🔴 Пробная тревога\n✅ Звонит: если сайт ляжет, ты узнаешь сразу.")
+
+
+@router.callback_query(F.data == "ring:no")
+async def cb_ring_no(call: CallbackQuery):
+    await ack(call)
+    await render(call, NO_RING_HELP, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Ещё раз через минуту", callback_data="ring:test")]]))
+
+
+async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
+    """After the first site: what makes the bot's silence trustworthy — an
+    alert that rings and a watchdog for the bot itself. None when both are
+    done."""
+    steps, rows = [], []
+    if not await get_state("ring_ok"):
+        steps.append("🔔 Пробная тревога — проверим, что телефон зазвонит, если сайт ляжет. Чаще всего "
+                     "тревогу пропускают из-за выключенного звука у чата.")
+        rows.append([InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="ring:test")])
+    if not integrations.self_heartbeat_url():
+        steps.append("🛡 Сторож — если сломаюсь я сам, тебе напишет healthchecks.io. Бесплатно, 2 минуты.")
+        rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа", callback_data="onb:watchdog")])
+    if not steps:
+        return None
+    head = ("Ещё два шага, чтобы моё молчание точно значило «всё в порядке»:" if len(steps) == 2
+            else "Ещё один шаг, чтобы моё молчание точно значило «всё в порядке»:")
+    return "\n\n".join([head, *(f"{i}. {step}" for i, step in enumerate(steps, 1))]), \
+        InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ── One-tap fixes ────────────────────────────────────────────────────────────
@@ -373,18 +447,21 @@ def _watchdog_kb() -> InlineKeyboardMarkup:
     return _guide_kb(*buttons)
 
 
-@router.callback_query(F.data == "setup:watchdog")
+@router.callback_query(F.data.in_({"setup:watchdog", "onb:watchdog"}))
 async def cb_guide_watchdog(call: CallbackQuery):
+    """onb: from the first-site steps — answers below, so the other step's
+    button stays where it was."""
     await ack(call)
     state_line = {"bot": "Подключён, ссылка введена в боте.", "env": "Подключён через .env."}.get(
         integrations.source("self_heartbeat_url"), "Пока не подключён.")
-    await render(call, ("🛡 Внешний сторож\n\n"
-                        f"{state_line}\n\n"
-                        "Бот следит за сайтами, а кто следит за ботом? healthchecks.io (бесплатно).\n\n"
-                        "1. Зарегистрируйся на <a href=\"https://healthchecks.io\">healthchecks.io</a>, "
-                        "создай check с периодом 5 минут.\n"
-                        "2. Скопируй ссылку вида <code>https://hc-ping.com/…</code> и нажми «🔗 Вставить ссылку».\n"
-                        "3. Бот будет отмечаться там каждые 5 минут; пропадёт — healthchecks пришлёт письмо."),
+    target = call.message if call.data == "onb:watchdog" and call.message is not None else call
+    await render(target, ("🛡 Внешний сторож\n\n"
+                         f"{state_line}\n\n"
+                         "Бот следит за сайтами, а кто следит за ботом? healthchecks.io (бесплатно).\n\n"
+                         "1. Зарегистрируйся на <a href=\"https://healthchecks.io\">healthchecks.io</a>, "
+                         "создай check с периодом 5 минут.\n"
+                         "2. Скопируй ссылку вида <code>https://hc-ping.com/…</code> и нажми «🔗 Вставить ссылку».\n"
+                         "3. Бот будет отмечаться там каждые 5 минут; пропадёт — healthchecks пришлёт письмо."),
                  _watchdog_kb())
 
 

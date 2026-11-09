@@ -1,5 +1,6 @@
 """The setup checklist: grouping, buttons, one-tap fixes and the wizards."""
 
+import asyncio
 import json
 
 from conftest import FakeCall, FakeMessage, FakeState, buttons
@@ -227,3 +228,37 @@ async def test_watchdog_wizard(bot, db, monkeypatch):
     await setup.cb_watchdog_off(FakeCall("setup:watchdog_off"))
     assert not integrations.self_heartbeat_url() and await heartbeats.watchdog() is None
     assert await db.get_state("watchdog") is None
+
+
+async def test_test_alert_rings_a_minute_later_and_helps_when_silent(bot, db, monkeypatch):
+    """The bot cannot see a muted chat. The test comes a minute later —
+    Telegram keeps the phone quiet while you are in the app — rings through
+    «будить только когда сайт лёг», and «🔕 Нет» says what to fix."""
+    monkeypatch.setattr(setup, "RING_DELAY_S", 0)
+    monkeypatch.setattr(settings, "ring_only_down", lambda: True)
+    call = FakeCall("ring:test")
+    await setup.cb_test_alert(call)
+    assert "Через минуту" in call.answers[-1]
+    await asyncio.gather(*setup._ring_tasks)
+    assert bot.sent[-1]["text"].startswith("🔴 Пробная тревога") and bot.sent[-1]["silent"] is False
+    assert buttons(bot.sent[-1]["reply_markup"]) == ["✅ Да, зазвонил", "🔕 Нет"]
+    call = FakeCall("ring:no")
+    await setup.cb_ring_no(call)
+    assert "Звук выключен у этого чата" in call.message.texts[-1]
+    assert buttons(call.message.reply_markup) == ["🔔 Ещё раз через минуту"]
+    await setup.cb_ring_yes(FakeCall("ring:yes"))
+    assert await db.get_state("ring_ok") == "1"
+
+
+async def test_first_site_offers_the_last_two_steps(bot, db, monkeypatch):
+    assert (await setup.last_steps())[0].startswith("Ещё два шага")
+    await db.set_state("ring_ok", "1")
+    text, kb = await setup.last_steps()
+    assert text.startswith("Ещё один шаг") and "Сторож" in text
+    assert [b.callback_data for row in kb.inline_keyboard for b in row] == ["onb:watchdog"]
+    call = FakeCall("onb:watchdog")
+    await setup.cb_guide_watchdog(call)                             # answered below, the steps stay
+    assert "🛡 Внешний сторож" in call.message.texts[-1]
+    await integrations.set_value("self_heartbeat_url", "https://hc-ping.com/abc")
+    assert await setup.last_steps() is None
+    await integrations.set_value("self_heartbeat_url", None)

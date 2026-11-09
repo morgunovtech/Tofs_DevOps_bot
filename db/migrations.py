@@ -155,7 +155,21 @@ async def m4_queued_buttons(db):
     await _add_columns(db, "pending_notifications", {"reply_markup": "TEXT"})
 
 
-MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons]
+async def m5_outbox(db):
+    # Messages Telegram did not take (network, 5xx, flood limit): kept and
+    # retried every minute — a lost «сайт лёг» would leave the silence lying.
+    await db.executescript("""
+        CREATE TABLE IF NOT EXISTS outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            reply_markup TEXT,
+            priority TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+    """)
+
+
+MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox]
 
 
 async def migrate(db) -> int:
