@@ -108,6 +108,24 @@ def job_lines(jobs: list[Job], watchdog: Watchdog | None = None) -> list[str]:
     return ["⏰ Задачи и боты:", *lines] if lines else []
 
 
+async def status_blocks(jobs: list[Job]) -> tuple[list[str], list[tuple[str, str]]]:
+    """What bots report about the things they watch: a block per bot —
+    its title, then a line per item — and the (icon, name) of each fresh
+    item for the headline. A late bot's block is one «не знаю» line; its
+    silence is already counted by its own line below."""
+    lines, items = [], []
+    for j in jobs:
+        status = await heartbeats.job_status(j.name)
+        if not status:
+            continue
+        rows = heartbeats.status_items(j, status)
+        lines += ["", f"{esc(heartbeats.status_title(j, status))}:",
+                  *(f"{icon} {esc(name)} · {esc(text)}" for icon, name, text in rows)]
+        if j.icon == "✅":
+            items += [(icon, name) for icon, name, _ in rows]
+    return lines, items
+
+
 def _item_rows(items: list[InlineKeyboardButton]) -> list[list[InlineKeyboardButton]]:
     """A few items get a full row each, so long names are not cut; more
     go two to a row — twenty sites stay one screen."""
@@ -129,7 +147,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     states = [(s, *await site_state(s)) for s in sites]
     ages = [age for *_, age in states if age is not None]
     site_icons = [icon for _, icon, *_ in states]
-    icons = site_icons + [j.icon for j in jobs] + ([watchdog.icon] if watchdog else [])
+    seen_lines, seen = await status_blocks(jobs)
+    icons = site_icons + [i for i, _ in seen] + [j.icon for j in jobs] + ([watchdog.icon] if watchdog else [])
     total = sum(1 for icon in icons if icon != "⏳")
     sites_total = sum(1 for icon in site_icons if icon != "⏳")
     opening = sum(1 for icon in site_icons if icon in ("✅", "🔧", "🟠"))   # 🟠 sites are up, with a note
@@ -149,6 +168,11 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
             parts.append(f"⏰ {esc(silent[0])} молчит" if len(silent) == 1 else f"⏰ молчат: {len(silent)}")
         if watchdog and watchdog.icon == "🟠":
             parts.append("🛡 сторож не на связи")
+        troubled = [(i, n) for i, n in seen if i != "✅"]
+        if troubled:
+            worst_item = "🔴" if any(i == "🔴" for i, _ in troubled) else "🟠"
+            parts.append(" · ".join(f"{i} {esc(n)}" for i, n in troubled) if len(troubled) <= 2
+                         else f"{worst_item} с замечаниями: {len(troubled)}")
         if incidents:
             parts.append(f"{inc_icon} проблем: {len(incidents)}")
         headline = f"{worst} " + " · ".join(parts)
@@ -162,6 +186,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
         lines.append(f"{icon} {esc(site_label(s['url']))} · {esc(state)}")
     if len(states) > 10:
         lines.append(f"… и ещё {len(states) - 10}")
+    lines += seen_lines
     if jobs or watchdog:
         lines += ["", *job_lines(jobs, watchdog)]
 
@@ -264,8 +289,8 @@ async def cb_check_now(call: CallbackQuery):
     asked — they report themselves — so their last marks close the report."""
     await ack(call)
     urls, jobs = await get_active_site_urls(), await job_states()
-    block = job_lines(jobs, await heartbeats.watchdog())
-    tail = "\n\n" + "\n".join(block) if block else ""
+    block = (await status_blocks(jobs))[0] + ([""] if jobs else []) + job_lines(jobs, await heartbeats.watchdog())
+    tail = "\n\n" + "\n".join(block).strip("\n") if any(block) else ""
     if not urls:
         await render(call, tail.strip() or "Сайтов пока нет — сначала добавь хотя бы один.", InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="site_add")],

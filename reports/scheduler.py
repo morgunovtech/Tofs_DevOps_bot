@@ -800,7 +800,16 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     the watchdog — the answer to «and if the bot itself goes down?». A
     silent task gets its «🔗 Подключить / 🗑 Удалить» buttons under the
     digest; a missing watchdog is mentioned in the morning only."""
-    lines = [heartbeats.digest_line(j) for j in await heartbeats.job_states()]
+    jobs = await heartbeats.job_states()
+    lines: list[tuple[str, bool]] = []
+    for j in jobs:   # what bots report comes first, a block of its own
+        status = await heartbeats.job_status(j.name)
+        if status:
+            lines += [(f"{esc(heartbeats.status_title(j, status))}:", True),
+                      *((f"{icon} {esc(name)} — {esc(text)}", icon == "✅")
+                        for icon, name, text in heartbeats.status_items(j, status)),
+                      ("", True)]
+    lines += [heartbeats.digest_line(j) for j in jobs]
     w = await heartbeats.watchdog()
     if w or morning:
         lines.append(heartbeats.watchdog_digest_line(w))
