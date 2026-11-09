@@ -1,4 +1,9 @@
+from types import SimpleNamespace
+
+from conftest import FakeMessage, FakeState
+
 from config import config
+from handlers import setup, start
 from services import runtime, settings
 
 
@@ -36,12 +41,6 @@ async def test_a_database_off_the_railway_volume_is_said_at_once(db, cfg, tmp_pa
     """Without a volume Railway wipes the database on each deploy — with
     weekly auto-updates the bot would forget its sites and owner every week.
     Off Railway the docker volume is the operator's call: no opinion."""
-    from types import SimpleNamespace
-
-    from conftest import FakeMessage, FakeState
-
-    from handlers import setup, start
-
     cfg(on_railway=False)
     assert runtime.db_on_persistent_disk() is None
     cfg(on_railway=True, db_path=str(tmp_path / "data" / "bot.db"))
