@@ -21,6 +21,7 @@ class Overrides:
     quiet: tuple[int, int] | None = None  # None → .env (unless quiet_off)
     quiet_off: bool = False
     hb_jobs: dict[str, int] = field(default_factory=dict)  # added via UI
+    hb_hidden: set[str] = field(default_factory=set)       # .env jobs removed in the bot
     status_page: bool | None = None      # None → .env
     timezone: str | None = None          # IANA key; None → .env
     ring_only_down: bool = False         # ring only for «site down»; the rest waits quietly
@@ -50,6 +51,11 @@ async def load():
         o.hb_jobs = {str(k): int(v) for k, v in jobs.items()} if isinstance(jobs, dict) else {}
     except (ValueError, TypeError):
         o.hb_jobs = {}
+    try:
+        hidden = json.loads(await get_state("cfg:hb_hidden") or "[]")
+        o.hb_hidden = {str(n) for n in hidden} if isinstance(hidden, list) else set()
+    except ValueError:
+        o.hb_hidden = set()
     v = await get_state("cfg:status_page")
     o.status_page = {"on": True, "off": False}.get(v or "")
     o.timezone = valid_timezone(await get_state("cfg:timezone"))
@@ -100,13 +106,20 @@ def quiet_hours() -> tuple[int, int] | None:
 
 
 def heartbeat_jobs() -> dict[str, int]:
-    """env-defined jobs merged with UI-added ones (UI wins on name clash)."""
-    return {**config.heartbeat_jobs, **_o.hb_jobs}
+    """env-defined jobs merged with UI-added ones (UI wins on name clash),
+    minus the env jobs removed in the bot."""
+    env = {k: v for k, v in config.heartbeat_jobs.items() if k not in _o.hb_hidden}
+    return {**env, **_o.hb_jobs}
 
 
 def ui_heartbeat_jobs() -> dict[str, int]:
-    """Only the jobs added via the bot UI (deletable there, unlike env ones)."""
+    """Only the jobs added via the bot UI (what the export carries)."""
     return dict(_o.hb_jobs)
+
+
+def heartbeat_job_from_env(name: str) -> bool:
+    """Defined in HEARTBEAT_JOBS on the server rather than added in the bot."""
+    return name in config.heartbeat_jobs and name not in _o.hb_jobs
 
 
 def status_page_enabled() -> bool:
@@ -175,14 +188,24 @@ async def add_heartbeat_job(name: str, interval_min: int) -> bool:
         return False
     _o.hb_jobs[name] = interval_min
     await set_state("cfg:hb_jobs", json.dumps(_o.hb_jobs))
+    if name in _o.hb_hidden:   # added again on purpose
+        _o.hb_hidden.discard(name)
+        await set_state("cfg:hb_hidden", json.dumps(sorted(_o.hb_hidden)) if _o.hb_hidden else None)
     return True
 
 
 async def remove_heartbeat_job(name: str) -> bool:
-    if name not in _o.hb_jobs:
+    """Stop waiting for a job, wherever it was defined. One from
+    HEARTBEAT_JOBS stays in the server's variable but is hidden here — a
+    person who never set up a server variable must not need to find it."""
+    if name not in heartbeat_jobs():
         return False
-    del _o.hb_jobs[name]
-    await set_state("cfg:hb_jobs", json.dumps(_o.hb_jobs))
+    if name in _o.hb_jobs:
+        del _o.hb_jobs[name]
+        await set_state("cfg:hb_jobs", json.dumps(_o.hb_jobs))
+    if name in config.heartbeat_jobs:   # else the server's copy would come back
+        _o.hb_hidden.add(name)
+        await set_state("cfg:hb_hidden", json.dumps(sorted(_o.hb_hidden)))
     # Clear the "went silent" flag so a re-added job starts clean.
     await set_state(f"hb_alerted:{name}", None)
     return True
