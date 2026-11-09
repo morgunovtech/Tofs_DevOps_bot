@@ -11,8 +11,10 @@ from aiogram.types import (
     ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     LinkPreviewOptions,
     Message,
+    ReplyKeyboardMarkup,
 )
 
 from db.database import get_site
@@ -23,6 +25,12 @@ from utils.text import clip
 logger = logging.getLogger(__name__)
 
 DENIED = "⛔ Доступ только для администратора."
+
+# The bot's three doors, always under the input field (no ☰ menu).
+HOME, ABOUT, ICONS = "🏠 Главная", "📖 Что я умею", "❓ Значки"
+BOTTOM = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=HOME), KeyboardButton(text=ABOUT), KeyboardButton(text=ICONS)]],
+    resize_keyboard=True, is_persistent=True)
 MAX_SITES = 20
 
 

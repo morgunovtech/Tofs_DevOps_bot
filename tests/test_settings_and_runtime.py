@@ -67,12 +67,13 @@ async def test_a_database_off_the_railway_volume_is_said_at_once(db, cfg, tmp_pa
     assert msg.texts[0].startswith("🔑 Ты стал администратором") and "не на постоянном диске Railway" in msg.texts[1]
 
 
-async def test_old_bottom_buttons_are_removed_once(bot, db):
-    """Earlier versions pinned «📱 Меню» / «📊 Статус» under the input field;
-    Telegram keeps them until a message takes them away."""
-    await main._remove_old_bottom_buttons(bot)
-    assert "Убрал кнопки под полем ввода" in bot.sent[-1]["text"]
-    assert type(bot.sent[-1]["reply_markup"]).__name__ == "ReplyKeyboardRemove"
+async def test_bottom_buttons_are_announced_once(bot, db):
+    """No ☰ menu: its doors are buttons under the input field, and Telegram
+    shows a keyboard only once a message brings it."""
+    await main._show_bottom_buttons(bot)
+    assert "кнопки теперь всегда под полем ввода" in bot.sent[-1]["text"]
+    kb = bot.sent[-1]["reply_markup"]
+    assert [b.text for b in kb.keyboard[0]] == ["🏠 Главная", "📖 Что я умею", "❓ Значки"] and kb.is_persistent
     n = len(bot.sent)
-    await main._remove_old_bottom_buttons(bot)
+    await main._show_bottom_buttons(bot)
     assert len(bot.sent) == n
