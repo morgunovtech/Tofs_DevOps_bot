@@ -16,9 +16,13 @@ Made for people who have never heard of DNS or a 502. Three buttons: **is everyt
 
 ## Quick start — 5 minutes, no server
 
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)
+
 1. Create a bot at [@BotFather](https://t.me/BotFather) and copy the token.
-2. Fork this repo → [Railway](https://railway.com) → **Deploy from GitHub repo** → variable `TELEGRAM_BOT_TOKEN`, a volume at `/app/data`, a generated domain.
-3. Send `/start` — the first user becomes the admin and adds the first site right in the chat. The bot's own checklist («⚙️ Settings → Diagnostics») walks you through the rest.
+2. Press **Deploy on Railway** above and paste the token — the only field. The volume for the database, the public domain and the rest are already in the template.
+3. Send `/start` — the first user becomes the admin and adds the first site right in the chat. The bot then offers a test alert and the external watchdog; its own checklist («⚙️ Settings → Diagnostics») covers the rest.
+
+Prefer your own fork? Railway → **Deploy from GitHub repo** → variable `TELEGRAM_BOT_TOKEN`, a volume at `/app/data`, a generated domain on port 8080.
 
 Docker Compose, every `.env` integration, architecture and the development loop: [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
 
