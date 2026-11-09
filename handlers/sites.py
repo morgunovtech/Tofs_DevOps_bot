@@ -42,6 +42,7 @@ from handlers.common import (
     site_by_cb,
 )
 from handlers.menu import best_ms, cb_main_menu
+from handlers.setup import last_steps
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
@@ -399,6 +400,8 @@ async def msg_site_add(message: Message, state: FSMContext):
                 [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
                  InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]])
     await status.edit_text("\n".join(lines), reply_markup=kb)
+    if first_site and (steps := await last_steps()):
+        await message.answer(steps[0], reply_markup=steps[1])
 
 
 @router.callback_query(F.data.startswith("kwno:"))

@@ -14,7 +14,7 @@ from aiogram.types import BotCommand, MenuButtonCommands
 from config import config
 from db.database import close_db, count_sites_total, get_or_create_site, init_db
 from handlers import router
-from reports.scheduler import rerun_seo_after_update, setup_scheduler
+from reports.scheduler import catch_up_after_restart, rerun_seo_after_update, setup_scheduler
 from services import integrations, maintenance, notifier, runtime, secrets, settings, updates
 from web.webhook import start_web_server
 
@@ -38,10 +38,12 @@ async def on_startup(bot: Bot):
     logger.info("Bot started: @%s — TofsDevOps on duty 🐕", me.username)
     await bot.set_my_commands(COMMANDS)
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    # Intentionally no startup ping — silence is the default. The only
-    # startup message is "I got updated", and only when something changed.
+    # No «I'm up» ping — silence is the default. A start speaks only when
+    # something changed («I got updated») or when the bot was gone long
+    # enough that its silence meant nothing («Меня не было …»).
     if await updates.report_startup_changes():
         rerun_seo_after_update()
+    await catch_up_after_restart()
 
 
 async def main():

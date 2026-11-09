@@ -13,6 +13,11 @@ A site_id turns the message into a per-site alert: while that site is
 paused or inside a maintenance window it is dropped, whatever the priority.
 send() returns True when the message was delivered or queued — callers that
 set one-shot "already alerted" flags must only do so on True.
+
+A message Telegram did not take (no network, 5xx, flood limit) is not lost:
+it goes to the outbox and is retried every minute, with a note of when it
+should have arrived. Without that a lost «сайт лёг» would never come back —
+the incident is already open, so the next check has nothing new to say.
 """
 
 import logging
@@ -20,19 +25,22 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from db.database import (
     delete_notifications,
     get_state,
+    outbox_add,
+    outbox_delete,
+    outbox_peek,
     peek_notifications,
     queue_notification,
     set_state,
 )
 from services import maintenance, runtime, settings
-from utils.clock import now_local
-from utils.text import SAFE_LIMIT, clip, parse_iso_utc
+from utils.clock import now_local, to_local
+from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc
 
 logger = logging.getLogger(__name__)
 
@@ -111,20 +119,73 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
     if site_id is not None and await maintenance.is_paused(site_id):
         logger.info("Site %s paused — dropping: %s", site_id, text[:60])
         return False
-    if priority is not Priority.CRITICAL:
-        muted = await is_muted()
-        if muted or (priority is Priority.NORMAL and in_quiet_hours()):
-            markup = reply_markup.model_dump_json(exclude_none=True) if reply_markup is not None else None
-            await queue_notification(text, markup)
-            logger.info("Queued (%s): %s", "muted" if muted else "quiet hours", text[:60])
-            return True
+    if await _defer(priority):
+        await queue_notification(text, _markup_json(reply_markup))
+        logger.info("Queued (mute / quiet hours): %s", text[:60])
+        return True
+    sent = await _deliver(chat_id, text, reply_markup, priority)
+    if sent is None:
+        await outbox_add(text, _markup_json(reply_markup), priority.value)
+        logger.warning("Telegram did not take the message — kept for a retry: %s", text[:60])
+        return True
+    return sent
+
+
+async def _defer(priority: Priority) -> bool:
+    """Mute holds everything but critical; quiet hours hold NORMAL only."""
+    if priority is Priority.CRITICAL:
+        return False
+    return await is_muted() or (priority is Priority.NORMAL and in_quiet_hours())
+
+
+def _markup_json(reply_markup) -> str | None:
+    return reply_markup.model_dump_json(exclude_none=True) if reply_markup is not None else None
+
+
+async def _deliver(chat_id: str, text: str, reply_markup, priority: Priority) -> Message | bool | None:
+    """The sent Message; False when it can never be delivered (the text is
+    broken twice over, or the bot is blocked); None when Telegram may take it
+    later. Informational messages arrive silently; only critical ones ring."""
+    silent = priority is not Priority.CRITICAL
     try:
-        # Informational messages arrive silently; only critical ones ring.
         return await _bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup,
-                                       disable_notification=priority is not Priority.CRITICAL)
+                                       disable_notification=silent)
+    except TelegramBadRequest as e:
+        # Our own markup Telegram cannot parse: a retry would fail the same
+        # way, plain text still says what happened.
+        logger.error("Telegram rejected a message (%s) — sending it as plain text", e)
+        try:
+            return await _bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup,
+                                           parse_mode=None, disable_notification=silent)
+        except Exception as e2:
+            logger.error("Failed to send message to admin: %s", e2)
+            return False
+    except TelegramForbiddenError as e:
+        logger.error("The admin blocked the bot or left the chat: %s", e)
+        return False
     except Exception as e:
         logger.error("Failed to send message to admin: %s", e)
-        return False
+        return None
+
+
+async def flush_outbox():
+    """Every minute: what Telegram did not take, oldest first, each with
+    the time it should have arrived. Stops at the first failure — Telegram
+    is still away. A silent message that now falls into quiet hours or mute
+    joins the quiet queue like any other."""
+    chat_id = runtime.admin_chat_id()
+    if _bot is None or not chat_id:
+        return
+    for row in await outbox_peek():
+        priority = Priority(row["priority"])
+        late = parse_sqlite_utc(row["created_at"])
+        note = f"⏳ Не дошло в {to_local(late).strftime('%H:%M')} — Telegram не отвечал. Отправляю сейчас:\n\n" if late else ""
+        text = clip(note + row["text"])
+        if await _defer(priority):
+            await queue_notification(text, row["reply_markup"])
+        elif await _deliver(chat_id, text, _markup(row["reply_markup"]), priority) is None:
+            return
+        await outbox_delete(row["id"])
 
 
 async def edit(message_id: int, text: str, reply_markup=None) -> bool:

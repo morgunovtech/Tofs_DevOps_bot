@@ -241,6 +241,7 @@ def format_compact_status_report(availability: list[AvailabilityResult],
     «Всё спокойно» like a site."""
     now = now_local().strftime("%d.%m %H:%M")
     header = {"morning": f"🌅 Доброе утро · {now}",
+              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
               "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
     ssl_by_url = {r.url: r for r in (ssl_results or [])}
     domain_by_root = {registrable_domain(host_of(r.url)): r for r in (domain_results or [])}

@@ -12,6 +12,7 @@ from monitors import host_checker
 from monitors.base import SslInfo, SslResult
 from reports import scheduler
 from services import gsc, heartbeats, integrations, settings, sitestatus, updates
+from utils.text import fmt_duration
 
 
 async def _site_server(status: int = 200):
@@ -192,7 +193,8 @@ def test_setup_scheduler_registers_jobs(db):
     ids = {j.id for j in sched.get_jobs()}
     assert {"availability_checks", "ssl_checks", "domain_checks", "seo_checks", "links_checks",
             "dns_checks", "deep_checks", "heartbeat_watch", "escalation_watch", "quiet_flush",
-            "retention", "db_backup", "morning_report", "evening_report", "weekly_report"} <= ids
+            "retention", "db_backup", "morning_report", "evening_report", "weekly_report",
+            "alive", "outbox_flush"} <= ids
     scheduler.reschedule_all()   # works on a not-yet-started scheduler too
 
 
@@ -306,6 +308,42 @@ async def test_watchdog_ping_reads_the_answer_not_just_the_code(db):
         assert await heartbeats.ping_watchdog(str(server.make_url("/gone"))) == "check не найден"
         assert await heartbeats.ping_watchdog(str(server.make_url("/broken"))) == "отвечает ошибкой 503"
     assert await heartbeats.ping_watchdog(ok_url) == "не отвечает"         # server gone
+
+
+async def test_a_long_absence_is_said_and_the_missed_morning_comes_late(bot, db, monkeypatch):
+    """While the bot was gone its silence meant nothing: after a restart
+    past a redeploy's minute or two it says when it was gone, and a morning
+    report that fell into the gap comes late."""
+    sched = scheduler.setup_scheduler()
+    monkeypatch.setattr(scheduler, "_scheduler", sched)
+    await scheduler.catch_up_after_restart()                         # first run ever: nothing to say
+    assert sched.get_job("downtime_note") is None and await get_state("alive_at")
+
+    await set_state("alive_at", (datetime.now(UTC) - timedelta(minutes=3)).isoformat())
+    await scheduler.catch_up_after_restart()                         # a redeploy
+    assert sched.get_job("downtime_note") is None
+
+    now = scheduler.now_local()
+    monkeypatch.setattr(settings, "morning_hour", lambda: now.hour)
+    gone = datetime.now(UTC) - timedelta(minutes=now.minute + 90)    # before this hour's «morning»
+    await set_state("alive_at", gone.isoformat())
+    await scheduler.catch_up_after_restart()
+    job = sched.get_job("downtime_note")
+    assert job is not None
+    assert (sched.get_job("late_morning_report") is not None) == (now.hour < scheduler.LATE_MORNING_UNTIL)
+
+    async with await _site_server(200) as server:
+        await db.activate_or_create_site(str(server.make_url("")).rstrip("/"))
+        await scheduler._report_downtime(*job.args)
+    text = bot.sent[-1]["text"]
+    assert text.startswith(f"⏸ Меня не было {fmt_duration(now.minute + 90)} (")
+    assert "не следил за сайтами" in text and "✅ Сейчас всё работает: 1 из 1." in text and bot.sent[-1]["silent"]
+
+    async def snapshot(report_type, extras):
+        return report_type
+    monkeypatch.setattr(scheduler, "_status_snapshot", snapshot)
+    await scheduler.send_morning_report(late=True)
+    assert bot.sent[-1]["text"] == "morning_late"
 
 
 async def test_an_update_reruns_the_seo_audit_soon(bot, db, cfg, monkeypatch):

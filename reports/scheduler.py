@@ -79,7 +79,7 @@ from services.actions import (
     trigger_redeploy,
 )
 from services.notifier import Priority
-from utils.clock import local_tz
+from utils.clock import local_tz, now_local, to_local
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
 
@@ -567,6 +567,52 @@ async def run_escalation_watch():
             await set_state(f"escalated:{inc['id']}", now.isoformat())
 
 
+# ── The bot's own downtime ───────────────────────────────────────────────────
+
+DOWNTIME_NOTE_MIN = 10      # a redeploy takes a minute or two; longer is worth a word
+LATE_MORNING_UNTIL = 21     # a missed morning report still comes, but not at night
+
+
+async def run_alive():
+    """A mark every minute: after a restart, the gap since the last one is
+    how long nobody was watching."""
+    await set_state("alive_at", datetime.now(UTC).isoformat())
+
+
+async def catch_up_after_restart():
+    """Once at startup. While the bot was gone its silence did not mean
+    «всё в порядке» — a pause longer than a redeploy is said out loud, and a
+    morning report that fell into it comes late rather than not at all."""
+    last = parse_iso_utc(await get_state("alive_at"))
+    now = datetime.now(UTC)
+    await run_alive()
+    if not last or now - last < timedelta(minutes=DOWNTIME_NOTE_MIN) or _scheduler is None:
+        return
+    # After the scheduler's first look at the sites, so the line is fresh.
+    _scheduler.add_job(_report_downtime, DateTrigger(run_date=now + timedelta(seconds=30)),
+                       args=[last, now], id="downtime_note", replace_existing=True)
+    local_now = now_local()
+    morning = local_now.replace(hour=settings.morning_hour(), minute=0, second=0, microsecond=0)
+    if last < morning <= local_now and local_now.hour < LATE_MORNING_UNTIL:
+        _scheduler.add_job(send_morning_report, DateTrigger(run_date=now + timedelta(seconds=60)),
+                           kwargs={"late": True}, id="late_morning_report", replace_existing=True)
+
+
+async def _report_downtime(start: datetime, end: datetime):
+    minutes = (end - start).total_seconds() / 60
+    fmt = "%H:%M" if minutes < 20 * 60 else "%d.%m %H:%M"
+    lines = [f"⏸ Меня не было {fmt_duration(minutes)} ({to_local(start).strftime(fmt)}–"
+             f"{to_local(end).strftime(fmt)}): всё это время я не следил за сайтами и не смог бы "
+             f"ничего сообщить. Сейчас снова на посту."]
+    urls = await get_active_site_urls()
+    if urls:
+        results = await check_all(urls, manage=False)
+        down = [esc(site_label(r.url)) for r in results if not r.ok]
+        lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}." if down
+                     else f"✅ Сейчас всё работает: {len(results)} из {len(results)}.")
+    await notifier.send("\n".join(lines), Priority.NORMAL)
+
+
 # ── Self-maintenance ─────────────────────────────────────────────────────────
 
 async def run_self_heartbeat():
@@ -750,10 +796,10 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     return lines
 
 
-async def send_morning_report():
+async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
-    text = clip(await _status_snapshot("morning", extras=True))
+    text = clip(await _status_snapshot("morning_late" if late else "morning", extras=True))
     silent_jobs = [j.name for j in await heartbeats.job_states() if j.needs_you]
     await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
 
@@ -880,6 +926,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
     job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
     job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
+    job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
+    job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
     job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
     # Nightly maintenance.
