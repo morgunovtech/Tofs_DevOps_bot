@@ -37,7 +37,7 @@ _TYPE_RU = {
     "availability": "Недоступность", "performance": "Медленные ответы",
     "ssl": "Проблема с SSL-сертификатом", "domain": "Проблема с доменом",
     "links": "Битые ссылки", "deep": "Ошибки на части страниц",
-    "seo": "Проблема с индексацией", "mail": "Почта не принимала письма",
+    "seo": "Проблема с индексацией", "mail": "Почта не принимала письма", "visitors": "Медленно у посетителей",
 }
 # Never on the public page: a list of a site's weak spots is a gift to an attacker.
 _PRIVATE_TYPES = frozenset({"exposed", "security", "mail_auth"})

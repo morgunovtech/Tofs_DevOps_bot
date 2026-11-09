@@ -4,7 +4,8 @@ stays the fallback so existing deployments keep working unchanged.
 
 Keys: yandex_token, gsc_property, gsc_key (service-account JSON text),
 deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id,
-second_opinion ("on"/"off"), github_token, github_owner.
+second_opinion ("on"/"off"), github_token, github_owner, crux_key (Google
+API key for the Chrome UX Report).
 """
 
 import json
@@ -15,7 +16,7 @@ from db.database import get_state, set_state
 
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
         "cf_api_token", "cf_zone_id", "second_opinion", "self_heartbeat_url", "status_page_slug",
-        "github_token", "github_owner")
+        "github_token", "github_owner", "crux_key")
 _values: dict[str, str] = {}
 
 
@@ -58,6 +59,7 @@ def source(key: str) -> str | None:
         "status_page_slug": config.status_page_slug,
         "github_token": config.github_token,
         "github_owner": config.github_owner,
+        "crux_key": config.crux_api_key,
     }.get(key)
     return "env" if env else None
 
@@ -166,6 +168,12 @@ def github_token() -> str:
 def github_owner() -> str:
     """'' means «the token's own account»."""
     return _values.get("github_owner") or config.github_owner
+
+
+# ── Chrome UX Report ─────────────────────────────────────────────────────────
+
+def crux_key() -> str:
+    return _values.get("crux_key") or config.crux_api_key
 
 
 # ── Second opinion ───────────────────────────────────────────────────────────

@@ -51,6 +51,7 @@ from handlers.mail import mail_lines
 from handlers.menu import best_ms, cb_main_menu, site_state
 from handlers.security import security_lines
 from handlers.setup import last_steps
+from handlers.speed import speed_lines
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
@@ -201,6 +202,7 @@ async def card_lines(site: dict) -> list[str]:
         verb = "Не открывается" if http and not api else "Не отвечает"
         lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
     lines += await _history_lines(site)
+    lines += await speed_lines(site)
     lines += await _outage_lines(site)
     lines += _keyword_lines(site, avail)
     covered_by = await host_checked_by(site)
@@ -253,7 +255,7 @@ async def _history_lines(site: dict) -> list[str]:
     spark = sparkline([d["avg_ms"] for d in days])
     if spark:
         typical = sorted(d["avg_ms"] for d in days)[len(days) // 2]
-        lines.append(f"⏱ Скорость за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
+        lines.append(f"⏱ Ответ сервера за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     month = await get_uptime_over_days(site["id"], 30)
@@ -390,7 +392,7 @@ async def render_card(call: CallbackQuery, site: dict):
     # «что делать».
     st = await sitestatus.get(sid)
     seo = st.get("seo") or {}
-    other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS)]
+    other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
     if is_web_page(url, site.get("http_method")) and seo.get("problems"):
         rows.append([InlineKeyboardButton(text="🛠 Как исправить поиск", callback_data=f"seo_site:{sid}")])
     elif other:
@@ -399,6 +401,8 @@ async def render_card(call: CallbackQuery, site: dict):
         rows.append([InlineKeyboardButton(text="✉️ Как починить почту", callback_data=f"mail:{sid}")])
     if (st.get("security") or {}).get("findings") or any(inc["check_type"] in SECURITY_CHECKS for inc in problems):
         rows.append([InlineKeyboardButton(text="🛡 Как защитить сайт", callback_data=f"sec:{sid}")])
+    if any(inc["check_type"] == "visitors" for inc in problems):
+        rows.append([InlineKeyboardButton(text="👥 Почему медленно", callback_data=f"spd:{sid}")])
     rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
     rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])

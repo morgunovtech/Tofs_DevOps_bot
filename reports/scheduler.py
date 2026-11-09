@@ -25,6 +25,7 @@ from db.database import (
     get_last_check,
     get_state,
     get_uptime_over_days,
+    purge_rum_samples,
     resolve_incident,
     rollup_old_checks,
     save_incident,
@@ -44,6 +45,7 @@ from monitors.second_opinion import repeatable
 from monitors.security_checker import SECURITY_CHECKS, check_all_security
 from monitors.seo_checker import check_all_seo
 from monitors.ssl_checker import check_all_ssl
+from monitors.visitor_checker import check_all_visitors
 from reports.formatter import (
     format_availability_alert,
     format_compact_status_report,
@@ -58,6 +60,8 @@ from reports.formatter import (
     format_security_recovery,
     format_seo_alert,
     format_ssl_alert,
+    format_visitors_alert,
+    format_visitors_recovery,
     incident_line,
 )
 from reports.weekly import build_weekly_report
@@ -70,6 +74,7 @@ from services import (
     integrations,
     notifier,
     recommend,
+    rum,
     screenshots,
     settings,
     sitestatus,
@@ -454,6 +459,21 @@ def _security_keyboard(r):
                                                                  callback_data=f"sec:{r.site_id}")])
 
 
+async def run_visitor_checks():
+    """Daily: real visitors' speed — Google's Chrome data when a key is set,
+    the owner's own measurement when it has enough page views."""
+    urls = await get_active_page_urls()
+    await close_inapplicable(("visitors",), urls)
+    await _notify_transitions(await check_all_visitors(urls), format_visitors_alert, format_visitors_recovery,
+                              keyboard=_visitors_keyboard)
+
+
+def _visitors_keyboard(r):
+    return explain_keyboard(r.incident_id,
+                            [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=rum.pagespeed_url(r.url))],
+                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
+
+
 async def run_index_checks():
     """Daily indexing watch via GSC / Yandex.Webmaster (when tokens are set):
     the answers go into the site snapshot for the «🔎 Поиск и ИИ» screen,
@@ -713,6 +733,7 @@ async def run_retention():
         n = await rollup_old_checks(config.retention_days)
         if n:
             logger.info("Retention: rolled up %d old check rows", n)
+        await purge_rum_samples(rum.WINDOW_DAYS)
     except Exception as e:
         logger.error("Retention job failed: %s", e)
 
@@ -961,6 +982,7 @@ def _cron_specs() -> dict[str, dict]:
         "dns_checks": dict(minute=20),
         "mail_checks": dict(minute=25),
         "security_checks": dict(hour="*/6", minute=35),
+        "visitor_checks": dict(hour=8, minute=10),
         "region_checks": dict(minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
@@ -1015,6 +1037,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_mail_checks, DateTrigger(run_date=soon), "mail_checks_soon")
     job(run_security_checks, _cron(**specs["security_checks"]), "security_checks", misfire_grace_time=600)
     job(run_security_checks, DateTrigger(run_date=soon + timedelta(minutes=1)), "security_checks_soon")
+    job(run_visitor_checks, _cron(**specs["visitor_checks"]), "visitor_checks", misfire_grace_time=3600)
+    job(run_visitor_checks, DateTrigger(run_date=soon + timedelta(minutes=2)), "visitor_checks_soon")
     job(run_region_checks, _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
     job(run_deep_checks, _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
     # Watchers.

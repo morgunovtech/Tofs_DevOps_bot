@@ -24,6 +24,7 @@ from handlers import (
     setup,
     site_settings,
     sites,
+    speed,
     start,
 )
 from handlers.common import deny_router, on_handler_error, stale_router
@@ -40,7 +41,7 @@ admin.include_routers(
     menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router, mail.router,
-    security.router,
+    security.router, speed.router,
     stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)
