@@ -14,6 +14,7 @@ from handlers import (
     heartbeats,
     incidents,
     links,
+    mail,
     maintenance,
     menu,
     mute,
@@ -37,7 +38,7 @@ admin.callback_query.filter(AdminFilter())
 admin.include_routers(
     menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
-    seo.router, links.router, feedback.router, setup.router,
+    seo.router, links.router, feedback.router, setup.router, mail.router,
     stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)

@@ -64,6 +64,8 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
     elif kind == "availability":
         rows.append([InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{sid}"),
                      InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{sid}")])
+    elif kind in ("mail", "mail_auth"):
+        rows.append([InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{sid}")])
     elif kind == "domain":
         registrar = ((await sitestatus.get(sid)).get("domain") or {}).get("registrar")
         url = humanize.registrar_url(registrar)

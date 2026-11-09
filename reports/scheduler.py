@@ -7,7 +7,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
-from aiogram.types import FSInputFile, Message
+from aiogram.types import FSInputFile, InlineKeyboardButton, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -39,6 +39,7 @@ from monitors.dns_checker import check_all_dns
 from monitors.domain_checker import check_all_domains
 from monitors.host_checker import check_disk, watch_containers
 from monitors.links_checker import check_all_links
+from monitors.mail_checker import MAIL_CHECKS, carriers, check_all_mail
 from monitors.second_opinion import repeatable
 from monitors.seo_checker import check_all_seo
 from monitors.ssl_checker import check_all_ssl
@@ -49,6 +50,8 @@ from reports.formatter import (
     format_dns_change,
     format_domain_alert,
     format_links_report,
+    format_mail_alert,
+    format_mail_recovery,
     format_recovery_alert,
     format_seo_alert,
     format_ssl_alert,
@@ -406,6 +409,30 @@ async def run_dns_checks():
                                    Priority.CRITICAL if change["critical"] else Priority.NORMAL)
         if sent:
             await set_dns_state(change["host"], change["rtype"], change["new"])
+
+
+MAIL_RECHECK_MIN = 10
+
+
+async def run_mail_checks():
+    """Hourly: mail on the sites' domains (monitors.mail_checker). A domain
+    whose mail did not answer once is asked again in ten minutes — a dead
+    mailbox is said within the quarter hour, not in two."""
+    urls = await get_active_host_urls()
+    await close_inapplicable(MAIL_CHECKS, list(carriers(urls).values()))
+    results = await check_all_mail(urls)
+    await _notify_transitions(results, format_mail_alert, format_mail_recovery, priority=_by_level,
+                              keyboard=_mail_keyboard)
+    if _scheduler is not None and any(r.kind == "mail" and r.ok and r.delivery.ok is False for r in results):
+        _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN)),
+                           id="mail_recheck", replace_existing=True, misfire_grace_time=300)
+
+
+def _mail_keyboard(r):
+    status = ([InlineKeyboardButton(text=f"↗️ Статус {r.provider}", url=r.status_page)]
+              if r.kind == "mail" and r.status_page else [])
+    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}")]
+    return explain_keyboard(r.incident_id, status, mail)
 
 
 async def run_index_checks():
@@ -913,6 +940,7 @@ def _cron_specs() -> dict[str, dict]:
         "index_checks": dict(hour=7, minute=45),
         "card_pictures": dict(hour=7, minute=50),
         "dns_checks": dict(minute=20),
+        "mail_checks": dict(minute=25),
         "region_checks": dict(minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
@@ -962,6 +990,9 @@ def setup_scheduler() -> AsyncIOScheduler:
         "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
     job(run_dns_checks, _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
+    # Mail hourly, and soon after a start — so the cards show it right away.
+    job(run_mail_checks, _cron(**specs["mail_checks"]), "mail_checks", misfire_grace_time=600)
+    job(run_mail_checks, DateTrigger(run_date=soon), "mail_checks_soon")
     job(run_region_checks, _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
     job(run_deep_checks, _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
     # Watchers.
