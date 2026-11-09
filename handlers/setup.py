@@ -146,7 +146,7 @@ async def build_items() -> list[Item]:
         items.append(Item("second_opinion", "ok", "вторая точка проверки"))
     else:
         items.append(Item("second_opinion", "off", "🌐 Вторая точка проверки",
-                          "перед алертом «сайт лежит» перепроверка с внешних нод check-host.net, "
+                          "перед тревогой «сайт лежит» перепроверка с внешних серверов check-host.net, "
                           "и раз в час — скорость сайта из региона твоей аудитории",
                           ("🌐 Включить вторую точку", "setup:so:on")))
 
@@ -182,7 +182,7 @@ async def build_items() -> list[Item]:
         items.append(Item("cloudflare", "ok", "Cloudflare"))
     else:
         items.append(Item("cloudflare", "off", "☁️ Cloudflare",
-                          "кнопки «передеплой» и «сброс кэша» в алертах, автопередеплой при падении",
+                          "кнопки «передеплой» и «сброс кэша» в тревогах, автопередеплой при падении",
                           ("☁️ Подключить Cloudflare", "setup:cf")))
 
     if github.available():
@@ -252,7 +252,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
         rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
     if off:
         rows.append([InlineKeyboardButton(text=f"➕ Подключить ещё ({len(off)})", callback_data="setup:more")])
-    rows.append([InlineKeyboardButton(text="🔔 Тест алерта", callback_data="menu_testalert"),
+    rows.append([InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="menu_testalert"),
                  InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -522,7 +522,7 @@ async def cb_guide_yandex(call: CallbackQuery):
     state_line = {"bot": "Токен введён в боте.", "env": "Токен взят из .env."}.get(src, "Пока не подключено.")
     await render(call, ("🔎 Яндекс.Вебмастер\n\n"
                         f"{state_line}\n\n"
-                        "Даёт число страниц в поиске, ИКС и алерты о фатальных проблемах сайта.\n\n"
+                        "Даёт число страниц в поиске, ИКС и тревоги о фатальных проблемах сайта.\n\n"
                         "1. Открой <a href=\"https://oauth.yandex.ru/\">oauth.yandex.ru</a> → "
                         "«Зарегистрировать приложение», права: <b>Яндекс.Вебмастер → чтение</b>.\n"
                         "2. Получи OAuth-токен для этого приложения (ссылка «Получить токен» "
@@ -587,7 +587,7 @@ async def cb_guide_gsc(call: CallbackQuery):
     await ack(call)
     await render(call, ("🔎 Google Search Console\n\n"
                         f"{_gsc_state_line()}\n\n"
-                        "Даёт алерт «главная выпала из индекса» тем же днём и клики/показы "
+                        "Даёт тревогу «главная выпала из индекса» тем же днём и клики/показы "
                         "неделя к неделе в воскресном отчёте.\n\n"
                         "1. <a href=\"https://console.cloud.google.com/iam-admin/serviceaccounts\">"
                         "Google Cloud → Service Accounts</a>: создай аккаунт, вкладка Keys → "
@@ -695,7 +695,7 @@ async def cb_guide_cf(call: CallbackQuery):
     await ack(call)
     await render(call, ("☁️ Cloudflare\n\n"
                         f"{esc(_cf_state_line())}\n\n"
-                        "<b>Deploy hook</b> даёт кнопку «🚀 Передеплой» в алертах (и автопередеплой "
+                        "<b>Deploy hook</b> даёт кнопку «🚀 Передеплой» в тревогах (и автопередеплой "
                         "при падении, если включить AUTO_REDEPLOY): Cloudflare Pages → проект → "
                         "Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n"
                         "<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge "

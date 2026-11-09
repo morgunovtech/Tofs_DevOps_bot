@@ -160,7 +160,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     labels = [b.text for row in call.message.reply_markup.inline_keyboard for b in row]
     assert "🩺 Диагностика и подключения" in labels and "на главном экране" in call.message.texts[-1]
     # Tasks moved to the main screen; the test alert lives in diagnostics — no twins here.
-    assert "⏰ Контроль задач" not in labels and "🔔 Тест алерта" not in labels
+    assert "⏰ Контроль задач" not in labels and "🔔 Пробная тревога" not in labels
     call = FakeCall("set_w:18")
     await settings.cb_settings_pick(call)
     assert settings_service.weekly_hour() == 18

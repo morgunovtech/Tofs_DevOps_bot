@@ -27,8 +27,9 @@ async def _mute(arg: str) -> str | None:
     if not duration:
         return None
     deadline = await notifier.set_mute(duration)
-    return (f"🔕 Алерты приглушены до {to_local(deadline).strftime('%d.%m %H:%M')}.\n"
-            f"Критические алерты (сайт лежит) всё равно придут.\nСнять: /unmute")
+    return (f"🔕 Молчу до {to_local(deadline).strftime('%d.%m %H:%M')}.\n"
+            f"Если сайт ляжет — всё равно позвоню. Остальное пришлю потом одним сообщением.\n"
+            f"Снова писать обо всём: /unmute")
 
 
 @router.message(Command("mute"))
@@ -41,7 +42,7 @@ async def cmd_mute(message: Message):
 @router.message(Command("unmute"))
 async def cmd_unmute(message: Message):
     await notifier.set_mute(None)
-    await message.answer("🔔 Алерты снова включены.")
+    await message.answer("🔔 Снова пишу обо всём.")
 
 
 def _mute_menu() -> InlineKeyboardMarkup:
@@ -60,7 +61,7 @@ async def cb_mute_menu(call: CallbackQuery):
     deadline = await notifier.mute_until()
     status = (f"🔕 Сейчас приглушено до {to_local(deadline).strftime('%d.%m %H:%M')}\n\n"
               if deadline else "")
-    await render(call, f"{status}На сколько приглушить алерты?\n"
+    await render(call, f"{status}На сколько замолчать? Если сайт ляжет — всё равно позвоню.\n"
                        "(критические — «сайт лежит» — всё равно придут)", _mute_menu())
 
 
@@ -70,6 +71,6 @@ async def cb_mute_pick(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
     if arg == "off":
         await notifier.set_mute(None)
-        await render(call, "🔔 Алерты снова включены.", back_button())
+        await render(call, "🔔 Снова пишу обо всём.", back_button())
         return
     await render(call, (await _mute(arg)) or "Не понял длительность.", back_button())
