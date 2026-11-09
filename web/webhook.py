@@ -1,6 +1,5 @@
 """aiohttp web server: feedback from site widgets, heartbeat pings, the
-public status page (+JSON, +badges), the widget file itself, and the
-real-visitor speed script with its beacon (services.rum).
+public status page (+JSON, +badges) and the widget file itself.
 
 SECURITY MODEL of /api/feedback: the widget ships the secret to every site
 visitor, so this endpoint is effectively PUBLIC. The secret only filters
@@ -9,20 +8,18 @@ strict size caps. The heartbeat secret is a different value on purpose.
 """
 
 import hmac
-import json
 import logging
 import re
 import time
 from collections import defaultdict, deque
 from pathlib import Path
-from urllib.parse import urlparse
 
 from aiohttp import web
 
 from config import config
-from db.database import get_site, get_state, heartbeat_ping, save_feedback, set_state
+from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import heartbeats, integrations, notifier, rum, screenshots, secrets, settings
+from services import heartbeats, integrations, notifier, screenshots, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -168,81 +165,6 @@ async def handle_shot(request: web.Request) -> web.Response:
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
-# ── Real visitors' speed ─────────────────────────────────────────────────────
-
-_RUM_JS = Path(__file__).parent / "rum.js"
-RUM_MAX_BODY = 1024
-RUM_PER_IP_PER_MIN = 30
-RUM_PER_SITE_PER_DAY = 5000
-_rum_ip: dict[str, deque] = defaultdict(deque)
-_rum_day: dict[int, tuple[str, int]] = {}
-_RUM_CORS = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS",
-             "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "86400"}
-
-
-async def handle_rum_js(request: web.Request) -> web.Response:
-    return web.Response(text=_RUM_JS.read_text("utf-8"), content_type="application/javascript", charset="utf-8",
-                        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"})
-
-
-def _rum_limited(ip: str, site_id: int) -> bool:
-    now = time.monotonic()
-    if len(_rum_ip) > 2048:
-        for stale in [k for k, v in _rum_ip.items() if not v or v[-1] < now - 60]:
-            del _rum_ip[stale]
-    hits = _rum_ip[ip]
-    while hits and hits[0] < now - 60:
-        hits.popleft()
-    day = time.strftime("%Y-%m-%d")
-    seen_day, n = _rum_day.get(site_id, (day, 0))
-    n = n if seen_day == day else 0
-    if len(hits) >= RUM_PER_IP_PER_MIN or n >= RUM_PER_SITE_PER_DAY:
-        return True
-    hits.append(now)
-    _rum_day[site_id] = (day, n + 1)
-    return False
-
-
-def _same_site(origin: str, site_url: str) -> bool:
-    """The beacon comes from the site's own pages: example.com and
-    www.example.com alike."""
-    try:
-        got = (urlparse(origin).hostname or "").lower().removeprefix("www.")
-    except ValueError:
-        return False
-    return bool(got) and got == (urlparse(site_url).hostname or "").lower().removeprefix("www.")
-
-
-async def handle_rum(request: web.Request) -> web.Response:
-    """One page view's numbers. Answers 204 to anything well-formed and
-    keeps quiet otherwise — a beacon has nobody to read an error."""
-    def done(status: int = 204) -> web.Response:
-        return web.Response(status=status, headers=_RUM_CORS)
-    sid = request.match_info.get("sid", "")
-    if not _SID_RE.fullmatch(sid) or not rum.sig_ok(int(sid), request.match_info.get("sig", "")):
-        return done(404)
-    site = await get_site(int(sid))
-    if not site or not site["active"] or not _same_site(request.headers.get("Origin", ""), site["url"]):
-        return done(403)
-    if _rum_limited(client_ip(request), int(sid)):
-        return done(429)
-    raw = await request.content.read(RUM_MAX_BODY + 1)
-    if len(raw) > RUM_MAX_BODY:
-        return done(413)
-    try:
-        values = rum.clean(json.loads(raw.decode("utf-8")))
-    except (ValueError, UnicodeDecodeError):
-        values = None
-    if values is None:
-        return done(400)
-    await rum.save(int(sid), values)
-    return done()
-
-
-async def handle_rum_options(request: web.Request) -> web.Response:
-    return web.Response(status=204, headers=_RUM_CORS)
-
-
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
@@ -312,9 +234,6 @@ def create_app() -> web.Application:
     app.router.add_get("/feedback-widget.js", handle_widget)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/shot/{sig}/{sid}", handle_shot)
-    app.router.add_get("/rum.js", handle_rum_js)
-    app.router.add_post("/rum/{sig}/{sid}", handle_rum)
-    app.router.add_options("/rum/{sig}/{sid}", handle_rum_options)
     # Registration order matters: literal segments before the {slug} catch-all.
     app.router.add_get("/status", handle_status_page)
     app.router.add_get("/status.json", handle_status_json)

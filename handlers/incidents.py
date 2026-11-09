@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from db.database import get_active_incidents, get_incident, resolve_all_incidents, resolve_incident_by_id
 from handlers.common import ack, back_button, render
 from reports.formatter import incident_line
-from services import humanize, rum, sitestatus
+from services import crux, humanize, sitestatus
 from utils.clock import fmt_local
 from utils.text import esc
 
@@ -70,7 +70,7 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🛡 Безопасность", callback_data=f"sec:{sid}")])
     elif kind == "visitors":
         rows.append([InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{sid}"),
-                     InlineKeyboardButton(text="↗️ PageSpeed", url=rum.pagespeed_url(inc["url"]))])
+                     InlineKeyboardButton(text="↗️ PageSpeed", url=crux.pagespeed_url(inc["url"]))])
     elif kind == "domain":
         registrar = ((await sitestatus.get(sid)).get("domain") or {}).get("registrar")
         url = humanize.registrar_url(registrar)

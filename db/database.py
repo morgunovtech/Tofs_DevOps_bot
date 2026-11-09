@@ -583,33 +583,6 @@ async def count_feedback() -> int:
 
 # ── Retention & backup ───────────────────────────────────────────────────────
 
-# ── Real visitors' speed ─────────────────────────────────────────────────────
-
-async def add_rum_sample(site_id: int, lcp: int | None, inp: int | None, cls: float | None,
-                         ttfb: int | None, mobile: bool):
-    db = await get_db()
-    async with _write_lock:
-        await db.execute("INSERT INTO rum_samples (site_id, lcp, inp, cls, ttfb, mobile) VALUES (?, ?, ?, ?, ?, ?)",
-                         (site_id, lcp, inp, cls, ttfb, int(mobile)))
-        await db.commit()
-
-
-async def get_rum_samples(site_id: int, days: int = 28) -> list[dict]:
-    db = await get_db()
-    cursor = await db.execute(
-        "SELECT at, lcp, inp, cls, ttfb, mobile FROM rum_samples WHERE site_id = ? AND at >= datetime('now', ?)",
-        (site_id, f"-{days} days"))
-    return [dict(r) for r in await cursor.fetchall()]
-
-
-async def purge_rum_samples(days: int = 28) -> int:
-    db = await get_db()
-    async with _write_lock:
-        cursor = await db.execute("DELETE FROM rum_samples WHERE at < datetime('now', ?)", (f"-{days} days",))
-        await db.commit()
-        return cursor.rowcount
-
-
 async def rollup_old_checks(retention_days: int) -> int:
     """Aggregate raw checks older than N days into checks_daily, then delete
     them. Returns the number of raw rows rolled up."""

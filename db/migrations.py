@@ -170,24 +170,21 @@ async def m5_outbox(db):
 
 
 async def m6_visitor_speed(db):
-    # Real visitors' page views measured on the site (services.rum): three
-    # numbers and the kind of device — no address, no page, no visitor.
+    # Created rum_samples for the own speed measurement, since dropped (m7).
+    pass
+
+
+async def m7_drop_visitor_samples(db):
+    # The own measurement on sites is gone: real visitors' speed comes from
+    # Google's Chrome data only, so its page views are not kept anywhere.
     await db.executescript("""
-        CREATE TABLE IF NOT EXISTS rum_samples (
-            site_id INTEGER NOT NULL,
-            at TEXT DEFAULT (datetime('now')),
-            lcp INTEGER,
-            inp INTEGER,
-            cls REAL,
-            ttfb INTEGER,
-            mobile INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_rum_site_at ON rum_samples(site_id, at);
+        DROP INDEX IF EXISTS idx_rum_site_at;
+        DROP TABLE IF EXISTS rum_samples;
     """)
 
 
 MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
-              m6_visitor_speed]
+              m6_visitor_speed, m7_drop_visitor_samples]
 
 
 async def migrate(db) -> int:
