@@ -16,7 +16,7 @@ from config import config
 from handlers.common import ack, back_button, cancel_kb, render
 from handlers.menu import mute_until_local
 from reports.scheduler import reschedule_all
-from services import integrations, maintenance, public_urls, settings
+from services import helpers, integrations, maintenance, notifier, public_urls, runtime, settings
 from utils.clock import now_local
 from utils.text import esc
 
@@ -49,6 +49,7 @@ async def hub_text() -> str:
             f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} · "
             f"{'🔕 тихо до ' + mute if mute else '🔔 пишу обо всём'} · будить: {ring}\n"
             f"🕐 Часовой пояс: {esc(settings.timezone())}, сейчас {now_local().strftime('%H:%M')}\n"
+            f"👥 Помощники: {esc(', '.join(h['name'] for h in await helpers.helpers()) or 'нет')}\n"
             f"🗓 Плановые работы: {len(maintenance.windows()) or 'нет'} · "
             f"🌐 Статус-страница: {esc(sp)}\n\n"
             f"<i>Сайты, боты и задачи — на главном экране, новые — через «➕ Добавить».</i>")
@@ -60,6 +61,7 @@ def hub_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌅 Сводки и тихие часы", callback_data="menu_reports"),
          InlineKeyboardButton(text="🔕 Заглушить на время", callback_data="menu_mute")],
+        [InlineKeyboardButton(text="👥 Помощники — кому ещё звонить", callback_data="menu_helpers")],
         [InlineKeyboardButton(text="🗓 Плановые работы", callback_data="menu_maint"),
          InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="menu_tz")],
         [InlineKeyboardButton(text="🩺 Диагностика и подключения", callback_data="menu_diag")],
@@ -78,6 +80,53 @@ async def show_hub(target):
 async def cb_settings(call: CallbackQuery):
     await ack(call)
     await show_hub(call)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+async def helpers_screen() -> tuple[str, InlineKeyboardMarkup]:
+    items = await helpers.helpers()
+    lines = ["👥 Помощники", ""]
+    if items:
+        lines.append("Тревоги 🔴 — сайт лёг и снова работает — приходят тебе и:")
+        lines += [f"• {esc(h['name'])}" for h in items]
+    else:
+        lines.append("Тревоги 🔴 — сайт лёг и снова работает — сейчас приходят только тебе. Если ты в "
+                     "отпуске или сел телефон, о лежащем сайте никто не узнает.")
+    lines += ["", "Помощник получает только то, что звонит, без кнопок, и не может управлять ботом. "
+                  "Уйти сам может командой /stop."]
+    rows = [[InlineKeyboardButton(text=f"🗑 Убрать {h['name']}", callback_data=f"helper_rm:{h['chat_id']}")]
+            for h in items]
+    if len(items) < helpers.MAX_HELPERS:
+        rows.append([InlineKeyboardButton(text="🔗 Пригласить помощника", callback_data="helper_invite")])
+    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "menu_helpers")
+async def cb_helpers(call: CallbackQuery):
+    await ack(call)
+    await render(call, *await helpers_screen())
+
+
+@router.callback_query(F.data == "helper_invite")
+async def cb_helper_invite(call: CallbackQuery):
+    await ack(call)
+    payload = helpers.PAYLOAD_PREFIX + await helpers.create_invite()
+    me = runtime.bot_username()
+    link = f"https://t.me/{me}?start={payload}" if me else f"/start {payload}"
+    await render(call, f"🔗 Перешли эту ссылку тому, кто подстрахует тебя:\n\n{esc(link)}\n\n"
+                       f"Он откроет её и нажмёт «Start» — и будет получать тревоги 🔴. Ссылка сработает "
+                       f"один раз и живёт сутки.", back_button("← Помощники", "menu_helpers"))
+
+
+@router.callback_query(F.data.startswith("helper_rm:"))
+async def cb_helper_remove(call: CallbackQuery):
+    gone = await helpers.remove(call.data.split(":", 1)[1])
+    await ack(call, f"Убрал: {gone['name']}" if gone else "Его уже нет")
+    if gone:
+        await notifier.send_to(gone["chat_id"], "Владелец убрал тебя из помощников — тревоги больше не приходят.")
+    await render(call, *await helpers_screen())
 
 
 # ── Digests and quiet hours ──────────────────────────────────────────────────

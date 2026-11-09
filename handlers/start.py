@@ -1,14 +1,16 @@
-"""/start (public: claims the admin seat on first run) and /help."""
+"""/start (public: claims the admin seat on first run; with a helper
+invite, makes a helper), /stop for helpers, and /help."""
 
-from aiogram import Router
-from aiogram.filters import Command, CommandStart
+from aiogram import F, Router
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from config import config
 from handlers.common import DENIED, back_button, persistent_keyboard
 from handlers.menu import send_main_menu
-from services import runtime, settings
+from services import helpers, notifier, runtime, settings
+from utils.text import esc
 
 router = Router(name="start")
 
@@ -40,6 +42,46 @@ def rules_of_the_game() -> str:
             f"• Каждое утро в {settings.morning_hour()}:00 одно короткое «всё в порядке».\n"
             f"• {quiet_line}\n"
             "• Если сайт лёг, напишу в любое время и повторю через полчаса, пока не поднимется.")
+
+
+_HELPER_ANSWERS = {
+    "ok": "✅ Готово: теперь, если сайт ляжет, я позвоню и тебе — и напишу, когда он снова заработает. "
+          "Больше ничего присылать не буду, управляет ботом владелец. Перестать — /stop.",
+    "already": "Ты уже помощник — тревоги 🔴 приходят и тебе. Перестать — /stop.",
+    "full": "У владельца уже три помощника — больше нельзя. Попроси его убрать кого-нибудь.",
+    "invalid": "Ссылка не сработала: она одноразовая и живёт сутки. Попроси у владельца новую.",
+}
+
+
+@router.message(CommandStart(deep_link=True, magic=F.args.startswith(helpers.PAYLOAD_PREFIX)))
+async def cmd_start_helper(message: Message, command: CommandObject, state: FSMContext):
+    """An invite link from «⚙️ Настройки → 👥 Помощники». Never claims the
+    admin seat, whatever happens."""
+    await state.clear()
+    if runtime.is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("Это приглашение для помощника — перешли ссылку тому, кто подстрахует тебя.")
+        return
+    if message.chat.type != "private":
+        await message.answer("Открой эту ссылку в личном чате со мной.")
+        return
+    name = message.from_user.full_name if message.from_user else ""
+    result = await helpers.accept(command.args[len(helpers.PAYLOAD_PREFIX):], message.chat.id, name)
+    await message.answer(_HELPER_ANSWERS[result])
+    if result == "ok":
+        await notifier.send(f"👥 {esc(name)} теперь получает тревоги 🔴. Убрать — ⚙️ Настройки → 👥 Помощники.")
+
+
+@router.message(Command("stop"))
+async def cmd_stop(message: Message):
+    if runtime.is_admin(message.from_user.id if message.from_user else None):
+        await message.answer("Ты владелец. Чтобы я помолчал — /mute 8h, тревога «сайт лёг» всё равно придёт.")
+        return
+    gone = await helpers.remove(message.chat.id)
+    if not gone:
+        await message.answer(DENIED)
+        return
+    await message.answer("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца.")
+    await notifier.send(f"👥 {esc(gone['name'])} больше не получает тревоги 🔴.")
 
 
 @router.message(CommandStart())

@@ -14,6 +14,9 @@ paused or inside a maintenance window it is dropped, whatever the priority.
 send() returns True when the message was delivered or queued — callers that
 set one-shot "already alerted" flags must only do so on True.
 
+What rings (CRITICAL) also goes to the helpers (services.helpers), as text
+without buttons — the buttons steer the bot, and only the owner can.
+
 A message Telegram did not take (no network, 5xx, flood limit) is not lost:
 it goes to the outbox and is retried every minute, with a note of when it
 should have arrived. Without that a lost «сайт лёг» would never come back —
@@ -38,7 +41,7 @@ from db.database import (
     queue_notification,
     set_state,
 )
-from services import maintenance, runtime, settings
+from services import helpers, maintenance, runtime, settings
 from utils.clock import now_local, to_local
 from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc
 
@@ -105,7 +108,8 @@ def in_quiet_hours(hour: int | None = None) -> bool:
 # ── Sending ──────────────────────────────────────────────────────────────────
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
-               reply_markup=None, site_id: int | None = None, always_ring: bool = False) -> Message | bool:
+               reply_markup=None, site_id: int | None = None, always_ring: bool = False,
+               to_helpers: bool = True) -> Message | bool:
     """The sent Message when delivered now, True when queued, False when
     dropped or failed — so `if sent:` keeps working for one-shot flags.
     With «будить только когда сайт лёг» on, CRITICAL messages that are not
@@ -124,11 +128,34 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
         logger.info("Queued (mute / quiet hours): %s", text[:60])
         return True
     sent = await _deliver(chat_id, text, reply_markup, priority)
+    if priority is Priority.CRITICAL and to_helpers:
+        await _tell_helpers(text)
     if sent is None:
         await outbox_add(text, _markup_json(reply_markup), priority.value)
         logger.warning("Telegram did not take the message — kept for a retry: %s", text[:60])
         return True
     return sent
+
+
+async def send_to(chat_id: str, text: str) -> bool:
+    """One line to someone who is not the admin (a helper being removed)."""
+    if _bot is None:
+        return False
+    try:
+        await _bot.send_message(chat_id=chat_id, text=text)
+        return True
+    except Exception as e:
+        logger.warning("Could not tell %s: %s", chat_id, e)
+        return False
+
+
+async def _tell_helpers(text: str):
+    """Best effort, one try: the owner's copy is the one that is retried."""
+    for h in await helpers.helpers():
+        try:
+            await _bot.send_message(chat_id=h["chat_id"], text=text, disable_notification=False)
+        except Exception as e:
+            logger.warning("Helper %s did not get the alert: %s", h["chat_id"], e)
 
 
 async def _defer(priority: Priority) -> bool:
