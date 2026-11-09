@@ -188,9 +188,12 @@ async def test_adding_an_api_address_says_what_is_watched(bot, db):
     async with TestServer(app) as server:
         msg = FakeMessage(f"http://127.0.0.1:{server.port}/api/whoami")
         await sites.msg_site_add(msg, FakeState())
-    text = msg.texts[-1]
+    # The first site is followed by the «два последних шага» message.
+    assert msg.texts[-1].startswith("Ещё два шага")
+    text = msg.texts[-2]
     assert "✅ Отвечает" in text and "🔌 Это API" in text and "поиск и ИИ проверю" not in text
-    assert "📡 Настроить запрос" in buttons(msg.reply_markup)
+    assert "📡 Настроить запрос" in buttons(msg.markups[-2])
+    assert buttons(msg.markups[-1]) == ["🔔 Пробная тревога", "🛡 Подключить сторожа"]
 
 
 async def test_switching_to_post_closes_page_findings(bot, db):
