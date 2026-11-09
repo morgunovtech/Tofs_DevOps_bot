@@ -32,6 +32,7 @@ from services import (
     integrations,
     notifier,
     public_urls,
+    railway,
     runtime,
     secrets,
     settings,
@@ -41,7 +42,7 @@ from services import (
 from services.notifier import Priority
 from utils.clock import now_local
 from utils.text import esc, plural
-from utils.urls import host_of
+from utils.urls import host_of, proxy_label
 
 router = Router(name="setup")
 
@@ -101,7 +102,8 @@ async def _yandex_probe() -> int | None:
 async def build_items() -> list[Item]:
     items: list[Item] = []
     me = runtime.bot_username()
-    items.append(Item("telegram", "ok", f"Telegram @{me}" if me else "Telegram"))
+    via = f" через прокси {proxy_label(config.telegram_proxy)}" if config.telegram_proxy else ""
+    items.append(Item("telegram", "ok", (f"Telegram @{me}" if me else "Telegram") + via))
     if runtime.db_on_persistent_disk() is False:
         items.append(Item("db", "warn", "база данных",
                           "не на постоянном диске — при каждом обновлении сотрётся. Railway: правый клик "
@@ -109,6 +111,16 @@ async def build_items() -> list[Item]:
     else:
         items.append(Item("db", "ok" if await _db_ok() else "warn", "база данных",
                           "не пишется — проверь volume /app/data и права на файл"))
+    if config.on_railway:
+        days = await railway.days_since_claim()
+        if await railway.is_paid():
+            items.append(Item("railway", "ok", "Railway Hobby"))
+        elif days is not None and days < railway.TRIAL_DAYS + 3:
+            # Unknown date = an install from before this check; still running
+            # past the trial = the account pays. Neither needs the warning.
+            items.append(Item("railway", "warn", "тариф Railway",
+                              "на пробном периоде через 30 дней с регистрации я остановлюсь молча — нужен Hobby",
+                              ("💳 Railway: тариф", "setup:railway")))
     items.append(Item("web", "ok" if await _web_ok() else "warn", "веб-сервер",
                       f"не отвечает на localhost:{config.webhook_port} — перезапусти бота, "
                       f"проверь WEBHOOK_PORT"))
@@ -363,10 +375,13 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
     if not integrations.self_heartbeat_url():
         steps.append("🛡 Сторож — если сломаюсь я сам, тебе напишет healthchecks.io. Бесплатно, 2 минуты.")
         rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа", callback_data="onb:watchdog")])
+    if await railway.asks():
+        steps.append(railway.STEP)
+        rows += railway.keyboard("railway:paid:onb").inline_keyboard
     if not steps:
         return None
-    head = ("Ещё два шага, чтобы моё молчание точно значило «всё в порядке»:" if len(steps) == 2
-            else "Ещё один шаг, чтобы моё молчание точно значило «всё в порядке»:")
+    count = {1: "Ещё один шаг", 2: "Ещё два шага"}.get(len(steps), "Ещё три шага")
+    head = f"{count}, чтобы моё молчание точно значило «всё в порядке»:"
     return "\n\n".join([head, *(f"{i}. {step}" for i, step in enumerate(steps, 1))]), \
         InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -454,6 +469,28 @@ def _watchdog_kb() -> InlineKeyboardMarkup:
     if integrations.source("self_heartbeat_url") == "bot":
         buttons.append(("🗑 Отключить", "setup:watchdog_off"))
     return _guide_kb(*buttons)
+
+
+@router.callback_query(F.data == "setup:railway")
+async def cb_guide_railway(call: CallbackQuery):
+    await ack(call)
+    await render(call, railway.GUIDE, InlineKeyboardMarkup(inline_keyboard=[
+        *railway.keyboard("railway:paid:setup").inline_keyboard, *_guide_kb().inline_keyboard]))
+
+
+@router.callback_query(F.data.startswith("railway:paid"))
+async def cb_railway_paid(call: CallbackQuery):
+    """«✅ Уже на Hobby» — from the first-site steps (:onb), the guide
+    (:setup) or the day-25 reminder (bare). Never asked again."""
+    await railway.set_paid()
+    await ack(call, "Понял, больше не напоминаю")
+    where = call.data.removeprefix("railway:paid").lstrip(":")
+    if where == "setup":
+        await show_checklist(call)
+    elif where == "onb" and (steps := await last_steps()):
+        await render(call, *steps)
+    else:
+        await render(call, "✅ Понял: аккаунт Railway на Hobby — больше не напоминаю.")
 
 
 @router.callback_query(F.data.in_({"setup:watchdog", "onb:watchdog"}))

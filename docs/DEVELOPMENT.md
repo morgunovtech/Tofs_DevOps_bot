@@ -29,6 +29,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
 | Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
+| Telegram через прокси (сервер в России) | `TELEGRAM_PROXY` |
 
 ## Шаблон Railway (кнопка «Deploy on Railway»)
 

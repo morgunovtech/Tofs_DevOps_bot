@@ -10,7 +10,7 @@ from config import config
 from db.database import set_state
 from handlers.common import DENIED, back_button
 from handlers.menu import send_main_menu
-from services import helpers, notifier, runtime, settings
+from services import helpers, notifier, railway, runtime, settings
 from utils.text import esc
 
 router = Router(name="start")
@@ -90,6 +90,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()  # /start always aborts any pending input flow
     if not runtime.has_admin() and message.from_user:
         await runtime.claim(message.chat.id, message.from_user.id)
+        await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
         await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
                              "и тревоги будут приходить сюда.")
         if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
