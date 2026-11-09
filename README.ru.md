@@ -29,16 +29,31 @@
 
 ### Бесплатно: свой сервер через Docker
 
-Подойдёт любой компьютер, который работает круглосуточно: VPS, домашний сервер, NAS, Raspberry Pi.
+Подойдёт любой компьютер, который работает круглосуточно: VPS, домашний сервер, NAS, Raspberry Pi. Готовый образ для amd64 и arm64 публикуется сам после каждого изменения, прошедшего тесты, — клонировать и собирать ничего не нужно.
 
-```bash
-git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
-cd Tofs_DevOps_bot
-cp .env.example .env   # впиши TELEGRAM_BOT_TOKEN — единственное обязательное поле
-docker compose up -d --build
+Создай папку и в ней два файла. `.env` — одна строка:
+
+```
+TELEGRAM_BOT_TOKEN=токен-от-BotFather
 ```
 
-Отправь боту `/start` — первый пользователь становится админом и добавляет первый сайт прямо в чате. Обновиться: `git pull && docker compose up -d --build`.
+`docker-compose.yml`:
+
+```yaml
+services:
+  bot:
+    image: ghcr.io/morgunovtech/tofs_devops_bot:latest
+    restart: always
+    env_file: .env
+    volumes:
+      - bot_data:/app/data
+volumes:
+  bot_data:
+```
+
+Запусти `docker compose up -d` и отправь боту `/start` — первый пользователь становится админом и добавляет первый сайт прямо в чате. Обновиться — `docker compose pull && docker compose up -d`, бот сам скажет «🔄 Бот обновился». Остальные настройки — строками в тот же `.env` (полный список — в [.env.example](.env.example)); виджету обратной связи, ссылкам для задач и статус-странице нужен публичный адрес — [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+Хочешь собрать из исходников — свои правки или форк: `git clone`, `cp .env.example .env`, `docker compose up -d --build` — в репозитории лежит `docker-compose.yml` со сборкой.
 
 **Сервер в России.** Оттуда api.telegram.org часто недоступен напрямую — бот не достучится до Telegram. Укажи в `.env` прокси: `TELEGRAM_PROXY=socks5://логин:пароль@host:1080` (подойдут и `socks4://`, и `http://host:3128`). Через прокси идёт только общение с Telegram, сайты бот проверяет напрямую.
 

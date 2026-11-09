@@ -6,6 +6,8 @@
 
 Нужны: Docker и токен бота от [@BotFather](https://t.me/BotFather).
 
+Без исходников — готовый образ `ghcr.io/morgunovtech/tofs_devops_bot:latest` (amd64 и arm64), короткий `docker-compose.yml` для него — в [README](../README.ru.md#бесплатно-свой-сервер-через-docker). Ниже — сборка из исходников, для своих правок.
+
 ```bash
 git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
 cd Tofs_DevOps_bot

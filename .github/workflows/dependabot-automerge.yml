@@ -13,6 +13,7 @@ permissions:
   contents: write
   pull-requests: write
   checks: read
+  actions: write   # to start CI on main after the merge (see below)
 
 jobs:
   automerge:
@@ -39,6 +40,10 @@ jobs:
             fi
             if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
               gh pr merge --squash "$PR_URL"
+              # A push made with GITHUB_TOKEN starts no workflow, so main would
+              # get no CI run and no new image on ghcr.io. A dispatch does start
+              # one. (Railway deploys from its own GitHub hook — unaffected.)
+              gh workflow run ci.yml --repo "$REPO" --ref main
               exit 0
             fi
             sleep 30
