@@ -37,8 +37,10 @@ _TYPE_RU = {
     "availability": "Недоступность", "performance": "Медленные ответы",
     "ssl": "Проблема с SSL-сертификатом", "domain": "Проблема с доменом",
     "links": "Битые ссылки", "deep": "Ошибки на части страниц",
-    "seo": "Проблема с индексацией",
+    "seo": "Проблема с индексацией", "mail": "Почта не принимала письма", "visitors": "Медленно у посетителей",
 }
+# Never on the public page: a list of a site's weak spots is a gift to an attacker.
+_PRIVATE_TYPES = frozenset({"exposed", "security", "mail_auth"})
 _STATE = {
     "up": ("dot-up", "работает"), "down": ("dot-down", "недоступен"),
     "maint": ("dot-maint", "тех. работы"), "pending": ("dot-pending", "ждёт первой проверки"),
@@ -78,8 +80,8 @@ async def build_payload() -> dict:
     for inc in reversed(await get_incidents_since(14)):
         if len(incidents) >= 10:
             break
-        if inc["site_id"] not in active_ids:  # removed sites must not haunt the page
-            continue
+        if inc["site_id"] not in active_ids or inc["check_type"] in _PRIVATE_TYPES:
+            continue   # removed sites must not haunt the page; weak spots are not advertised
         created = parse_sqlite_utc(inc.get("created_at"))
         resolved = parse_sqlite_utc(inc.get("resolved_at")) if inc.get("resolved") else None
         minutes = round((resolved - created).total_seconds() / 60) if created and resolved else None

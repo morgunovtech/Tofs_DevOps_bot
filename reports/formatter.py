@@ -13,7 +13,10 @@ from monitors.base import (
     SeoResult,
     SslResult,
 )
-from services import humanize, seo_fixes
+from monitors.mail_checker import MailResult
+from monitors.security_checker import SecurityResult
+from monitors.visitor_checker import VisitorsResult
+from services import crux, humanize, seo_fixes
 from services.humanize import (
     UNCHECKED,
     describe_error,
@@ -170,7 +173,9 @@ def format_seo_alert(r: SeoResult) -> str:
 
 
 def format_dns_change(change: DnsChange) -> str:
-    expl = humanize.EXPLANATIONS["ns_change" if change["critical"] else "dns_change"]
+    key = {"NS": "ns_change", "MX": "mx_gone" if change["new"] == "—" else "mx_change"}.get(change["rtype"],
+                                                                                         "dns_change")
+    expl = humanize.EXPLANATIONS[key]
     kinds = {"A": "адрес сервера (запись A)", "AAAA": "адрес сервера IPv6 (запись AAAA)",
              "CNAME": "псевдоним адреса (запись CNAME)", "NS": "NS-серверы домена",
              "MX": "почтовые серверы (запись MX)"}
@@ -179,6 +184,99 @@ def format_dns_change(change: DnsChange) -> str:
     return (f"{icon} У {esc(change['host'])} изменились {what}\n{expl.meaning}\n\n"
             f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}\n\n"
             f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
+
+
+# ── Mail ─────────────────────────────────────────────────────────────────────
+
+def finding_block(n: int, f: dict) -> str:
+    """One finding (monitors.base.Finding): what, why, what to do, the
+    record to paste — a block of lines as <pre>, one line as <code>."""
+    lines = [f"{n}. <b>{esc(f['title'])}</b> — {esc(f['why'])}.", esc(f["fix"])]
+    record = f.get("record")
+    if record:
+        lines.append(f"<pre>{esc(record)}</pre>" if "\n" in record else f"<code>{esc(record)}</code>")
+    if f.get("note"):
+        lines.append(esc(f["note"]))
+    return "\n".join(lines)
+
+
+def format_mail_alert(r: MailResult) -> str:
+    domain = esc(r.domain)
+    if r.kind == "mail":
+        if r.delivery.reason == "nowhere":
+            what = ("Записи MX домена ведут на сервер, которого нет. Письма тебе не доходят — "
+                    "отправители получают ошибку.")
+        else:
+            who = esc(r.provider) if r.provider else "Почтовый сервер"
+            what = (f"{who} не отвечает уже две проверки подряд — проверял из нескольких стран. Письма тебе "
+                    f"сейчас не доходят: серверы отправителей будут пробовать ещё несколько дней, потом вернут "
+                    f"письмо с ошибкой.")
+        steps = ([f"Открыть страницу статуса {esc(r.provider)} (кнопка ниже): если сбой у них — ждать, я "
+                  f"напишу, когда почта заработает."] if r.status_page else [])
+        steps.append("Если у почтового сервиса всё в порядке — проверить записи MX в DNS: они должны вести на "
+                     "него, точные значения есть в его настройках.")
+        return "\n".join([f"🔴 Почта на {domain} не принимает письма", what, "", "Что делать:",
+                          *(f"{i}. {s}" for i, s in enumerate(steps, 1))])
+    n = len(r.findings)
+    head = (f"🟠 Почта на {domain} настроена не до конца — письма могут попадать в спам, а подделать "
+            f"твой адрес проще")
+    lines = [head, "Что исправить в DNS:" if n == 1 else
+             f"{n} {plural(n, 'помеха', 'помехи', 'помех')}, у каждой — что исправить в DNS:", ""]
+    lines += ["\n\n".join(finding_block(i, f) for i, f in enumerate(r.findings, 1)), "",
+              "Изменения в DNS доходят за 5–30 минут. Я перепроверяю каждый час и напишу, когда всё будет "
+              "в порядке."]
+    return "\n".join(lines)
+
+
+def format_mail_recovery(r: MailResult) -> str:
+    domain = esc(r.domain)
+    if r.kind == "mail_auth":
+        return f"✅ Почта на {domain}: настройки в порядке, письмам ничего не мешает."
+    started = parse_sqlite_utc((r.resolved_incident or {}).get("created_at"))
+    how_long = ""
+    if started:
+        minutes = max(1, round((datetime.now(UTC) - started).total_seconds() / 60))
+        how_long = f" (не принимала около {fmt_duration(minutes)})"
+    return (f"✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
+            f"обычно доходят сами: серверы отправителей повторяют попытки.")
+
+
+# ── Security ─────────────────────────────────────────────────────────────────
+
+def format_security_alert(r: SecurityResult) -> str:
+    label = esc(site_label(r.url))
+    n = len(r.findings)
+    if r.kind == "exposed":
+        head = f"🔴 На {label} наружу видны служебные файлы — их может скачать любой"
+        tail = "Убрал — нажми «🔄 Перепроверить» на карточке сайта, я скажу, что их больше не видно."
+    else:
+        head = f"🟠 {label}: защиту сайта стоит усилить"
+        tail = "Я перепроверяю каждые 6 часов и напишу, когда всё будет в порядке."
+    lines = [head, "Что сделать:" if n == 1 else f"{n} {plural(n, 'помеха', 'помехи', 'помех')}, у каждой — что сделать:",
+             "", "\n\n".join(finding_block(i, f) for i, f in enumerate(r.findings, 1)), "", tail]
+    return "\n".join(lines)
+
+
+def format_security_recovery(r: SecurityResult) -> str:
+    label = esc(site_label(r.url))
+    if r.kind == "exposed":
+        return (f"✅ На {label} служебные файлы больше не видны снаружи. Если в них были пароли или ключи — "
+                f"смени их, если ещё не сменил.")
+    return f"✅ {label}: защита сайта в порядке."
+
+
+# ── Real visitors' speed ─────────────────────────────────────────────────────
+
+def format_visitors_alert(r: VisitorsResult) -> str:
+    expl = explain("visitors", r.error)
+    return (f"🟠 {esc(site_label(r.url))}: медленно у настоящих посетителей\n"
+            f"{esc(crux.describe(r.values))} — так у 3 из 4 посетителей, у остальных ещё дольше "
+            f"({crux.SOURCE}).\n{esc(expl.meaning)}\n\n"
+            f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
+
+
+def format_visitors_recovery(r: VisitorsResult) -> str:
+    return f"✅ {esc(site_label(r.url))}: у посетителей снова не медленно — {esc(crux.describe(r.values))}."
 
 
 # ── Status report (one line per site) ────────────────────────────────────────

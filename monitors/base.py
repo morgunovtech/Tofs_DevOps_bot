@@ -10,7 +10,7 @@ monitor should fire.
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TypedDict
 
 import aiohttp
@@ -149,6 +149,21 @@ class SeoResult(CheckResult):
     @property
     def has_critical(self) -> bool:
         return any(p.severity == "critical" for p in self.problems)
+
+
+@dataclass
+class Finding:
+    """A problem the owner fixes by hand — mail records, security settings:
+    what, why it matters, what to do, the exact thing to paste."""
+    code: str
+    title: str        # «Две записи SPF вместо одной»
+    why: str          # what it does to the owner's visitors or letters
+    fix: str          # what to do, leading to the record
+    record: str = ""  # the exact value to paste, when there is one
+    note: str = ""    # said after the record
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 _META_CHARSET_RE = re.compile(rb'charset=["\']?([a-zA-Z0-9_-]{2,20})')

@@ -2,8 +2,9 @@
 domain, alert when answers change (panel misconfig, expired zone, hijack).
 
 First observation of a host/rtype is stored silently as the baseline.
-NS changes are critical (that's what a hijack looks like); everything
-else is a warning that respects mute/quiet hours.
+NS changes are critical (that's what a hijack looks like), and so is an MX
+that disappeared (mail stops arriving); everything else is a warning
+that respects mute/quiet hours.
 """
 
 import asyncio
@@ -51,8 +52,9 @@ async def _check_record(host: str, rtype: str) -> dict | None:
         return None
     # The baseline is NOT updated here — the scheduler commits it only after
     # the alert is delivered/queued, so a failed send cannot swallow a change.
+    # NS moved: what a hijack looks like. MX gone: letters stop arriving.
     return {"host": host, "rtype": rtype, "old": previous, "new": current,
-            "critical": rtype == "NS"}
+            "critical": rtype == "NS" or (rtype == "MX" and current == "—")}
 
 
 async def _host_rtypes(host: str) -> tuple[str, ...]:

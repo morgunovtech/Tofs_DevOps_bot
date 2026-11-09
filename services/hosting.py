@@ -54,3 +54,16 @@ def label(key: str | None) -> str | None:
 
 def panel_url(key: str | None) -> str | None:
     return PANELS[key][1] if key in PANELS else None
+
+
+# NS host fragment → who keeps the domain's DNS records.
+_NS_PROVIDERS = (("cloudflare", "Cloudflare"), ("awsdns", "Amazon Route 53"), ("googledomains", "Google"),
+                 ("vercel-dns", "Vercel"), ("nsone", "NS1 (Netlify)"), ("netlify", "Netlify"),
+                 ("registrar-servers", "Namecheap"), ("nic.ru", "RU-CENTER"), ("reg.ru", "REG.RU"),
+                 ("yandex", "Яндекс"), ("beget", "Beget"), ("timeweb", "Timeweb"), ("digitalocean", "DigitalOcean"))
+
+
+def dns_provider(ns: str) -> str:
+    """«Cloudflare» for «amy.ns.cloudflare.com, bob.ns.cloudflare.com»;
+    the first server's name when the provider is not known."""
+    return next((name for key, name in _NS_PROVIDERS if key in ns.lower()), ns.split(",")[0].strip())

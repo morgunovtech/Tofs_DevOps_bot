@@ -25,6 +25,7 @@ from config import config
 from db.database import get_all_sites, get_state, set_state
 from handlers.common import ack, back_button, cancel_kb, render
 from services import (
+    crux,
     docker_api,
     github,
     gsc,
@@ -57,6 +58,7 @@ class SetupForm(StatesGroup):
     watchdog_url = State()
     gh_token = State()
     gh_owner = State()
+    crux_key = State()
 
 
 @dataclass
@@ -189,6 +191,14 @@ async def build_items() -> list[Item]:
         items.append(Item("yandex", "off", "🔎 Яндекс.Вебмастер",
                           "страницы в поиске, ИКС и фатальные проблемы сайта от Яндекса",
                           ("🔎 Подключить Яндекс", "setup:yx")))
+
+    if crux.available():
+        items.append(Item("crux", "ok", "скорость у посетителей Chrome (Google)"))
+    else:
+        items.append(Item("crux", "off", "⚡ Скорость у посетителей Chrome",
+                          "сколько реальные посетители ждут твой сайт — данные Google за 28 дней, для сайтов, "
+                          "где посетителей достаточно",
+                          ("⚡ Подключить данные Google", "setup:crux")))
 
     if integrations.deploy_hooks() or integrations.cf_purge_configured():
         items.append(Item("cloudflare", "ok", "Cloudflare"))
@@ -602,6 +612,66 @@ async def msg_yx_token(message: Message, state: FSMContext):
 @router.callback_query(F.data == "setup:yx_off")
 async def cb_yx_off(call: CallbackQuery):
     await integrations.set_value("yandex_token", None)
+    await ack(call, "Отключено")
+    await show_checklist(call)
+
+
+# ── Chrome UX Report wizard ──────────────────────────────────────────────────
+
+def _crux_kb() -> InlineKeyboardMarkup:
+    buttons = [("🔑 Ввести ключ", "setup:crux_key")]
+    if integrations.source("crux_key") == "bot":
+        buttons.append(("🗑 Отключить", "setup:crux_off"))
+    return _guide_kb(*buttons)
+
+
+@router.callback_query(F.data == "setup:crux")
+async def cb_guide_crux(call: CallbackQuery):
+    await ack(call)
+    src = integrations.source("crux_key")
+    state_line = {"bot": "Ключ введён в боте.", "env": "Ключ взят из .env."}.get(src, "Пока не подключено.")
+    await render(call, ("⚡ Скорость у посетителей Chrome\n\n"
+                        f"{state_line}\n\n"
+                        "Google собирает, сколько реальные посетители в Chrome ждут каждый сайт, и отдаёт эти "
+                        "числа бесплатно. На сайты ничего ставить не нужно. У небольших сайтов данных часто нет: "
+                        "Google считает только сайты, у которых достаточно посетителей в Chrome.\n\n"
+                        "1. Открой <a href=\"https://console.cloud.google.com/apis/library/"
+                        "chromeuxreport.googleapis.com\">Chrome UX Report API</a> в Google Cloud (войди, создай "
+                        "проект, если спросит) и нажми <b>Enable</b>.\n"
+                        "2. Там же: <b>Credentials → Create credentials → API key</b>. Скопируй ключ.\n"
+                        "3. Нажми «🔑 Ввести ключ» и пришли его сюда — я сразу проверю живым запросом.\n\n"
+                        "Ключ бесплатный и даёт доступ только к этим общедоступным числам."),
+                 _crux_kb())
+
+
+@router.callback_query(F.data == "setup:crux_key")
+async def cb_crux_key(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(SetupForm.crux_key)
+    await render(call, "🔑 Пришли ключ Google API одним сообщением.", cancel_kb())
+
+
+@router.message(SetupForm.crux_key)
+async def msg_crux_key(message: Message, state: FSMContext):
+    key = (message.text or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{30,60}", key):
+        await message.answer("Не похоже на ключ Google API (он вида AIza…). Попробуй ещё раз:",
+                             reply_markup=cancel_kb())
+        return
+    await state.clear()
+    await _forget(message)
+    if not await crux.key_works(key):
+        await message.answer("❌ Google не принял ключ. Проверь, что Chrome UX Report API включён в том же "
+                             "проекте, где создан ключ, и что ключ скопирован целиком.", reply_markup=_crux_kb())
+        return
+    await integrations.set_value("crux_key", key)
+    await message.answer("✅ Данные Google о скорости подключены. Спрошу про твои сайты сегодня в 08:10 — числа "
+                         "появятся на карточках.", reply_markup=back_button("← К подключениям", "setup:check"))
+
+
+@router.callback_query(F.data == "setup:crux_off")
+async def cb_crux_off(call: CallbackQuery):
+    await integrations.set_value("crux_key", None)
     await ack(call, "Отключено")
     await show_checklist(call)
 

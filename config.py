@@ -121,6 +121,9 @@ class Config:
     gsc_property: str = os.getenv("GSC_PROPERTY", "").strip()
     yandex_webmaster_token: str = os.getenv("YANDEX_WEBMASTER_TOKEN", "").strip()
 
+    # ── Real visitors' speed from Chrome (Google CrUX API, optional) ─────────
+    crux_api_key: str = os.getenv("CRUX_API_KEY", "").strip()
+
     # ── GitHub hygiene in the weekly report (optional) ───────────────────────
     # Read-only token; the owner defaults to the token's own account.
     github_token: str = os.getenv("GITHUB_TOKEN", "").strip()

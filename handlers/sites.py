@@ -47,13 +47,18 @@ from handlers.common import (
     site_by_cb,
     with_running_bar,
 )
+from handlers.mail import mail_lines
 from handlers.menu import best_ms, cb_main_menu, site_state
+from handlers.security import security_lines
 from handlers.setup import last_steps
+from handlers.speed import speed_lines
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
+from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
+from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
 from reports.scheduler import reschedule_all, reset_site_schedule
@@ -197,6 +202,7 @@ async def card_lines(site: dict) -> list[str]:
         verb = "Не открывается" if http and not api else "Не отвечает"
         lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
     lines += await _history_lines(site)
+    lines += await speed_lines(site)
     lines += await _outage_lines(site)
     lines += _keyword_lines(site, avail)
     covered_by = await host_checked_by(site)
@@ -228,6 +234,10 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"ℹ️ Домен: {esc(dom.get('error') or 'срок не сообщается')}")
         else:
             lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
+        if await carrier_of(site["url"]) == site["url"]:
+            lines += mail_lines(st.get("mail"))
+        if not api and is_https(site["url"]):
+            lines += security_lines(st.get("security"))
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
         lines += await _home_lines(site)
@@ -245,7 +255,7 @@ async def _history_lines(site: dict) -> list[str]:
     spark = sparkline([d["avg_ms"] for d in days])
     if spark:
         typical = sorted(d["avg_ms"] for d in days)[len(days) // 2]
-        lines.append(f"⏱ Скорость за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
+        lines.append(f"⏱ Ответ сервера за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     month = await get_uptime_over_days(site["id"], 30)
@@ -278,12 +288,6 @@ def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
     return [f"✅ Фраза «{esc(phrase)}» на месте"]
 
 
-_NS_PROVIDERS = (("cloudflare", "Cloudflare"), ("awsdns", "Amazon Route 53"), ("googledomains", "Google"),
-                 ("vercel-dns", "Vercel"), ("nsone", "NS1 (Netlify)"), ("netlify", "Netlify"),
-                 ("registrar-servers", "Namecheap"), ("nic.ru", "RU-CENTER"), ("reg.ru", "REG.RU"),
-                 ("yandex", "Яндекс"), ("beget", "Beget"), ("timeweb", "Timeweb"), ("digitalocean", "DigitalOcean"))
-
-
 async def _home_lines(site: dict) -> list[str]:
     """Where the site lives and who answers for its domain — what to open
     when something breaks, and whether the domain's servers stayed put."""
@@ -293,7 +297,7 @@ async def _home_lines(site: dict) -> list[str]:
         parts.append(f"сайт на {hosting}")
     ns = await get_dns_record(registrable_domain(host_of(site["url"])), "NS")
     if ns and ns[0]:
-        provider = next((name for key, name in _NS_PROVIDERS if key in ns[0].lower()), ns[0].split(",")[0])
+        provider = hosting_svc.dns_provider(ns[0])
         since = parse_sqlite_utc(ns[1])
         parts.append(f"DNS у {provider}" + (f", не менялись с {to_local(since).strftime('%d.%m.%Y')}" if since else ""))
     if not parts:
@@ -388,15 +392,22 @@ async def render_card(call: CallbackQuery, site: dict):
                   f"<i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
     rows = []
     # One way to the fix, only when there is something to fix: search
-    # findings have a step-by-step screen, anything else its «что делать».
-    snap = await sitestatus.get(sid)
-    seo = snap.get("seo") or {}
-    page = is_web_page(url, site.get("http_method"))
-    if page and seo.get("problems"):
+    # findings and mail have a screen with the steps, anything else its
+    # «что делать».
+    st = await sitestatus.get(sid)
+    seo = st.get("seo") or {}
+    other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
+    if is_web_page(url, site.get("http_method")) and seo.get("problems"):
         rows.append([InlineKeyboardButton(text="🛠 Как исправить поиск", callback_data=f"seo_site:{sid}")])
-    elif problems:
-        rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}")])
-    if page and await seo_screen.cloudflare_check_pending(sid, snap):
+    elif other:
+        rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{other[0]['id']}")])
+    if (st.get("mail") or {}).get("findings") or any(inc["check_type"] in MAIL_CHECKS for inc in problems):
+        rows.append([InlineKeyboardButton(text="✉️ Как починить почту", callback_data=f"mail:{sid}")])
+    if (st.get("security") or {}).get("findings") or any(inc["check_type"] in SECURITY_CHECKS for inc in problems):
+        rows.append([InlineKeyboardButton(text="🛡 Как защитить сайт", callback_data=f"sec:{sid}")])
+    if any(inc["check_type"] == "visitors" for inc in problems):
+        rows.append([InlineKeyboardButton(text="👥 Почему медленно", callback_data=f"spd:{sid}")])
+    if is_web_page(url, site.get("http_method")) and await seo_screen.cloudflare_check_pending(sid, st):
         rows.append([InlineKeyboardButton(text="🤖 Проверить в Cloudflare", callback_data=f"seo_fix:{sid}:ai_cloudflare")])
     rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
@@ -468,9 +479,14 @@ async def cb_check_site_live(call: CallbackQuery):
     await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
-        await render(call, "▰▱▱ Смотрю сертификат и срок домена...")
+        mail_domain = registrable_domain(host_of(url)) if await carrier_of(url) == url else None
+        await render(call, f"▰▱▱ Смотрю сертификат, срок домена{', почту' if mail_domain else ''} и защиту сайта...")
         await check_ssl(url, manage=False)
         await check_domain(url, manage=False)
+        if mail_domain:
+            await check_mail(mail_domain, url, manage=False)
+        if is_https(url) and is_web_page(url, site.get("http_method")):
+            await check_security(url, manage=False)
     if is_web_page(url, site.get("http_method")):
         base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
         await render(call, f"▰▰▱ {base}")

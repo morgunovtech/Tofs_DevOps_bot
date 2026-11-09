@@ -14,14 +14,17 @@ from handlers import (
     heartbeats,
     incidents,
     links,
+    mail,
     maintenance,
     menu,
     mute,
+    security,
     seo,
     settings,
     setup,
     site_settings,
     sites,
+    speed,
     start,
 )
 from handlers.common import deny_router, on_handler_error, stale_router
@@ -37,7 +40,8 @@ admin.callback_query.filter(AdminFilter())
 admin.include_routers(
     menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
-    seo.router, links.router, feedback.router, setup.router,
+    seo.router, links.router, feedback.router, setup.router, mail.router,
+    security.router, speed.router,
     stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)

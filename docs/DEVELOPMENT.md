@@ -26,6 +26,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Статус индексации Google | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |
+| Скорость у посетителей Chrome (данные Google) | `CRUX_API_KEY` |
 | Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
 | Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
