@@ -109,3 +109,33 @@ def registrable_domain(host: str) -> str:
 def same_site(url_a: str, url_b: str) -> bool:
     a, b = host_of(url_a), host_of(url_b)
     return bool(a and b) and registrable_domain(a) == registrable_domain(b)
+
+
+# ── Proxy for Telegram (TELEGRAM_PROXY) ──────────────────────────────────────
+# What aiogram's proxy support (aiohttp-socks) can parse; anything else fails
+# deep inside it with «Invalid scheme component».
+PROXY_SCHEMES = ("socks5", "socks4", "http")
+
+
+def proxy_problem(url: str) -> str | None:
+    """None when TELEGRAM_PROXY can be used, otherwise what is wrong — said
+    at start instead of a traceback from the proxy library."""
+    p = urlparse(url)
+    if p.scheme not in PROXY_SCHEMES:
+        return (f"схема «{p.scheme or 'нет'}» не подходит — нужен адрес вида socks5://host:1080, "
+                f"socks4://host:1080 или http://host:3128")
+    if not p.hostname:
+        return "нет адреса сервера — нужен вид socks5://host:1080"
+    try:
+        port = p.port
+    except ValueError:
+        return "порт не число — нужен вид socks5://host:1080"
+    if not port:
+        return "нет порта — нужен вид socks5://host:1080"
+    return None
+
+
+def proxy_label(url: str) -> str:
+    """scheme://host:port — for logs and screens, never the login or password."""
+    p = urlparse(url)
+    return f"{p.scheme}://{p.hostname}:{p.port}"

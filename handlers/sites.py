@@ -244,7 +244,7 @@ async def card_lines(site: dict) -> list[str]:
         if not api:
             lines += _pages_lines(st.get("deep"))
             lines += _links_lines(st.get("links"))
-            lines += _seo_lines(st)
+            lines += _seo_lines(st, cf_pending=await seo_screen.cloudflare_check_pending(site["id"], st))
     return lines
 
 
@@ -336,9 +336,10 @@ def _links_lines(links: dict | None) -> list[str]:
     return lines
 
 
-def _seo_lines(st: dict) -> list[str]:
+def _seo_lines(st: dict, cf_pending: bool = False) -> list[str]:
     """Search and AI in full: the verdict, the index when Google or Yandex
-    is connected, and each kind of finding by name."""
+    is connected, and each kind of finding by name. cf_pending: a Cloudflare
+    site whose access for AI the audit cannot see (said until opened once)."""
     seo = st.get("seo")
     if not seo:
         return []
@@ -351,6 +352,9 @@ def _seo_lines(st: dict) -> list[str]:
     lines = [f"{verdict}{_ago(seo)}"]
     idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available())
     lines += [f"    {line}" for line in idx]
+    if cf_pending:
+        lines.append("    🤖 Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт "
+                     "по адресу. Где посмотреть — кнопка ниже.")
     lines += [f"    {i}. {humanize.level_icon(sev)} {esc(seo_fixes.fix(code).title)}"
               for i, (code, sev, _) in enumerate(groups[:5], 1)]
     if n > 5:
@@ -403,6 +407,8 @@ async def render_card(call: CallbackQuery, site: dict):
         rows.append([InlineKeyboardButton(text="🛡 Как защитить сайт", callback_data=f"sec:{sid}")])
     if any(inc["check_type"] == "visitors" for inc in problems):
         rows.append([InlineKeyboardButton(text="👥 Почему медленно", callback_data=f"spd:{sid}")])
+    if is_web_page(url, site.get("http_method")) and await seo_screen.cloudflare_check_pending(sid, st):
+        rows.append([InlineKeyboardButton(text="🤖 Проверить в Cloudflare", callback_data=f"seo_fix:{sid}:ai_cloudflare")])
     rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
     rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])

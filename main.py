@@ -8,6 +8,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, MenuButtonCommands, ReplyKeyboardRemove
 
@@ -16,6 +17,7 @@ from db.database import close_db, count_sites_total, get_or_create_site, get_sta
 from handlers import router
 from reports.scheduler import catch_up_after_restart, rerun_seo_after_update, setup_scheduler
 from services import integrations, maintenance, notifier, runtime, secrets, settings, updates
+from utils.urls import proxy_label, proxy_problem
 from web.webhook import start_web_server
 
 logging.basicConfig(level=logging.INFO,
@@ -63,10 +65,24 @@ async def _remove_old_bottom_buttons(bot: Bot):
         logger.warning("Could not remove the old bottom buttons: %s", e)
 
 
+def telegram_session() -> AiohttpSession | None:
+    """With TELEGRAM_PROXY every call to Telegram — messages, alerts, files —
+    goes through it; aiogram resolves api.telegram.org on the proxy side too.
+    A malformed value stops the start with a sentence, not a traceback: a bot
+    that cannot reach Telegram has no other way to say anything."""
+    if not config.telegram_proxy:
+        return None
+    problem = proxy_problem(config.telegram_proxy)
+    if problem:
+        raise RuntimeError(f"TELEGRAM_PROXY: {problem}")
+    logger.info("Telegram через прокси %s", proxy_label(config.telegram_proxy))
+    return AiohttpSession(proxy=config.telegram_proxy)
+
+
 async def main():
     if not config.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
-    bot = Bot(token=config.bot_token, default=DefaultBotProperties(
+    bot = Bot(token=config.bot_token, session=telegram_session(), default=DefaultBotProperties(
         parse_mode=ParseMode.HTML,
         # Reports are full of URLs — without this every message grows a
         # huge site-preview card.

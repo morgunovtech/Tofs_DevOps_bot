@@ -74,19 +74,42 @@ FIXES: dict[str, Fix] = {
          "Нажми «🔄 Проверить снова»."),
         links=(("📄 Открыть robots.txt", "{url}/robots.txt"),), short="Пустить ИИ-ассистентов"),
     "ai_blocked": _F(
-        "ai_blocked", "🤖", "Хостинг отвечает ИИ-ассистентам ошибкой доступа",
-        "ChatGPT, Claude и Perplexity получают «доступ запрещён» и не узнают о сайте. Обычно это защита от ботов.",
+        "ai_blocked", "🤖", "Запрос с подписью ИИ-ассистента получает отказ",
+        "Обычный запрос сайт пропускает, а подписанный как GPTBot, ClaudeBot или PerplexityBot — нет. Настоящие "
+        "боты присылают ту же подпись, поэтому, скорее всего, ChatGPT, Claude и Perplexity тоже получают отказ "
+        "и не узнают о сайте. Наверняка это видно только в панели хостинга: я прихожу не с адреса настоящих "
+        "ботов. Обычно отказывает защита от ботов.",
         ("Найди в панели хостинга защиту от ботов (Bot protection / Anti-bot / WAF) и добавь исключение для "
-         "GPTBot, ClaudeBot и PerplexityBot — или выключи блокировку ИИ-ботов целиком.",
+         "GPTBot, ClaudeBot и PerplexityBot — или выключи блокировку ИИ-ботов целиком. Если у защиты есть "
+         "журнал, там видно, кому и когда она отказала.",
          "Если защиту ставил не ты — спроси у того, кто настраивал сайт.",
+         "Если не хочешь отдавать тексты ИИ — оставь как есть: это осознанный выбор.",
          "Нажми «🔄 Проверить снова»."),
         by_hosting={
-            "cloudflare": ("Cloudflare → сайт → Security → Bots: выключи переключатель «Block AI bots» "
-                           "(в новых панелях — Security → Settings → AI Scrapers and Crawlers).",
-                           "Если хочешь пускать не всех — оставь блокировку и добавь GPTBot, ClaudeBot, "
-                           "PerplexityBot в исключения (Security → WAF → Custom rules → Skip).",
+            "cloudflare": ("Cloudflare → домен → AI Crawl Control → вкладка Crawlers: у GPTBot, ClaudeBot и "
+                           "PerplexityBot в колонке Action поставь Allow. Там же видно, приходили ли настоящие "
+                           "боты и что получили.",
+                           "Если там всё разрешено, а отказ остаётся — ищи своё правило: Security → WAF → "
+                           "Custom rules, правило с GPTBot или ClaudeBot в условии.",
+                           "Если не хочешь отдавать тексты ИИ — оставь как есть: это осознанный выбор.",
                            "Нажми «🔄 Проверить снова»."),
         }, short="Открыть доступ ИИ-ассистентам"),
+    # Not a finding: what the probe above cannot see. Cloudflare recognises the
+    # real crawlers by address, and since July 2025 a new domain blocks them
+    # by default — so on a Cloudflare site a passed probe proves only that
+    # nothing filters by signature. The audit screen offers this check.
+    "ai_cloudflare": _F(
+        "ai_cloudflare", "🤖", "Пускает ли Cloudflare ИИ-ассистентов — видно только в его панели",
+        "Cloudflare узнаёт настоящих ИИ-ботов по адресу, с которого они приходят, — не только по подписи. "
+        "Мой запрос с подписью GPTBot приходит не с адреса OpenAI, поэтому такую блокировку я снаружи не вижу. "
+        "А новые сайты Cloudflare с июля 2025 года по умолчанию закрывает от ИИ-краулеров.",
+        ("Открой Cloudflare → домен → AI Crawl Control → вкладка Crawlers.",
+         "Посмотри колонку Action у GPTBot, ClaudeBot и PerplexityBot: Block значит, что эти ассистенты сайт не "
+         "видят. Там же видно, приходили ли они и что получили.",
+         "Хочешь, чтобы ИИ-ассистенты знали о сайте и советовали его, — поставь Allow. Не хочешь отдавать "
+         "тексты ИИ — оставь Block, это осознанный выбор."),
+        links=(("🔗 Открыть Cloudflare", "https://dash.cloudflare.com/"),),
+        short="Проверить в Cloudflare"),
     "no_js": _F(
         "no_js", "🤖", "ИИ-ассистенты и часть роботов видят пустую страницу",
         "Текст появляется только после запуска JavaScript. ИИ-ассистенты и часть поисковых роботов JavaScript "

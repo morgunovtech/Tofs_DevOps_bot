@@ -1,5 +1,7 @@
 aiogram==3.31.0
 aiohttp==3.14.5
+# Only for TELEGRAM_PROXY: aiogram routes Telegram calls through it.
+aiohttp-socks==0.12.0
 aiosqlite==0.22.1
 apscheduler==3.11.3
 beautifulsoup4==4.15.0

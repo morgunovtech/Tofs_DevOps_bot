@@ -11,7 +11,7 @@ live audit (~30 s) and refreshes the index data too."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import get_site, resolve_incident
+from db.database import get_site, get_state, resolve_incident, set_state
 from handlers.common import ack, render, site_by_cb, with_running_bar
 from monitors.seo_checker import check_all_seo
 from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
@@ -26,6 +26,7 @@ router = Router(name="seo")
 FRESH_MINUTES = 24 * 60
 MAX_ITEMS = 6
 AI_CODES = {"robots_ai", "ai_blocked", "no_js"}
+CF_SEEN = "ai_cf_seen:{}"   # the owner opened the Cloudflare check for this site
 
 
 def grouped(problems: list[dict]) -> list[tuple[str, str, list[str]]]:
@@ -98,9 +99,30 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str]
     return lines, absent
 
 
-def headline(seo: dict, groups: list[tuple[str, str, list[str]]], absent: list[str]) -> str:
+def ai_unseen(seo: dict, codes: set[str], hosting: str | None) -> bool:
+    """A Cloudflare site the audit found open to AI: robots.txt lets the bots
+    in and a request with their signature passed. Cloudflare recognises the
+    real crawlers by address (and blocks them by default on domains added
+    since July 2025), which no request from here can show — so the screen
+    does not say «open to AI assistants» and offers the check in the panel."""
+    return (hosting == "cloudflare" and seo.get("status") not in (None, "error")
+            and not codes & {"robots_ai", "ai_blocked"})
+
+
+async def cloudflare_check_pending(site_id: int, snap: dict) -> bool:
+    """The site card says it once: until the owner has opened «🤖 Проверить
+    в Cloudflare», a clean Cloudflare site carries a line and a button about
+    what the audit cannot see. The search screen keeps it in its caption."""
+    seo = snap.get("seo") or {}
+    codes = {p.get("code") for p in seo.get("problems") or []}
+    return ai_unseen(seo, codes, snap.get("hosting")) and not await get_state(CF_SEEN.format(site_id))
+
+
+def headline(seo: dict, groups: list[tuple[str, str, list[str]]], absent: list[str],
+             ai_checked: bool = True) -> str:
     """Asserts only what was measured: robots/noindex → «открыт/закрыт»,
-    an index verdict → only when Search Console / Webmaster said so."""
+    an index verdict → only when Search Console / Webmaster said so, access
+    for AI assistants → only where the probe can see it (not on Cloudflare)."""
     n = len(groups)
     if seo.get("status") == "error":
         return "⚠️ Сайт не открывался, когда я проверял — аудит пропущен. Нажми «🔄 Проверить снова»."
@@ -113,6 +135,8 @@ def headline(seo: dict, groups: list[tuple[str, str, list[str]]], absent: list[s
         return f"🔴 <b>В {where} сайта нет</b>.{tail}"
     if n:
         return f"🟠 Сайт открыт для поисковиков, но есть {_hindrances(n)} — у каждой кнопка «что делать»."
+    if not ai_checked:
+        return "✅ Сайт открыт для поисковиков, помех нет."
     return "✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет."
 
 
@@ -124,11 +148,14 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     problems = seo.get("problems") or []
     groups = grouped(problems)
     idx_lines, absent = index_lines(snap, google_on, yandex_on)
-    lines = [f"🔎 {label} в поиске и у ИИ", "", headline(seo, groups, absent)]
     codes = {g[0] for g in groups}
+    unseen = ai_unseen(seo, codes, snap.get("hosting"))
+    lines = [f"🔎 {label} в поиске и у ИИ", "", headline(seo, groups, absent, ai_checked=not unseen)]
     chars = seo.get("no_js_chars")
-    if codes & {"robots_ai", "ai_blocked"}:
+    if "robots_ai" in codes:
         lines.append("🤖 ИИ-ассистенты: сайт для них закрыт.")
+    elif "ai_blocked" in codes:
+        lines.append("🤖 ИИ-ассистенты: запрос с их подписью получает отказ — скорее всего, сайт для них закрыт.")
     elif "no_js" in codes:
         lines.append(f"🤖 ИИ-ассистенты: видят почти пустую страницу — {chars} "
                      f"{plural(chars or 0, 'символ', 'символа', 'символов')} текста без JavaScript.")
@@ -154,6 +181,9 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     if _ago(seo):
         tail.append(_ago(seo))
     caption = " · ".join(tail) if tail else "ещё не проверял"
+    if unseen:
+        caption += (". ИИ-ассистентов robots.txt пускает, и запрос с их подписью проходит, но настоящих ботов "
+                    "Cloudflare узнаёт по адресу — пускает ли он их, видно только в его панели (кнопка ниже)")
     caption += ". Критичное (🔴) присылаю сразу, как замечу; остальное (🟠) не шлю — оно здесь, в «Проблемах» и в сводках."
     if not google_on and not yandex_on:
         caption += " В индексе ли сайт, знают только Google и Яндекс — подключи Search Console или Вебмастер."
@@ -161,9 +191,12 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     return "\n".join(lines)
 
 
-def seo_keyboard(site_id: int, seo: dict, *, google_on: bool = False, yandex_on: bool = False) -> InlineKeyboardMarkup:
+def seo_keyboard(site_id: int, seo: dict, *, google_on: bool = False, yandex_on: bool = False,
+                 hosting: str | None = None) -> InlineKeyboardMarkup:
     groups = grouped(seo.get("problems") or [])
     rows = seo_fix_keyboard(site_id, [g[0] for g in groups[:MAX_ITEMS]], numbered=True).inline_keyboard
+    if ai_unseen(seo, {g[0] for g in groups}, hosting):
+        rows += seo_fix_keyboard(site_id, ["ai_cloudflare"]).inline_keyboard
     if not google_on and not yandex_on:
         rows.append([InlineKeyboardButton(text="🔌 Подключить Google или Яндекс", callback_data="menu_diag")])
     rows.append([InlineKeyboardButton(text="🔄 Проверить снова", callback_data=f"seo_live:{site_id}"),
@@ -197,7 +230,8 @@ async def show_seo(call: CallbackQuery, site: dict):
     snap = await sitestatus.get(site["id"])
     google_on, yandex_on = gsc.available(), yandex_webmaster.available()
     await render(call, seo_text(site["url"], snap, google_on=google_on, yandex_on=yandex_on),
-                 seo_keyboard(site["id"], snap.get("seo") or {}, google_on=google_on, yandex_on=yandex_on))
+                 seo_keyboard(site["id"], snap.get("seo") or {}, google_on=google_on, yandex_on=yandex_on,
+                              hosting=snap.get("hosting")))
 
 
 async def run_live(call: CallbackQuery, site: dict):
@@ -268,6 +302,8 @@ async def cb_seo_fix(call: CallbackQuery):
     await ack(call)
     snap = await sitestatus.get(site["id"])
     code = args[1]
+    if code == "ai_cloudflare":
+        await set_state(CF_SEEN.format(site["id"]), "1")
     text = fix_text(site["url"], code, snap.get("seo") or {}, snap.get("hosting"))
     kb = fix_keyboard(site["id"], site["url"], code, snap.get("hosting"))
     if on_alert and call.message is not None:

@@ -73,6 +73,7 @@ from services import (
     index_status,
     integrations,
     notifier,
+    railway,
     recommend,
     screenshots,
     settings,
@@ -1048,6 +1049,9 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
     job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
+    if config.on_railway:
+        # One reminder around day 25 of Railway's 30-day trial (services.railway).
+        job(railway.remind_if_due, IntervalTrigger(hours=6, start_date=soon), "railway_trial")
     # Nightly maintenance.
     job(run_retention, _cron(**specs["retention"]), "retention")
     job(run_db_backup, _cron(**specs["db_backup"]), "db_backup")

@@ -727,3 +727,49 @@ async def test_site_card_tells_when_it_fell_where_it_lives_and_how_the_rest_is(b
     await sitestatus.update(sid, "deep", sampled=10, errors=3)
     text = "\n".join(await sites.card_lines(await db.get_site(sid)))
     assert "🟠 Страницы: проверил 10 страниц из карты сайта — 3 отвечают ошибкой сервера" in text
+
+
+def test_on_cloudflare_the_screen_does_not_claim_what_it_cannot_see():
+    """Cloudflare recognises the real AI crawlers by address — a request with
+    their signature passing proves nothing there. The headline drops «и
+    ИИ-ассистентов», the caption says why, a button leads to the panel."""
+    url = "https://ex.test"
+    text = seo.seo_text(url, _snap(hosting="cloudflare"))
+    assert "✅ Сайт открыт для поисковиков, помех нет." in text and "и ИИ-ассистентов" not in text
+    assert "настоящих ботов Cloudflare узнаёт по адресу" in text
+    kb = seo.seo_keyboard(1, _snap()["seo"], hosting="cloudflare")
+    assert "seo_fix:1:ai_cloudflare" in [b.callback_data for row in kb.inline_keyboard for b in row]
+
+    refused = [{"code": "ai_blocked", "severity": "warning",
+                "message": "обычный запрос сайт пропустил, а запрос с подписью GPTBot (HTTP 403) — нет"}]
+    text = seo.seo_text(url, _snap("warning", refused, hosting="cloudflare"))
+    assert "🤖 ИИ-ассистенты: запрос с их подписью получает отказ — скорее всего, сайт для них закрыт." in text
+    assert "узнаёт по адресу" not in text                          # the refusal is already the answer
+    kb = seo.seo_keyboard(1, _snap("warning", refused)["seo"], hosting="cloudflare")
+    assert "ai_cloudflare" not in " ".join(b.callback_data for row in kb.inline_keyboard for b in row)
+
+    text = seo.seo_text(url, _snap(hosting="vercel"))
+    assert "✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет." in text   # a block by signature is all there is
+
+
+async def test_card_says_the_cloudflare_caveat_once(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    await sitestatus.set_field(sid, "hosting", "cloudflare")
+    await sitestatus.update(sid, "seo", status="ok", critical=0, improve=0, pages=1, problems=[])
+
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    assert "✅ Поиск и ИИ: помех нет" in call.message.texts[-1]
+    assert "🤖 Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно" in call.message.texts[-1]
+    assert "🤖 Проверить в Cloudflare" in buttons(call.message.reply_markup)
+
+    fix = FakeCall(f"seo_fix:{sid}:ai_cloudflare")
+    await seo.cb_seo_fix(fix)
+    assert "AI Crawl Control" in fix.message.texts[-1]
+    assert "🔗 Открыть Cloudflare" in buttons(fix.message.reply_markup)
+
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    assert "Пускает ли Cloudflare" not in call.message.texts[-1]
+    assert "🤖 Проверить в Cloudflare" not in buttons(call.message.reply_markup)

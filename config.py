@@ -77,6 +77,11 @@ class Config:
     admin_user_id: str = os.getenv("TELEGRAM_ADMIN_USER_ID", "").strip()
     # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
     trust_proxy: bool = _bool("TRUST_PROXY")
+    # Optional: every call to Telegram goes through this proxy
+    # (socks5://user:pass@host:1080 or http://host:3128). For a server where
+    # api.telegram.org is not reachable directly — a Russian VPS, for one.
+    # Checks of the sites themselves never use it.
+    telegram_proxy: str = os.getenv("TELEGRAM_PROXY", "").strip()
     # First-run seed only; afterwards the DB is the source of truth.
     sites: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("SITES")))
     check_interval_minutes: int = _int("CHECK_INTERVAL_MINUTES", 5)

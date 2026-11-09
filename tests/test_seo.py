@@ -1,3 +1,7 @@
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
+from monitors import seo_checker
 from monitors.base import SeoProblem
 from monitors.seo_checker import analyze_page, analyze_robots, incident_message
 
@@ -69,3 +73,39 @@ def test_incident_message_leads_with_the_critical_finding():
     assert incident_message([warn, crit]) == "закрыт от поиска — В коде страницы стоит запрет на индексацию"
     assert incident_message([warn, SeoProblem("no_h1", "warning", "x")]) == \
         "2 помехи в поиске, напр.: Нет карты сайта (sitemap.xml)"
+
+
+async def test_ai_probe_reports_a_signature_refusal_in_its_own_words(db, cfg, monkeypatch):
+    """The plain request passes, the signed ones do not: 403 for GPTBot, 402
+    (Cloudflare's pay-per-crawl) for ClaudeBot. The finding says «запрос с
+    подписью», never that the real bots were seen."""
+    page = ("<html lang='ru'><head><title>Магазин кофе в Ташкенте</title>"
+            "<meta name='description' content='Свежая обжарка каждый день, доставка по городу за час.'>"
+            "</head><body><h1>Кофе</h1>" + "<p>текст страницы</p>" * 60 + "</body></html>")
+
+    async def home(request):
+        ua = request.headers.get("User-Agent", "")
+        if "GPTBot" in ua:
+            return web.Response(status=403)
+        if "ClaudeBot" in ua:
+            return web.Response(status=402)
+        return web.Response(text=page, content_type="text/html")
+
+    app = web.Application()
+    app.router.add_get("/", home)
+    server = TestServer(app)
+    await server.start_server()
+    monkeypatch.setattr(seo_checker, "sitemap_urls", lambda session, base: _none())
+    cfg(seo_pages_sample=1)
+    try:
+        r = await seo_checker.check_seo(f"http://127.0.0.1:{server.port}", manage=False)
+    finally:
+        await server.close()
+    found = {p.code: p.message for p in r.problems}
+    assert found["ai_blocked"] == ("обычный запрос сайт пропустил, а запрос с подписью "
+                                   "GPTBot (HTTP 403), ClaudeBot (HTTP 402) — нет")
+    assert "PerplexityBot" not in found["ai_blocked"]
+
+
+async def _none():
+    return None

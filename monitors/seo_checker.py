@@ -7,8 +7,13 @@ Checks (no API keys required):
   * sampled pages: meta robots noindex / X-Robots-Tag (critical);
     <title>/description present and of a sane length, canonical points
     home, h1, og:title/og:image and lang on the homepage, JSON-LD parses;
-  * AI user-agent probes: a 403 for GPTBot/ClaudeBot usually means a
-    Cloudflare "block AI bots" toggle;
+  * AI user-agent probes: the homepage asked again with the GPTBot /
+    ClaudeBot / PerplexityBot signature. A refusal there, after the plain
+    request passed, is a block by signature — the real bots send the same
+    one. What this probe cannot see is a block by address: Cloudflare and
+    others recognise the real crawlers by the IPs they come from, and this
+    request does not come from OpenAI's. The wording says «a request with
+    the signature», never «what GPTBot sees»;
   * content available WITHOUT JavaScript (AI crawlers mostly don't run JS);
   * http→https redirect, soft-404.
 
@@ -53,6 +58,10 @@ AI_BOTS = {
                      "compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot",
 }
 BLOCKED_CODES = {401, 403, 451}
+# A crawler refused by Cloudflare's pay-per-crawl gets 402 Payment Required —
+# for the AI probe that is a refusal too (the homepage probe keeps the set
+# above: a 402 to a plain request is not a block by signature).
+AI_REFUSED_CODES = BLOCKED_CODES | {402}
 
 
 def _p(code: str, severity: str, message: str) -> SeoProblem:
@@ -221,14 +230,18 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                         f"без JavaScript на главной всего {text_len} "
                         f"{plural(text_len, 'символ', 'символа', 'символов')} текста")))
 
+        # The plain request above passed, so a refusal here is a block by
+        # signature. A block by address (the real crawlers' IPs) is invisible
+        # from here — the screen says so for Cloudflare, where it is the default.
         blocked_bots = []
         for bot, ua in AI_BOTS.items():
             status, _, _, _ = await _fetch(session, base + "/", ua=ua)
-            if status in BLOCKED_CODES:
+            if status in AI_REFUSED_CODES:
                 blocked_bots.append(f"{bot} (HTTP {status})")
             await asyncio.sleep(0.3)
         if blocked_bots:
-            problems.append(_p("ai_blocked", "warning", "доступ запрещён для " + ", ".join(blocked_bots)))
+            problems.append(_p("ai_blocked", "warning", "обычный запрос сайт пропустил, а запрос с подписью "
+                               + ", ".join(blocked_bots) + " — нет"))
 
         status, _, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
