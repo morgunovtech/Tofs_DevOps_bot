@@ -1,7 +1,10 @@
 # Auto-merge Dependabot PRs for minor/patch updates once CI passes.
-# Requires: repository Settings → General → "Allow auto-merge", and a branch
-# protection rule on main with the "lint · test · audit" check required —
-# otherwise `--auto` merges immediately, before tests run.
+#
+# The job waits for the «lint · test · audit» jobs itself and merges only
+# when every one of them is green. It used to call `gh pr merge --auto`,
+# which waits for tests only when a branch rule requires them — in a fresh
+# fork without that rule the PR merged before the tests ran, and Railway
+# deployed it. Nothing has to be configured in the repository settings now.
 name: Dependabot auto-merge
 
 on: pull_request
@@ -9,18 +12,40 @@ on: pull_request
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 jobs:
   automerge:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Merge once the tests are green
+        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: |
+          for _ in $(seq 1 60); do
+            runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
+              --jq '[.check_runs[] | select(.name | startswith("lint · test · audit"))]')
+            total=$(jq length <<<"$runs")
+            pending=$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")
+            failed=$(jq '[.[] | select(.status == "completed" and .conclusion != "success")] | length' <<<"$runs")
+            if [ "$failed" -gt 0 ]; then
+              echo "Tests failed — the PR stays open for a human."
+              exit 0
+            fi
+            if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              gh pr merge --squash "$PR_URL"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Tests did not finish in 30 minutes — the PR stays open."
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

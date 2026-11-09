@@ -1,12 +1,40 @@
-"""Who the admin is. Env wins; otherwise the first user to /start claims the
-bot and the claim is persisted in bot_state so it survives restarts."""
+"""Who the admin is, and whether that — with everything else — survives a
+restart. Env wins; otherwise the first user to /start claims the bot and
+the claim is persisted in bot_state so it survives restarts."""
 
 import logging
+import os
 
 from config import config
 from db.database import get_state, set_state
 
 logger = logging.getLogger(__name__)
+
+# Said at the claim, at every start and in the diagnostics: without a volume
+# Railway wipes the database on each deploy, and weekly auto-updates mean
+# the bot forgets the sites — and its owner — every week, without a word.
+NO_VOLUME = ("🟠 Моя база не на постоянном диске Railway: при каждом обновлении я забываю сайты, "
+             "настройки и тебя как хозяина. Подключи диск: в Railway правый клик по сервису → "
+             "Attach Volume → Mount Path <code>/app/data</code>, и переменная "
+             "<code>DB_PATH=/app/data/bot.db</code>.")
+
+
+def db_on_persistent_disk() -> bool | None:
+    """None off Railway — on a VPS the docker volume is the operator's call.
+    On Railway: the database file must sit on the attached volume (Railway
+    names its mount in RAILWAY_VOLUME_MOUNT_PATH) or on any other mount."""
+    if not config.on_railway:
+        return None
+    path = os.path.realpath(config.db_path)
+    mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip().rstrip("/")
+    if mount and path.startswith(mount + "/"):
+        return True
+    d = os.path.dirname(path)
+    while d and d != "/":
+        if os.path.ismount(d):
+            return True
+        d = os.path.dirname(d)
+    return False
 
 _chat_id: str | None = config.admin_chat_id or None
 _user_id: str | None = config.admin_user_id or None

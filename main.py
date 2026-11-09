@@ -41,6 +41,9 @@ async def on_startup(bot: Bot):
     # No «I'm up» ping — silence is the default. A start speaks only when
     # something changed («I got updated») or when the bot was gone long
     # enough that its silence meant nothing («Меня не было …»).
+    if runtime.db_on_persistent_disk() is False:
+        logger.warning("The database is not on a persistent disk — it is wiped on every deploy")
+        await notifier.send(runtime.NO_VOLUME)
     if await updates.report_startup_changes():
         rerun_seo_after_update()
     await catch_up_after_restart()

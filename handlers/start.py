@@ -58,6 +58,8 @@ async def cmd_start(message: Message, state: FSMContext):
         await runtime.claim(message.chat.id, message.from_user.id)
         await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
                              "и алерты будут приходить сюда.")
+        if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
+            await message.answer(runtime.NO_VOLUME)
     if not runtime.is_admin(message.from_user.id if message.from_user else None):
         await message.answer(DENIED)
         return

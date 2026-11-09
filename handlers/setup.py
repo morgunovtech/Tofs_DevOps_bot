@@ -102,8 +102,13 @@ async def build_items() -> list[Item]:
     items: list[Item] = []
     me = runtime.bot_username()
     items.append(Item("telegram", "ok", f"Telegram @{me}" if me else "Telegram"))
-    items.append(Item("db", "ok" if await _db_ok() else "warn", "база данных",
-                      "не пишется — проверь volume /app/data и права на файл"))
+    if runtime.db_on_persistent_disk() is False:
+        items.append(Item("db", "warn", "база данных",
+                          "не на постоянном диске — при каждом обновлении сотрётся. Railway: правый клик "
+                          "по сервису → Attach Volume → /app/data, DB_PATH=/app/data/bot.db"))
+    else:
+        items.append(Item("db", "ok" if await _db_ok() else "warn", "база данных",
+                          "не пишется — проверь volume /app/data и права на файл"))
     items.append(Item("web", "ok" if await _web_ok() else "warn", "веб-сервер",
                       f"не отвечает на localhost:{config.webhook_port} — перезапусти бота, "
                       f"проверь WEBHOOK_PORT"))
