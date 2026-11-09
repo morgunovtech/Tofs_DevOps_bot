@@ -173,9 +173,19 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     call = FakeCall("hb_show:backup")
     await heartbeats.cb_hb_show(call)
     text = call.message.texts[-1]
-    assert text.startswith("⏰ backup\n⏳ Ждёт первой отметки · жду раз в сутки")
-    assert "unit-test-heartbeat-secret" in text and "curl -fsS" in text and "Бот или сервис" in text
-    assert "hb_del:backup" in [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row]
+    # One question first; no curl line and no secret until the answer.
+    assert text.startswith("⏰ backup\n⏳ Пока ни одной отметки · жду раз в сутки")
+    assert text.endswith("Что такое «backup» у тебя?") and "curl" not in text and "secret" not in text
+    assert [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row] == [
+        "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "menu_main"]
+    call = FakeCall("hb_bot:backup")
+    await heartbeats.cb_hb_bot(call)
+    assert "unit-test-heartbeat-secret/backup</code>" in call.message.texts[-1] and "HEALTHCHECK_URL" in call.message.texts[-1]
+    call = FakeCall("hb_cron:backup")
+    await heartbeats.cb_hb_cron(call)
+    text = call.message.texts[-1]
+    assert "GitHub Actions" in text and "- run: curl -fsS" in text and "&& curl -fsS" in text
+    assert buttons(call.message.reply_markup) == ["← Назад"]
     # From the morning digest: the answer goes below, the digest stays as it was.
     call = FakeCall("hb_how:backup")
 
@@ -184,7 +194,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
 
     call.message.edit_text = no_edit
     await heartbeats.cb_hb_show(call)
-    assert "curl -fsS" in call.message.texts[-1] and "удали её" in call.message.texts[-1]
+    assert "Что такое «backup» у тебя?" in call.message.texts[-1]
     # «🗑 Удалить» under the alert: the task goes, its buttons go, the text stays.
     call = FakeCall("hb_rm:backup")
     call.message.text = "⚠️ Задача «backup» ещё ни разу не отметилась"
@@ -241,7 +251,7 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     assert header.startswith("🟠 1/1 открывается · ⏰ socialbot молчит") and "🟠 socialbot · молчит 1 дн 7 ч" in header
     call = FakeCall("hb_show:socialbot")
     await heartbeats.cb_hb_show(call)
-    assert "🟠 Молчит 1 дн 7 ч · жду раз в сутки" in call.message.texts[-1]
+    assert "🟠 Молчит 1 дн 7 ч, а жду отметку раз в сутки." in call.message.texts[-1]
 
     await settings_service.add_heartbeat_job("backup", 60)
     await db.set_state("hb_alerted:backup", NOW)                 # the watch already said «never marked»
@@ -522,3 +532,21 @@ async def test_a_clean_manual_link_check_closes_the_links_alert(bot, db, monkeyp
     page["html"] = '<a href="https://ok.test/y">y</a>'
     await links.cb_check_links(FakeCall(f"check_links:{sid}"))
     assert await get_active_incidents() == []
+
+
+async def test_a_task_from_the_server_variable_can_be_removed_in_the_bot(bot, db, cfg):
+    """HEARTBEAT_JOBS on the server used to mean «убрать можно только там» —
+    a dead end for someone who never set that variable consciously."""
+    cfg(heartbeat_jobs={"backup": 1440})
+    assert "backup" in settings_service.heartbeat_jobs() and settings_service.heartbeat_job_from_env("backup")
+    call = FakeCall("hb_del:backup")
+    await heartbeats.cb_hb_del(call)
+    assert "backup" not in settings_service.heartbeat_jobs()
+    assert "больше не жду" in call.message.texts[-1] and "HEARTBEAT_JOBS" in call.message.texts[-1]
+    await settings_service.load()                                    # survives a restart
+    assert "backup" not in settings_service.heartbeat_jobs()
+    await settings_service.add_heartbeat_job("backup", 60)           # added again on purpose
+    assert settings_service.heartbeat_jobs()["backup"] == 60
+    await settings_service.remove_heartbeat_job("backup")
+    assert "backup" not in settings_service.heartbeat_jobs()
+    assert heartbeat_keyboard(["backup"]).inline_keyboard[0][1].callback_data == "hb_rm:backup"

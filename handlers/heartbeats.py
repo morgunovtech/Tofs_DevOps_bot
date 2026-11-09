@@ -24,35 +24,86 @@ class AddHeartbeatForm(StatesGroup):
     name = State()
 
 
-def _how_to(name: str) -> str:
-    return (f"Как подключить «{esc(name)}» — одна строка:\n\n"
-            f"<code>&& curl -fsS {esc(public_urls.heartbeat_url(name))}</code>\n\n"
-            f"• Задача по расписанию (crontab, планировщик хостинга, GitHub Actions): допиши строку "
-            f"в конец её команды.\n"
-            f"• Бот или сервис: дай ему адрес из строки — пусть открывает его после каждого удачного "
-            f"запуска. В настройках бота такое поле обычно называется healthcheck или heartbeat URL.\n\n"
-            f"Отметка не придёт вовремя — напишу.")
+def _kind_rows(name: str) -> list[list[InlineKeyboardButton]]:
+    return [[InlineKeyboardButton(text="🤖 Это бот или сервис", callback_data=f"hb_bot:{name}")],
+            [InlineKeyboardButton(text="🗓 Это задача по расписанию", callback_data=f"hb_cron:{name}")]]
 
 
 async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
-    """The card: when it last marked, the line that connects it, and the
-    way out when there is no such task — a delete button for a UI job, the
-    env variable for an .env one."""
+    """The card answers «what is this and is it fine?» first. A task that
+    never marked asks one question — a bot, a scheduled task, or nothing
+    of the kind — and the address with its how-to sits behind the answer:
+    a raw curl line with a secret in it explained nothing to anybody."""
     job = next(j for j in await job_states() if j.name == name)
-    icon, state = job.icon, job.state
-    lines = [f"⏰ {esc(name)}", f"{icon} {esc(state[:1].upper() + state[1:])} · жду {every(job.interval)}", "",
-             _how_to(name)]
-    rows = []
-    marked = icon in ("✅", "🟠")
-    if name in settings.ui_heartbeat_jobs():
-        if not marked:
-            lines += ["", "Если такой задачи у тебя нет — удали её, и я перестану её ждать."]
-        rows.append([InlineKeyboardButton(text="🗑 Удалить", callback_data=f"hb_del:{name}")])
+    n, rhythm = esc(name), every(job.interval)
+    lines = [f"⏰ {n}"]
+    rows: list[list[InlineKeyboardButton]] = []
+    if job.icon == "✅":
+        lines += [f"✅ Работает: {esc(job.state)}, жду {rhythm}.", "", "Перестанет отмечаться — напишу."]
+        rows.append([InlineKeyboardButton(text="🔗 Как подключена", callback_data=f"hb_ask:{name}")])
+    elif job.icon == "🟠":
+        lines += [f"🟠 {esc(job.state[:1].upper() + job.state[1:])}, а жду отметку {rhythm}.", "",
+                  "Обычно это значит, что задача не запустилась или упала, не дойдя до конца. Проверь её. "
+                  "Если меняли адрес для отметок — подключи заново."]
+        rows.append([InlineKeyboardButton(text="🔗 Подключить заново", callback_data=f"hb_ask:{name}")])
     else:
-        lines += ["", "Задана в переменной <code>HEARTBEAT_JOBS</code> на сервере бота — убрать её можно "
-                      "только там."]
+        lines += [f"{job.icon} Пока ни одной отметки · жду {rhythm}", "",
+                  f"Я жду от «{n}» сигнал {rhythm} — так я узнаю, что она запустилась и дошла до конца. "
+                  f"Сигналов ещё не было: похоже, её не подключили.", "", f"Что такое «{n}» у тебя?"]
+        rows += _kind_rows(name)
+    rows.append([InlineKeyboardButton(text="🗑 Такой задачи нет — убрать" if job.icon not in ("✅", "🟠")
+                                      else "🗑 Убрать", callback_data=f"hb_del:{name}")])
     rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _url_line(name: str) -> str:
+    return f"<code>{esc(public_urls.heartbeat_url(name))}</code>"
+
+
+def _back(name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← Назад", callback_data=f"hb_show:{name}")]])
+
+
+@router.callback_query(F.data.startswith("hb_ask:"))
+async def cb_hb_ask(call: CallbackQuery):
+    name = call.data.split(":", 1)[1]
+    if name not in settings.heartbeat_jobs():
+        await ack(call, "Задачи больше нет", show_alert=True)
+        return
+    await ack(call)
+    await render(call, f"⏰ {esc(name)}\n\nЧто такое «{esc(name)}» у тебя?",
+                 InlineKeyboardMarkup(inline_keyboard=[*_kind_rows(name), *_back(name).inline_keyboard]))
+
+
+@router.callback_query(F.data.startswith("hb_bot:"))
+async def cb_hb_bot(call: CallbackQuery):
+    name = call.data.split(":", 1)[1]
+    await ack(call)
+    await render(call, f"🤖 Подключить «{esc(name)}»\n\n"
+                       f"Дай этому боту адрес — нажми на него, он скопируется:\n{_url_line(name)}\n\n"
+                       f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
+                       f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
+                       f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
+                       f"Как только придёт первая отметка, строка на главном экране станет ✅.", _back(name))
+
+
+@router.callback_query(F.data.startswith("hb_cron:"))
+async def cb_hb_cron(call: CallbackQuery):
+    name = call.data.split(":", 1)[1]
+    await ack(call)
+    url = esc(public_urls.heartbeat_url(name))
+    await render(call, f"🗓 Подключить «{esc(name)}»\n\n"
+                       f"В самом конце задача должна открыть адрес — нажми на него, он скопируется:\n"
+                       f"{_url_line(name)}\n\n"
+                       f"Где задача запускается:\n"
+                       f"• <b>GitHub Actions</b> — добавь последний шаг в workflow:\n"
+                       f"<code>- run: curl -fsS {url}</code>\n"
+                       f"• <b>cron на своём сервере</b> — допиши в конец строки задачи:\n"
+                       f"<code>&& curl -fsS {url}</code>\n"
+                       f"• <b>Планировщик хостинга</b> (Railway Cron, Render…) — допиши то же в конец команды.\n\n"
+                       f"Задача упадёт раньше — адрес не откроется, и я напишу. Первая отметка — и строка на "
+                       f"главном экране станет ✅.", _back(name))
 
 
 @router.callback_query(F.data.startswith("hb_show:") | F.data.startswith("hb_how:"))
@@ -113,8 +164,9 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
         return
     await settings.add_heartbeat_job(name, int(arg))
     await ack(call, "Добавил ✅")
-    await render(call, f"✅ «{esc(name)}» под присмотром и уже на главном экране.\n\n{_how_to(name)}",
-                 back_button())
+    await render(call, f"✅ «{esc(name)}» под присмотром и уже на главном экране.\n\n"
+                       f"Осталось подключить. Что такое «{esc(name)}»?",
+                 InlineKeyboardMarkup(inline_keyboard=[*_kind_rows(name), *back_button().inline_keyboard]))
 
 
 @router.callback_query(F.data.startswith("hb_rm:"))
@@ -123,7 +175,7 @@ async def cb_hb_remove_here(call: CallbackQuery):
     buttons — the message itself stays as it was."""
     name = call.data.split(":", 1)[1]
     removed = await settings.remove_heartbeat_job(name)
-    await ack(call, f"Удалил «{name}» — больше не жду" if removed else "Эта задача из .env — убери её там")
+    await ack(call, f"Удалил «{name}» — больше не жду" if removed else "Её уже нет")
     markup = getattr(call.message, "reply_markup", None)
     if removed and markup is not None:
         rows = [row for row in markup.inline_keyboard
@@ -135,8 +187,11 @@ async def cb_hb_remove_here(call: CallbackQuery):
 @router.callback_query(F.data.startswith("hb_del:"))
 async def cb_hb_del(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
+    from_env = settings.heartbeat_job_from_env(name)
     if not await settings.remove_heartbeat_job(name):
-        await ack(call, "Эта задача из .env — убери её там", show_alert=True)
+        await ack(call, "Её уже нет", show_alert=True)
         return
     await ack(call, "Удалил")
-    await render(call, f"🗑 «{esc(name)}» больше не жду.", back_button())
+    note = ("\n\nОна была записана в переменной <code>HEARTBEAT_JOBS</code> на сервере бота. Там она "
+            "может остаться — я её больше не жду." if from_env else "")
+    await render(call, f"🗑 «{esc(name)}» больше не жду.{note}", back_button())
