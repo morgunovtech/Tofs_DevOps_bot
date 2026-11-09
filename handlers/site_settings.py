@@ -16,7 +16,7 @@ from reports.scheduler import PAGE_CHECKS, close_inapplicable, reset_site_schedu
 from services import public_urls, settings
 from utils.parse import parse_accepted_codes, parse_header_lines
 from utils.text import esc
-from utils.urls import is_api_check, is_http_url, site_label
+from utils.urls import is_api_check, is_http_url, is_web_page, site_label
 
 router = Router(name="site_settings")
 
@@ -126,6 +126,8 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     if http:
         rows.append([InlineKeyboardButton(text="🔍 Следить за фразой", callback_data=f"ssp:k:{sid}")])
     # «📸 Как выглядит сайт» is gone: the card shows the page itself.
+    if is_web_page(site["url"], site.get("http_method")):
+        rows.append([InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{sid}")])
     rows.append([InlineKeyboardButton(text="🛠 Для продвинутых", callback_data=f"ssetx:{sid}")])
     rows.append([InlineKeyboardButton(text="🗑 Убрать из мониторинга", callback_data=f"delsite:{sid}")])
     rows.append([InlineKeyboardButton(text="← К сайту", callback_data=f"check_site:{sid}")])

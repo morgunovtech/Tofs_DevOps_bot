@@ -169,7 +169,25 @@ async def m5_outbox(db):
     """)
 
 
-MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox]
+async def m6_visitor_speed(db):
+    # Real visitors' page views measured on the site (services.rum): three
+    # numbers and the kind of device — no address, no page, no visitor.
+    await db.executescript("""
+        CREATE TABLE IF NOT EXISTS rum_samples (
+            site_id INTEGER NOT NULL,
+            at TEXT DEFAULT (datetime('now')),
+            lcp INTEGER,
+            inp INTEGER,
+            cls REAL,
+            ttfb INTEGER,
+            mobile INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_rum_site_at ON rum_samples(site_id, at);
+    """)
+
+
+MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
+              m6_visitor_speed]
 
 
 async def migrate(db) -> int:

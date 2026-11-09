@@ -306,6 +306,12 @@ EXPLANATIONS: dict[str, Explanation] = {
                    "добавляют руками",
                    ("Открыть «🛡 Безопасность» в боте: там готовый текст под твой хостинг.",
                     "После выкладки нажать «🔄 Перепроверить».")),
+    "visitors": _E("visitors",
+                   "Часть посетителей уходит, не дождавшись, а Google опускает медленные сайты в поиске.",
+                   "тяжёлые картинки и шрифты, много скриптов (счётчики, чаты, виджеты) или медленный сервер",
+                   ("Открыть PageSpeed Insights (кнопка ниже) — там видно, что именно тормозит.",
+                    "Сжать картинки (WebP или AVIF) и задать им размеры — заодно перестанет прыгать вёрстка.",
+                    "Убрать скрипты, без которых можно обойтись.")),
     "heartbeat": _E("heartbeat",
                     "Бот или задача по расписанию вовремя не вышли на связь.",
                     "крон не запустился, скрипт упал или сервер задачи выключен",
@@ -364,7 +370,8 @@ def classify(check_type: str, message: str | None) -> str:
         # for noindex/robots, «N помех в поиске, напр.: …» for the rest.
         return "seo_critical" if "закрыт от поиска" in msg else "seo_warning"
     return {"performance": "slow", "links": "links", "deep": "deep", "mail": "mail_down",
-            "mail_auth": "mail_auth", "exposed": "exposed", "security": "security"}.get(check_type, "unknown")
+            "mail_auth": "mail_auth", "exposed": "exposed", "security": "security",
+            "visitors": "visitors"}.get(check_type, "unknown")
 
 
 def explain(check_type: str, message: str | None) -> Explanation:
