@@ -70,6 +70,10 @@ async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
                   f"<code>{esc(rum.snippet(sid))}</code>",
                   "Скрипт не ставит cookie, не запоминает посетителя и не передаёт адрес страницы — только три "
                   "числа скорости и «телефон или нет». Первые числа появятся здесь после первых визитов."]
+        if ((await sitestatus.get(sid)).get("security") or {}).get("csp"):
+            bot = public_urls.base_url().rstrip("/")
+            lines.append(f"⚠️ У сайта есть CSP — без правки браузер заблокирует скрипт. Допиши адрес бота "
+                         f"<code>{esc(bot)}</code> в script-src и connect-src.")
     else:
         lines += ["", "Чтобы мерить у посетителей, боту нужен публичный адрес: 🔌 Подключения → публичный адрес."]
     rows = [[InlineKeyboardButton(text="↗️ PageSpeed Insights", url=rum.pagespeed_url(site["url"]))],

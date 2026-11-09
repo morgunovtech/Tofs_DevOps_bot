@@ -144,7 +144,11 @@ async def test_speed_screen_gives_the_one_line(bot, db, cfg):
     assert (f"<code>&lt;script src=\"https://bot.test/rum.js\" data-site=\"{rum.sig(sid)}.{sid}\" defer&gt;"
             f"&lt;/script&gt;</code>") in text
     assert "не ставит cookie" in text and "Не подключено: 🔌 Подключения" in text
-    assert "↗️ PageSpeed Insights" in buttons(call.message.reply_markup)
+    assert "↗️ PageSpeed Insights" in buttons(call.message.reply_markup) and "CSP" not in text
+    # A strict CSP (the owner's own site has one) would block the script: say what to add.
+    await sitestatus.update(sid, "security", findings=[], csp=True)
+    await speed_screen.cb_speed(call)
+    assert "Допиши адрес бота <code>https://bot.test</code> в script-src и connect-src" in call.message.texts[-1]
 
 
 async def test_google_key_wizard(bot, db, monkeypatch):
