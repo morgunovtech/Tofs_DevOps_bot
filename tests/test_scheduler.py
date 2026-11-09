@@ -11,7 +11,7 @@ from db.database import get_active_incidents, get_state, save_incident, set_stat
 from monitors import host_checker
 from monitors.base import SslInfo, SslResult
 from reports import scheduler
-from services import gsc, settings, sitestatus, updates
+from services import gsc, heartbeats, integrations, settings, sitestatus, updates
 
 
 async def _site_server(status: int = 200):
@@ -198,8 +198,8 @@ def test_setup_scheduler_registers_jobs(db):
 
 async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     """A search finding that is an open incident is not repeated in the
-    «🔎 Поиск и ИИ» line; a clean week is one phrase; a task that never
-    marked says what to do and brings a button for it."""
+    «🔎 Поиск и ИИ» line; a clean week is one phrase; a task is a line of
+    its own under the sites, and one that never marked brings its buttons."""
     a = await db.activate_or_create_site("https://a.test")
     b = await db.activate_or_create_site("https://b.test")
     for sid in (a, b):
@@ -212,7 +212,11 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     text = "\n".join(extras)
     assert "📈 За неделю: все сайты без сбоев" in text
     assert "Поиск и ИИ" not in text                                 # a.test is in «Открытых проблем»
-    assert "⏰ backup: ⚠️ ни разу не отметилась — подключи её или удали: кнопки ниже" in text
+    assert "backup" not in text                                     # under the sites, not in the tail
+    assert (await scheduler._watch_lines(morning=True))[0] == ("⏳ backup — отметок ещё не было, жду раз в сутки", True)
+    await set_state("hb_alerted:backup", "1")                       # the watch has said «never marked»
+    assert (await scheduler._watch_lines(morning=True))[0] == (
+        "⚠️ backup — ни одной отметки: подключи или удали, кнопки ниже", False)
 
     await db.save_check(b, "availability", "error", details="Timeout (15s)")
     await db.save_check(b, "seo", "error", details="site unreachable, audit skipped")
@@ -228,11 +232,80 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     buttons = [btn.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for btn in row]
     assert buttons == ["hb_how:backup", "hb_rm:backup"]
     await db.heartbeat_ping("backup")
-    text = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
-    assert "⏰ Задачи в срок: backup (" in text and "ни разу не отметилась" not in text
+    # «1 дн назад» alone read like trouble: the expected rhythm says it is on time.
+    assert (await scheduler._watch_lines(morning=True))[0] == (
+        "✅ backup — работает, отметка только что (жду раз в сутки)", True)
     await scheduler.send_morning_report()
     assert bot.sent[-1]["reply_markup"] is None
     await settings.remove_heartbeat_job("backup")
+
+
+async def test_watchdog_on_watch_is_seen_and_a_deaf_one_is_said_once(bot, db, monkeypatch):
+    """«If the bot dies, will anyone know?» — the digest answers it: ✅ while
+    the watchdog takes the marks; a blip stays ✅, a quarter of an hour of
+    refusals is 🟠 and half an hour one alert; the recovery is said once."""
+    assert (await scheduler._watch_lines(morning=True))[-1][0].startswith("🛡 Внешнего сторожа нет")
+    assert await scheduler._watch_lines(morning=False) == []        # the evening report does not nag
+    await scheduler.run_self_heartbeat()                            # nothing to ping, nothing stored
+    assert await get_state("watchdog") is None
+
+    await integrations.set_value("self_heartbeat_url", "https://hc-ping.com/abc")
+    answer = [None]
+
+    async def ping(url):
+        return answer[0]
+    monkeypatch.setattr(heartbeats, "ping_watchdog", ping)
+    assert (await heartbeats.watchdog()).icon == "⏳"
+    await scheduler.run_self_heartbeat()
+    assert (await scheduler._watch_lines(morning=False))[-1] == (
+        "✅ Сторож healthchecks.io — на связи: если я упаду, он сообщит", True)
+
+    async def failing_for(minutes):
+        rec = json.loads(await get_state("watchdog"))
+        rec["fail_since"] = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+        await set_state("watchdog", json.dumps(rec))
+
+    answer[0] = "check не найден"
+    n = len(bot.sent)
+    await scheduler.run_self_heartbeat()
+    assert (await heartbeats.watchdog()).icon == "✅"                # one refused mark is a blip
+    await failing_for(20)
+    line, fine = (await scheduler._watch_lines(morning=False))[-1]
+    assert line == ("🟠 Сторож healthchecks.io — не принимает отметки 20 мин (check не найден): "
+                    "если я упаду, никто не узнает") and not fine
+    await scheduler.run_self_heartbeat()
+    assert len(bot.sent) == n                                       # not yet worth a message
+    await failing_for(35)
+    await scheduler.run_self_heartbeat()
+    assert len(bot.sent) == n + 1
+    assert bot.sent[-1]["text"].startswith("🟠 Сторож healthchecks.io не принимает мои отметки уже 35 мин: check не найден")
+    await scheduler.run_self_heartbeat()
+    assert len(bot.sent) == n + 1                                   # said once
+    answer[0] = None
+    await scheduler.run_self_heartbeat()
+    assert "снова принимает отметки" in bot.sent[-1]["text"] and not await get_state("watchdog_alerted")
+    await scheduler.run_self_heartbeat()
+    assert len(bot.sent) == n + 2
+    await integrations.set_value("self_heartbeat_url", None)
+
+
+async def test_watchdog_ping_reads_the_answer_not_just_the_code(db):
+    """healthchecks.io answers a check that does not exist with HTTP 200 and
+    «OK (not found)» — that is not a mark taken."""
+    async def handler(request):
+        if request.path == "/gone":
+            return web.Response(text="OK (not found)")
+        if request.path == "/broken":
+            return web.Response(status=503, text="nope")
+        return web.Response(text="OK")
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", handler)
+    async with TestServer(app) as server:
+        ok_url = str(server.make_url("/ok"))
+        assert await heartbeats.ping_watchdog(ok_url) is None
+        assert await heartbeats.ping_watchdog(str(server.make_url("/gone"))) == "check не найден"
+        assert await heartbeats.ping_watchdog(str(server.make_url("/broken"))) == "отвечает ошибкой 503"
+    assert await heartbeats.ping_watchdog(ok_url) == "не отвечает"         # server gone
 
 
 async def test_an_update_reruns_the_seo_audit_soon(bot, db, cfg, monkeypatch):

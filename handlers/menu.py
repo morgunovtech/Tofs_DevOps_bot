@@ -21,13 +21,13 @@ from db.database import (
     get_all_sites,
 )
 from handlers.common import ack, back_button, render
-from handlers.heartbeats import job_states
 from monitors.availability import check_all
 from monitors.domain_checker import check_all_domains
 from monitors.links_checker import check_all_links
 from monitors.ssl_checker import check_all_ssl
 from reports.formatter import format_compact_status_report, incident_line, links_summary
-from services import humanize, maintenance, notifier, sitestatus
+from services import heartbeats, humanize, maintenance, notifier, sitestatus
+from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
 from utils.text import clip, esc, fmt_duration, plural
 from utils.urls import is_api_check, site_label
@@ -99,9 +99,13 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     return "✅", word, age
 
 
-def job_lines(jobs: list[tuple[str, str, str]]) -> list[str]:
-    """The «⏰ Задачи и боты» block: one line per task, as on the main screen."""
-    return ["⏰ Задачи и боты:", *(f"{icon} {esc(name)} · {esc(state)}" for name, icon, state in jobs)]
+def job_lines(jobs: list[Job], watchdog: Watchdog | None = None) -> list[str]:
+    """The «⏰ Задачи и боты» block: one line per task, as on the main screen,
+    and last the watchdog that would tell if the bot itself went down."""
+    lines = [f"{j.icon} {esc(j.name)} · {esc(j.state)}" for j in jobs]
+    if watchdog:
+        lines.append(f"{watchdog.icon} сторож {esc(watchdog.name)} · {esc(watchdog.state)}")
+    return ["⏰ Задачи и боты:", *lines] if lines else []
 
 
 def _item_rows(items: list[InlineKeyboardButton]) -> list[list[InlineKeyboardButton]]:
@@ -113,7 +117,7 @@ def _item_rows(items: list[InlineKeyboardButton]) -> list[list[InlineKeyboardBut
 
 async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     sites = await get_all_sites()
-    jobs = await job_states()
+    jobs, watchdog = await job_states(), await heartbeats.watchdog()
     if not sites and not jobs:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Добавить первый сайт", callback_data="site_add")],
@@ -125,12 +129,12 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     states = [(s, *await site_state(s)) for s in sites]
     ages = [age for *_, age in states if age is not None]
     site_icons = [icon for _, icon, *_ in states]
-    icons = site_icons + [icon for _, icon, _ in jobs]
+    icons = site_icons + [j.icon for j in jobs] + ([watchdog.icon] if watchdog else [])
     total = sum(1 for icon in icons if icon != "⏳")
     sites_total = sum(1 for icon in site_icons if icon != "⏳")
     opening = sum(1 for icon in site_icons if icon in ("✅", "🔧", "🟠"))   # 🟠 sites are up, with a note
     fine = sum(1 for icon in icons if icon in ("✅", "🔧"))
-    silent = [name for name, icon, _ in jobs if icon in ("🟠", humanize.UNCHECKED)]
+    silent = [j.name for j in jobs if j.icon in ("🟠", humanize.UNCHECKED)]
     incidents = await get_active_incidents()
     inc_icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in incidents))
 
@@ -143,6 +147,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
             parts.append(f"{opening}/{sites_total} {plural(sites_total, 'открывается', 'открываются', 'открываются')}")
         if silent:
             parts.append(f"⏰ {esc(silent[0])} молчит" if len(silent) == 1 else f"⏰ молчат: {len(silent)}")
+        if watchdog and watchdog.icon == "🟠":
+            parts.append("🛡 сторож не на связи")
         if incidents:
             parts.append(f"{inc_icon} проблем: {len(incidents)}")
         headline = f"{worst} " + " · ".join(parts)
@@ -156,8 +162,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
         lines.append(f"{icon} {esc(site_label(s['url']))} · {esc(state)}")
     if len(states) > 10:
         lines.append(f"… и ещё {len(states) - 10}")
-    if jobs:
-        lines += ["", *job_lines(jobs)]
+    if jobs or watchdog:
+        lines += ["", *job_lines(jobs, watchdog)]
 
     if incidents:
         lines.append("")
@@ -177,8 +183,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     items = [InlineKeyboardButton(text=f"{icon} {site_label(s['url'])}", callback_data=f"check_site:{s['id']}")
              for s, icon, *_ in states]
-    items += [InlineKeyboardButton(text=f"{icon} {name}", callback_data=f"hb_show:{name}")
-              for name, icon, _ in jobs if len(f"hb_show:{name}".encode()) <= 64]   # an .env name may be anything
+    items += [InlineKeyboardButton(text=f"{j.icon} {j.name}", callback_data=f"hb_show:{j.name}")
+              for j in jobs if len(f"hb_show:{j.name}".encode()) <= 64]   # an .env name may be anything
     rows = []
     if incidents:   # first: on a bad day this is the button that matters
         rows.append([InlineKeyboardButton(text=f"{inc_icon} Проблемы ({len(incidents)})", callback_data="menu_incidents")])
@@ -258,7 +264,8 @@ async def cb_check_now(call: CallbackQuery):
     asked — they report themselves — so their last marks close the report."""
     await ack(call)
     urls, jobs = await get_active_site_urls(), await job_states()
-    tail = "\n\n" + "\n".join(job_lines(jobs)) if jobs else ""
+    block = job_lines(jobs, await heartbeats.watchdog())
+    tail = "\n\n" + "\n".join(block) if block else ""
     if not urls:
         await render(call, tail.strip() or "Сайтов пока нет — сначала добавь хотя бы один.", InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="➕ Добавить", callback_data="site_add")],

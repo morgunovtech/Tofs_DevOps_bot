@@ -7,7 +7,6 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 
-import aiohttp
 from aiogram.types import FSInputFile, Message
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -59,6 +58,7 @@ from reports.weekly import build_weekly_report
 from services import (
     github,
     gsc,
+    heartbeats,
     humanize,
     index_status,
     integrations,
@@ -456,7 +456,7 @@ async def run_heartbeat_watch():
         overdue, detail = False, ""
         if last:
             silence_min = (now - last).total_seconds() / 60
-            overdue = silence_min > interval_min * 1.25   # 25% slack for a late cron
+            overdue = heartbeats.is_late(interval_min, silence_min)
             detail = f"последний сигнал: {fmt_duration(silence_min)} назад"
         elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
             overdue, detail = True, "ни одного сигнала с момента запуска бота"
@@ -570,15 +570,28 @@ async def run_escalation_watch():
 # ── Self-maintenance ─────────────────────────────────────────────────────────
 
 async def run_self_heartbeat():
-    """Ping the external watchdog (healthchecks.io etc.)."""
+    """Mark in with the external watchdog (healthchecks.io etc.) and keep
+    its answer: the morning report and the main screen say whether it is
+    on watch. Half an hour of refused marks is said once — a watchdog that
+    does not take them would stay silent when the bot dies."""
     url = integrations.self_heartbeat_url()
     if not url:
         return
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            await s.get(url)
-    except Exception as e:
-        logger.warning("Self-heartbeat ping failed: %s", e)
+    rec = await heartbeats.record_watchdog(await heartbeats.ping_watchdog(url))
+    name = esc(heartbeats.watchdog_name(url))
+    failing = heartbeats.failing_minutes(rec)
+    alerted = await get_state("watchdog_alerted")
+    if failing >= heartbeats.WATCHDOG_ALERT_MIN and not alerted:
+        sent = await notifier.send(
+            f"🟠 Сторож {name} не принимает мои отметки уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
+            f"Пока так, если я упаду, тебе никто не напишет.\n\n"
+            f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
+            f"вставь новую: ⚙️ Настройки → 🩺 Диагностика и подключения → 🛡 Внешний сторож.")
+        if sent:
+            await set_state("watchdog_alerted", "1")
+    elif not failing and alerted:
+        await set_state("watchdog_alerted", None)
+        await notifier.send(f"✅ Сторож {name} снова принимает отметки. Ничего делать не нужно.")
 
 
 async def run_retention():
@@ -629,25 +642,6 @@ async def send_db_backup_to_telegram():
 
 # ── Reports ──────────────────────────────────────────────────────────────────
 
-async def _job_states() -> list[tuple[str, int, float | None]]:
-    """(task, expected interval, minutes since its last mark — None if it
-    never marked) for every task under ⏰ control."""
-    jobs = settings.heartbeat_jobs()
-    if not jobs:
-        return []
-    beats = await get_heartbeats()
-    now = datetime.now(UTC)
-    out = []
-    for job, interval_min in jobs.items():
-        last = parse_sqlite_utc(beats.get(job))
-        out.append((job, interval_min, (now - last).total_seconds() / 60 if last else None))
-    return out
-
-
-def _job_needs_you(interval_min: int, ago: float | None) -> bool:
-    return ago is None or ago > interval_min * 1.25   # 25% slack for a late cron, as in the watch
-
-
 async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) -> list[str]:
     extras: list[str] = []
     sites = await get_all_sites()
@@ -676,20 +670,6 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
                 and 30 < r.domain_info.days_left <= 60]
     if expiring:
         extras.append("🔜 Истекает: " + "; ".join(expiring))
-
-    # A task that marked on time is one short line; one that is silent says
-    # what to do, and the digest carries a «⏰ …: что делать» button for it.
-    states = await _job_states()
-    on_time = [f"{esc(job)} ({fmt_duration(ago)} назад)"
-               for job, interval_min, ago in states if not _job_needs_you(interval_min, ago)]
-    if on_time:
-        extras.append("⏰ Задачи в срок: " + ", ".join(on_time))
-    for job, interval_min, ago in states:
-        if ago is None:
-            extras.append(f"⏰ {esc(job)}: ⚠️ ни разу не отметилась — подключи её или удали: кнопки ниже")
-        elif _job_needs_you(interval_min, ago):
-            extras.append(f"⏰ {esc(job)}: 🟠 молчит {fmt_duration(ago)}, а должна отмечаться каждые "
-                          f"{fmt_duration(interval_min)} — проверь, запускается ли она")
 
     # Search findings are open incidents and already listed above. This line
     # says only what that list cannot: all clear, or which audits failed.
@@ -754,14 +734,27 @@ async def _status_snapshot(report_type: str, extras: bool):
     return format_compact_status_report(
         availability=availability, incidents=incidents,
         ssl_results=ssl_results, domain_results=domain_results, report_type=report_type,
-        extras=await _morning_extras(ssl_results, domain_results, incidents) if extras else None)
+        extras=await _morning_extras(ssl_results, domain_results, incidents) if extras else None,
+        watch=await _watch_lines(morning=extras))
+
+
+async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
+    """Bots and tasks under the sites, a line each like a site's, and last
+    the watchdog — the answer to «and if the bot itself goes down?». A
+    silent task gets its «🔗 Подключить / 🗑 Удалить» buttons under the
+    digest; a missing watchdog is mentioned in the morning only."""
+    lines = [heartbeats.digest_line(j) for j in await heartbeats.job_states()]
+    w = await heartbeats.watchdog()
+    if w or morning:
+        lines.append(heartbeats.watchdog_digest_line(w))
+    return lines
 
 
 async def send_morning_report():
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
     text = clip(await _status_snapshot("morning", extras=True))
-    silent_jobs = [job for job, interval_min, ago in await _job_states() if _job_needs_you(interval_min, ago)]
+    silent_jobs = [j.name for j in await heartbeats.job_states() if j.needs_you]
     await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
 
 

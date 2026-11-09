@@ -234,7 +234,11 @@ def format_compact_status_report(availability: list[AvailabilityResult],
                                  ssl_results: list[SslResult] | None = None,
                                  domain_results: list[DomainResult] | None = None,
                                  report_type: str = "status",
-                                 extras: list[str] | None = None) -> str:
+                                 extras: list[str] | None = None,
+                                 watch: list[tuple[str, bool]] | None = None) -> str:
+    """watch: (line, fine) for the bots and tasks that mark in and for the
+    bot's own watchdog — a block of their own under the sites, counted in
+    «Всё спокойно» like a site."""
     now = now_local().strftime("%d.%m %H:%M")
     header = {"morning": f"🌅 Доброе утро · {now}",
               "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
@@ -254,6 +258,9 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         line, ok = _site_line(r, ssl_by_url.get(r.url) if (ssl_results is not None and http) else None, dom)
         lines.append(line)
         all_ok &= ok
+    if watch:
+        lines += ([""] if availability else []) + [line for line, _ in watch]
+        all_ok &= all(ok for _, ok in watch)
     if incidents:
         worst = worst_severity(i.get("severity") for i in incidents)
         lines += ["", f"{level_icon(worst)} Открытых проблем: {len(incidents)}"]

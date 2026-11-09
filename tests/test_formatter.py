@@ -54,6 +54,21 @@ def test_recovery_includes_duration_and_cause():
     assert "Ничего делать не нужно" in text
 
 
+def test_bots_and_watchdog_sit_under_the_sites():
+    """Bots, tasks and the watchdog are a block of their own right under the
+    sites, and a silent one takes «Всё спокойно» away like a fallen site."""
+    avail = [AvailabilityResult(url="https://ex.com", site_id=1, response_time_ms=95, status_code=200)]
+    fine = [("✅ socialtracker — работает, отметка 1 дн назад (жду раз в сутки)", True)]
+    text = format_compact_status_report(avail, [], report_type="morning", extras=["📈 x"], watch=fine)
+    lines = text.split("\n")
+    assert lines[2:7] == ["✅ ex.com — в порядке, быстро (0.10 с)", "", fine[0][0], "", "Всё спокойно 🐕"]
+    silent = fine + [("⚠️ backup — ни одной отметки: подключи или удали, кнопки ниже", False)]
+    text = format_compact_status_report(avail, [], report_type="morning", watch=silent)
+    assert "⚠️ backup" in text and "Всё спокойно" not in text
+    # Only tasks, no sites: no empty gap under the header.
+    assert format_compact_status_report([], [], watch=fine).split("\n")[1:3] == ["", fine[0][0]]
+
+
 def test_compact_report_chips():
     avail = [AvailabilityResult(url="https://ex.com", site_id=1, response_time_ms=95, status_code=200),
              AvailabilityResult(url="tcp://ex.com:25", site_id=2, response_time_ms=12)]

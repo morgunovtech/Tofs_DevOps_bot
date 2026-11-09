@@ -27,6 +27,7 @@ from services import (
     docker_api,
     github,
     gsc,
+    heartbeats,
     integrations,
     notifier,
     public_urls,
@@ -197,7 +198,12 @@ async def build_items() -> list[Item]:
                               "автоперезапуск контейнеров и очистка диска на сервере бота",
                               ("🐳 Как подключить", "setup:docker")))
 
-    if integrations.self_heartbeat_url():
+    w = await heartbeats.watchdog()
+    if w and w.icon == "🟠":
+        items.append(Item("watchdog", "warn", f"Внешний сторож {w.name}",
+                          f"{w.state} — если бот упадёт, никто не узнает",
+                          ("🛡 Сторож: проверить", "setup:watchdog")))
+    elif w:
         items.append(Item("watchdog", "ok", "внешний сторож"))
     else:
         items.append(Item("watchdog", "off", "🛡 Внешний сторож",
@@ -398,27 +404,22 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
         return
     await state.clear()
     await _forget(message)
-    if not await _watchdog_ping(url):
-        await message.answer("❌ По этой ссылке сторож не ответил. Проверь, что скопировал её целиком.",
-                             reply_markup=_watchdog_kb())
+    error = await heartbeats.ping_watchdog(url)
+    if error:
+        await message.answer(f"❌ Сторож не принял отметку: {esc(error)}. Проверь, что скопировал ссылку "
+                             f"целиком и check не удалён.", reply_markup=_watchdog_kb())
         return
     await integrations.set_value("self_heartbeat_url", url)
+    await heartbeats.forget_watchdog()   # the old link's failures are not this one's
+    await heartbeats.record_watchdog(None)
     await message.answer("✅ Сторож подключён: только что отметился, дальше буду каждые 5 минут.",
                          reply_markup=back_button("← К диагностике", "setup:check"))
-
-
-async def _watchdog_ping(url: str) -> bool:
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(url) as resp:
-                return resp.status < 400
-    except Exception:
-        return False
 
 
 @router.callback_query(F.data == "setup:watchdog_off")
 async def cb_watchdog_off(call: CallbackQuery):
     await integrations.set_value("self_heartbeat_url", None)
+    await heartbeats.forget_watchdog()
     await ack(call, "Отключено")
     await show_checklist(call)
 
