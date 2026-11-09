@@ -26,7 +26,7 @@ from monitors import links_checker
 from monitors.base import LinkCheck, SeoResult
 from reports import scheduler
 from services import heartbeats as heartbeats_service
-from services import integrations, recommend, sitestatus
+from services import integrations, recommend, screenshots, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
 from services.actions import heartbeat_keyboard
@@ -101,7 +101,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         call = FakeCall(f"check_site:{sid}")
         await sites.cb_check_single_site(call)
         assert "Ссылки: все открываются" in call.message.texts[-1]
-        assert "🟠 Поиск и ИИ: 2 помехи" in call.message.texts[-1] and "За неделю" in call.message.texts[-1]
+        assert "🟠 Поиск и ИИ: 2 помехи" in call.message.texts[-1] and "Простой: за неделю" in call.message.texts[-1]
         assert "В поиске" not in call.message.texts[-1]          # the card never claims index status
 
         text, kb = await site_settings.sset_screen(await db.get_site(sid))
@@ -352,8 +352,15 @@ async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):
     labels = buttons(call.message.reply_markup)
     assert "🔗 Открыть панель Cloudflare" in labels and "🔗 Открыть несуществующую страницу" in labels
 
+    # The card says it all at once: the count matches the numbered list (a
+    # kind of finding on two pages is one item), each item by name.
     lines = await sites.card_lines(await db.get_site(sid))
-    assert any(line.startswith("🟠 Поиск и ИИ: 5 помех") for line in lines)
+    assert any(line.startswith("🟠 Поиск и ИИ: 4 помехи") for line in lines)
+    assert any(line.startswith("    1. 🟠 ИИ-ассистенты") for line in lines)
+    assert any(line.startswith("    4. 🟠 Нет картинки для превью") for line in lines)
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    _, state, _ = await menu.site_state(await db.get_site(sid))
+    assert "4 помехи в поиске" in state                                # the main screen counts the same
 
 
 def _snap(status="ok", problems=(), **extra):
@@ -637,3 +644,59 @@ async def test_old_check_everything_button_lands_on_main(bot, db):
     call = FakeCall("run_full_check")
     await menu.cb_main_menu(call, FakeState())
     assert "Пока ни за чем не слежу" in call.message.texts[-1]
+
+
+async def test_site_card_says_everything_without_extra_buttons(bot, db, cfg, tmp_path, monkeypatch):
+    """The card is the whole story: broken links with their reasons, each
+    search finding by name, speed over the week, the page itself above the
+    text — and one «как исправить» instead of «🔎 Поиск и ИИ» / «🔗 Ссылки»
+    / «📸 Как выглядит» buttons."""
+    cfg(db_path=str(tmp_path / "bot.db"), public_base_url="https://bot.example")
+    sid = await db.activate_or_create_site("https://ex.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    for _ in range(3):
+        await db.save_check(sid, "availability", "ok", response_time_ms=120)
+    await sitestatus.update(sid, "links", status="warning", broken=1, pending=0, total=24,
+                            items=[{"url": "https://github.com/x/gone", "code": 404, "error": None}])
+    await sitestatus.update(sid, "seo", status="warning", critical=0, improve=1, pages=1,
+                            problems=[{"code": "sitemap_missing", "severity": "warning", "message": "нет sitemap.xml"}])
+
+    async def shot(url):
+        return b"\x89PNG fake", None
+    monkeypatch.setattr(screenshots, "fetch_screenshot", shot)
+    assert await screenshots.refresh(sid, "https://ex.test")
+
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    text = call.message.texts[-1]
+    assert "🟠 Ссылки: 1 из 24 не открывается" in text and "• https://github.com/x/gone — " in text
+    assert "🟠 Поиск и ИИ: 1 помеха" in text and "    1. 🟠 " in text
+    labels = buttons(call.message.reply_markup)
+    assert labels[0] == "🛠 Как исправить поиск" and "🔄 Перепроверить" in labels
+    assert not {"🔎 Поиск и ИИ", "🔗 Ссылки", "📸 Как выглядит сайт"} & set(labels)
+    picture = call.message.previews[-1]
+    assert picture.startswith("https://bot.example/shot/") and f"/{sid}?v=" in picture
+
+    _, kb = await site_settings.sset_screen(await db.get_site(sid))
+    assert "📸 Как выглядит сайт" not in buttons(kb)
+
+
+async def test_recheck_renews_links_and_search_too(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    calls = []
+
+    async def avail(url, manage=True):
+        calls.append("avail")
+    async def links(url, manage=True):
+        calls.append("links")
+    async def audit(site):
+        calls.append("seo")
+    async def nothing(url, manage=True):
+        return None
+    monkeypatch.setattr(sites, "check_availability", avail)
+    monkeypatch.setattr(sites, "check_ssl", nothing)
+    monkeypatch.setattr(sites, "check_domain", nothing)
+    monkeypatch.setattr(sites, "check_links", links)
+    monkeypatch.setattr(sites.seo_screen, "audit_now", audit)
+    await sites.cb_check_site_live(FakeCall(f"check_site_live:{sid}"))
+    assert calls == ["avail", "links", "seo"]

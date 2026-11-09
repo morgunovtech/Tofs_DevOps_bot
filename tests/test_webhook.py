@@ -1,7 +1,9 @@
+import os
+
 from aiohttp.test_utils import TestClient, TestServer
 
 from db.database import get_heartbeats, get_state, set_state
-from services import heartbeats, settings
+from services import heartbeats, screenshots, settings
 from web import webhook
 from web.webhook import create_app
 
@@ -132,3 +134,18 @@ async def test_status_page_slug(bot, db, cfg):
         assert (await c.get("/status/s3cret")).status == 200
         assert (await c.get("/status/s3cret.json")).status == 200
     await settings.set_status_page(False)
+
+
+async def test_card_picture_is_served_on_a_signed_address(bot, db, cfg, tmp_path):
+    cfg(db_path=str(tmp_path / "bot.db"))
+    sid = await db.activate_or_create_site("https://ex.test")
+    path = screenshots.shot_path(sid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG fake")
+    good = screenshots._sig(sid)
+    async with await _client() as c:
+        r = await c.get(f"/shot/{good}/{sid}")
+        assert r.status == 200 and r.content_type == "image/png" and await r.read() == b"\x89PNG fake"
+        assert (await c.get(f"/shot/{'0' * 16}/{sid}")).status == 404
+        assert (await c.get(f"/shot/{good}/{sid + 1}")).status == 404

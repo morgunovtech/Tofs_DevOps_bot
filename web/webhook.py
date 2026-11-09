@@ -19,7 +19,7 @@ from aiohttp import web
 from config import config
 from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import heartbeats, integrations, notifier, secrets, settings
+from services import heartbeats, integrations, notifier, screenshots, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -148,6 +148,23 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
+async def handle_shot(request: web.Request) -> web.Response:
+    """The site card's picture (services.screenshots), on a signed address."""
+    try:
+        site_id = int(request.match_info.get("sid", ""))
+    except ValueError:
+        return web.Response(status=404)
+    if not screenshots.sig_ok(site_id, request.match_info.get("sig", "")):
+        return web.Response(status=404)
+    try:
+        with open(screenshots.shot_path(site_id), "rb") as f:
+            data = f.read()
+    except OSError:
+        return web.Response(status=404)
+    return web.Response(body=data, content_type=screenshots.image_type(data),
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
 async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"})
 
@@ -216,6 +233,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/heartbeat/{token}/{job}", handle_heartbeat)
     app.router.add_get("/feedback-widget.js", handle_widget)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/shot/{sig}/{sid}", handle_shot)
     # Registration order matters: literal segments before the {slug} catch-all.
     app.router.add_get("/status", handle_status_page)
     app.router.add_get("/status.json", handle_status_json)

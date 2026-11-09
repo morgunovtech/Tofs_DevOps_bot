@@ -11,6 +11,7 @@ from aiogram.types import (
     ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     Message,
 )
 
@@ -35,23 +36,26 @@ def cancel_kb() -> InlineKeyboardMarkup:
 
 
 async def render(target: Message | CallbackQuery, text: str,
-                 kb: InlineKeyboardMarkup | None = None) -> None:
+                 kb: InlineKeyboardMarkup | None = None, picture: str | None = None) -> None:
     """Show a screen: edit in place for a button tap, send for a command.
     A re-render with identical content ("message is not modified") is not
-    an error — the screen is already right."""
+    an error — the screen is already right. picture: an image address that
+    Telegram draws above the text (link previews are off everywhere else)."""
     text = clip(text)
+    extra = {"link_preview_options": LinkPreviewOptions(url=picture, prefer_large_media=True,
+                                                         show_above_text=True)} if picture else {}
     editable = getattr(target, "message", None)   # CallbackQuery → its message
     if editable is not None and not hasattr(editable, "edit_text"):
         # InaccessibleMessage (too old to edit): answer below instead.
-        await editable.answer(text, reply_markup=kb)
+        await editable.answer(text, reply_markup=kb, **extra)
     elif editable is not None:
         try:
-            await editable.edit_text(text, reply_markup=kb)
+            await editable.edit_text(text, reply_markup=kb, **extra)
         except TelegramBadRequest as e:
             if "not modified" not in str(e):
                 raise
     else:
-        await target.answer(text, reply_markup=kb)
+        await target.answer(text, reply_markup=kb, **extra)
 
 
 async def ack(call: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:

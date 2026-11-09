@@ -18,6 +18,7 @@ from db.database import (
     get_active_site_urls,
     get_all_sites,
 )
+from handlers import seo as seo_screen
 from handlers.blocks import backup_state
 from handlers.common import ack, back_button, render
 from monitors.availability import check_all
@@ -85,7 +86,8 @@ async def site_state(site: dict) -> tuple[str, str, float | None]:
     if seo.get("status") == "critical":
         notes.append(("critical", "закрыт от поиска"))
     elif seo.get("status") == "warning" and seo.get("improve"):
-        n = seo["improve"]
+        # as many as the card lists: a kind of finding on two pages is one
+        n = len(seo_screen.grouped(seo.get("problems") or [])) or seo["improve"]
         notes.append(("warning", f"{n} {plural(n, 'помеха', 'помехи', 'помех')} в поиске"))
     if notes:
         return humanize.level_icon(humanize.worst_severity(s for s, _ in notes)), ", ".join(w for _, w in notes), age

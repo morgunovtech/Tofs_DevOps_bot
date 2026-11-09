@@ -64,6 +64,7 @@ from services import (
     integrations,
     notifier,
     recommend,
+    screenshots,
     settings,
     sitestatus,
     updates,
@@ -353,6 +354,16 @@ async def run_seo_checks():
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
+
+
+async def run_card_pictures():
+    """Once a day, after the search audit: a fresh picture of every page
+    for its card (services.screenshots). One at a time — the free
+    screenshot service allows about fifty a day."""
+    for site in await get_all_sites():
+        if is_web_page(site["url"], site.get("http_method")) \
+                and await screenshots.is_due(site["id"]):
+            await screenshots.refresh(site["id"], site["url"])
 
 
 def rerun_seo_after_update(minutes: int = 3):
@@ -899,6 +910,7 @@ def _cron_specs() -> dict[str, dict]:
         "domain_checks": dict(hour=8, minute=5),
         "seo_checks": dict(hour=7, minute=30),
         "index_checks": dict(hour=7, minute=45),
+        "card_pictures": dict(hour=7, minute=50),
         "dns_checks": dict(minute=20),
         "region_checks": dict(minute=17),
         "deep_checks": dict(minute=40),
@@ -942,6 +954,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     # SEO/GEO audit before the morning report, so the digest shows fresh results.
     job(run_seo_checks, _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
     job(run_index_checks, _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
+    job(run_card_pictures, _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
     # Links: first run shortly after boot, then every N hours.
     job(run_links_checks, IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon),
         "links_checks", misfire_grace_time=300)

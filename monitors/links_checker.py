@@ -181,7 +181,9 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
                           + (f" ({len(r.pending)} failed once, rechecking)" if r.pending else ""))
     await save_check(site_id, "links", r.status, details=details)
     await sitestatus.update(site_id, "links", status=r.status, broken=len(r.broken),
-                            pending=len(r.pending), total=r.total_links)
+                            pending=len(r.pending), total=r.total_links,
+                            # the card lists them — no separate «🔗 Ссылки» screen to tap
+                            items=[{"url": b.url, "code": b.status_code, "error": b.error} for b in r.broken[:5]])
     if not manage:
         # Read-only, with one exception (as for search): a clean check — no
         # dead link, nothing waiting for a recheck — closes the open links
