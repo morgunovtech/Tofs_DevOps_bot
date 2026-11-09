@@ -295,9 +295,20 @@ async def run_domain_checks():
 async def run_links_checks():
     urls = await get_active_page_urls()
     await close_inapplicable(("links",), urls)
-    await _notify_transitions(
-        await check_all_links(urls), format_links_report,
-        lambda r: f"✅ На {esc(site_label(r.url))} все ссылки снова работают.")
+    await _notify_transitions(await check_all_links(urls), format_links_report, _links_recovered)
+
+
+def _links_recovered(r) -> str:
+    """Closed while some link still fails once in a while: say so, rather
+    than «всё работает» next to a link that does not open right now."""
+    label = esc(site_label(r.url))
+    if not r.pending:
+        return f"✅ На {label} все ссылки снова работают."
+    n = len(r.pending)
+    return (f"✅ На {label} снимаю тревогу по ссылкам: {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} "
+            f"сейчас не {'открывается' if n == 1 else 'открываются'}, но это похоже на временный сбой на той "
+            f"стороне. Перепроверю через несколько часов и напишу, только если "
+            f"{'она не откроется' if n == 1 else 'они не откроются'} и тогда.")
 
 
 async def run_deep_checks():

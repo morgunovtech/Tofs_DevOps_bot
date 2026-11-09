@@ -1,13 +1,16 @@
 import asyncio
+import json
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from monitors.base import LinkCheck
+from monitors.base import LinkCheck, LinksResult
 from monitors.links_checker import check_links, is_definite
 from monitors.seo_checker import _fetch, check_seo
 from monitors.sitemap import pick_sample, sitemap_urls
+from reports.scheduler import _links_recovered
 
 
 def test_pick_sample():
@@ -88,8 +91,9 @@ async def test_sitemap_is_missing_only_when_the_site_says_so(db):
 
 
 async def test_links_are_judged_by_how_sure_the_answer_is(db):
-    """A 404 is a problem at once, own site or not; a 502 only when it
-    repeats on the next crawl; a bot block (403) never."""
+    """A 404 is a problem at once, own site or not; a 502 only when it still
+    fails three hours after the first time — a restart minutes later is not
+    «later»; a bot block (403) never."""
     other = web.Application()
     other.router.add_get("/gone", lambda r: web.Response(status=404))
     other.router.add_get("/flaky", lambda r: web.Response(status=502))
@@ -102,15 +106,36 @@ async def test_links_are_judged_by_how_sure_the_answer_is(db):
         site.router.add_get("/", lambda r: web.Response(text=page, content_type="text/html"))
         async with TestServer(site) as own:
             base = str(own.make_url("")).rstrip("/")
+            gone, flaky = f"{ext_base}/gone", f"{ext_base}/flaky"
             first = await check_links(base)
-            assert [b.url for b in first.broken] == [f"{ext_base}/gone"]
-            assert [p.url for p in first.pending] == [f"{ext_base}/flaky"] and first.incident_new
-            # A menu tap sees it failing again after the crawl — that is the
-            # second time in a row — but it writes no state of its own.
+            assert [b.url for b in first.broken] == [gone]
+            assert [p.url for p in first.pending] == [flaky] and first.incident_new
+            # Minutes later — a menu tap, a crawl after a restart — is not
+            # «later»: the 502 is still only a suspect.
             ui = await check_links(base, manage=False)
-            assert sorted(b.url for b in ui.broken) == [f"{ext_base}/flaky", f"{ext_base}/gone"]
+            assert [b.url for b in ui.broken] == [gone] and [p.url for p in ui.pending] == [flaky]
+            again = await check_links(base)
+            assert [p.url for p in again.pending] == [flaky]
+            key = f"links_suspect:{first.site_id}"
+            state = json.loads(await db.get_state(key))
+            state[flaky] = (datetime.now(UTC) - timedelta(hours=3, minutes=1)).isoformat()
+            await db.set_state(key, json.dumps(state))
             second = await check_links(base)
-            assert sorted(b.url for b in second.broken) == [f"{ext_base}/flaky", f"{ext_base}/gone"]
+            assert sorted(b.url for b in second.broken) == [flaky, gone]
             assert second.pending == []
+            # The list kept before 11.2026 had no times: its links start
+            # the clock now instead of counting as confirmed.
+            await db.set_state(key, json.dumps([flaky]))
+            third = await check_links(base)
+            assert [p.url for p in third.pending] == [flaky]
+            assert flaky in json.loads(await db.get_state(key))
     assert is_definite(LinkCheck("https://x", None, False, error="[SSL: CERTIFICATE_VERIFY_FAILED] certificate"))
     assert not is_definite(LinkCheck("https://x", None, False, error="timeout"))
+
+
+def test_closing_a_links_alert_does_not_claim_a_failing_link_works():
+    r = LinksResult(url="https://s.example", site_id=1)
+    assert _links_recovered(r) == "✅ На s.example все ссылки снова работают."
+    r.pending = [LinkCheck("https://github.com/x/y", 504, False)]
+    text = _links_recovered(r)
+    assert "снимаю тревогу" in text and "1 ссылка сейчас не открывается" in text and "временный сбой" in text

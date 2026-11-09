@@ -7,13 +7,17 @@ What decides is how sure the answer is, not the domain:
   * definite — a 4xx (page gone), a domain that does not resolve, a bad
     certificate: a problem at once;
   * maybe temporary — a timeout, a 5xx, a refused connection: a problem
-    only when the same link failed on the previous scheduled crawl too;
+    only when the same link still fails CONFIRM_AFTER after its first
+    failure. Time, not «the next crawl»: every bot start runs a crawl, and
+    on 09.11.2026 six deploys in twenty minutes turned a GitHub incident
+    (504 for anonymous visitors) into two confirmed «broken» links;
   * a bot block (401/403/429…, ALWAYS_OK_HOSTS) is not an answer at all.
 """
 
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
@@ -22,11 +26,16 @@ from bs4 import BeautifulSoup
 from db.database import get_or_create_site, get_state, resolve_incident, save_check, save_incident, set_state
 from monitors.base import LinkCheck, LinksResult, decode_body, gather_checks, read_capped
 from services import sitestatus
+from utils.text import parse_iso_utc
 from utils.urls import USER_AGENT, host_of, same_site
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = aiohttp.ClientTimeout(total=15, connect=8)
+# A maybe-temporary failure must outlive a typical outage on the far end
+# before it is called broken. Shorter than the 6-hour crawl interval, so a
+# scheduled crawl always confirms; longer than any burst of restarts.
+CONFIRM_AFTER = timedelta(hours=3)
 MAX_PAGE_BYTES = 2 * 1024 * 1024
 DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -149,18 +158,20 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
 
         failed = [c for c in await asyncio.gather(*(guarded(link) for link in links)) if not c.ok]
 
-    # A maybe-temporary failure becomes a problem on the second crawl in a
-    # row; the list of such links is alert state, kept by the scheduler only.
+    # A maybe-temporary failure becomes a problem when it still fails
+    # CONFIRM_AFTER after the first time; {url: first failure} is alert
+    # state, kept by the scheduler only.
     key = f"links_suspect:{site_id}"
-    try:
-        suspects = set(json.loads(await get_state(key) or "[]"))
-    except ValueError:
-        suspects = set()
+    now = datetime.now(UTC)
+    suspects = _suspects(await get_state(key), now)
     flaky = [c for c in failed if not is_definite(c)]
     for c in failed:
-        (r.broken if is_definite(c) or c.url in suspects else r.pending).append(c)
+        since = parse_iso_utc(suspects.get(c.url))
+        confirmed = since is not None and now - since >= CONFIRM_AFTER
+        (r.broken if is_definite(c) or confirmed else r.pending).append(c)
     if manage:
-        await set_state(key, json.dumps(sorted(c.url for c in flaky)) if flaky else None)
+        state = {c.url: suspects.get(c.url) or now.isoformat() for c in flaky}
+        await set_state(key, json.dumps(state, sort_keys=True) if state else None)
 
     if r.broken:
         r.status = "warning"
@@ -184,6 +195,19 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
     elif await resolve_incident(site_id, "links"):
         r.recovered = True
     return r
+
+
+def _suspects(raw: str | None, now: datetime) -> dict[str, str]:
+    """{url: first failure, ISO}. The list kept before 11.2026 had no times:
+    its links start the clock now rather than count as confirmed."""
+    try:
+        data = json.loads(raw or "{}")
+    except ValueError:
+        return {}
+    if isinstance(data, list):
+        return {u: now.isoformat() for u in data if isinstance(u, str)}
+    return {u: t for u, t in data.items() if isinstance(u, str) and isinstance(t, str)} \
+        if isinstance(data, dict) else {}
 
 
 async def check_all_links(urls: list[str], manage: bool = True) -> list[LinksResult]:
