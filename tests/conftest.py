@@ -66,15 +66,18 @@ class FakeMessage:
         self.texts: list[str] = []
         self.markups: list = []      # the keyboard of each text, in step with self.texts
         self.documents: list = []    # captions of the files sent
+        self.previews: list = []     # the picture drawn above each text, or None
         self.chat = SimpleNamespace(id=1)
         self.reply_markup = None
 
-    async def edit_text(self, text, reply_markup=None):
+    async def edit_text(self, text, reply_markup=None, **kwargs):
+        self.previews.append((kwargs.get("link_preview_options") or None) and kwargs["link_preview_options"].url)
         self.texts.append(text)
         self.markups.append(reply_markup)
         self.reply_markup = reply_markup
 
-    async def answer(self, text, reply_markup=None):
+    async def answer(self, text, reply_markup=None, **kwargs):
+        self.previews.append((kwargs.get("link_preview_options") or None) and kwargs["link_preview_options"].url)
         self.texts.append(text)
         self.markups.append(reply_markup)
         self.reply_markup = reply_markup

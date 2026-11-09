@@ -1,6 +1,7 @@
 """🌍 Sites: the card (opened from the main screen), add/remove, pause,
 export/import."""
 
+import asyncio
 import json
 import re
 from datetime import UTC, datetime
@@ -25,6 +26,7 @@ from db.database import (
     get_active_host_urls,
     get_active_incidents,
     get_all_sites,
+    get_daily_availability,
     get_site,
     get_state,
     get_uptime_over_days,
@@ -32,6 +34,7 @@ from db.database import (
     set_state,
     update_site_settings,
 )
+from handlers import seo as seo_screen
 from handlers.common import (
     MAX_SITES,
     ack,
@@ -40,19 +43,33 @@ from handlers.common import (
     cb_args,
     render,
     site_by_cb,
+    with_running_bar,
 )
 from handlers.menu import best_ms, cb_main_menu, site_state
 from handlers.setup import last_steps
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
 from monitors.domain_checker import check_domain
+from monitors.links_checker import check_links
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
 from reports.scheduler import reschedule_all, reset_site_schedule
-from services import humanize, integrations, maintenance, runtime, secrets, settings, sitestatus
+from services import (
+    gsc,
+    humanize,
+    integrations,
+    maintenance,
+    runtime,
+    screenshots,
+    secrets,
+    seo_fixes,
+    settings,
+    sitestatus,
+    yandex_webmaster,
+)
 from utils.clock import fmt_local
-from utils.text import esc, fmt_date, fmt_duration, plural
+from utils.text import esc, fmt_date, fmt_duration, plural, sparkline
 from utils.urls import host_key, is_api_check, is_api_url, is_http_url, is_web_page, site_label
 
 router = Router(name="sites")
@@ -171,6 +188,7 @@ async def card_lines(site: dict) -> list[str]:
     else:
         verb = "Не открывается" if http and not api else "Не отвечает"
         lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
+    lines += await _history_lines(site)
     covered_by = await host_checked_by(site)
     if covered_by and covered_by != site["url"]:
         lines.append(f"🔒 Сертификат и домен — на карточке {esc(site_label(covered_by))}: "
@@ -202,31 +220,67 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
-        links = st.get("links") if not api else None
-        if links:
-            if links.get("status") == "ok":
-                lines.append(f"✅ Ссылки: все открываются{_ago(links)}")
-            elif links.get("status") == "warning":
-                n = links.get("broken", links.get("internal")) or 0
-                lines.append(f"🟠 Ссылки: {n} не {plural(n, 'открывается', 'открываются', 'открываются')}{_ago(links)}")
-            else:
-                lines.append(f"⚠️ Ссылки: не смог проверить{_ago(links)}")
-        seo = st.get("seo") if not api else None
-        if seo:
-            # Says what was measured: robots/noindex and page findings. Whether
-            # the site is IN an index is the «🔎 Поиск и ИИ» screen's job.
-            n = seo.get("improve") or 0
-            verdict = {"ok": "✅ Поиск и ИИ: помех нет",
-                       "warning": f"🟠 Поиск и ИИ: {n} {plural(n, 'помеха', 'помехи', 'помех')}",
-                       "critical": "🔴 Поиск и ИИ: сайт закрыт от поисковиков"}.get(
-                seo.get("status"), "⚠️ Поиск и ИИ: не смог проверить")
-            lines.append(f"{verdict}{_ago(seo)}")
+        if not api:
+            lines += _links_lines(st.get("links"))
+            lines += _seo_lines(st)
+    return lines
+
+
+async def _history_lines(site: dict) -> list[str]:
+    """How it went over the week: speed day by day, and downtime."""
+    days = [d for d in await get_daily_availability(site["id"], 7) if d.get("avg_ms")]
+    lines = []
+    spark = sparkline([d["avg_ms"] for d in days])
+    if spark:
+        typical = sorted(d["avg_ms"] for d in days)[len(days) // 2]
+        lines.append(f"⏱ Скорость за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     month = await get_uptime_over_days(site["id"], 30)
     if week["total_checks"]:
-        lines.append(f"📈 За неделю {humanize.downtime(week['total_checks'], week['ok_checks'], interval)}, "
+        lines.append(f"📈 Простой: за неделю {humanize.downtime(week['total_checks'], week['ok_checks'], interval)}, "
                      f"за месяц {humanize.downtime(month['total_checks'], month['ok_checks'], interval)}")
+    return lines
+
+
+def _links_lines(links: dict | None) -> list[str]:
+    """The links on the page — and, when some do not open, which and why,
+    right here: the card is the whole story, not a pointer to a screen."""
+    if not links:
+        return []
+    total = links.get("total")
+    of = f" из {total}" if total else ""
+    if links.get("status") == "ok":
+        return [f"✅ Ссылки: {f'{total}, ' if total else ''}все открываются{_ago(links)}"]
+    if links.get("status") != "warning":
+        return [f"⚠️ Ссылки: не смог проверить{_ago(links)}"]
+    n = links.get("broken", links.get("internal")) or 0
+    lines = [f"🟠 Ссылки: {n}{of} не {plural(n, 'открывается', 'открываются', 'открываются')}{_ago(links)}"]
+    lines += [f"    • {esc(i['url'])} — {esc(humanize.link_reason(i.get('code'), i.get('error'), i['url']))}"
+              for i in (links.get("items") or [])[:5]]
+    lines.append("    Что сделать: поставь новый адрес, убери ссылку или дай копию из web.archive.org.")
+    return lines
+
+
+def _seo_lines(st: dict) -> list[str]:
+    """Search and AI in full: the verdict, the index when Google or Yandex
+    is connected, and each kind of finding by name."""
+    seo = st.get("seo")
+    if not seo:
+        return []
+    groups = seo_screen.grouped(seo.get("problems") or [])
+    n = len(groups) or seo.get("improve") or 0   # snapshots from before 11.2026 kept a count only
+    verdict = {"ok": "✅ Поиск и ИИ: помех нет",
+               "warning": f"🟠 Поиск и ИИ: {n} {plural(n, 'помеха', 'помехи', 'помех')}",
+               "critical": "🔴 Поиск и ИИ: сайт закрыт от поисковиков"}.get(
+        seo.get("status"), "⚠️ Поиск и ИИ: не смог проверить")
+    lines = [f"{verdict}{_ago(seo)}"]
+    idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available())
+    lines += [f"    {line}" for line in idx]
+    lines += [f"    {i}. {humanize.level_icon(sev)} {esc(seo_fixes.fix(code).title)}"
+              for i, (code, sev, _) in enumerate(groups[:5], 1)]
+    if n > 5:
+        lines.append(f"    … и ещё {n - 5}")
     return lines
 
 
@@ -258,23 +312,40 @@ async def render_card(call: CallbackQuery, site: dict):
         lines.append("")
         lines += [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))} "
                   f"<i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
-    rows = [[InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"check_site_live:{sid}"),
-             *pause_row[:1]]]
-    if is_web_page(url, site.get("http_method")):
-        rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}"),
-                     InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
-    last_row = []
-    if problems:
-        last_row.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}"))
-    last_row.append(InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}"))
-    rows.append(last_row)
+    rows = []
+    # One way to the fix, only when there is something to fix: search
+    # findings have a step-by-step screen, anything else its «что делать».
+    seo = (await sitestatus.get(sid)).get("seo") or {}
+    if is_web_page(url, site.get("http_method")) and seo.get("problems"):
+        rows.append([InlineKeyboardButton(text="🛠 Как исправить поиск", callback_data=f"seo_site:{sid}")])
+    elif problems:
+        rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}")])
+    rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
+                 *pause_row[:1]])
+    rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])
     if len(sites) > 1:
         prev, nxt = sites[pos - 1], sites[(pos + 1) % len(sites)]
         rows.append([InlineKeyboardButton(text=f"◀ {site_label(prev['url'])}", callback_data=f"check_site:{prev['id']}"),
                      InlineKeyboardButton(text=f"{site_label(nxt['url'])} ▶", callback_data=f"check_site:{nxt['id']}")])
     rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
                  InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
-    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+    picture = None
+    if is_web_page(url, site.get("http_method")):
+        picture = await screenshots.card_picture_url(sid)
+        if await screenshots.is_due(sid):   # the first time, or a stale one: ready by the next look
+            _later(screenshots.refresh(sid, url))
+    await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows), picture=picture)
+
+
+_background: set = set()
+
+
+def _later(coro):
+    """Run without holding the screen; keep a reference so it is not
+    collected half-way."""
+    task = asyncio.get_running_loop().create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
 
 
 @router.callback_query(F.data == "blk:sites")
@@ -307,8 +378,9 @@ async def cb_check_single_site(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("check_site_live:"))
 async def cb_check_site_live(call: CallbackQuery):
-    """«🔍 Проверить сейчас»: fresh availability, certificate and domain
-    (when this site is the one they are checked for), then the same card."""
+    """«🔄 Перепроверить»: everything the card shows, live — availability,
+    certificate and domain (when this site is the one they are checked
+    for), links and search — then the same card."""
     await ack(call, "Проверяю…")
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
@@ -318,11 +390,19 @@ async def cb_check_site_live(call: CallbackQuery):
     await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
-        await render(call, "▰▱▱ Смотрю сертификат...")
+        await render(call, "▰▱▱ Смотрю сертификат и срок домена...")
         await check_ssl(url, manage=False)
-        await render(call, "▰▰▱ Узнаю срок домена...")
         await check_domain(url, manage=False)
+    if is_web_page(url, site.get("http_method")):
+        base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
+        await render(call, f"▰▰▱ {base}")
+        await with_running_bar(call.message, base, _pages_now(site))
     await render_card(call, site)
+
+
+async def _pages_now(site: dict):
+    await check_links(site["url"], manage=False)
+    await seo_screen.audit_now(site)
 
 
 # ── Add ──────────────────────────────────────────────────────────────────────

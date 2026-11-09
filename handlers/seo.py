@@ -204,18 +204,19 @@ async def run_live(call: CallbackQuery, site: dict):
     base = (f"Смотрю на {esc(site_label(site['url']))} глазами Google, Яндекса и ИИ-ассистентов…\n"
             "(это занимает около 30 секунд)")
     await render(call, f"▰▱▱ {base}")
-
-    async def audit():
-        results = await check_all_seo([site["url"]], manage=False)
-        # Read-only, with one exception: a clean audit closes an open search
-        # finding — the screen says «помех нет», the list must not disagree.
-        # A new finding still waits for the daily audit to become an incident.
-        if results and results[0].status == "ok":
-            await resolve_incident(site["id"], "seo")
-        await index_status.refresh(site["id"], site["url"])
-
-    await with_running_bar(call.message, base, audit())
+    await with_running_bar(call.message, base, audit_now(site))
     await show_seo(call, site)
+
+
+async def audit_now(site: dict):
+    """A live audit for a screen. Read-only, with one exception: a clean
+    audit closes an open search finding — the screen says «помех нет», the
+    list must not disagree. A new finding still waits for the daily audit
+    to become an incident."""
+    results = await check_all_seo([site["url"]], manage=False)
+    if results and results[0].status == "ok":
+        await resolve_incident(site["id"], "seo")
+    await index_status.refresh(site["id"], site["url"])
 
 
 async def _auditable(call: CallbackQuery, site: dict | None) -> bool:

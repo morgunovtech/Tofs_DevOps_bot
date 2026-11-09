@@ -11,12 +11,17 @@ are supported:
 """
 
 import asyncio
+import hashlib
+import hmac
 import logging
+import os
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 import aiohttp
 
 from config import config
+from services import public_urls, secrets, sitestatus
 
 logger = logging.getLogger(__name__)
 
@@ -104,3 +109,71 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
             if attempt < RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY_SEC)
     return None, "сервис снимков не ответил, попробуй через минуту"
+
+
+# ── The site card's picture ──────────────────────────────────────────────────
+#
+# The card shows the page above its text instead of behind a «📸» button:
+# a screenshot is taken once a day (with the search audit) and kept on the
+# bot's disk; the card links to it on the bot's own public address, and
+# Telegram draws that link as a picture above the text. Off a public
+# address (no domain) there is simply no picture.
+
+REFRESH_AFTER = timedelta(hours=20)
+
+
+def _shots_dir() -> str:
+    return os.path.join(os.path.dirname(config.db_path) or ".", "shots")
+
+
+def shot_path(site_id: int) -> str:
+    return os.path.join(_shots_dir(), f"{site_id}.img")
+
+
+def _sig(site_id: int) -> str:
+    """Signed, so the address does not enumerate what the bot watches."""
+    key = secrets.heartbeat_secret().encode()
+    return hmac.new(key, f"shot:{site_id}".encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def sig_ok(site_id: int, sig: str) -> bool:
+    return hmac.compare_digest(_sig(site_id), sig)
+
+
+def image_type(data: bytes) -> str:
+    if data.startswith(b"\x89PNG"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+async def refresh(site_id: int, url: str) -> bool:
+    """Take a fresh picture of the page and keep it for the card."""
+    image, reason = await fetch_screenshot(url)
+    if not image:
+        logger.info("No card picture for %s: %s", url, reason)
+        return False
+    os.makedirs(_shots_dir(), exist_ok=True)
+    with open(shot_path(site_id), "wb") as f:
+        f.write(image)
+    await sitestatus.update(site_id, "shot", ok=True)
+    return True
+
+
+async def is_due(site_id: int) -> bool:
+    shot = (await sitestatus.get(site_id)).get("shot") or {}
+    age = sitestatus.age_minutes(shot)
+    return age is None or age > REFRESH_AFTER.total_seconds() / 60 or not os.path.exists(shot_path(site_id))
+
+
+async def card_picture_url(site_id: int) -> str | None:
+    """The address Telegram previews above the card, or None. The day in
+    the query makes Telegram take a fresh picture after a refresh."""
+    if not public_urls.is_public() or not os.path.exists(shot_path(site_id)):
+        return None
+    shot = (await sitestatus.get(site_id)).get("shot") or {}
+    version = str(shot.get("at") or datetime.now(UTC).date())[:16].replace(":", "").replace("-", "")
+    return f"{public_urls.base_url().rstrip('/')}/shot/{_sig(site_id)}/{site_id}?v={version}"
