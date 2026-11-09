@@ -1,5 +1,7 @@
-"""Alert ladder shared by SSL and domain expiry: notify once per threshold
-crossing (14 → 7 → 3 → 1 → 0 days), never daily about the same band."""
+"""Incident bookkeeping shared by monitors: the alert ladder of SSL and
+domain expiry (notify once per threshold crossing, 14 → 7 → 3 → 1 → 0
+days, never daily about the same band) and the plain open / keep / close
+of mail and security findings."""
 
 from db.database import (
     get_last_alert_threshold,
@@ -44,3 +46,16 @@ async def apply_ladder(result: CheckResult, check_type: str,
         result.recovered = True
     if last is not None:
         await set_last_alert_threshold(result.site_id, check_type, None)
+
+
+async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, open_new: bool = True):
+    """Open, keep or close r's incident. settled=False — the check had no
+    verdict (its service is down): an open incident stays as it is. A check
+    from a screen (open_new=False) may close what got fixed — the owner is
+    looking at it — but never opens: the alert belongs to the scheduled check."""
+    if not r.ok and r.error:
+        if open_new:
+            r.incident_id, r.incident_new = await save_incident(r.site_id, check_type, r.error, r.severity)
+    elif settled:
+        closed = await resolve_incident(r.site_id, check_type)
+        r.recovered, r.resolved_incident = closed is not None, closed
