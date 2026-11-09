@@ -14,6 +14,7 @@ from monitors.base import (
     SslResult,
 )
 from monitors.mail_checker import MailResult
+from monitors.security_checker import SecurityResult
 from services import humanize, seo_fixes
 from services.humanize import (
     UNCHECKED,
@@ -187,10 +188,12 @@ def format_dns_change(change: DnsChange) -> str:
 # ── Mail ─────────────────────────────────────────────────────────────────────
 
 def finding_block(n: int, f: dict) -> str:
-    """One mail finding: what, why, what to do, the record to paste."""
+    """One finding (monitors.base.Finding): what, why, what to do, the
+    record to paste — a block of lines as <pre>, one line as <code>."""
     lines = [f"{n}. <b>{esc(f['title'])}</b> — {esc(f['why'])}.", esc(f["fix"])]
-    if f.get("record"):
-        lines.append(f"<code>{esc(f['record'])}</code>")
+    record = f.get("record")
+    if record:
+        lines.append(f"<pre>{esc(record)}</pre>" if "\n" in record else f"<code>{esc(record)}</code>")
     if f.get("note"):
         lines.append(esc(f["note"]))
     return "\n".join(lines)
@@ -235,6 +238,30 @@ def format_mail_recovery(r: MailResult) -> str:
         how_long = f" (не принимала около {fmt_duration(minutes)})"
     return (f"✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
             f"обычно доходят сами: серверы отправителей повторяют попытки.")
+
+
+# ── Security ─────────────────────────────────────────────────────────────────
+
+def format_security_alert(r: SecurityResult) -> str:
+    label = esc(site_label(r.url))
+    n = len(r.findings)
+    if r.kind == "exposed":
+        head = f"🔴 На {label} наружу видны служебные файлы — их может скачать любой"
+        tail = "Убрал — нажми «🔄 Перепроверить» на карточке сайта, я скажу, что их больше не видно."
+    else:
+        head = f"🟠 {label}: защиту сайта стоит усилить"
+        tail = "Я перепроверяю каждые 6 часов и напишу, когда всё будет в порядке."
+    lines = [head, "Что сделать:" if n == 1 else f"{n} {plural(n, 'помеха', 'помехи', 'помех')}, у каждой — что сделать:",
+             "", "\n\n".join(finding_block(i, f) for i, f in enumerate(r.findings, 1)), "", tail]
+    return "\n".join(lines)
+
+
+def format_security_recovery(r: SecurityResult) -> str:
+    label = esc(site_label(r.url))
+    if r.kind == "exposed":
+        return (f"✅ На {label} служебные файлы больше не видны снаружи. Если в них были пароли или ключи — "
+                f"смени их, если ещё не сменил.")
+    return f"✅ {label}: защита сайта в порядке."
 
 
 # ── Status report (one line per site) ────────────────────────────────────────

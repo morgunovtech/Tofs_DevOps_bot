@@ -20,7 +20,7 @@ SPF has no mail: nothing to check, nothing to say.
 
 import asyncio
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 
 import dns.exception
 import dns.resolver
@@ -29,11 +29,10 @@ from db.database import (
     get_active_host_urls,
     get_dns_record,
     get_or_create_site,
-    resolve_incident,
-    save_incident,
 )
-from monitors.base import CheckResult
+from monitors.base import CheckResult, Finding
 from monitors.dns_checker import _resolve_sync
+from monitors.ladder import apply_incident
 from monitors.second_opinion import second_opinion_up
 from services import hosting, humanize, integrations, sitestatus
 from utils.text import plural
@@ -215,19 +214,6 @@ async def _dkim_found(domain: str, selectors: tuple[str, ...]) -> bool | None:
 
 
 # ── Findings ─────────────────────────────────────────────────────────────────
-
-@dataclass
-class Finding:
-    code: str
-    title: str        # «Две записи SPF вместо одной»
-    why: str          # what it does to the owner's letters
-    fix: str          # what to do, leading to the record
-    record: str = ""  # the exact value to paste, when there is one
-    note: str = ""    # said after the record
-
-    def as_dict(self) -> dict:
-        return asdict(self)
-
 
 def merge_spf(records: list[str], provider: Provider | None) -> str:
     """One record out of several: every mechanism once, the provider's
@@ -452,7 +438,8 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
     if findings:
         spam.status, spam.error = "warning", summary(findings)
     for r in (down, spam):
-        await _apply(r, settled=r.kind == "mail_auth" or bool(deliv.ok) or not mx, open_new=manage)
+        await apply_incident(r, r.kind, settled=r.kind == "mail_auth" or bool(deliv.ok) or not mx,
+                             open_new=manage)
     return [down, spam]
 
 
@@ -460,19 +447,6 @@ def down_message(reason: str | None, provider: str | None) -> str:
     if reason == "nowhere":
         return "почта не принимает письма — записи MX ведут на сервер, которого нет"
     return f"почта не принимает письма — {provider or 'почтовый сервер'} не отвечает"
-
-
-async def _apply(r: MailResult, settled: bool, open_new: bool):
-    """Open, keep or close the incident. A delivery check without a verdict
-    (the verdict service is down) leaves an open one as it is. A check from
-    a screen (open_new=False) may close what got fixed — the owner is looking
-    at it — but never opens: the alert belongs to the scheduled check."""
-    if not r.ok and r.error:
-        if open_new:
-            r.incident_id, r.incident_new = await save_incident(r.site_id, r.kind, r.error, r.severity)
-    elif settled:
-        closed = await resolve_incident(r.site_id, r.kind)
-        r.recovered, r.resolved_incident = closed is not None, closed
 
 
 async def check_all_mail(urls: list[str], manage: bool = True) -> list[MailResult]:

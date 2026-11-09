@@ -18,6 +18,7 @@ from handlers import (
     maintenance,
     menu,
     mute,
+    security,
     seo,
     settings,
     setup,
@@ -39,6 +40,7 @@ admin.include_routers(
     menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router, mail.router,
+    security.router,
     stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)

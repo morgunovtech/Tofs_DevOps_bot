@@ -194,7 +194,8 @@ def test_setup_scheduler_registers_jobs(db):
     assert {"availability_checks", "ssl_checks", "domain_checks", "seo_checks", "links_checks",
             "dns_checks", "deep_checks", "heartbeat_watch", "escalation_watch", "quiet_flush",
             "retention", "db_backup", "morning_report", "evening_report", "weekly_report",
-            "alive", "outbox_flush", "card_pictures", "card_pictures_soon", "mail_checks", "mail_checks_soon"} <= ids
+            "alive", "outbox_flush", "card_pictures", "card_pictures_soon", "mail_checks", "mail_checks_soon",
+            "security_checks", "security_checks_soon"} <= ids
     scheduler.reschedule_all()   # works on a not-yet-started scheduler too
 
 

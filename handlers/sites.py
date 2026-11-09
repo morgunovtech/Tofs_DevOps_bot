@@ -49,6 +49,7 @@ from handlers.common import (
 )
 from handlers.mail import mail_lines
 from handlers.menu import best_ms, cb_main_menu, site_state
+from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
@@ -56,6 +57,7 @@ from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
 from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
+from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
 from monitors.ssl_checker import check_ssl
 from reports.formatter import incident_line
 from reports.scheduler import reschedule_all, reset_site_schedule
@@ -232,6 +234,8 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
         if await carrier_of(site["url"]) == site["url"]:
             lines += mail_lines(st.get("mail"))
+        if not api and is_https(site["url"]):
+            lines += security_lines(st.get("security"))
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
         lines += await _home_lines(site)
@@ -386,13 +390,15 @@ async def render_card(call: CallbackQuery, site: dict):
     # «что делать».
     st = await sitestatus.get(sid)
     seo = st.get("seo") or {}
-    other = [inc for inc in problems if inc["check_type"] not in MAIL_CHECKS]
+    other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS)]
     if is_web_page(url, site.get("http_method")) and seo.get("problems"):
         rows.append([InlineKeyboardButton(text="🛠 Как исправить поиск", callback_data=f"seo_site:{sid}")])
     elif other:
         rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{other[0]['id']}")])
-    if (st.get("mail") or {}).get("findings") or len(other) < len(problems):
+    if (st.get("mail") or {}).get("findings") or any(inc["check_type"] in MAIL_CHECKS for inc in problems):
         rows.append([InlineKeyboardButton(text="✉️ Как починить почту", callback_data=f"mail:{sid}")])
+    if (st.get("security") or {}).get("findings") or any(inc["check_type"] in SECURITY_CHECKS for inc in problems):
+        rows.append([InlineKeyboardButton(text="🛡 Как защитить сайт", callback_data=f"sec:{sid}")])
     rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
     rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])
@@ -464,11 +470,13 @@ async def cb_check_site_live(call: CallbackQuery):
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
         mail_domain = registrable_domain(host_of(url)) if await carrier_of(url) == url else None
-        await render(call, f"▰▱▱ Смотрю сертификат, срок домена{' и почту' if mail_domain else ''}...")
+        await render(call, f"▰▱▱ Смотрю сертификат, срок домена{', почту' if mail_domain else ''} и защиту сайта...")
         await check_ssl(url, manage=False)
         await check_domain(url, manage=False)
         if mail_domain:
             await check_mail(mail_domain, url, manage=False)
+        if is_https(url) and is_web_page(url, site.get("http_method")):
+            await check_security(url, manage=False)
     if is_web_page(url, site.get("http_method")):
         base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
         await render(call, f"▰▰▱ {base}")
