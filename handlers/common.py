@@ -42,7 +42,9 @@ async def render(target: Message | CallbackQuery, text: str,
     an error — the screen is already right. picture: an image address that
     Telegram draws above the text (link previews are off everywhere else)."""
     text = clip(text)
-    extra = {"link_preview_options": LinkPreviewOptions(url=picture, prefer_large_media=True,
+    # is_disabled=False must be said: aiogram fills an unset field from the
+    # bot-wide default, and that default switches every preview off.
+    extra = {"link_preview_options": LinkPreviewOptions(is_disabled=False, url=picture, prefer_large_media=True,
                                                          show_above_text=True)} if picture else {}
     editable = getattr(target, "message", None)   # CallbackQuery → its message
     if editable is not None and not hasattr(editable, "edit_text"):

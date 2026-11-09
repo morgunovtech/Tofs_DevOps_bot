@@ -675,6 +675,9 @@ async def test_site_card_says_everything_without_extra_buttons(bot, db, cfg, tmp
     assert not {"🔎 Поиск и ИИ", "🔗 Ссылки", "📸 Как выглядит сайт"} & set(labels)
     picture = call.message.previews[-1]
     assert picture.startswith("https://bot.example/shot/") and f"/{sid}?v=" in picture
+    # Said outright: an unset field takes the bot-wide «no previews» and the
+    # picture silently never shows (09.11.2026).
+    assert call.message.preview_options[-1].is_disabled is False
 
     _, kb = await site_settings.sset_screen(await db.get_site(sid))
     assert "📸 Как выглядит сайт" not in buttons(kb)
@@ -699,3 +702,28 @@ async def test_recheck_renews_links_and_search_too(bot, db, monkeypatch):
     monkeypatch.setattr(sites.seo_screen, "audit_now", audit)
     await sites.cb_check_site_live(FakeCall(f"check_site_live:{sid}"))
     assert calls == ["avail", "links", "seo"]
+
+
+async def test_site_card_tells_when_it_fell_where_it_lives_and_how_the_rest_is(bot, db):
+    """What the bot knew and the card did not say: the last outage with its
+    cause, the watched phrase, hosting and the domain's DNS, the pages from
+    the sitemap."""
+    sid = await db.activate_or_create_site("https://ex.test")
+    await db.update_site_settings(sid, keyword="Привет", keyword_mode="present")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    await sitestatus.update(sid, "deep", sampled=10, errors=0)
+    await db.set_state(f"hosting:{sid}", "cloudflare")
+    await db.set_dns_state("ex.test", "NS", "ada.ns.cloudflare.com,bob.ns.cloudflare.com")
+    inc_id, _ = await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    conn = await db.get_db()
+    await conn.execute("UPDATE incidents SET created_at = datetime('now', '-2 days'), "
+                       "resolved = 1, resolved_at = datetime('now', '-2 days', '+5 minutes') WHERE id = ?", (inc_id,))
+    await conn.commit()
+    text = "\n".join(await sites.card_lines(await db.get_site(sid)))
+    assert "🕓 Последний сбой: " in text and ", 5 мин (хостинг отвечает ошибкой 502)" in text
+    assert "✅ Фраза «Привет» на месте" in text
+    assert "🏠 Сайт на Cloudflare" in text and "DNS у Cloudflare, не менялись с " in text
+    assert "✅ Страницы: проверил 10 страниц из карты сайта — все отвечают" in text
+    await sitestatus.update(sid, "deep", sampled=10, errors=3)
+    text = "\n".join(await sites.card_lines(await db.get_site(sid)))
+    assert "🟠 Страницы: проверил 10 страниц из карты сайта — 3 отвечают ошибкой сервера" in text

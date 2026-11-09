@@ -67,21 +67,26 @@ class FakeMessage:
         self.markups: list = []      # the keyboard of each text, in step with self.texts
         self.documents: list = []    # captions of the files sent
         self.previews: list = []     # the picture drawn above each text, or None
+        self.preview_options: list = []   # the LinkPreviewOptions object as sent
         self.chat = SimpleNamespace(id=1)
         self.reply_markup = None
 
     async def edit_text(self, text, reply_markup=None, **kwargs):
-        self.previews.append((kwargs.get("link_preview_options") or None) and kwargs["link_preview_options"].url)
+        self._preview(kwargs.get("link_preview_options"))
         self.texts.append(text)
         self.markups.append(reply_markup)
         self.reply_markup = reply_markup
 
     async def answer(self, text, reply_markup=None, **kwargs):
-        self.previews.append((kwargs.get("link_preview_options") or None) and kwargs["link_preview_options"].url)
+        self._preview(kwargs.get("link_preview_options"))
         self.texts.append(text)
         self.markups.append(reply_markup)
         self.reply_markup = reply_markup
         return self
+
+    def _preview(self, options):
+        self.preview_options.append(options)
+        self.previews.append(options.url if options is not None else None)
 
     async def edit_reply_markup(self, reply_markup=None):
         self.reply_markup = reply_markup

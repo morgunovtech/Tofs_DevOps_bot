@@ -4,6 +4,7 @@ export/import."""
 import asyncio
 import json
 import re
+from datetime import timedelta
 from urllib.parse import urlparse
 
 from aiogram import F, Router
@@ -26,6 +27,8 @@ from db.database import (
     get_active_incidents,
     get_all_sites,
     get_daily_availability,
+    get_dns_record,
+    get_last_incident,
     get_site,
     get_state,
     get_uptime_over_days,
@@ -67,9 +70,19 @@ from services import (
     sitestatus,
     yandex_webmaster,
 )
-from utils.clock import fmt_local
-from utils.text import esc, fmt_date, fmt_duration, plural, sparkline
-from utils.urls import host_key, is_api_check, is_api_url, is_http_url, is_web_page, site_label
+from services import hosting as hosting_svc
+from utils.clock import fmt_local, to_local, utcnow
+from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural, sparkline
+from utils.urls import (
+    host_key,
+    host_of,
+    is_api_check,
+    is_api_url,
+    is_http_url,
+    is_web_page,
+    registrable_domain,
+    site_label,
+)
 
 router = Router(name="sites")
 
@@ -184,6 +197,8 @@ async def card_lines(site: dict) -> list[str]:
         verb = "Не открывается" if http and not api else "Не отвечает"
         lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
     lines += await _history_lines(site)
+    lines += await _outage_lines(site)
+    lines += _keyword_lines(site, avail)
     covered_by = await host_checked_by(site)
     if covered_by and covered_by != site["url"]:
         lines.append(f"🔒 Сертификат и домен — на карточке {esc(site_label(covered_by))}: "
@@ -215,7 +230,9 @@ async def card_lines(site: dict) -> list[str]:
             lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
+        lines += await _home_lines(site)
         if not api:
+            lines += _pages_lines(st.get("deep"))
             lines += _links_lines(st.get("links"))
             lines += _seo_lines(st)
     return lines
@@ -236,6 +253,64 @@ async def _history_lines(site: dict) -> list[str]:
         lines.append(f"📈 Простой: за неделю {humanize.downtime(week['total_checks'], week['ok_checks'], interval)}, "
                      f"за месяц {humanize.downtime(month['total_checks'], month['ok_checks'], interval)}")
     return lines
+
+
+async def _outage_lines(site: dict) -> list[str]:
+    """When it last went down, for how long and why — the downtime total
+    above says how much, this says when."""
+    inc = await get_last_incident(site["id"], "availability")
+    started = parse_sqlite_utc(inc["created_at"]) if inc else None
+    if not inc or not inc["resolved"] or not started or utcnow() - started > timedelta(days=90):
+        return []   # nothing recent; an open one is listed as a problem below
+    ended = parse_sqlite_utc(inc.get("resolved_at")) or started
+    minutes = max(1, round((ended - started).total_seconds() / 60))
+    why = humanize.describe_error(inc.get("message"))
+    return [f"🕓 Последний сбой: {to_local(started).strftime('%d.%m %H:%M')}, {fmt_duration(minutes)} ({esc(why)})"]
+
+
+def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
+    """The phrase the owner asked to watch — said when it is fine too."""
+    phrase = site.get("keyword")
+    if not phrase or not avail or avail.get("status") != "ok":
+        return []
+    if site.get("keyword_mode") == "absent":
+        return [f"✅ Фразы «{esc(phrase)}» на странице нет, как и должно быть"]
+    return [f"✅ Фраза «{esc(phrase)}» на месте"]
+
+
+_NS_PROVIDERS = (("cloudflare", "Cloudflare"), ("awsdns", "Amazon Route 53"), ("googledomains", "Google"),
+                 ("vercel-dns", "Vercel"), ("nsone", "NS1 (Netlify)"), ("netlify", "Netlify"),
+                 ("registrar-servers", "Namecheap"), ("nic.ru", "RU-CENTER"), ("reg.ru", "REG.RU"),
+                 ("yandex", "Яндекс"), ("beget", "Beget"), ("timeweb", "Timeweb"), ("digitalocean", "DigitalOcean"))
+
+
+async def _home_lines(site: dict) -> list[str]:
+    """Where the site lives and who answers for its domain — what to open
+    when something breaks, and whether the domain's servers stayed put."""
+    parts = []
+    hosting = hosting_svc.label(await get_state(f"hosting:{site['id']}"))
+    if hosting:
+        parts.append(f"сайт на {hosting}")
+    ns = await get_dns_record(registrable_domain(host_of(site["url"])), "NS")
+    if ns and ns[0]:
+        provider = next((name for key, name in _NS_PROVIDERS if key in ns[0].lower()), ns[0].split(",")[0])
+        since = parse_sqlite_utc(ns[1])
+        parts.append(f"DNS у {provider}" + (f", не менялись с {to_local(since).strftime('%d.%m.%Y')}" if since else ""))
+    if not parts:
+        return []
+    text = " · ".join(parts)
+    return [f"🏠 {esc(text[:1].upper() + text[1:])}"]
+
+
+def _pages_lines(deep: dict | None) -> list[str]:
+    """The rest of the site: a sample of pages from the sitemap, hourly."""
+    if not deep or not deep.get("sampled"):
+        return []
+    n, bad = deep["sampled"], deep.get("errors") or 0
+    pages = f"{n} {plural(n, 'страницу', 'страницы', 'страниц')} из карты сайта"
+    if not bad:
+        return [f"✅ Страницы: проверил {pages} — все отвечают{_ago(deep)}"]
+    return [f"🟠 Страницы: проверил {pages} — {bad} отвечают ошибкой сервера{_ago(deep)}"]
 
 
 def _links_lines(links: dict | None) -> list[str]:

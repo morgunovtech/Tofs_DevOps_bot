@@ -956,6 +956,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_seo_checks, _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
     job(run_index_checks, _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
     job(run_card_pictures, _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
+    job(run_card_pictures, DateTrigger(run_date=soon), "card_pictures_soon")
     # Links: first run shortly after boot, then every N hours.
     job(run_links_checks, IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon),
         "links_checks", misfire_grace_time=300)
