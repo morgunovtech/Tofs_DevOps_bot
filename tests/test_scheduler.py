@@ -59,7 +59,7 @@ async def test_slow_streak_opens_performance_incident(bot, db):
     assert len([i for i in await get_active_incidents() if i["check_type"] == "performance"]) == 1
     r.response_time_ms = 100
     await scheduler._track_slow(r, slow_ms=3000)
-    assert "снова открывается быстро" in bot.sent[-1]["text"]
+    assert "снова открывается за 0.10 с" in bot.sent[-1]["text"]
     assert not [i for i in await get_active_incidents() if i["check_type"] == "performance"]
 
 

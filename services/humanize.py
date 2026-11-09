@@ -47,18 +47,14 @@ def fmt_seconds(ms: int | float | None) -> str:
     return f"{s:.2f} с" if s < 1 else (f"{s:.1f} с" if s < 10 else f"{s:.0f} с")
 
 
-def speed_word(ms: int | float | None) -> str:
-    if ms is None:
-        return "нет данных"
-    return "быстро" if ms < 500 else ("нормально" if ms < 2000 else "медленно")
-
-
 def speed(ms: int | float | None, region: str | None = None) -> str:
-    """'быстро (0.12 с)' · 'нормально (0.8 с из России)' · 'медленно (3 с)'."""
+    """«за 0.12 с» · «за 0.8 с из России»: the number, never an adjective —
+    «быстро» would be a threshold nobody set. Slow is said only where the
+    owner's «медленно» threshold says so (the performance alert)."""
     if ms is None:
         return "нет данных"
     where = f" {region}" if region else ""
-    return f"{speed_word(ms)} ({fmt_seconds(ms)}{where})"
+    return f"за {fmt_seconds(ms)}{where}"
 
 
 def _http(code: int) -> str:

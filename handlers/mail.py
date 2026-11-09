@@ -9,6 +9,7 @@ from handlers.common import ack, back_button, render, site_by_cb
 from monitors.mail_checker import carrier_of, check_mail
 from reports.formatter import finding_block
 from services import integrations, sitestatus
+from services.humanize import lower_first
 from utils.text import esc, fmt_duration, plural
 from utils.urls import host_of, registrable_domain
 
@@ -25,49 +26,60 @@ def _who(mail: dict) -> str:
 
 
 def _receives_line(mail: dict) -> str:
-    """Does the domain accept letters — the thing that matters most."""
-    who = esc(_who(mail))
+    """Does the domain accept letters — the thing that matters most. Said
+    whole, so it reads the same at the top of the card among the problems."""
+    who, domain = esc(_who(mail)), esc(mail.get("domain") or "")
     if mail.get("accepts") is False:
         if (mail.get("fails") or 0) >= 2:
             why = ("записи MX ведут на сервер, которого нет" if mail.get("reason") == "nowhere"
                    else f"{who} не отвечает")
-            return f"🔴 Почта не принимает письма — {why}"
+            return f"🔴 Почта {domain} не принимает письма — {why}"
         return f"⏳ Почта: {who} не ответил — перепроверю через 10 минут"
     if mail.get("accepts"):
         backup = " (основной сервер молчит, принимает запасной)" if mail.get("backup_only") else ""
-        return f"✅ Почта: {who}, принимает письма{backup}"
+        return f"✅ Почта принимает письма · {who}{backup}"
     if not integrations.second_opinion_enabled():
-        return f"✉️ Почта: {who} — принимает ли письма, не проверяю: внешние проверки выключены"
-    return f"✉️ Почта: {who}"
+        return f"Почта · {who} — принимает ли письма, не проверяю: внешние проверки выключены"
+    return f"Почта · {who}"
 
 
-def _auth_ok(mail: dict) -> str:
-    """«SPF, DKIM, DMARC в порядке» — only what was actually seen fine."""
-    ok = [name for name, fine in (("SPF", mail.get("spf") == 1), ("DKIM", mail.get("dkim") is True),
-                                  ("DMARC", mail.get("dmarc") in ("quarantine", "reject"))) if fine]
-    return f"{', '.join(ok)} в порядке" if ok else ""
+def mail_brief(mail: dict | None) -> tuple[str, str]:
+    """(icon, words) for the domain's line on the main screen."""
+    if mail is None:
+        return "⏳", "ещё не проверял"
+    if not mail.get("mx") and not mail.get("sends_only"):
+        return "✅", "почты нет"
+    if mail.get("accepts") is False and (mail.get("fails") or 0) >= 2:
+        return "🔴", "не принимает письма"
+    findings = mail.get("findings") or []
+    if findings:
+        rest = len(findings) - 1
+        more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest else ""
+        return "🟠", f"{lower_first(findings[0]['title'])}{more}"
+    return "✅", _who(mail)
 
 
 def mail_lines(mail: dict | None) -> list[str]:
-    """The card: one line when all is well, the problems by name when not."""
+    """The card: whether letters arrive, and the spam settings — a problem
+    said whole («Почта example.com: …»), since the card lifts it to the top."""
     if mail is None:
         return ["⏳ Почта: ещё не проверял"]
     findings = mail.get("findings") or []
     if not mail.get("mx") and not mail.get("sends_only"):
-        return ["✅ Почты на этом домене нет, слать письма от его имени запрещено" if mail.get("locked")
-                else "✉️ Почты на этом домене нет"]
-    head = (_receives_line(mail) if mail.get("mx")
-            else "✉️ Почта: только отправка писем — входящей почты на домене нет")
-    if not findings:
-        auth = _auth_ok(mail)
-        lines = [f"{head}{f' · {auth}' if auth else ''}{_ago(mail)}"]
-    else:
+        return ["✅ Почты на домене нет, слать письма от его имени запрещено" if mail.get("locked")
+                else "✅ Почты на домене нет"]
+    lines = [_receives_line(mail) if mail.get("mx")
+             else "✅ Почта только отправляет письма — входящей на домене нет"]
+    domain = esc(mail.get("domain") or "")
+    if len(findings) == 1:
+        lines.append(f"🟠 Почта {domain}: {esc(lower_first(findings[0]['title']))} — письма могут уходить в спам")
+    elif findings:
         n = len(findings)
-        lines = [f"{head}{_ago(mail)}",
-                 f"🟠 Настройки почты: {n} {plural(n, 'помеха', 'помехи', 'помех')} — письма могут уходить в спам"]
+        lines.append(f"🟠 Почта {domain}: {n} {plural(n, 'помеха', 'помехи', 'помех')} — письма могут уходить "
+                     f"в спам")
         lines += [f"    {i}. {esc(f['title'])}" for i, f in enumerate(findings[:5], 1)]
-    if mail.get("dmarc") == "none" and not findings:
-        lines.append("    ℹ️ DMARC только наблюдает: подделки твоего адреса всё ещё доходят. Поменяй p=none на "
+    elif mail.get("dmarc") == "none":
+        lines.append("    DMARC только наблюдает: подделки твоего адреса всё ещё доходят. Поменяй p=none на "
                      "p=quarantine в записи _dmarc — тогда они будут уходить в спам.")
     return lines
 

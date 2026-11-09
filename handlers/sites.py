@@ -48,7 +48,7 @@ from handlers.common import (
     with_running_bar,
 )
 from handlers.mail import mail_lines
-from handlers.menu import best_ms, cb_main_menu, site_state
+from handlers.menu import PROBLEM_ICONS, best_ms, cb_main_menu, checked_at, headline, icon_of, site_state
 from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.speed import speed_lines
@@ -60,7 +60,6 @@ from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
 from monitors.ssl_checker import check_ssl
-from reports.formatter import incident_line
 from reports.scheduler import reschedule_all, reset_site_schedule
 from services import (
     gsc,
@@ -76,8 +75,8 @@ from services import (
     yandex_webmaster,
 )
 from services import hosting as hosting_svc
-from utils.clock import fmt_local, to_local, utcnow
-from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural, sparkline
+from utils.clock import to_local, utcnow
+from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import (
     host_key,
     host_of,
@@ -153,12 +152,16 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
 
 
 # ── Card ─────────────────────────────────────────────────────────────────────
+#
+# One set of rules for the card and the main screen: only status icons; the
+# time of the check once, at the top; a line is a status, what it is and one
+# number; a problem is said once — the card lifts it to the top, the blocks
+# below keep what is fine, most important first.
 
-def _ago(section: dict | None) -> str:
-    age = sitestatus.age_minutes(section)
-    if age is None:
-        return ""
-    return " · только что" if age < 1 else f" · {fmt_duration(age)} назад"
+# Problems the card shows on one of its lines; any other kind (a DNS change,
+# slow answers) gets a line of its own among the problems.
+_SHOWN_ON_A_LINE = frozenset({"availability", "ssl", "domain", "links", "deep", "seo", "visitors",
+                              *MAIL_CHECKS, *SECURITY_CHECKS})
 
 
 def api_line(site: dict) -> str:
@@ -169,7 +172,7 @@ def api_line(site: dict) -> str:
     if kw:
         expect = (f", в ответе не должно быть «{esc(kw)}»" if site.get("keyword_mode") == "absent"
                   else f", в ответе должно быть «{esc(kw)}»")
-    return (f"🔌 API-проверка: {method}{expect}. Слежу только за ответом — поиск, ссылки и SEO "
+    return (f"API-проверка: {method}{expect}. Слежу только за ответом — поиск, ссылки и SEO "
             f"к API не относятся.")
 
 
@@ -185,97 +188,128 @@ async def host_checked_by(site: dict) -> str | None:
     return next((u for u in hosts if host_key(u) == host_key(url)), None)
 
 
-async def card_lines(site: dict) -> list[str]:
-    """Everything about one site from the stored snapshot — instant."""
+def _items(lines: list[str]) -> list[list[str]]:
+    """Lines grouped into items: a line and the indented ones under it."""
+    out: list[list[str]] = []
+    for line in lines:
+        if line.startswith("    ") and out:
+            out[-1].append(line)
+        else:
+            out.append([line])
+    return out
+
+
+async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[str]]]]:
+    """(problems, [(block title, lines)]) from the stored snapshot — instant."""
     st = await sitestatus.get(site["id"])
     http = is_http_url(site["url"])
     api = is_api_check(site["url"], site.get("http_method"))
-    lines: list[str] = [api_line(site)] if api else []
+    page = http and not api
     avail = st.get("avail")
-    if not avail:
-        lines.append("⏳ Ещё не проверял — первая проверка в течение минуты")
-    elif avail.get("status") == "ok":
-        ms, region = best_ms(st)
-        verb = "Открывается" if http and not api else "Отвечает"
-        lines.append(f"✅ {verb}, {humanize.speed(ms, region)}{_ago(avail)}")
-    else:
-        verb = "Не открывается" if http and not api else "Не отвечает"
-        lines.append(f"🔴 {verb}: {esc(humanize.describe_error(avail.get('error')))}{_ago(avail)}")
-    lines += await _history_lines(site)
-    lines += await speed_lines(site)
-    lines += await _outage_lines(site)
-    lines += _keyword_lines(site, avail)
+
+    access = [api_line(site)] if api else []
+    access.append(await _avail_line(site, st, page))
+    access += await _history_lines(site)
+    access += _keyword_lines(site, avail)
+    domain: list[str] = []
+    mail: list[str] = []
+    protection: list[str] = []
+    search: list[str] = []
     covered_by = await host_checked_by(site)
     if covered_by and covered_by != site["url"]:
-        lines.append(f"🔒 Сертификат и домен — на карточке {esc(site_label(covered_by))}: "
-                     f"проверяю их один раз на адрес")
+        domain.append(f"Сертификат и домен — на карточке {esc(site_label(covered_by))}: проверяю их один раз "
+                      f"на адрес")
     if covered_by == site["url"]:
-        ssl = st.get("ssl")
-        if not ssl:
-            lines.append("⏳ Сертификат: ещё не проверял")
-        elif ssl.get("days_left") is not None:
-            days = ssl["days_left"]
-            icon = "✅" if days > 14 else humanize.level_icon("warning" if days > 3 else "critical")
-            issuer = f", выдан {esc(ssl['issuer'])}" if ssl.get("issuer") else ""
-            lines.append(f"{icon} Сертификат действует ещё {days} дн. (до {fmt_date(ssl.get('not_after'))}){issuer}")
-        else:
-            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl.get('error')))}")
-        dom = st.get("domain")
-        if not dom:
-            if not api:   # an api.* host shares the registration with its site
-                lines.append("⏳ Домен: ещё не проверял")
-        elif dom.get("days_left") is not None:
-            days = dom["days_left"]
-            icon = "✅" if days > 30 else humanize.level_icon("warning" if days > 7 else "critical")
-            registrar = (f", регистратор {esc(dom['registrar'])}"
-                         if dom.get("registrar") not in (None, "", "Unknown") else "")
-            lines.append(f"{icon} Домен оплачен до {fmt_date(dom.get('expiration'))} (ещё {days} дн.){registrar}")
-        elif dom.get("unsupported"):
-            lines.append(f"ℹ️ Домен: {esc(dom.get('error') or 'срок не сообщается')}")
-        else:
-            lines.append(f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}")
+        domain += _domain_lines(st.get("domain"), api)
+        domain += _ssl_lines(st.get("ssl"))
+        domain += await _dns_lines(site)
         if await carrier_of(site["url"]) == site["url"]:
-            lines += mail_lines(st.get("mail"))
-        if not api and is_https(site["url"]):
-            lines += security_lines(st.get("security"))
+            mail += mail_lines(st.get("mail"))
+        if page and is_https(site["url"]):
+            protection += security_lines(st.get("security"))
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
-        lines += await _home_lines(site)
-        if not api:
-            lines += _pages_lines(st.get("deep"))
-            lines += _links_lines(st.get("links"))
-            lines += _seo_lines(st, cf_pending=await seo_screen.cloudflare_check_pending(site["id"], st))
-    return lines
+        if page:
+            access += _pages_lines(st.get("deep"))
+            access += _links_lines(st.get("links"))
+            search += _seo_lines(st, cf_pending=await seo_screen.cloudflare_check_pending(site["id"], st))
+    access += await speed_lines(site)
+
+    problems: list[list[str]] = []
+    blocks: list[tuple[str, list[str]]] = []
+    mail_title = "Почта и защита" if mail and protection else "Почта" if mail else "Защита"
+    for title, lines in (("Доступность", access), ("Домен", domain), (mail_title, mail + protection),
+                         ("Поиск", search)):
+        rest: list[str] = []
+        for item in _items(lines):
+            if item[0].startswith(PROBLEM_ICONS):
+                problems.append(item)
+            else:
+                rest += item
+        if rest:
+            blocks.append((title, rest))
+    for inc in await get_active_incidents():
+        if inc["site_id"] == site["id"] and inc["check_type"] not in _SHOWN_ON_A_LINE:
+            problems.append([f"{humanize.level_icon(inc['severity'])} "
+                             f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), 'Сайт'))}"])
+    return problems, blocks
+
+
+async def card_lines(site: dict) -> list[str]:
+    """The card's text under its headline: problems, then the blocks."""
+    problems, blocks = await card_parts(site)
+    lines = [line for item in problems for line in item]
+    for title, rest in blocks:
+        lines += ["", f"<b>{title}</b>", *rest]
+    return lines[1:] if lines and lines[0] == "" else lines
+
+
+async def _typical_ms(site: dict) -> int | None:
+    """The usual answer time this week: the median of the daily averages."""
+    days = sorted(d["avg_ms"] for d in await get_daily_availability(site["id"], 7) if d.get("avg_ms"))
+    return days[len(days) // 2] if days else None
+
+
+async def _avail_line(site: dict, st: dict, page: bool) -> str:
+    avail = st.get("avail")
+    if not avail:
+        return "⏳ Ещё не проверял — первая проверка в течение минуты"
+    if avail.get("status") != "ok":
+        return f"🔴 {'Не открывается' if page else 'Не отвечает'}: {esc(humanize.describe_error(avail.get('error')))}"
+    ms, region = best_ms(st)
+    typical = await _typical_ms(site)
+    usual = f", обычно за {humanize.fmt_seconds(typical)}" if typical else ""
+    return f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(ms, region)}{usual}"
 
 
 async def _history_lines(site: dict) -> list[str]:
-    """How it went over the week: speed day by day, and downtime."""
-    days = [d for d in await get_daily_availability(site["id"], 7) if d.get("avg_ms")]
-    lines = []
-    spark = sparkline([d["avg_ms"] for d in days])
-    if spark:
-        typical = sorted(d["avg_ms"] for d in days)[len(days) // 2]
-        lines.append(f"⏱ Ответ сервера за неделю {spark} · обычно {humanize.fmt_seconds(typical)}")
+    """Downtime over the week and the month, and when it last went down."""
     interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
-    month = await get_uptime_over_days(site["id"], 30)
+    parts = []
     if week["total_checks"]:
-        lines.append(f"📈 Простой: за неделю {humanize.downtime(week['total_checks'], week['ok_checks'], interval)}, "
-                     f"за месяц {humanize.downtime(month['total_checks'], month['ok_checks'], interval)}")
-    return lines
+        month = await get_uptime_over_days(site["id"], 30)
+        w = humanize.downtime(week["total_checks"], week["ok_checks"], interval)
+        m = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        parts.append("без сбоев ни за неделю, ни за месяц" if w == m == "без сбоев" else
+                     f"простой: за неделю {w.removeprefix('недоступен ')}, за месяц {m.removeprefix('недоступен ')}")
+    outage = await _last_outage(site)
+    if outage:
+        parts.append(outage)
+    text = "; ".join(parts)
+    return [f"✅ {text[:1].upper()}{text[1:]}"] if text else []
 
 
-async def _outage_lines(site: dict) -> list[str]:
-    """When it last went down, for how long and why — the downtime total
-    above says how much, this says when."""
+async def _last_outage(site: dict) -> str:
+    """«последний сбой 05.11 14:03 — 5 мин, хостинг отвечает ошибкой 502»."""
     inc = await get_last_incident(site["id"], "availability")
     started = parse_sqlite_utc(inc["created_at"]) if inc else None
     if not inc or not inc["resolved"] or not started or utcnow() - started > timedelta(days=90):
-        return []   # nothing recent; an open one is listed as a problem below
+        return ""   # nothing recent; an open one is a problem at the top
     ended = parse_sqlite_utc(inc.get("resolved_at")) or started
     minutes = max(1, round((ended - started).total_seconds() / 60))
     why = humanize.describe_error(inc.get("message"))
-    return [f"🕓 Последний сбой: {to_local(started).strftime('%d.%m %H:%M')}, {fmt_duration(minutes)} ({esc(why)})"]
+    return f"последний сбой {to_local(started).strftime('%d.%m %H:%M')} — {fmt_duration(minutes)}, {esc(why)}"
 
 
 def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
@@ -288,33 +322,67 @@ def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
     return [f"✅ Фраза «{esc(phrase)}» на месте"]
 
 
-async def _home_lines(site: dict) -> list[str]:
-    """Where the site lives and who answers for its domain — what to open
-    when something breaks, and whether the domain's servers stayed put."""
-    parts = []
-    hosting = hosting_svc.label(await get_state(f"hosting:{site['id']}"))
-    if hosting:
-        parts.append(f"сайт на {hosting}")
+def _ssl_lines(ssl: dict | None) -> list[str]:
+    if not ssl:
+        return ["⏳ Сертификат: ещё не проверял"]
+    days = ssl.get("days_left")
+    if days is None:
+        return [f"🔴 Сертификат: {esc(humanize.describe_error(ssl.get('error')))}"]
+    until = f"до {fmt_date(ssl['not_after'])} · " if ssl.get("not_after") else ""
+    if days > 14:
+        return [f"✅ Сертификат {until}ещё {days} дн."]
+    issuer = f", выдан {esc(ssl['issuer'])}" if ssl.get("issuer") else ""
+    return [f"{humanize.level_icon('warning' if days > 3 else 'critical')} Сертификат "
+            f"{'истёк' if days < 0 else f'{until}осталось {days} дн.'}{issuer}"]
+
+
+def _domain_lines(dom: dict | None, api: bool) -> list[str]:
+    if not dom:
+        return [] if api else ["⏳ Домен: ещё не проверял"]   # an api.* host shares its site's registration
+    if dom.get("unsupported"):
+        return [f"Домен: {esc(dom.get('error') or 'срок регистратура не сообщает')}"]
+    days = dom.get("days_left")
+    if days is None:
+        return [f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}"]
+    until = f"оплачен до {fmt_date(dom.get('expiration'))}"
+    if days > 30:
+        return [f"✅ Домен {until} · ещё {days} дн."]
+    # Running out: who to pay is the next question.
+    registrar = (f", регистратор {esc(dom['registrar'])}"
+                 if dom.get("registrar") not in (None, "", "Unknown") else "")
+    return [f"{humanize.level_icon('warning' if days > 7 else 'critical')} Домен "
+            f"{'истёк' if days < 0 else f'{until} · осталось {days} дн.'}{registrar}"]
+
+
+async def _dns_lines(site: dict) -> list[str]:
+    """Whether the domain's servers stayed put."""
     ns = await get_dns_record(registrable_domain(host_of(site["url"])), "NS")
-    if ns and ns[0]:
-        provider = hosting_svc.dns_provider(ns[0])
-        since = parse_sqlite_utc(ns[1])
-        parts.append(f"DNS у {provider}" + (f", не менялись с {to_local(since).strftime('%d.%m.%Y')}" if since else ""))
-    if not parts:
-        return []
-    text = " · ".join(parts)
-    return [f"🏠 {esc(text[:1].upper() + text[1:])}"]
+    since = parse_sqlite_utc(ns[1]) if ns and ns[0] else None
+    return [f"✅ DNS не менялись с {to_local(since).strftime('%d.%m.%Y')}"] if since else []
+
+
+async def hosting_words(site: dict) -> str:
+    """« · Cloudflare» for the card's title — what to open when it breaks."""
+    hosting = hosting_svc.label(await get_state(f"hosting:{site['id']}"))
+    return f" · {esc(hosting)}" if hosting else ""
 
 
 def _pages_lines(deep: dict | None) -> list[str]:
-    """The rest of the site: a sample of pages from the sitemap, hourly."""
+    """The rest of the site: pages from the sitemap, hourly — each with its mark."""
     if not deep or not deep.get("sampled"):
         return []
     n, bad = deep["sampled"], deep.get("errors") or 0
-    pages = f"{n} {plural(n, 'страницу', 'страницы', 'страниц')} из карты сайта"
-    if not bad:
-        return [f"✅ Страницы: проверил {pages} — все отвечают{_ago(deep)}"]
-    return [f"🟠 Страницы: проверил {pages} — {bad} отвечают ошибкой сервера{_ago(deep)}"]
+    pages = deep.get("pages") or []
+    if bad:
+        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера")
+    else:
+        head = "✅ Страницы из карты сайта" + ("" if pages else f": {n} из {n} отвечают")
+    lines = [head]
+    lines += [f"    {'🔴' if code else '✅'} {esc(path)}{f' — ошибка {code}' if code else ''}"
+              for path, code in pages[:10]]
+    if len(pages) > 10:
+        lines.append(f"    … и ещё {len(pages) - 10}")
+    return lines
 
 
 def _links_lines(links: dict | None) -> list[str]:
@@ -323,13 +391,13 @@ def _links_lines(links: dict | None) -> list[str]:
     if not links:
         return []
     total = links.get("total")
-    of = f" из {total}" if total else ""
     if links.get("status") == "ok":
-        return [f"✅ Ссылки: {f'{total}, ' if total else ''}все открываются{_ago(links)}"]
+        return [f"✅ Ссылки: {f'{total} из {total}' if total else 'все'} открываются"]
     if links.get("status") != "warning":
-        return [f"⚠️ Ссылки: не смог проверить{_ago(links)}"]
+        return ["⚠️ Ссылки: не смог проверить"]
     n = links.get("broken", links.get("internal")) or 0
-    lines = [f"🟠 Ссылки: {n}{of} не {plural(n, 'открывается', 'открываются', 'открываются')}{_ago(links)}"]
+    of = f" из {total}" if total else ""
+    lines = [f"🟠 Ссылки: {n}{of} не {plural(n, 'открывается', 'открываются', 'открываются')}"]
     lines += [f"    • {esc(i['url'])} — {esc(humanize.link_reason(i.get('code'), i.get('error'), i['url']))}"
               for i in (links.get("items") or [])[:5]]
     lines.append("    Что сделать: поставь новый адрес, убери ссылку или дай копию из web.archive.org.")
@@ -349,11 +417,11 @@ def _seo_lines(st: dict, cf_pending: bool = False) -> list[str]:
                "warning": f"🟠 Поиск и ИИ: {n} {plural(n, 'помеха', 'помехи', 'помех')}",
                "critical": "🔴 Поиск и ИИ: сайт закрыт от поисковиков"}.get(
         seo.get("status"), "⚠️ Поиск и ИИ: не смог проверить")
-    lines = [f"{verdict}{_ago(seo)}"]
+    lines = [verdict]
     idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available())
     lines += [f"    {line}" for line in idx]
     if cf_pending:
-        lines.append("    🤖 Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт "
+        lines.append("    Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт "
                      "по адресу. Где посмотреть — кнопка ниже.")
     lines += [f"    {i}. {humanize.level_icon(sev)} {esc(seo_fixes.fix(code).title)}"
               for i, (code, sev, _) in enumerate(groups[:5], 1)]
@@ -370,7 +438,7 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
     else:
         row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60")]
     if maintenance.maintenance_now(sid):
-        notes.append("🕐 Сейчас плановые работы — про этот сайт не пишу.")
+        notes.append("Сейчас плановые работы — про этот сайт не пишу.")
     return row, notes
 
 
@@ -380,21 +448,21 @@ async def render_card(call: CallbackQuery, site: dict):
     url, sid = site["url"], site["id"]
     sites = await get_all_sites()
     pos = next((i for i, s in enumerate(sites) if s["id"] == sid), 0)
-    where = f" · {pos + 1} из {len(sites)}" if len(sites) > 1 else ""
-    lines = [f"🌐 {esc(url)}{where}\n", *await card_lines(site)]
+    st = await sitestatus.get(sid)
+    found, blocks = await card_parts(site)
+    lines = [f"<b>{esc(site_label(url))}</b>{await hosting_words(site)}",
+             headline([icon_of(item[0]) for item in found], checked_at(st.get("avail")))]
     pause_row, notes = await _pause_rows(sid)
-    if notes:
-        lines += ["", *notes]
+    lines += notes
+    if found:
+        lines += ["", *(line for item in found for line in item)]
+    for title, rest in blocks:
+        lines += ["", f"<b>{title}</b>", *rest]
     problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
-    if problems:
-        lines.append("")
-        lines += [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))} "
-                  f"<i>с {fmt_local(inc['created_at'])}</i>" for inc in problems[:3]]
     rows = []
     # One way to the fix, only when there is something to fix: search
     # findings and mail have a screen with the steps, anything else its
     # «что делать».
-    st = await sitestatus.get(sid)
     seo = st.get("seo") or {}
     other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
     if is_web_page(url, site.get("http_method")) and seo.get("problems"):
@@ -560,7 +628,7 @@ async def msg_site_add(message: Message, state: FSMContext):
     page = is_web_page(url, site.get("http_method"))
     lines = [f"✅ {esc(label)} под присмотром.\n"]
     if r.ok:
-        lines.append(f"✅ {'Открывается' if page else 'Отвечает'}, {humanize.speed(r.response_time_ms)}")
+        lines.append(f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(r.response_time_ms)}")
     else:
         lines.append(f"🔴 Сейчас {'не открывается' if page else 'не отвечает'}: "
                      f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда поднимется.")

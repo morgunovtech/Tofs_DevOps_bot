@@ -6,11 +6,13 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
+from monitors import deep_checker
 from monitors.base import LinkCheck, LinksResult
 from monitors.links_checker import check_links, is_definite
 from monitors.seo_checker import _fetch, check_seo
 from monitors.sitemap import pick_sample, sitemap_urls
 from reports.scheduler import _links_recovered
+from services import sitestatus
 
 
 def test_pick_sample():
@@ -139,3 +141,26 @@ def test_closing_a_links_alert_does_not_claim_a_failing_link_works():
     r.pending = [LinkCheck("https://github.com/x/y", 504, False)]
     text = _links_recovered(r)
     assert "снимаю тревогу" in text and "1 ссылка сейчас не открывается" in text and "временный сбой" in text
+
+
+
+async def test_deep_check_keeps_each_page_with_its_mark(db, monkeypatch):
+    """The card lists the pages it checked, each with ✅ or 🔴 — so the
+    snapshot keeps their paths and errors, not only a count."""
+    async def page(request):
+        return web.Response(status=502 if request.path == "/broken" else 200, text="ok")
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", page)
+    async with TestServer(app) as server:
+        base = str(server.make_url("")).rstrip("/")            # http://127.0.0.1:port
+        other = f"http://localhost:{server.port}/x"             # another host, still this test server
+
+        async def fake_sitemap(session, url):
+            return [f"{base}/", f"{base}/broken", f"{base}/about?lang=en", other]
+
+        monkeypatch.setattr(deep_checker, "sitemap_urls", fake_sitemap)
+        r = await deep_checker.check_deep(base)
+    deep = (await sitestatus.get(r.site_id))["deep"]
+    assert deep["sampled"] == 4 and deep["errors"] == 1
+    assert deep["pages"] == [["/", None], ["/broken", 502], ["/about?lang=en", None], [other, None]]

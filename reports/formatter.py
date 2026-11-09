@@ -307,9 +307,10 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     if notes:
         worst = worst_severity(s for s, _ in notes)
         icon = level_icon(worst) if worst else UNCHECKED
-        verb = "отвечает" if r.api else "открывается"
+        verb = "открывается" if is_http_url(r.url) and not r.api else "отвечает"
         return f"{icon} {label} — {verb}, но {'; '.join(w for _, w in notes)}", False
-    return f"✅ {label} — в порядке, {humanize.speed(r.response_time_ms)}", True
+    verb = "открывается" if is_http_url(r.url) and not r.api else "отвечает"
+    return f"✅ {label} — {verb} {humanize.speed(r.response_time_ms)}", True
 
 
 def format_compact_status_report(availability: list[AvailabilityResult],
