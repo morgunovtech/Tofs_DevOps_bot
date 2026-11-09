@@ -24,11 +24,11 @@ logger = logging.getLogger(__name__)
 
 COMMANDS = [
     BotCommand(command="menu", description="Главное меню"),
-    BotCommand(command="status", description="Быстрый статус сайтов"),
-    BotCommand(command="sites", description="Список сайтов"),
-    BotCommand(command="mute", description="Заглушить алерты (напр. /mute 8h)"),
-    BotCommand(command="unmute", description="Снять заглушку"),
-    BotCommand(command="help", description="Справка"),
+    BotCommand(command="status", description="Открываются ли сайты прямо сейчас"),
+    BotCommand(command="sites", description="Сайты, боты и задачи"),
+    BotCommand(command="mute", description="Помолчать, кроме «сайт лёг» (напр. /mute 8h)"),
+    BotCommand(command="unmute", description="Снова писать обо всём"),
+    BotCommand(command="help", description="Что значат значки и где что"),
 ]
 
 

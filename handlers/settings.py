@@ -47,7 +47,7 @@ async def hub_text() -> str:
             f"🌙 вечерняя {'выкл' if evening is None else f'{evening}:00'} · "
             f"📊 недельная вс {settings.weekly_hour()}:00\n"
             f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} · "
-            f"{'🔕 тихо до ' + mute if mute else '🔔 алерты включены'} · будить: {ring}\n"
+            f"{'🔕 тихо до ' + mute if mute else '🔔 пишу обо всём'} · будить: {ring}\n"
             f"🕐 Часовой пояс: {esc(settings.timezone())}, сейчас {now_local().strftime('%H:%M')}\n"
             f"🗓 Плановые работы: {len(maintenance.windows()) or 'нет'} · "
             f"🌐 Статус-страница: {esc(sp)}\n\n"

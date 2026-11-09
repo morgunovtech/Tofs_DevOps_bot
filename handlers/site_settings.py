@@ -48,7 +48,7 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     lines = [f"⚙️ Настройки: {esc(site_label(site['url']))}\n",
              f"⏱ Интервал проверки: {interval or config.check_interval_minutes} мин"
              + ("" if interval else " (по умолчанию)"),
-             f"🔁 Фейлов подряд до алерта: {thr or CONSECUTIVE_FAILURE_THRESHOLD}"
+             f"🔁 Неудачных проверок подряд до тревоги: {thr or CONSECUTIVE_FAILURE_THRESHOLD}"
              + ("" if thr else " (по умолчанию)"),
              f"🐢 Порог «медленно»: {slow or config.slow_response_ms} мс"
              + ("" if slow else " (по умолчанию)")]
@@ -190,7 +190,7 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
                      _presets("i", sid, _INTERVAL_PRESETS, lambda m: f"{m} мин"))
     elif kind == "f":
         await render(call, f"🔁 Сколько фейлов подряд должно случиться, чтобы {label} считался "
-                           f"лежащим?\n(1 — алерт с первого фейла, больше — меньше ложных тревог)",
+                           f"лежащим?\n(1 — тревога с первой неудачи, больше — меньше ложных тревог)",
                      _presets("f", sid, _FAIL_PRESETS, str))
     elif kind == "s":
         await render(call, f"🐢 С какого времени ответа {label} считать медленным?\n"
@@ -306,7 +306,7 @@ async def cb_site_keyword_mode(call: CallbackQuery, state: FSMContext):
     await state.set_state(SiteKeywordForm.keyword)
     await state.update_data(sset_site_id=site["id"], kw_mode=args[1])
     what = (f"которая должна быть {_where(site)}" if args[1] == "present"
-            else "при появлении которой нужен алерт (стоп-фраза)")
+            else "при появлении которой нужна тревога (стоп-фраза)")
     await render(call, f"🔍 Пришли фразу, {what}.\nОт 2 до 100 символов, регистр не важен.", cancel_kb())
 
 

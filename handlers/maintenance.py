@@ -24,7 +24,7 @@ class MaintTimeForm(StatesGroup):
 
 async def _screen() -> tuple[str, InlineKeyboardMarkup]:
     windows = maintenance.windows()
-    lines = ["🔧 Тех. окна — в это время алерты и эскалация молчат, "
+    lines = ["🔧 Плановые работы — в это время я не пишу о падениях и не напоминаю, "
              "проверки и статистика продолжаются.\n"]
     rows = [[InlineKeyboardButton(text="➕ Добавить окно", callback_data="mw_add")]]
     if not windows:
