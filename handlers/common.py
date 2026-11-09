@@ -18,6 +18,7 @@ from aiogram.types import (
 
 from db.database import get_site
 from handlers.filters import AdminFilter
+from services import helpers
 from utils.text import clip
 
 logger = logging.getLogger(__name__)
@@ -171,7 +172,6 @@ deny_router = Router(name="deny")
 
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
 async def deny_command(message: Message):
-    from services import helpers   # not at import time: handlers.common is imported very early
     if await helpers.is_helper(message.chat.id):
         await message.answer("👥 Ты помощник: я присылаю тебе только тревоги 🔴 о сайтах, управляет ботом "
                              "владелец. Перестать — /stop.")

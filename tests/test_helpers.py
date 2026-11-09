@@ -8,7 +8,8 @@ from aiogram.filters import CommandObject
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from conftest import FakeCall, FakeMessage, FakeState, buttons
 
-from handlers import common, settings as settings_screen, start
+from handlers import common, start
+from handlers import settings as settings_screen
 from services import helpers, notifier
 from services.notifier import Priority
 
