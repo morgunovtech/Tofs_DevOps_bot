@@ -1,7 +1,7 @@
 from aiohttp.test_utils import TestClient, TestServer
 
 from db.database import get_heartbeats, get_state, set_state
-from services import settings
+from services import heartbeats, settings
 from web import webhook
 from web.webhook import create_app
 
@@ -62,7 +62,42 @@ async def test_heartbeat_secrets(bot):
         await set_state("hb_alerted:backup", "1")
         assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200
         assert await get_state("hb_alerted:backup") is None
-        assert "снова подаёт" in bot.sent[-1]["text"]
+        assert "снова отмечается" in bot.sent[-1]["text"]
+
+
+SOCIAL = {"title": "📣 Соцсети", "open_url": "https://t.me/social_tracker_bot",
+          "items": [{"name": "Telegram-канал", "level": "ok", "text": "12 340, +18 за сутки"},
+                    {"name": "LinkedIn", "level": "warning", "text": "cookie истекает через 3 дн."}]}
+
+
+async def test_a_bot_sends_what_it_sees_with_its_mark(bot, db):
+    """One screen for sites, bots and what they watch: SocialTracker POSTs a
+    line per channel with its mark. A broken payload is refused loudly and
+    is not a mark; «heartbeat»: false updates the lines only."""
+    await settings.add_heartbeat_job("socialtracker", 1440)
+    async with await _client() as c:
+        r = await c.post(f"/api/heartbeat/{HB}/socialtracker", json={"items": [{"level": "ok"}]})
+        assert r.status == 400 and "name is required" in await r.text()
+        assert "socialtracker" not in await get_heartbeats()
+        assert (await c.post(f"/api/heartbeat/{HB}/socialtracker", json={"items": [{"name": "x", "level": "fine"}]})).status == 400
+        assert (await c.post(f"/api/heartbeat/{HB}/socialtracker", json={**SOCIAL, "open_url": "http://x"})).status == 400
+        assert (await c.post("/api/heartbeat/wrong/socialtracker", json=SOCIAL)).status == 403
+        assert (await c.post(f"/api/heartbeat/{HB}/socialtracker", json=SOCIAL)).status == 200
+        assert "socialtracker" in await get_heartbeats()
+        status = await heartbeats.job_status("socialtracker")
+        assert status["title"] == "📣 Соцсети" and [i["level"] for i in status["items"]] == ["ok", "warning"]
+        conn = await db.get_db()
+        await conn.execute("UPDATE heartbeats SET last_ping = '2000-01-01 00:00:00' WHERE job = 'socialtracker'")
+        await conn.commit()
+        quiet = {**SOCIAL, "heartbeat": False, "items": [{"name": "Telegram-канал", "level": "critical", "text": "канал недоступен"}]}
+        assert (await c.post(f"/api/heartbeat/{HB}/socialtracker", json=quiet)).status == 200
+        assert (await get_heartbeats())["socialtracker"].startswith("2000")      # not a mark
+        assert (await heartbeats.job_status("socialtracker"))["items"][0]["level"] == "critical"
+        # A job nobody watches keeps no status; a plain GET is still a mark.
+        assert (await c.post(f"/api/heartbeat/{HB}/stranger", json=SOCIAL)).status == 200
+        assert await heartbeats.job_status("stranger") is None
+        assert (await c.get(f"/api/heartbeat/{HB}/socialtracker")).status == 200
+    await settings.remove_heartbeat_job("socialtracker")
 
 
 async def test_status_page_and_json_and_badge(bot, db):

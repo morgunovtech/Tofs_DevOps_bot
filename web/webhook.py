@@ -19,7 +19,7 @@ from aiohttp import web
 from config import config
 from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import integrations, notifier, secrets, settings
+from services import heartbeats, integrations, notifier, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -129,10 +129,22 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         return web.Response(status=403, text="Forbidden")
     if not job:
         return web.Response(status=400, text="job name required")
-    await heartbeat_ping(job)
-    if await get_state(f"hb_alerted:{job}"):
-        await set_state(f"hb_alerted:{job}", None)
-        await notifier.send(f"💚 Heartbeat «{esc(job)}» снова подаёт сигналы", Priority.NORMAL)
+    mark = True
+    if request.method == "POST" and request.content_type == "application/json":
+        # A bot may send what it sees along with the mark (services.heartbeats).
+        try:
+            data = await request.json()
+            status = heartbeats.parse_status(data)
+        except (ValueError, heartbeats.StatusError) as e:
+            return web.Response(status=400, text=f"bad status: {e}")
+        mark = data.get("heartbeat", True) is not False
+        if job in settings.heartbeat_jobs():
+            await heartbeats.save_status(job, status)
+    if mark:
+        await heartbeat_ping(job)
+        if await get_state(f"hb_alerted:{job}"):
+            await set_state(f"hb_alerted:{job}", None)
+            await notifier.send(f"✅ «{esc(job)}» снова отмечается.", Priority.NORMAL)
     return web.Response(text="ok")
 
 

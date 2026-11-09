@@ -23,6 +23,7 @@ from handlers import (
 )
 from monitors import links_checker
 from monitors.base import LinkCheck, SeoResult
+from reports import scheduler
 from services import heartbeats as heartbeats_service
 from services import integrations, recommend, sitestatus
 from services import maintenance as maint_service
@@ -550,3 +551,37 @@ async def test_a_task_from_the_server_variable_can_be_removed_in_the_bot(bot, db
     await settings_service.remove_heartbeat_job("backup")
     assert "backup" not in settings_service.heartbeat_jobs()
     assert heartbeat_keyboard(["backup"]).inline_keyboard[0][1].callback_data == "hb_rm:backup"
+
+
+async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
+    """«Соцсети живы, подписчики подписываются» next to the sites: a block
+    per reporting bot; a problem line spoils the headline; a silent bot's
+    old lines turn into one «не знаю»."""
+    sid = await db.activate_or_create_site("https://a.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=100)
+    await settings_service.add_heartbeat_job("socialtracker", 1440)
+    await db.heartbeat_ping("socialtracker")
+    await heartbeats_service.save_status("socialtracker", heartbeats_service.parse_status({
+        "title": "📣 Соцсети", "open_url": "https://t.me/social_tracker_bot",
+        "items": [{"name": "Telegram-канал", "level": "ok", "text": "12 340, +18 за сутки"},
+                  {"name": "LinkedIn", "level": "warning", "text": "cookie истекает через 3 дн."}]}))
+    header, _ = await menu.build_main_menu()
+    assert header.startswith("🟠 1/1 открывается · 🟠 LinkedIn")
+    assert "📣 Соцсети:\n✅ Telegram-канал · 12 340, +18 за сутки\n🟠 LinkedIn · cookie истекает через 3 дн." in header
+    call = FakeCall("hb_show:socialtracker")
+    await heartbeats.cb_hb_show(call)
+    assert "✅ Telegram-канал · 12 340" in call.message.texts[-1]
+    assert call.message.reply_markup.inline_keyboard[0][0].url == "https://t.me/social_tracker_bot"
+    watch = await scheduler._watch_lines(morning=False)
+    assert watch[:4] == [("📣 Соцсети:", True), ("✅ Telegram-канал — 12 340, +18 за сутки", True),
+                         ("🟠 LinkedIn — cookie истекает через 3 дн.", False), ("", True)]
+
+    conn = await db.get_db()
+    await conn.execute("UPDATE heartbeats SET last_ping = datetime('now', '-3 days') WHERE job = 'socialtracker'")
+    await conn.commit()
+    header, _ = await menu.build_main_menu()
+    assert "📣 Соцсети:\n⚠️ socialtracker · молчит — не знаю, что сейчас" in header and "LinkedIn" not in header
+
+    call = FakeCall("hb_del:socialtracker")
+    await heartbeats.cb_hb_del(call)
+    assert await heartbeats_service.job_status("socialtracker") is None

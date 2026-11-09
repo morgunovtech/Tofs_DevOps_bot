@@ -13,7 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from handlers.common import ack, back_button, cancel_kb, render
-from services import public_urls, settings
+from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.text import esc
 
@@ -51,6 +51,12 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
                   f"Я жду от «{n}» сигнал {rhythm} — так я узнаю, что она запустилась и дошла до конца. "
                   f"Сигналов ещё не было: похоже, её не подключили.", "", f"Что такое «{n}» у тебя?"]
         rows += _kind_rows(name)
+    status = await heartbeats.job_status(name)
+    if status:
+        lines[2:2] = ["", f"{esc(heartbeats.status_title(job, status))}:",
+                      *(f"{icon} {esc(item)} · {esc(text)}" for icon, item, text in heartbeats.status_items(job, status))]
+        if status.get("open_url"):
+            rows.insert(0, [InlineKeyboardButton(text=f"↗️ Открыть {name}", url=status["open_url"])])
     rows.append([InlineKeyboardButton(text="🗑 Такой задачи нет — убрать" if job.icon not in ("✅", "🟠")
                                       else "🗑 Убрать", callback_data=f"hb_del:{name}")])
     rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
@@ -175,6 +181,8 @@ async def cb_hb_remove_here(call: CallbackQuery):
     buttons — the message itself stays as it was."""
     name = call.data.split(":", 1)[1]
     removed = await settings.remove_heartbeat_job(name)
+    if removed:
+        await heartbeats.forget_status(name)
     await ack(call, f"Удалил «{name}» — больше не жду" if removed else "Её уже нет")
     markup = getattr(call.message, "reply_markup", None)
     if removed and markup is not None:
@@ -191,6 +199,7 @@ async def cb_hb_del(call: CallbackQuery):
     if not await settings.remove_heartbeat_job(name):
         await ack(call, "Её уже нет", show_alert=True)
         return
+    await heartbeats.forget_status(name)
     await ack(call, "Удалил")
     note = ("\n\nОна была записана в переменной <code>HEARTBEAT_JOBS</code> на сервере бота. Там она "
             "может остаться — я её больше не жду." if from_env else "")

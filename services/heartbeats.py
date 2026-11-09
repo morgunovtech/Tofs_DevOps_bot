@@ -88,6 +88,88 @@ def digest_line(job: Job) -> tuple[str, bool]:
     return f"{job.icon} {name} — ни одной отметки: подключи или удали, кнопки ниже", False
 
 
+# ── Status that a bot sends with its mark ────────────────────────────────────
+#
+# A bot that does more than «I ran» — SocialTracker watching channels and
+# followers — POSTs its verdict with the mark: one line per thing it
+# watches, so «всё в порядке» is one screen for sites, bots and what they
+# see. The bot keeps its own alerts and deep screens; here it is shown only.
+#
+#   POST /api/heartbeat/<secret>/<job>      Content-Type: application/json
+#   {"title": "📣 Соцсети",                       ≤ 40 chars
+#    "items": [{"name": "Telegram-канал",         ≤ 10 items, name ≤ 40
+#               "level": "ok",                    ok | warning | critical | unknown
+#               "text": "12 340, +18 за сутки"}], ≤ 120
+#    "open_url": "https://t.me/some_bot",         optional, https
+#    "heartbeat": true}                           false: status only, not a mark
+
+STATUS_ICONS = {"ok": "✅", "warning": "🟠", "critical": "🔴", "unknown": humanize.UNCHECKED}
+MAX_STATUS_ITEMS = 10
+
+
+class StatusError(ValueError):
+    """The payload is not a status; the message says what is wrong."""
+
+
+def parse_status(data) -> dict:
+    """Validated and trimmed status, or StatusError."""
+    if not isinstance(data, dict):
+        raise StatusError("body must be a JSON object")
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        raise StatusError("items: a non-empty list is required")
+    if len(items) > MAX_STATUS_ITEMS:
+        raise StatusError(f"items: at most {MAX_STATUS_ITEMS}")
+    out_items = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise StatusError(f"items[{i}]: an object is required")
+        name, level, text = item.get("name"), item.get("level", "ok"), item.get("text", "")
+        if not isinstance(name, str) or not name.strip():
+            raise StatusError(f"items[{i}].name is required")
+        if level not in STATUS_ICONS:
+            raise StatusError(f"items[{i}].level: one of {', '.join(STATUS_ICONS)}")
+        if not isinstance(text, str):
+            raise StatusError(f"items[{i}].text: a string is required")
+        out_items.append({"name": name.strip()[:40], "level": level, "text": text.strip()[:120]})
+    title = data.get("title")
+    open_url = data.get("open_url")
+    if open_url is not None and not (isinstance(open_url, str) and open_url.startswith("https://")
+                                     and len(open_url) <= 200):
+        raise StatusError("open_url: an https link up to 200 characters")
+    return {"title": title.strip()[:40] if isinstance(title, str) and title.strip() else None,
+            "items": out_items, "open_url": open_url}
+
+
+async def save_status(job: str, status: dict):
+    await set_state(f"hb_status:{job}", json.dumps({**status, "at": datetime.now(UTC).isoformat()},
+                                                   ensure_ascii=False))
+
+
+async def job_status(job: str) -> dict | None:
+    try:
+        status = json.loads(await get_state(f"hb_status:{job}") or "null")
+    except ValueError:
+        return None
+    return status if isinstance(status, dict) and status.get("items") else None
+
+
+async def forget_status(job: str):
+    await set_state(f"hb_status:{job}", None)
+
+
+def status_title(job: Job, status: dict) -> str:
+    return status.get("title") or f"⏰ Что видит {job.name}"
+
+
+def status_items(job: Job, status: dict) -> list[tuple[str, str, str]]:
+    """(icon, name, text) for each line — only while the job marks on time:
+    a status from a bot that went silent says nothing about now."""
+    if job.icon != "✅":
+        return [(humanize.UNCHECKED, job.name, "молчит — не знаю, что сейчас")]
+    return [(STATUS_ICONS[i["level"]], i["name"], i["text"]) for i in status["items"]]
+
+
 # ── The bot's own watchdog ───────────────────────────────────────────────────
 
 class Watchdog(NamedTuple):
