@@ -52,7 +52,8 @@ async def hub_text() -> str:
             f"👥 Помощники: {esc(', '.join(h['name'] for h in await helpers.helpers()) or 'нет')}\n"
             f"🗓 Плановые работы: {len(maintenance.windows()) or 'нет'} · "
             f"🌐 Статус-страница: {esc(sp)}\n\n"
-            f"<i>Сайты, боты и задачи — на главном экране, новые — через «➕ Добавить».</i>")
+            f"<i>Сайты, боты и задачи — на главном экране; новые добавляются на страницах «🌐 Сайты» и "
+            f"«🤖 Боты».</i>")
 
 
 def hub_kb() -> InlineKeyboardMarkup:

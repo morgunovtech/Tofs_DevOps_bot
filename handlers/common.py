@@ -11,9 +11,7 @@ from aiogram.types import (
     ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
 )
 
 from db.database import get_site
@@ -34,14 +32,6 @@ def back_button(text: str = "← Главное меню", callback: str = "menu
 def cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
-
-
-def persistent_keyboard() -> ReplyKeyboardMarkup:
-    """Always-visible bottom keyboard so the menu is one tap away."""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Меню")]],
-        resize_keyboard=True, is_persistent=True,
-        input_field_placeholder="Тапни «📱 Меню» или введи команду")
 
 
 async def render(target: Message | CallbackQuery, text: str,

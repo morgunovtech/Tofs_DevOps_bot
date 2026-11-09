@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from conftest import FakeMessage, FakeState
 
+import main
 from config import config
 from handlers import setup, start
 from services import runtime, settings
@@ -64,3 +65,14 @@ async def test_a_database_off_the_railway_volume_is_said_at_once(db, cfg, tmp_pa
     msg.from_user, msg.chat = SimpleNamespace(id=42), SimpleNamespace(id=42)
     await start.cmd_start(msg, FakeState())
     assert msg.texts[0].startswith("🔑 Ты стал администратором") and "не на постоянном диске Railway" in msg.texts[1]
+
+
+async def test_old_bottom_buttons_are_removed_once(bot, db):
+    """Earlier versions pinned «📱 Меню» / «📊 Статус» under the input field;
+    Telegram keeps them until a message takes them away."""
+    await main._remove_old_bottom_buttons(bot)
+    assert "Убрал кнопки под полем ввода" in bot.sent[-1]["text"]
+    assert type(bot.sent[-1]["reply_markup"]).__name__ == "ReplyKeyboardRemove"
+    n = len(bot.sent)
+    await main._remove_old_bottom_buttons(bot)
+    assert len(bot.sent) == n

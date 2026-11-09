@@ -59,7 +59,7 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
             rows.insert(0, [InlineKeyboardButton(text=f"↗️ Открыть {name}", url=status["open_url"])])
     rows.append([InlineKeyboardButton(text="🗑 Такой задачи нет — убрать" if job.icon not in ("✅", "🟠")
                                       else "🗑 Убрать", callback_data=f"hb_del:{name}")])
-    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+    rows.append([InlineKeyboardButton(text="← Боты", callback_data="blk:bots")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -166,7 +166,7 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     await state.clear()
     arg = call.data.split(":", 1)[1]
     if not name or not arg.isdigit():
-        await ack(call, "Начни заново: 📱 Меню → ➕ Добавить", show_alert=True)
+        await ack(call, "Начни заново: 🏠 Главная → «🤖 Боты» → «➕ Бот или задача»", show_alert=True)
         return
     await settings.add_heartbeat_job(name, int(arg))
     await ack(call, "Добавил ✅")

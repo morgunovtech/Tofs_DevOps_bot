@@ -671,6 +671,15 @@ def _backup_files() -> list[str]:
     return sorted(f for f in os.listdir(d) if f.startswith("bot-") and f.endswith(".db"))
 
 
+def backup_info() -> tuple[str, datetime] | None:
+    """(path, when) of the freshest local backup, or None before the first."""
+    files = _backup_files()
+    if not files:
+        return None
+    path = os.path.join(_backups_dir(), files[-1])
+    return path, datetime.fromtimestamp(os.path.getmtime(path), UTC)
+
+
 async def run_db_backup():
     """Nightly local DB backup with rotation."""
     try:
