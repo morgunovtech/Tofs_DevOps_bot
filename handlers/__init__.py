@@ -9,6 +9,7 @@ from aiogram import Router
 
 from handlers import (
     alerts,
+    blocks,
     feedback,
     heartbeats,
     incidents,
@@ -34,7 +35,7 @@ admin = Router(name="admin")
 admin.message.filter(AdminFilter())
 admin.callback_query.filter(AdminFilter())
 admin.include_routers(
-    menu.router, mute.router, alerts.router, incidents.router, sites.router,
+    menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router,
     stale_router,   # last: catches only what nothing above handled

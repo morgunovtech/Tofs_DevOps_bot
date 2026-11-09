@@ -41,7 +41,7 @@ from handlers.common import (
     render,
     site_by_cb,
 )
-from handlers.menu import best_ms, cb_main_menu
+from handlers.menu import best_ms, cb_main_menu, site_state
 from handlers.setup import last_steps
 from handlers.start import rules_of_the_game
 from monitors.availability import check_availability
@@ -243,8 +243,13 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
 
 
 async def render_card(call: CallbackQuery, site: dict):
+    """One site, everything about it; ◀ ▶ flip to the neighbours, so the
+    sites block is one message rather than a button per site."""
     url, sid = site["url"], site["id"]
-    lines = [f"🌍 {esc(url)}\n", *await card_lines(site)]
+    sites = await get_all_sites()
+    pos = next((i for i, s in enumerate(sites) if s["id"] == sid), 0)
+    where = f" · {pos + 1} из {len(sites)}" if len(sites) > 1 else ""
+    lines = [f"🌐 {esc(url)}{where}\n", *await card_lines(site)]
     pause_row, notes = await _pause_rows(sid)
     if notes:
         lines += ["", *notes]
@@ -261,10 +266,32 @@ async def render_card(call: CallbackQuery, site: dict):
     last_row = []
     if problems:
         last_row.append(InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{problems[0]['id']}"))
-    last_row.append(InlineKeyboardButton(text="⚙️ Настройки", callback_data=f"sset:{sid}"))
+    last_row.append(InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}"))
     rows.append(last_row)
-    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+    if len(sites) > 1:
+        prev, nxt = sites[pos - 1], sites[(pos + 1) % len(sites)]
+        rows.append([InlineKeyboardButton(text=f"◀ {site_label(prev['url'])}", callback_data=f"check_site:{prev['id']}"),
+                     InlineKeyboardButton(text=f"{site_label(nxt['url'])} ▶", callback_data=f"check_site:{nxt['id']}")])
+    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
+                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "blk:sites")
+async def cb_sites_block(call: CallbackQuery):
+    """«🌐 Сайты» on the main screen: the card of the first site that needs
+    a look, else of the first site."""
+    sites = await get_all_sites()
+    if not sites:
+        await ack(call, "Сайтов пока нет", show_alert=True)
+        return
+    await ack(call)
+    for site in sites:
+        if (await site_state(site))[0] != "✅":
+            break
+    else:
+        site = sites[0]
+    await render_card(call, site)
 
 
 @router.callback_query(F.data.startswith("check_site:"))
@@ -480,7 +507,7 @@ async def cb_pause(call: CallbackQuery):
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
-                              f"проверки идут. Раньше снять: 📱 Меню → {esc(host)}.")
+                              f"проверки идут. Раньше снять: 🏠 Главная → «🌐 Сайты» → {esc(host)}.")
 
 
 # ── Export / import ──────────────────────────────────────────────────────────

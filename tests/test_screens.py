@@ -10,6 +10,7 @@ from conftest import FakeCall, FakeMessage, FakeState, buttons
 
 from db.database import get_active_incidents, save_feedback, save_incident
 from handlers import (
+    blocks,
     feedback,
     heartbeats,
     incidents,
@@ -46,15 +47,15 @@ async def test_main_menu_header_states(bot, db):
     assert first.startswith("✅ 1/1 открывается · 🟠 проблем: 1") and "чинится" in header
     assert "🟠 ex.test: expiring" in header                      # the problem is right on the main screen
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    # «Проблемы» first, then the site itself — one tap to its card.
-    assert labels[:2] == ["🟠 Проблемы (1)", "🔧 ex.test"] and "⚙️ Настройки" in labels
-    assert kb.inline_keyboard[1][0].callback_data == f"check_site:{sid}"
+    # «Что не так» first, then a button per block — not one per site.
+    assert labels == ["🟠 Что не так (1)", "🌐 Сайты", "🤖 Боты", "⚙️ Настройки"]
+    assert kb.inline_keyboard[1][0].callback_data == "blk:sites"
     await maint_service.pause_site(sid, None)
     await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
     await sitestatus.update(sid, "avail", status="error", ms=None, error="HTTP 502")
     header, kb = await menu.build_main_menu()
     assert header.startswith("🔴 0/1 открывается · 🔴 проблем: 2")
-    assert "🔴 Проблемы (2)" in [b.text for row in kb.inline_keyboard for b in row]
+    assert "🔴 Что не так (2)" in [b.text for row in kb.inline_keyboard for b in row]
 
 
 async def test_main_menu_site_line_takes_the_worst_level(bot, db):
@@ -178,7 +179,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     assert text.startswith("⏰ backup\n⏳ Пока ни одной отметки · жду раз в сутки")
     assert text.endswith("Что такое «backup» у тебя?") and "curl" not in text and "secret" not in text
     assert [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row] == [
-        "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "menu_main"]
+        "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "blk:bots"]
     call = FakeCall("hb_bot:backup")
     await heartbeats.cb_hb_bot(call)
     assert "unit-test-heartbeat-secret/backup</code>" in call.message.texts[-1] and "HEALTHCHECK_URL" in call.message.texts[-1]
@@ -219,13 +220,15 @@ async def test_main_menu_header_is_short_when_all_is_well(bot, db):
         await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
     header, kb = await menu.build_main_menu()
     lines = header.split("\n")
-    assert lines[0].startswith("✅ 3/3 в порядке") and len(lines) == 4
-    assert all(line.endswith("· быстро") for line in lines[1:])
+    assert lines[0] == "✅ Всё в порядке · проверял только что"
+    assert lines[1:6] == ["", "🌐 Веб-сервисы · 3/3", "✅ ok0.test · быстро", "✅ ok1.test · быстро",
+                          "✅ ok2.test · быстро"]
+    assert "🤖 Боты и системы" in header and "резервная копия" in header
     labels = [b.text for row in kb.inline_keyboard for b in row]
-    # A button per site straight to its card; no «Проблемы» on a good day.
-    assert labels == ["✅ ok0.test", "✅ ok1.test", "✅ ok2.test",
-                      "🔎 Проверить всё сейчас", "➕ Добавить", "⚙️ Настройки"]
-    assert [len(row) for row in kb.inline_keyboard] == [1, 1, 1, 1, 2]       # few items: a full row each
+    # A button per block, not per site; no «Что не так» on a good day, no
+    # «Проверить всё сейчас» — the screen is never older than a minute or two.
+    assert labels == ["🌐 Сайты", "🤖 Боты", "⚙️ Настройки"]
+    assert [len(row) for row in kb.inline_keyboard] == [2, 1]
 
 
 async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
@@ -237,13 +240,14 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     header, kb = await menu.build_main_menu()
     lines = header.split("\n")
     # Not marked yet and not alerted: waiting, not counted, not a problem.
-    assert lines[0].startswith("✅ 1/1 в порядке") and lines[-2:] == ["⏰ Задачи и боты:", "⏳ socialbot · ждёт первой отметки"]
-    assert "hb_show:socialbot" in [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert lines[0].startswith("✅ Всё в порядке") and "🤖 Боты и системы\n⏳ socialbot · ждёт первой отметки" in header
+    call = FakeCall("blk:bots")                                       # its card: one tap from the bots page
+    await blocks.cb_bots(call)
+    assert "hb_show:socialbot" in [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row]
 
     await db.heartbeat_ping("socialbot")
     header, kb = await menu.build_main_menu()
-    assert header.startswith("✅ 2/2 в порядке") and "✅ socialbot · отметка только что" in header
-    assert "✅ socialbot" in buttons(kb)
+    assert header.startswith("✅ Всё в порядке") and "✅ socialbot · отметка только что" in header
 
     conn = await db.get_db()
     await conn.execute("UPDATE heartbeats SET last_ping = datetime('now', '-31 hours') WHERE job = 'socialbot'")
@@ -262,8 +266,9 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     # Only tasks, no sites: still a dashboard, not the «add your first site» greeting.
     await db.deactivate_site(sid)
     header, kb = await menu.build_main_menu()
-    assert "Пока ни за чем не слежу" not in header and "⏰ Задачи и боты:" in header
-    assert "1/1 открывается" not in header
+    assert "Пока ни за чем не слежу" not in header and "🤖 Боты и системы" in header
+    assert "1/1 открывается" not in header and "Веб-сервисы" not in header
+    assert buttons(kb) == ["🤖 Боты", "⚙️ Настройки"]
 
 
 async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
@@ -272,16 +277,16 @@ async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
     sid = await db.activate_or_create_site("https://a.test")
     await sitestatus.update(sid, "avail", status="ok", ms=100)
     header, _ = await menu.build_main_menu()
-    assert "сторож" not in header                                   # none connected: the checklist says so
+    assert "🛡 внешнего сторожа нет · подключить — «🤖 Боты»" in header   # not a problem, not hidden
+    assert header.startswith("✅ Всё в порядке")
     await integrations.set_value("self_heartbeat_url", "https://hc-ping.com/abc")
     await heartbeats_service.record_watchdog(None)
     header, _ = await menu.build_main_menu()
-    assert header.startswith("✅ 2/2 в порядке") and header.endswith(
-        "⏰ Задачи и боты:\n✅ сторож healthchecks.io · на связи")
+    assert header.startswith("✅ Всё в порядке") and "🤖 Боты и системы\n✅ сторож healthchecks.io · на связи" in header
     await db.set_state("watchdog", json.dumps({"ok_at": NOW, "error": "отвечает ошибкой 404",
                                                "fail_since": (datetime.now(UTC) - timedelta(minutes=40)).isoformat()}))
     header, _ = await menu.build_main_menu()
-    assert header.startswith("🟠 1/1 открывается · 🛡 сторож не на связи")
+    assert header.startswith("🟠 1/1 открывается · 🟠 сторож healthchecks.io")
     assert "🟠 сторож healthchecks.io · не принимает отметки 40 мин (отвечает ошибкой 404)" in header
     await integrations.set_value("self_heartbeat_url", None)
 
@@ -567,7 +572,13 @@ async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
                   {"name": "LinkedIn", "level": "warning", "text": "cookie истекает через 3 дн."}]}))
     header, _ = await menu.build_main_menu()
     assert header.startswith("🟠 1/1 открывается · 🟠 LinkedIn")
-    assert "📣 Соцсети:\n✅ Telegram-канал · 12 340, +18 за сутки\n🟠 LinkedIn · cookie истекает через 3 дн." in header
+    assert "📣 Соцсети\n✅ Telegram-канал · 12 340, +18 за сутки\n🟠 LinkedIn · cookie истекает через 3 дн." in header
+    assert "blk:seen:socialtracker" in [b.callback_data for row in _.inline_keyboard for b in row]
+    call = FakeCall("blk:seen:socialtracker")
+    await blocks.cb_seen(call)
+    text = call.message.texts[-1]
+    assert text.startswith("📣 Соцсети · от socialtracker, ") and "🟠 LinkedIn — cookie истекает через 3 дн." in text
+    assert call.message.reply_markup.inline_keyboard[0][0].url == "https://t.me/social_tracker_bot"
     call = FakeCall("hb_show:socialtracker")
     await heartbeats.cb_hb_show(call)
     assert "✅ Telegram-канал · 12 340" in call.message.texts[-1]
@@ -580,8 +591,49 @@ async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
     await conn.execute("UPDATE heartbeats SET last_ping = datetime('now', '-3 days') WHERE job = 'socialtracker'")
     await conn.commit()
     header, _ = await menu.build_main_menu()
-    assert "📣 Соцсети:\n⚠️ socialtracker · молчит — не знаю, что сейчас" in header and "LinkedIn" not in header
+    assert "📣 Соцсети\n⚠️ socialtracker · молчит — не знаю, что сейчас" in header and "LinkedIn" not in header
 
     call = FakeCall("hb_del:socialtracker")
     await heartbeats.cb_hb_del(call)
     assert await heartbeats_service.job_status("socialtracker") is None
+
+
+async def test_sites_block_is_one_card_with_arrows(bot, db):
+    """«🌐 Сайты» opens the site that needs a look, and ◀ ▶ flip through
+    the rest in the same message — no button per site on the main screen."""
+    ids = []
+    for name in ("a", "b", "c"):
+        sid = await db.activate_or_create_site(f"https://{name}.test")
+        await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+        ids.append(sid)
+    await sitestatus.update(ids[1], "ssl", days_left=5, issuer="LE", not_after=None, error=None)
+    call = FakeCall("blk:sites")
+    await sites.cb_sites_block(call)
+    text = call.message.texts[-1]
+    assert text.startswith("🌐 https://b.test · 2 из 3")
+    nav = [b for row in call.message.reply_markup.inline_keyboard for b in row if "◀" in b.text or "▶" in b.text]
+    assert [(b.text, b.callback_data) for b in nav] == [("◀ a.test", f"check_site:{ids[0]}"),
+                                                         ("c.test ▶", f"check_site:{ids[2]}")]
+    assert buttons(call.message.reply_markup)[-2:] == ["➕ Добавить сайт", "🏠 Главная"]
+
+
+async def test_bots_page_says_everything_and_hands_out_a_backup(bot, db, cfg, tmp_path):
+    cfg(db_path=str(tmp_path / "bot.db"))
+    await settings_service.add_heartbeat_job("socialbot", 1440)
+    await db.heartbeat_ping("socialbot")
+    text, kb = await blocks.bots_page()
+    assert text.startswith("🤖 Боты и системы\n\n✅ socialbot — работает, отметка только что (жду раз в сутки)")
+    assert "🛡 Внешнего сторожа нет" in text and "⏳ Резервная копия базы — первую сделаю сегодня ночью." in text
+    assert buttons(kb) == ["⚙️ socialbot", "🛡 Подключить сторожа", "💾 Скачать копию базы",
+                           "➕ Бот или задача", "🏠 Главная"]
+    call = FakeCall("sys:backup")
+    await blocks.cb_backup_now(call)
+    assert call.message.documents and "храни её как пароль" in call.message.documents[-1]
+    text, _ = await blocks.bots_page()
+    assert "✅ Резервная копия базы — " in text and "Делаю каждую ночь" in text
+
+
+async def test_old_check_everything_button_lands_on_main(bot, db):
+    call = FakeCall("run_full_check")
+    await menu.cb_main_menu(call, FakeState())
+    assert "Пока ни за чем не слежу" in call.message.texts[-1]

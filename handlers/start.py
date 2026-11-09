@@ -4,10 +4,10 @@ invite, makes a helper), /stop for helpers, and /help."""
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardRemove
 
 from config import config
-from handlers.common import DENIED, back_button, persistent_keyboard
+from handlers.common import DENIED, back_button
 from handlers.menu import send_main_menu
 from services import helpers, notifier, runtime, settings
 from utils.text import esc
@@ -24,8 +24,8 @@ HELP = (
     "⚠️ — не смог проверить: сам попробую ещё раз.\n"
     "⏳ — жду первой проверки или первой отметки.\n\n"
     "Где что:\n"
-    "📱 Меню — всё на одном экране: строка и кнопка на каждый сайт, бота и задачу.\n"
-    "➕ Добавить — сайт, другой бот или задача по расписанию (например, бэкап).\n"
+    "🏠 Главная (☰ слева от поля ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
+    "системы. Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
     "⚙️ Настройки — во сколько присылать сводку, ночная тишина, пробная тревога.\n\n"
     "Нужно, чтобы я помолчал: /mute 8h — пишу только о том, что сайт лёг. Снова обо всём — /unmute."
 )
@@ -98,10 +98,10 @@ async def cmd_start(message: Message, state: FSMContext):
         return
     await message.answer(
         "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
-        "Кнопка «📱 Меню» внизу всегда под рукой.\n\n"
+        "Главный экран всегда под рукой: ☰ слева от поля ввода → «🏠 Главная».\n\n"
         "Назван в честь Тофса — ирландского терьера, который принимает "
         "аптайм близко к сердцу.",
-        reply_markup=persistent_keyboard())
+        reply_markup=ReplyKeyboardRemove())   # bottom buttons of earlier versions go
     await message.answer(rules_of_the_game())
     await send_main_menu(message)
 

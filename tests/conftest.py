@@ -65,6 +65,7 @@ class FakeMessage:
         self.document = None
         self.texts: list[str] = []
         self.markups: list = []      # the keyboard of each text, in step with self.texts
+        self.documents: list = []    # captions of the files sent
         self.chat = SimpleNamespace(id=1)
         self.reply_markup = None
 
@@ -81,6 +82,10 @@ class FakeMessage:
 
     async def edit_reply_markup(self, reply_markup=None):
         self.reply_markup = reply_markup
+
+    async def answer_document(self, document, caption=None):
+        self.documents.append(caption)
+        return self
 
 
 class FakeCall:
