@@ -160,6 +160,7 @@ async def refresh(site_id: int, url: str) -> bool:
     with open(shot_path(site_id), "wb") as f:
         f.write(image)
     await sitestatus.update(site_id, "shot", ok=True)
+    logger.info("Card picture for %s: %d KB", url, len(image) // 1024)
     return True
 
 

@@ -17,6 +17,7 @@ from db.database import (
 )
 from monitors.base import DeepResult, gather_checks
 from monitors.sitemap import TIMEOUT, pick_sample, sitemap_urls
+from services import sitestatus
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,8 @@ async def check_deep(url: str) -> DeepResult:
 
         r.errors = [p for p in await asyncio.gather(*(probe(p) for p in sample)) if p]
 
+    # The card says how the rest of the site is, not only the home page.
+    await sitestatus.update(site_id, "deep", sampled=r.sampled, errors=len(r.errors))
     # One 5xx out of ten can be a fluke; several mean the site is broken.
     threshold = 1 if r.sampled <= 3 else 2
     if len(r.errors) >= threshold:

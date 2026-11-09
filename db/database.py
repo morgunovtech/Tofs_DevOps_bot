@@ -465,6 +465,24 @@ async def get_dns_state(host: str, rtype: str) -> str | None:
     return row[0] if row else None
 
 
+async def get_dns_record(host: str, rtype: str) -> tuple[str, str] | None:
+    """(value, since when it is so) — updated_at moves only on a change."""
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT value, updated_at FROM dns_state WHERE host = ? AND rtype = ?", (host, rtype))
+    row = await cursor.fetchone()
+    return (row[0], row[1]) if row else None
+
+
+async def get_last_incident(site_id: int, check_type: str) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT * FROM incidents WHERE site_id = ? AND check_type = ?
+           ORDER BY created_at DESC, id DESC LIMIT 1""", (site_id, check_type))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def set_dns_state(host: str, rtype: str, value: str):
     db = await get_db()
     async with _write_lock:
