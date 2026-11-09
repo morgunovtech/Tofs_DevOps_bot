@@ -13,10 +13,21 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
+from db.database import count_feedback
 from handlers.common import ack, back_button, cancel_kb, render
 from handlers.menu import mute_until_local
 from reports.scheduler import reschedule_all
-from services import helpers, integrations, maintenance, notifier, public_urls, runtime, settings
+from services import (
+    github,
+    gsc,
+    helpers,
+    integrations,
+    notifier,
+    public_urls,
+    runtime,
+    settings,
+    yandex_webmaster,
+)
 from utils.clock import now_local
 from utils.text import esc
 
@@ -38,39 +49,44 @@ router = Router(name="settings")
 
 
 async def hub_text() -> str:
-    evening, quiet = settings.evening_hour(), settings.quiet_hours()
+    """Five questions, each answered in one line: when to write, who else
+    hears it, what is connected, what visitors see, which clock."""
+    quiet = settings.quiet_hours()
     mute = await mute_until_local()
-    sp = f"вкл · {public_urls.status_page_url()}" if settings.status_page_enabled() else "выключена"
     ring = "только «сайт лёг»" if settings.ring_only_down() else "всё критичное"
+    write = (f"сводка {settings.morning_hour()}:00 · ночью тихо "
+             f"{'—' if not quiet else f'{quiet[0]}–{quiet[1]}'} · будить: {ring}"
+             + (f" · 🔕 молчу до {mute}" if mute else ""))
+    # From what is configured, no probes: the hub must open at once; the
+    # «🔌 Подключения» screen checks each one live.
+    known = [("сторож", bool(integrations.self_heartbeat_url())), ("Google", gsc.available()),
+             ("Яндекс", yandex_webmaster.available()),
+             ("Cloudflare", bool(integrations.cf_api_token() or integrations.deploy_hooks())),
+             ("GitHub", github.available())]
+    on = [name for name, ok in known if ok]
+    off = [name for name, ok in known if not ok]
+    connections = ((f"{', '.join(on)} ✅" if on else "ничего не подключено")
+                   + (f" · можно: {', '.join(off)}" if off else ""))
+    sp = "статус-страница вкл." if settings.status_page_enabled() else "статус-страница выкл."
+    feedback = await count_feedback()
+    visitors = sp + (f" · сообщений с сайтов: {feedback}" if feedback else "")
+    helpers_now = ", ".join(h["name"] for h in await helpers.helpers()) or "нет"
     return ("⚙️ Настройки\n\n"
-            f"🌅 Утренняя сводка {settings.morning_hour()}:00 · "
-            f"🌙 вечерняя {'выкл' if evening is None else f'{evening}:00'} · "
-            f"📊 недельная вс {settings.weekly_hour()}:00\n"
-            f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} · "
-            f"{'🔕 тихо до ' + mute if mute else '🔔 пишу обо всём'} · будить: {ring}\n"
-            f"🕐 Часовой пояс: {esc(settings.timezone())}, сейчас {now_local().strftime('%H:%M')}\n"
-            f"👥 Помощники: {esc(', '.join(h['name'] for h in await helpers.helpers()) or 'нет')}\n"
-            f"🗓 Плановые работы: {len(maintenance.windows()) or 'нет'} · "
-            f"🌐 Статус-страница: {esc(sp)}\n\n"
-            f"<i>Сайты, боты и задачи — на главном экране; новые добавляются на страницах «🌐 Сайты» и "
-            f"«🤖 Боты».</i>")
+            f"🔔 Когда писать — {esc(write)}\n"
+            f"👥 Помощники — {esc(helpers_now)}\n"
+            f"🔌 Подключения — {esc(connections)}\n"
+            f"🌍 Для посетителей — {esc(visitors)}\n"
+            f"🕐 Часовой пояс — {esc(settings.timezone())}, сейчас {now_local().strftime('%H:%M')}")
 
 
 def hub_kb() -> InlineKeyboardMarkup:
-    """Grouped by question: when to message me, is the bot itself fine,
-    what others see, my data."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌅 Сводки и тихие часы", callback_data="menu_reports"),
-         InlineKeyboardButton(text="🔕 Заглушить на время", callback_data="menu_mute")],
-        [InlineKeyboardButton(text="👥 Помощники — кому ещё звонить", callback_data="menu_helpers")],
-        [InlineKeyboardButton(text="🗓 Плановые работы", callback_data="menu_maint"),
-         InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="menu_tz")],
-        [InlineKeyboardButton(text="🩺 Диагностика и подключения", callback_data="menu_diag")],
-        [InlineKeyboardButton(text="🌐 Статус-страница", callback_data="menu_statuspage"),
-         InlineKeyboardButton(text="📩 Обратная связь", callback_data="menu_feedback:0")],
-        [InlineKeyboardButton(text="📤 Экспорт", callback_data="site_export"),
-         InlineKeyboardButton(text="📥 Импорт", callback_data="site_import")],
-        [InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")]])
+        [InlineKeyboardButton(text="🔔 Когда писать", callback_data="menu_reports"),
+         InlineKeyboardButton(text="👥 Помощники", callback_data="menu_helpers")],
+        [InlineKeyboardButton(text="🔌 Подключения", callback_data="menu_diag"),
+         InlineKeyboardButton(text="🌍 Для посетителей", callback_data="menu_visitors")],
+        [InlineKeyboardButton(text="🕐 Часовой пояс", callback_data="menu_tz"),
+         InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]])
 
 
 async def show_hub(target):
@@ -144,12 +160,17 @@ def _reports_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔕 23–8", callback_data="set_q:23-8"),
          InlineKeyboardButton(text="🔕 0–7", callback_data="set_q:0-7"),
          InlineKeyboardButton(text="🔕 выкл", callback_data="set_q:off")],
+        # Everything about «when» in one place: a pause, planned work, and
+        # the test that the phone actually rings.
+        [InlineKeyboardButton(text="🔕 Помолчать…", callback_data="menu_mute"),
+         InlineKeyboardButton(text="🗓 Плановые работы", callback_data="menu_maint")],
+        [InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="ring:test")],
         [InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")]])
 
 
 def _reports_text() -> str:
     evening, quiet = settings.evening_hour(), settings.quiet_hours()
-    return ("🌅 Сводки и тихие часы\n\n"
+    return ("🔔 Когда писать\n\n"
             f"🌅 Утренняя сводка: {settings.morning_hour()}:00 — одно короткое «всё в порядке» "
             f"или список того, что не так.\n"
             f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если есть проблемы'}.\n"
@@ -275,8 +296,26 @@ async def show_status_page(target):
         rows.append([InlineKeyboardButton(
             text="🔑 Секретная ссылка: выключить" if slug_src == "bot" else "🔑 Сделать ссылку секретной",
             callback_data=f"sp_secret:{'off' if slug_src == 'bot' else 'on'}")])
-    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
+    rows.append([InlineKeyboardButton(text="← Для посетителей", callback_data="menu_visitors")])
     await render(target, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data == "menu_visitors")
+async def cb_visitors(call: CallbackQuery):
+    """What the bot shows to the people who visit the sites."""
+    await ack(call)
+    sp = (f"включена: {public_urls.status_page_url()}" if settings.status_page_enabled()
+          else "выключена")
+    n = await count_feedback()
+    await render(call, "🌍 Для посетителей сайтов\n\n"
+                       f"🌐 Статус-страница — {esc(sp)}. Публичная страница «всё работает» с историей "
+                       f"простоев — её можно дать посетителям.\n"
+                       f"📩 Виджет «нашли опечатку?» — сообщения с сайтов приходят сюда"
+                       + (f"; получено: {n}." if n else "; пока ни одного."),
+                 InlineKeyboardMarkup(inline_keyboard=[
+                     [InlineKeyboardButton(text="🌐 Статус-страница", callback_data="menu_statuspage"),
+                      InlineKeyboardButton(text="📩 Сообщения", callback_data="menu_feedback:0")],
+                     [InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")]]))
 
 
 @router.callback_query(F.data == "menu_statuspage")

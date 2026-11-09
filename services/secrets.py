@@ -40,7 +40,7 @@ async def _resolve(name: str, env_value: str) -> str:
     value = _secrets.token_urlsafe(24)
     await set_state(key, value)
     logger.warning("%s secret was empty or a placeholder — generated one and "
-                   "stored it in the DB (see 🩺 Диагностика).", name)
+                   "stored it in the DB (see ⚙️ Настройки → 🔌 Подключения).", name)
     return value
 
 

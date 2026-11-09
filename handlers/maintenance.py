@@ -39,7 +39,7 @@ async def _screen() -> tuple[str, InlineKeyboardMarkup]:
         active = " · 🟢 активно сейчас" if maintenance.window_active_now(w) else ""
         lines.append(f"• {esc(desc)}{active}")
         rows.append([InlineKeyboardButton(text=f"🗑 {desc}"[:60], callback_data=f"mw_del:{w['id']}")])
-    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
+    rows.append([InlineKeyboardButton(text="← Когда писать", callback_data="menu_reports")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 

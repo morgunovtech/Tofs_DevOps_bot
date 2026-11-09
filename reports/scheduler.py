@@ -654,7 +654,7 @@ async def run_self_heartbeat():
             f"🟠 Сторож {name} не принимает мои отметки уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
             f"Пока так, если я упаду, тебе никто не напишет.\n\n"
             f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
-            f"вставь новую: ⚙️ Настройки → 🩺 Диагностика и подключения → 🛡 Внешний сторож.")
+            f"вставь новую: ⚙️ Настройки → 🔌 Подключения → 🛡 Внешний сторож.")
         if sent:
             await set_state("watchdog_alerted", "1")
     elif not failing and alerted:
@@ -714,7 +714,8 @@ async def send_db_backup_to_telegram():
     files = _backup_files()
     if files:
         await notifier.send_document(FSInputFile(os.path.join(_backups_dir(), files[-1])),
-                                     "🗄 Еженедельная копия базы бота")
+                                     "🗄 Еженедельная копия базы бота. Чтобы восстановить из неё — просто "
+                                     "пришли мне этот файл. В нём токены подключений: храни как пароль.")
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────

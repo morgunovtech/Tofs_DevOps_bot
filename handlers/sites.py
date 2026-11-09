@@ -4,14 +4,13 @@ export/import."""
 import asyncio
 import json
 import re
-from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -77,10 +76,6 @@ router = Router(name="sites")
 
 class AddSiteForm(StatesGroup):
     url = State()
-
-
-class ImportForm(StatesGroup):
-    data = State()
 
 
 # Hostname/IPv4 labels; single-label LAN hosts are allowed for tcp/ping.
@@ -590,34 +585,15 @@ async def cb_pause(call: CallbackQuery):
                               f"проверки идут. Раньше снять: 🏠 Главная → «🌐 Сайты» → {esc(host)}.")
 
 
-# ── Export / import ──────────────────────────────────────────────────────────
+# ── Restore from a file ──────────────────────────────────────────────────────
+#
+# No «📤 Экспорт / 📥 Импорт» buttons: the bot copies its database every
+# night and sends one here on Sundays (or now: «🤖 Боты» → «💾 Скачать
+# копию базы»). To restore, send that file back — the bot recognises it and
+# asks before replacing anything. A JSON export from older versions still
+# works the same way.
 
 _EXPORT_FIELDS = sorted(SITE_SETTING_COLS)
-
-
-async def export_document() -> dict:
-    """Everything a person configured: sites with dials, digest hours, quiet
-    hours, maintenance windows, task-control jobs and the integrations
-    entered in the chat (tokens included — treat the file as a secret)."""
-    sites = [{"url": s["url"], **{k: s.get(k) for k in _EXPORT_FIELDS if s.get(k) is not None}}
-             for s in await get_all_sites()]
-    quiet = settings.quiet_hours()
-    return {
-        "version": 2,
-        "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "sites": sites,
-        "settings": {
-            "morning_hour": settings.morning_hour(), "evening_hour": settings.evening_hour(),
-            "weekly_hour": settings.weekly_hour(), "quiet_hours": f"{quiet[0]}-{quiet[1]}" if quiet else None,
-            "status_page": settings.status_page_enabled(), "timezone": settings.timezone(),
-            "ring_only_down": settings.ring_only_down(),
-        },
-        "maintenance_windows": [{k: w[k] for k in ("site_id", "days", "start_min", "end_min")}
-                                | {"site_url": (await get_site(w["site_id"]) or {}).get("url") if w.get("site_id") else None}
-                                for w in maintenance.windows()],
-        "heartbeat_jobs": settings.ui_heartbeat_jobs(),
-        "integrations": integrations.stored(),
-    }
 
 
 async def apply_document(doc: dict) -> dict:
@@ -706,60 +682,27 @@ async def apply_document(doc: dict) -> dict:
     return counters
 
 
-@router.callback_query(F.data == "site_export")
-async def cb_site_export(call: CallbackQuery):
-    await ack(call)
-    doc = await export_document()
-    data = json.dumps(doc, ensure_ascii=False, indent=2).encode()
-    await call.message.answer_document(
-        BufferedInputFile(data, filename="tofsdevops-export.json"),
-        caption=(f"📤 {len(doc['sites'])} сайтов с настройками, сводки, тихие часы, плановые работы, "
-                 f"задачи и боты, подключения. В файле есть токены — храни его как пароль. "
-                 f"Восстановить: «⚙️ Настройки» → 📥."))
+_MAX_FILE = 20 * 1024 * 1024   # what the cloud Bot API lets a bot download
 
 
-@router.callback_query(F.data == "site_import")
-async def cb_site_import(call: CallbackQuery, state: FSMContext):
-    await ack(call)
-    await state.set_state(ImportForm.data)
-    await render(call, "📥 Пришли файл экспорта (JSON) или копию базы (.db из воскресного отчёта).\n"
-                       "JSON добавит и обновит сайты и настройки, лишнее не удалит. Копия базы заменит всё "
-                       "целиком, текущая база сохранится рядом как .bak.", cancel_kb())
-
-
-@router.message(ImportForm.data)
-async def msg_site_import(message: Message, state: FSMContext):
-    raw_bytes = (message.text or "").encode()
-    if message.document:
-        # The cloud Bot API downloads files up to 20 MB, whatever we allow.
-        if (message.document.file_size or 0) > 20 * 1024 * 1024:
-            await message.answer("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).",
-                                 reply_markup=cancel_kb())
-            return
-        buf = await message.bot.download(message.document)
-        raw_bytes = buf.read()
-    if raw_bytes.startswith(b"SQLite format 3"):
-        await state.clear()
+async def _restore_bytes(raw: bytes) -> str:
+    """Apply a database copy or an old JSON export; the answer in words."""
+    if raw.startswith(b"SQLite format 3"):
         try:
-            n = await restore_from_bytes(raw_bytes)
+            n = await restore_from_bytes(raw)
         except ValueError as e:
-            await message.answer(f"❌ Это не похоже на копию базы бота: {esc(e)}.", reply_markup=back_button())
-            return
+            return f"❌ Это не похоже на копию базы бота: {esc(e)}."
         await reload_services()
-        await message.answer(f"✅ База восстановлена из копии: активных сайтов {n}. Прежняя база лежит "
-                             f"рядом как .bak. Проверки продолжаются.", reply_markup=back_button())
-        return
+        return (f"✅ Восстановил из копии: активных сайтов {n}. Прежняя база лежит рядом как .bak. "
+                f"Проверки продолжаются.")
     try:
-        doc = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+        doc = json.loads(raw.decode("utf-8", errors="replace"))
         items = doc["sites"] if isinstance(doc, dict) else doc
         assert isinstance(items, list)
     except (ValueError, KeyError, AssertionError):
-        await message.answer("Не смог разобрать файл. Нужен JSON из «📤 Экспорт» или копия базы .db.",
-                             reply_markup=cancel_kb())
-        return
-    await state.clear()
+        return "Не смог разобрать файл. Нужна копия базы (.db), которую я присылаю по воскресеньям."
     c = await apply_document(doc)
-    text = f"📥 Импорт: сайтов добавлено {c['added']}, обновлено {c['updated']}."
+    text = f"✅ Из файла: сайтов добавлено {c['added']}, обновлено {c['updated']}."
     extras = [f"настроек {c['settings']}" if c["settings"] else "",
               f"плановых работ {c['windows']}" if c["windows"] else "",
               f"задач {c['jobs']}" if c["jobs"] else "",
@@ -768,8 +711,45 @@ async def msg_site_import(message: Message, state: FSMContext):
     if extras:
         text += " Также: " + ", ".join(extras) + "."
     if c["skipped"]:
-        text += "\nПропущено:\n" + "\n".join(f"  • {esc(s)}" for s in c["skipped"][:10])
-    await message.answer(text, reply_markup=back_button())
+        text += "\nПропущено:\n" + "\n".join(f"  • {esc(x)}" for x in c["skipped"][:10])
+    return text
+
+
+@router.message(F.document, StateFilter(None))
+async def msg_backup_file(message: Message, state: FSMContext):
+    """A file sent to the chat outside any wizard: if it is a copy of the
+    bot's database (or an old export), offer to restore from it."""
+    doc = message.document
+    if (doc.file_size or 0) > _MAX_FILE:
+        await message.answer("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).")
+        return
+    head = (await message.bot.download(doc)).read()
+    if head.startswith(b"SQLite format 3"):
+        question = ("💾 Это копия базы бота. Восстановить из неё всё — сайты, настройки, подключения? "
+                    "Текущая база сохранится рядом как .bak.")
+    elif head.lstrip()[:1] in (b"{", b"["):
+        question = "📥 Это файл экспорта из прежней версии. Добавить из него сайты и настройки? Лишнее не удалю."
+    else:
+        await message.answer("Не знаю, что делать с этим файлом. Чтобы восстановить бота, пришли копию базы "
+                             "(.db), которую я присылаю по воскресеньям.")
+        return
+    await state.update_data(restore_file=doc.file_id)
+    await message.answer(question, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Восстановить", callback_data="restore:yes"),
+        InlineKeyboardButton(text="✖️ Не надо", callback_data="restore:no")]]))
+
+
+@router.callback_query(F.data.in_({"restore:yes", "restore:no"}))
+async def cb_restore(call: CallbackQuery, state: FSMContext):
+    file_id = (await state.get_data()).get("restore_file")
+    await state.update_data(restore_file=None)
+    if call.data == "restore:no" or not file_id:
+        await ack(call, "Ничего не менял")
+        await render(call, "Ничего не менял.", back_button())
+        return
+    await ack(call, "Восстанавливаю…")
+    raw = (await call.bot.download(file_id)).read()
+    await render(call, await _restore_bytes(raw), back_button())
 
 
 async def reload_services():
