@@ -4,16 +4,19 @@ invite, makes a helper), /stop for helpers, and /help."""
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardRemove
+from aiogram.types import Message
 
 from config import config
 from db.database import set_state
-from handlers.common import DENIED, back_button
+from handlers.common import BOTTOM, DENIED, back_button
 from handlers.menu import send_main_menu
 from services import helpers, notifier, runtime, settings
 from utils.text import esc
 
 router = Router(name="start")
+
+# Set once the owner has the bottom buttons (main.py announces them otherwise).
+BOTTOM_SHOWN = "ui:bottom_keyboard"
 
 HELP = (
     "🐕 TofsDevOps следит за твоими сайтами и пишет, только когда что-то сломалось.\n\n"
@@ -25,7 +28,7 @@ HELP = (
     "⚠️ — не смог проверить: сам попробую ещё раз.\n"
     "⏳ — жду первой проверки или первой связи.\n\n"
     "Где что:\n"
-    "🏠 Главная (☰ слева от поля ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
+    "🏠 Главная (кнопка под полем ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
     "системы. Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
     "⚙️ Настройки — во сколько присылать сводку, ночная тишина, пробная тревога.\n\n"
     "Нужно, чтобы я помолчал: /mute 8h — пишу только о том, что сайт лёг. Снова обо всём — /unmute."
@@ -99,11 +102,11 @@ async def cmd_start(message: Message, state: FSMContext):
         return
     await message.answer(
         "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
-        "Главный экран всегда под рукой: ☰ слева от поля ввода → «🏠 Главная».\n\n"
+        "Всё под рукой — кнопки под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки.\n\n"
         "Назван в честь Тофса — ирландского терьера, который принимает "
         "аптайм близко к сердцу.",
-        reply_markup=ReplyKeyboardRemove())   # bottom buttons of earlier versions go
-    await set_state("ui:bottom_buttons_removed", "1")   # nothing left for main.py to announce
+        reply_markup=BOTTOM)
+    await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
     await message.answer(rules_of_the_game())
     await send_main_menu(message)
 

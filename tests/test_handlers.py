@@ -59,11 +59,11 @@ def test_one_word_for_being_alive():
 
 
 async def test_start_leaves_nothing_for_the_bottom_buttons_note(bot, db):
-    """/start removes any bottom keyboard itself, so the one-time «убрал
-    кнопки» note must not go to someone who never had them."""
+    """/start brings the bottom buttons itself, so the one-time «кнопки
+    теперь под полем ввода» note must not follow it."""
     msg = FakeMessage("/start")
     msg.from_user, msg.chat = SimpleNamespace(id=777), SimpleNamespace(id=777)
     await start.cmd_start(msg, FakeState())
     n = len(bot.sent)
-    await main._remove_old_bottom_buttons(bot)
+    await main._show_bottom_buttons(bot)
     assert len(bot.sent) == n

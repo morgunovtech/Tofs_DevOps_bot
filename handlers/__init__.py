@@ -8,8 +8,10 @@ send so they get a polite ⛔ instead of silence.
 from aiogram import Router
 
 from handlers import (
+    about,
     alerts,
     blocks,
+    bottom,
     feedback,
     heartbeats,
     incidents,
@@ -38,7 +40,8 @@ admin = Router(name="admin")
 admin.message.filter(AdminFilter())
 admin.callback_query.filter(AdminFilter())
 admin.include_routers(
-    menu.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
+    bottom.router,   # first: a bottom button aborts any pending input
+    menu.router, about.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router, mail.router,
     security.router, speed.router,
