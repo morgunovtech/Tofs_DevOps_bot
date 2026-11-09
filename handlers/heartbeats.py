@@ -39,17 +39,18 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
     lines = [f"⏰ {n}"]
     rows: list[list[InlineKeyboardButton]] = []
     if job.icon == "✅":
-        lines += [f"✅ Работает: {esc(job.state)}, жду {rhythm}.", "", "Перестанет отмечаться — напишу."]
+        lines += [f"✅ {esc(job.state[:1].upper() + job.state[1:])}.", f"Выходит на связь {rhythm}. Замолчит — напишу."]
         rows.append([InlineKeyboardButton(text="🔗 Как подключена", callback_data=f"hb_ask:{name}")])
     elif job.icon == "🟠":
-        lines += [f"🟠 {esc(job.state[:1].upper() + job.state[1:])}, а жду отметку {rhythm}.", "",
+        lines += [f"🟠 {esc(job.state[:1].upper() + job.state[1:])}, а выходит на связь {rhythm}.", "",
                   "Обычно это значит, что задача не запустилась или упала, не дойдя до конца. Проверь её. "
                   "Если меняли адрес для отметок — подключи заново."]
         rows.append([InlineKeyboardButton(text="🔗 Подключить заново", callback_data=f"hb_ask:{name}")])
     else:
-        lines += [f"{job.icon} Пока ни одной отметки · жду {rhythm}", "",
-                  f"Я жду от «{n}» сигнал {rhythm} — так я узнаю, что она запустилась и дошла до конца. "
-                  f"Сигналов ещё не было: похоже, её не подключили.", "", f"Что такое «{n}» у тебя?"]
+        lines += [f"{job.icon} Пока не выходит на связь · жду {rhythm}", "",
+                  f"Я жду, что «{n}» будет выходить со мной на связь {rhythm} — так я узнаю, что работа "
+                  f"запустилась и дошла до конца. Связи ещё не было: похоже, не подключили.", "",
+                  f"Что такое «{n}» у тебя?"]
         rows += _kind_rows(name)
     status = await heartbeats.job_status(name)
     if status:
@@ -91,7 +92,7 @@ async def cb_hb_bot(call: CallbackQuery):
                        f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
                        f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
                        f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
-                       f"Как только придёт первая отметка, строка на главном экране станет ✅.", _back(name))
+                       f"Как только связь появится, строка на главном экране станет ✅.", _back(name))
 
 
 @router.callback_query(F.data.startswith("hb_cron:"))
@@ -108,8 +109,8 @@ async def cb_hb_cron(call: CallbackQuery):
                        f"• <b>cron на своём сервере</b> — допиши в конец строки задачи:\n"
                        f"<code>&& curl -fsS {url}</code>\n"
                        f"• <b>Планировщик хостинга</b> (Railway Cron, Render…) — допиши то же в конец команды.\n\n"
-                       f"Задача упадёт раньше — адрес не откроется, и я напишу. Первая отметка — и строка на "
-                       f"главном экране станет ✅.", _back(name))
+                       f"Задача упадёт раньше — адрес не откроется, и я напишу. Как только связь появится, "
+                       f"строка на главном экране станет ✅.", _back(name))
 
 
 @router.callback_query(F.data.startswith("hb_show:") | F.data.startswith("hb_how:"))
@@ -134,10 +135,10 @@ async def cb_hb_add(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddHeartbeatForm.name)
     await render(call, "⏰ Бот или задача по расписанию\n\n"
                        "Самая коварная поломка бэкапа, выгрузки или другого бота — тишина: он молча "
-                       "перестаёт работать, и никто не замечает. Добавь его сюда — он будет отмечаться "
-                       "у меня после каждого запуска, а если отметка не придёт вовремя, я напишу.\n\n"
-                       "Как назвать? Латиницей, коротко: например <code>backup</code> или "
-                       "<code>socialbot</code>.", cancel_kb())
+                       "перестаёт работать, и никто не замечает. Добавь его сюда — он будет выходить со мной "
+                       "на связь после каждого запуска, а замолчит — я напишу.\n\n"
+                       "Как назвать? Латиницей, коротко: например <code>socialbot</code> или "
+                       "<code>site-backup</code>.", cancel_kb())
 
 
 @router.message(AddHeartbeatForm.name)
@@ -157,7 +158,7 @@ async def msg_hb_name(message: Message, state: FSMContext):
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[:2]],
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[2:]],
         [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
-    await message.answer(f"Как часто ждать отметку от «{esc(name)}»?", reply_markup=kb)
+    await message.answer(f"Как часто «{esc(name)}» будет выходить на связь?", reply_markup=kb)
 
 
 @router.callback_query(F.data.startswith("hbint:"))

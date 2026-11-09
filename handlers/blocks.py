@@ -43,8 +43,7 @@ async def bots_page() -> tuple[str, InlineKeyboardMarkup]:
     if jobs:
         lines += [heartbeats.digest_line(j)[0] for j in jobs]
     else:
-        lines.append("Ботов и задач по расписанию пока нет. Добавь — и я скажу, если они перестанут "
-                     "отмечаться.")
+        lines.append("Ботов и задач по расписанию пока нет. Добавь — и я скажу, если они замолчат.")
     lines += ["", heartbeats.watchdog_digest_line(watchdog)[0], backup_state()[2]]
     if await updates.deploy_problem():
         lines.append("🟠 Новая версия бота не запустилась — работаю на прежней. Лог сборки — в сообщении "

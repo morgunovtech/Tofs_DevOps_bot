@@ -78,7 +78,7 @@ async def test_admin_is_routed_and_strangers_are_denied(bot, db, monkeypatch):
     assert edits and "⚙️ Настройки" in edits[-1].text
 
     session.calls.clear()
-    await DP.feed_raw_update(tg, _message(777, "📱 Меню", 5))
+    await DP.feed_raw_update(tg, _message(777, "/menu", 5))
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
     assert sent and "Пока ни за чем не слежу" in sent[-1].text
     await tg.session.close()

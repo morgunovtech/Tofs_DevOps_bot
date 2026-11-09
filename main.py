@@ -22,8 +22,8 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-# The ☰ menu holds two doors; /status, /sites, /mute and /unmute still
-# work when typed, they just do not crowd the list.
+# The ☰ menu holds two doors; /mute and /unmute still work when typed
+# (the help names them), they just do not crowd the list.
 COMMANDS = [
     BotCommand(command="menu", description="🏠 Главная"),
     BotCommand(command="help", description="❓ Что значат значки"),

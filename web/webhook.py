@@ -144,7 +144,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         await heartbeat_ping(job)
         if await get_state(f"hb_alerted:{job}"):
             await set_state(f"hb_alerted:{job}", None)
-            await notifier.send(f"✅ «{esc(job)}» снова отмечается.", Priority.NORMAL)
+            await notifier.send(f"✅ «{esc(job)}» снова на связи.", Priority.NORMAL)
     return web.Response(text="ok")
 
 

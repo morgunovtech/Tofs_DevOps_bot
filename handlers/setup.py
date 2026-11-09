@@ -154,7 +154,7 @@ async def build_items() -> list[Item]:
         items.append(Item("heartbeats", "ok", "задачи и боты"))
     else:
         items.append(Item("heartbeats", "off", "⏰ Задачи и боты",
-                          "скажу, если бэкап, другой бот или задача по расписанию перестанет отмечаться",
+                          "скажу, если другой бот или задача по расписанию замолчит",
                           ("⏰ Добавить задачу или бота", "hb_add")))
 
     if gsc.available():
@@ -330,7 +330,7 @@ def schedule_ring_test() -> asyncio.Task:
     return task
 
 
-@router.callback_query(F.data.in_({"menu_testalert", "ring:test"}))
+@router.callback_query(F.data == "ring:test")
 async def cb_test_alert(call: CallbackQuery):
     schedule_ring_test()
     await ack(call, "Через минуту пришлю пробную тревогу. Сверни Telegram везде — на телефоне и на "
@@ -470,7 +470,7 @@ async def cb_guide_watchdog(call: CallbackQuery):
                          "1. Зарегистрируйся на <a href=\"https://healthchecks.io\">healthchecks.io</a>, "
                          "создай check с периодом 5 минут.\n"
                          "2. Скопируй ссылку вида <code>https://hc-ping.com/…</code> и нажми «🔗 Вставить ссылку».\n"
-                         "3. Бот будет отмечаться там каждые 5 минут; пропадёт — healthchecks пришлёт письмо."),
+                         "3. Бот будет выходить с ним на связь каждые 5 минут; замолчит — healthchecks пришлёт письмо."),
                  _watchdog_kb())
 
 
@@ -492,13 +492,13 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
     await _forget(message)
     error = await heartbeats.ping_watchdog(url)
     if error:
-        await message.answer(f"❌ Сторож не принял отметку: {esc(error)}. Проверь, что скопировал ссылку "
+        await message.answer(f"❌ Сторож не на связи: {esc(error)}. Проверь, что скопировал ссылку "
                              f"целиком и check не удалён.", reply_markup=_watchdog_kb())
         return
     await integrations.set_value("self_heartbeat_url", url)
     await heartbeats.forget_watchdog()   # the old link's failures are not this one's
     await heartbeats.record_watchdog(None)
-    await message.answer("✅ Сторож подключён: только что отметился, дальше буду каждые 5 минут.",
+    await message.answer("✅ Сторож подключён и на связи. Дальше выхожу с ним на связь каждые 5 минут.",
                          reply_markup=back_button("← К подключениям", "setup:check"))
 
 

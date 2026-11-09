@@ -90,7 +90,7 @@ A tiny embeddable JS widget for your sites — messages land in your Telegram (r
 ✅ example.com — в порядке, быстро (0.10 с)
 ✅ app.example.com — в порядке, быстро (0.14 с)
 
-✅ backup — работает, отметка 7 ч назад (жду раз в сутки)
+✅ socialbot — на связи, последний раз 7 ч назад (выходит на связь раз в сутки)
 ✅ Сторож healthchecks.io — на связи: если я упаду, он сообщит
 
 Всё спокойно 🐕

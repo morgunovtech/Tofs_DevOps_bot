@@ -479,24 +479,24 @@ async def run_heartbeat_watch():
         if last:
             silence_min = (now - last).total_seconds() / 60
             overdue = heartbeats.is_late(interval_min, silence_min)
-            detail = f"последний сигнал: {fmt_duration(silence_min)} назад"
+            detail = f"последний раз на связи {fmt_duration(silence_min)} назад"
         elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
-            overdue, detail = True, "ни одного сигнала с момента запуска бота"
+            overdue, detail = True, "на связь так и не выходит"
         alerted = await get_state(f"hb_alerted:{job}")
         if overdue and not alerted:
             expl = humanize.EXPLANATIONS["heartbeat"]
             if last:
-                text = (f"🟠 Задача «{esc(job)}» не отчиталась: {detail}, ожидалось каждые "
-                        f"{fmt_duration(interval_min)}.\n{expl.meaning}\n\n"
+                text = (f"🟠 «{esc(job)}» молчит: {detail}, а выходит на связь "
+                        f"{heartbeats.every(interval_min)}.\n{expl.meaning}\n\n"
                         f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
             else:
                 # Never marked at all: the task was added but not connected —
                 # nothing failed, so no «крон упал»; the fix is one tap.
-                text = (f"⚠️ Задача «{esc(job)}» ещё ни разу не отметилась — похоже, её не подключили.\n"
-                        f"Жду отметку каждые {fmt_duration(interval_min)}, но не получил ни одной и не могу "
-                        f"сказать, работает ли задача.\n\n"
-                        f"Задача есть — нажми «Подключить»: там одна строка для её расписания. "
-                        f"Такой задачи нет — «Удалить».")
+                text = (f"⚠️ «{esc(job)}» так и не выходит на связь — похоже, не подключили.\n"
+                        f"Жду связи {heartbeats.every(interval_min)}, но её ещё не было, и я не могу сказать, "
+                        f"работает ли «{esc(job)}».\n\n"
+                        f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
+                        f"Нет — «Удалить».")
             sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
             if sent:
                 await set_state(f"hb_alerted:{job}", now.isoformat())
@@ -651,7 +651,7 @@ async def run_self_heartbeat():
     alerted = await get_state("watchdog_alerted")
     if failing >= heartbeats.WATCHDOG_ALERT_MIN and not alerted:
         sent = await notifier.send(
-            f"🟠 Сторож {name} не принимает мои отметки уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
+            f"🟠 Сторож {name} не на связи уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
             f"Пока так, если я упаду, тебе никто не напишет.\n\n"
             f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
             f"вставь новую: ⚙️ Настройки → 🔌 Подключения → 🛡 Внешний сторож.")
@@ -659,7 +659,7 @@ async def run_self_heartbeat():
             await set_state("watchdog_alerted", "1")
     elif not failing and alerted:
         await set_state("watchdog_alerted", None)
-        await notifier.send(f"✅ Сторож {name} снова принимает отметки. Ничего делать не нужно.")
+        await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
 
 
 async def run_retention():

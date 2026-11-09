@@ -1,5 +1,12 @@
+import ast
+import pathlib
+import re
 from types import SimpleNamespace
 
+from conftest import FakeMessage, FakeState
+
+import main
+from handlers import start
 from handlers.filters import AdminFilter
 from handlers.sites import parse_site_input
 from handlers.start import HELP, rules_of_the_game
@@ -35,3 +42,28 @@ async def test_admin_filter(monkeypatch):
     assert await f(SimpleNamespace(from_user=SimpleNamespace(id=10)))
     assert not await f(SimpleNamespace(from_user=SimpleNamespace(id=11)))
     assert not await f(SimpleNamespace(from_user=None))
+
+
+def test_one_word_for_being_alive():
+    """«Отметка» meant nothing to the owner; «на связи / молчит» did. No
+    user-facing string may bring the old word back."""
+    old = re.compile(r"отметк|отмеча|отметил|отчитал", re.IGNORECASE)
+    found = []
+    for folder in ("handlers", "services", "reports", "web"):
+        for path in pathlib.Path(folder).glob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Constant) and isinstance(node.value, str) and old.search(node.value):
+                    if not node.value.lstrip().startswith(("A ", "The ", "«")):   # docstrings are English
+                        found.append(f"{path}:{node.lineno}")
+    assert found == []
+
+
+async def test_start_leaves_nothing_for_the_bottom_buttons_note(bot, db):
+    """/start removes any bottom keyboard itself, so the one-time «убрал
+    кнопки» note must not go to someone who never had them."""
+    msg = FakeMessage("/start")
+    msg.from_user, msg.chat = SimpleNamespace(id=777), SimpleNamespace(id=777)
+    await start.cmd_start(msg, FakeState())
+    n = len(bot.sent)
+    await main._remove_old_bottom_buttons(bot)
+    assert len(bot.sent) == n
