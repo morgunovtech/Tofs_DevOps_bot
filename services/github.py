@@ -1,6 +1,6 @@
 """Weekly GitHub hygiene (optional) — a section of the Sunday report.
 
-Off until a token is set (GITHUB_TOKEN or «🩺 Диагностика → 🐙 GitHub»).
+Off until a token is set (GITHUB_TOKEN or «⚙️ Настройки → 🔌 Подключения → 🐙 GitHub»).
 One GraphQL query reads the owner's repositories (GITHUB_OWNER, by default
 the token's own account) and the report names only what needs a hand —
 silent when healthy:

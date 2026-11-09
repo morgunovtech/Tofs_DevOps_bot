@@ -76,8 +76,8 @@ async def cb_backup_now(call: CallbackQuery):
         return
     await call.message.answer_document(
         FSInputFile(backup[0]),
-        caption=f"💾 Копия базы бота на {to_local(backup[1]).strftime('%d.%m %H:%M')}. В ней токены "
-                f"подключений — храни её как пароль.")
+        caption=f"💾 Копия базы бота на {to_local(backup[1]).strftime('%d.%m %H:%M')}. Чтобы восстановить "
+                f"из неё — просто пришли мне этот файл. В ней токены подключений — храни её как пароль.")
 
 
 @router.callback_query(F.data.startswith("blk:seen:"))

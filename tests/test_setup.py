@@ -46,16 +46,17 @@ async def test_checklist_groups_and_buttons(bot, db, cfg, monkeypatch):
     assert "docker" not in items                       # not applicable on Railway
     assert items["watchdog"].status == "off"
 
-    # What works is not listed; what is broken comes with its fix; the
-    # optional integrations wait behind one button.
+    # «🔌 Подключения» is a full screen: what is broken first, with its fix;
+    # then what works and what could be added, a line each — the details of
+    # each optional one wait behind one button.
     call = FakeCall("menu_diag")
     await setup.cb_checklist(call, FakeState())
     text = call.message.texts[-1]
-    assert text.startswith("🩺 Боту нужна твоя помощь") and "⚠️ сайты: пока ни одного" in text
-    assert "Работает" not in text and "Можно подключить" not in text and "aiogram" not in text
+    assert text.startswith("🔌 Подключения\n\nНужна твоя помощь:") and "⚠️ сайты: пока ни одного" in text
+    assert "\n✅ Работает: " in text and "\n➕ Можно подключить: " in text and "aiogram" not in text
     labels = buttons(call.message.reply_markup)
     assert "➕ Добавить сайт" in labels and "🌐 Включить статус-страницу" not in labels
-    assert "🔁 Проверить снова" in labels and "🔔 Пробная тревога" in labels
+    assert "🔁 Проверить снова" in labels and "← Настройки" in labels   # the test alert: «🔔 Когда писать»
     assert any(label.startswith("➕ Подключить ещё (") for label in labels)
     assert "Python" in text and "<i>" in text
     call = FakeCall("setup:more")

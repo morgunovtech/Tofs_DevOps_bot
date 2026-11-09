@@ -1,4 +1,4 @@
-"""🩺 Diagnostics as a setup checklist.
+"""🔌 Connections: what works, what needs a hand, what could be added.
 
 Every line is one of three kinds — works / needs attention / can be
 connected — and every non-green line carries a button that either fixes it
@@ -236,14 +236,19 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
     warn = [i for i in items if i.status == "warn"]
     off = [i for i in items if i.status == "off"]
     deploy = await updates.deploy_problem()
+    ok = [i for i in items if i.status == "ok"]
+    lines = ["🔌 Подключения", ""]
     if warn or deploy:
-        lines = ["🩺 Боту нужна твоя помощь\n"]
+        lines.append("Нужна твоя помощь:")
         lines += [f"⚠️ {esc(i.title)}: {esc(i.detail)}" for i in warn]
         if deploy:
             lines.append(f"🟠 Новая версия ({esc(deploy['sha'])}) не запустилась — работаю на прежней. "
                          f"Лог сборки — в сообщении «Новая версия бота не запустилась».")
-    else:
-        lines = ["🩺 Бот работает, всё в порядке."]
+        lines.append("")
+    if ok:
+        lines.append("✅ Работает: " + ", ".join(esc(i.title) for i in ok))
+    if off:
+        lines.append("➕ Можно подключить: " + ", ".join(esc(i.title) for i in off))
     lines.append(f"\n<i>Python {platform.python_version()}"
                  + (f" · сборка {esc(config.app_commit[:7])}" if config.app_commit else "") + "</i>")
 
@@ -252,8 +257,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
         rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
     if off:
         rows.append([InlineKeyboardButton(text=f"➕ Подключить ещё ({len(off)})", callback_data="setup:more")])
-    rows.append([InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="menu_testalert"),
-                 InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
+    rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -263,12 +267,12 @@ async def cb_more(call: CallbackQuery):
     await ack(call)
     off = [i for i in await build_items() if i.status == "off"]
     if not off:
-        await render(call, "Всё уже подключено.", back_button("← К диагностике", "setup:check"))
+        await render(call, "Всё уже подключено.", back_button("← К подключениям", "setup:check"))
         return
     lines = ["➕ Можно подключить — всё необязательно:\n"]
     lines += [f"• {esc(i.title)} — {esc(i.detail)}" for i in off]
     rows = _button_rows(off)
-    rows.append([InlineKeyboardButton(text="← К диагностике", callback_data="setup:check")])
+    rows.append([InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -374,7 +378,7 @@ async def cb_status_page_on(call: CallbackQuery):
     await settings.set_status_page(True)
     await ack(call, "Статус-страница включена")
     await render(call, f"🌐 Статус-страница включена:\n{esc(public_urls.status_page_url())}\n\n"
-                       f"Выключить можно в ⚙️ Настройках.", back_button("← К диагностике", "setup:check"))
+                       f"Выключить можно в ⚙️ Настройках.", back_button("← К подключениям", "setup:check"))
 
 
 @router.callback_query(F.data.startswith("setup:so:"))
@@ -395,7 +399,7 @@ async def cb_regen_heartbeat(call: CallbackQuery):
             "рестарта вернётся старое значение." if config.heartbeat_secret_env else "")
     await render(call, f"🔑 Новый heartbeat-секрет сохранён. Обнови строку в кроне:\n"
                        f"<code>curl -fsS {esc(public_urls.heartbeat_url(example))}</code>{note}",
-                 back_button("← К диагностике", "setup:check"))
+                 back_button("← К подключениям", "setup:check"))
 
 
 async def _forget(message: Message):
@@ -408,7 +412,7 @@ async def _forget(message: Message):
 
 def _guide_kb(*buttons: tuple[str, str]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=t, callback_data=c)] for t, c in buttons]
-    rows.append([InlineKeyboardButton(text="← К диагностике", callback_data="setup:check")])
+    rows.append([InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -495,7 +499,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
     await heartbeats.forget_watchdog()   # the old link's failures are not this one's
     await heartbeats.record_watchdog(None)
     await message.answer("✅ Сторож подключён: только что отметился, дальше буду каждые 5 минут.",
-                         reply_markup=back_button("← К диагностике", "setup:check"))
+                         reply_markup=back_button("← К подключениям", "setup:check"))
 
 
 @router.callback_query(F.data == "setup:watchdog_off")
@@ -555,7 +559,7 @@ async def msg_yx_token(message: Message, state: FSMContext):
                              "и что токен не истёк.", reply_markup=_yx_kb())
         return
     await message.answer(f"✅ Яндекс.Вебмастер подключён: верифицированных хостов {hosts}.",
-                         reply_markup=back_button("← К диагностике", "setup:check"))
+                         reply_markup=back_button("← К подключениям", "setup:check"))
 
 
 @router.callback_query(F.data == "setup:yx_off")
@@ -655,7 +659,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
         return
     if await _gsc_probe():
         await message.answer("✅ Google Search Console подключён, API отвечает.",
-                             reply_markup=back_button("← К диагностике", "setup:check"))
+                             reply_markup=back_button("← К подключениям", "setup:check"))
     else:
         await message.answer(f"Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан "
                              f"шаг 3: добавь <code>{esc(creds.get('client_email', ''))}</code> "
@@ -834,7 +838,7 @@ async def msg_gh_token(message: Message, state: FSMContext):
     await integrations.set_value("github_token", token)
     await message.answer(f"✅ GitHub подключён: аккаунт {esc(login)}. Первый раздел придёт в воскресном "
                          f"отчёте — если будет что прибрать.",
-                         reply_markup=back_button("← К диагностике", "setup:check"))
+                         reply_markup=back_button("← К подключениям", "setup:check"))
 
 
 @router.callback_query(F.data == "setup:gh_owner")

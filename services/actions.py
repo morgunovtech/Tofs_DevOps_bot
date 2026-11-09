@@ -102,7 +102,7 @@ async def trigger_redeploy(url: str) -> str:
     """Fire the Cloudflare Pages deploy hook. Returns a human-readable line."""
     hook = deploy_hook_for(url)
     if not hook:
-        return "❌ Пересборка не настроена для этого сайта (🩺 Диагностика → Cloudflare)"
+        return "❌ Пересборка не настроена для этого сайта (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(hook) as resp:
@@ -118,7 +118,7 @@ async def purge_cf_cache(url: str) -> str:
     """Purge the whole Cloudflare zone cache (per-host purge needs an
     Enterprise plan; purge_everything works everywhere)."""
     if not integrations.cf_purge_configured():
-        return "❌ Cloudflare API token / zone id не настроены (🩺 Диагностика → Cloudflare)"
+        return "❌ Cloudflare API token / zone id не настроены (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
     zone = f"https://api.cloudflare.com/client/v4/zones/{integrations.cf_zone_id()}"
     auth = {"Authorization": f"Bearer {integrations.cf_api_token()}"}
     host = host_of(url)

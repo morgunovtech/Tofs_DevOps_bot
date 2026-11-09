@@ -125,20 +125,11 @@ async def test_site_add_flow_and_detail_screen(bot, db):
         assert "чинится" in call.message.texts[-1]
         assert await maint_service.is_paused(sid)
 
-        call = FakeCall("site_export")
-        docs = []
-        call.message.answer_document = lambda document, caption=None: _record(docs, document, caption)
-        await sites.cb_site_export(call)
-        assert docs and b'"url"' in docs[0]
-
-        imp = FakeMessage('{"sites": [{"url": "https://imported.test", "slow_ms": 1234}, {"url": "bad host!"}]}')
-        await sites.msg_site_import(imp, FakeState())
-        assert "добавлено 1" in imp.texts[-1] and "Пропущено" in imp.texts[-1]
+        # An export from an older version, sent to the chat, still restores.
+        text = await sites._restore_bytes(
+            b'{"sites": [{"url": "https://imported.test", "slow_ms": 1234}, {"url": "bad host!"}]}')
+        assert "добавлено 1" in text and "Пропущено" in text
         assert (await db.get_site_by_url("https://imported.test"))["slow_ms"] == 1234
-
-
-async def _record(store, document, caption):
-    store.append(document.data)
 
 
 async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, db):
@@ -158,11 +149,19 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
 
     call = FakeCall("menu_settings")
     await settings.cb_settings(call)
-    assert "недельная вс 11:00" in call.message.texts[-1]
+    text = call.message.texts[-1]
+    # Five questions, a line each; no export/import, no separate diagnostics.
+    assert text.startswith("⚙️ Настройки\n\n🔔 Когда писать — сводка 9:00")
+    assert "👥 Помощники — нет" in text and "🔌 Подключения — " in text and "🌍 Для посетителей — " in text
     labels = [b.text for row in call.message.reply_markup.inline_keyboard for b in row]
-    assert "🩺 Диагностика и подключения" in labels and "на главном экране" in call.message.texts[-1]
-    # Tasks moved to the main screen; the test alert lives in diagnostics — no twins here.
-    assert "⏰ Контроль задач" not in labels and "🔔 Пробная тревога" not in labels
+    assert labels == ["🔔 Когда писать", "👥 Помощники", "🔌 Подключения", "🌍 Для посетителей",
+                      "🕐 Часовой пояс", "🏠 Главная"]
+    call = FakeCall("menu_reports")                                   # pause, planned work, the test alert live here
+    await settings.cb_reports(call)
+    assert {"🔕 Помолчать…", "🗓 Плановые работы", "🔔 Пробная тревога"} <= set(buttons(call.message.reply_markup))
+    call = FakeCall("menu_visitors")
+    await settings.cb_visitors(call)
+    assert buttons(call.message.reply_markup) == ["🌐 Статус-страница", "📩 Сообщения", "← Настройки"]
     call = FakeCall("set_w:18")
     await settings.cb_settings_pick(call)
     assert settings_service.weekly_hour() == 18
@@ -449,7 +448,7 @@ async def test_timezone_ring_and_status_page_screens(bot, db):
     assert "не знаю" in msg.texts[-1] and settings_service.timezone() == "Europe/Prague"
     await settings.cb_settings_pick(FakeCall("set_tz:env"))
     assert settings_service.timezone() == "Europe/Moscow"
-    assert "Часовой пояс: Europe/Moscow" in await settings.hub_text()
+    assert "🕐 Часовой пояс — Europe/Moscow" in await settings.hub_text()
 
     call = FakeCall("set_ring:on")
     await settings.cb_settings_pick(call)

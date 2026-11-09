@@ -249,7 +249,7 @@ def watchdog_digest_line(w: Watchdog | None) -> tuple[str, bool]:
     """(line, fine): what happens if the bot itself goes down."""
     if w is None:
         return ("🛡 Внешнего сторожа нет — если я упаду, никто не напишет. Подключить: "
-                "⚙️ Настройки → 🩺 Диагностика и подключения"), True
+                "⚙️ Настройки → 🔌 Подключения"), True
     head = f"{w.icon} Сторож {esc(w.name)} — {esc(w.state)}"
     if w.icon == "✅":
         return f"{head}: если я упаду, он сообщит", True
