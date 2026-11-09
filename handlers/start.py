@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove
 
 from config import config
+from db.database import set_state
 from handlers.common import DENIED, back_button
 from handlers.menu import send_main_menu
 from services import helpers, notifier, runtime, settings
@@ -22,7 +23,7 @@ HELP = (
     "🟠 — нужно действие, но не сегодня: например, сертификат скоро закончится. Приходит без звука.\n"
     "✅ — всё в порядке или снова работает.\n"
     "⚠️ — не смог проверить: сам попробую ещё раз.\n"
-    "⏳ — жду первой проверки или первой отметки.\n\n"
+    "⏳ — жду первой проверки или первой связи.\n\n"
     "Где что:\n"
     "🏠 Главная (☰ слева от поля ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
     "системы. Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
@@ -102,6 +103,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "Назван в честь Тофса — ирландского терьера, который принимает "
         "аптайм близко к сердцу.",
         reply_markup=ReplyKeyboardRemove())   # bottom buttons of earlier versions go
+    await set_state("ui:bottom_buttons_removed", "1")   # nothing left for main.py to announce
     await message.answer(rules_of_the_game())
     await send_main_menu(message)
 

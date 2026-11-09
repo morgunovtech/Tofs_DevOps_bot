@@ -175,7 +175,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await heartbeats.cb_hb_show(call)
     text = call.message.texts[-1]
     # One question first; no curl line and no secret until the answer.
-    assert text.startswith("⏰ backup\n⏳ Пока ни одной отметки · жду раз в сутки")
+    assert text.startswith("⏰ backup\n⏳ Пока не выходит на связь · жду раз в сутки")
     assert text.endswith("Что такое «backup» у тебя?") and "curl" not in text and "secret" not in text
     assert [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row] == [
         "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "blk:bots"]
@@ -198,7 +198,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     assert "Что такое «backup» у тебя?" in call.message.texts[-1]
     # «🗑 Удалить» under the alert: the task goes, its buttons go, the text stays.
     call = FakeCall("hb_rm:backup")
-    call.message.text = "⚠️ Задача «backup» ещё ни разу не отметилась"
+    call.message.text = "⚠️ «backup» так и не выходит на связь"
     call.message.reply_markup = heartbeat_keyboard(["backup"])
     call.message.edit_text = no_edit
     await heartbeats.cb_hb_remove_here(call)
@@ -239,14 +239,14 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     header, kb = await menu.build_main_menu()
     lines = header.split("\n")
     # Not marked yet and not alerted: waiting, not counted, not a problem.
-    assert lines[0].startswith("✅ Всё в порядке") and "🤖 Боты и системы\n⏳ socialbot · ждёт первой отметки" in header
+    assert lines[0].startswith("✅ Всё в порядке") and "🤖 Боты и системы\n⏳ socialbot · пока не выходит на связь" in header
     call = FakeCall("blk:bots")                                       # its card: one tap from the bots page
     await blocks.cb_bots(call)
     assert "hb_show:socialbot" in [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row]
 
     await db.heartbeat_ping("socialbot")
     header, kb = await menu.build_main_menu()
-    assert header.startswith("✅ Всё в порядке") and "✅ socialbot · отметка только что" in header
+    assert header.startswith("✅ Всё в порядке") and "✅ socialbot · на связи, только что" in header
 
     conn = await db.get_db()
     await conn.execute("UPDATE heartbeats SET last_ping = datetime('now', '-31 hours') WHERE job = 'socialbot'")
@@ -255,12 +255,12 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     assert header.startswith("🟠 1/1 открывается · ⏰ socialbot молчит") and "🟠 socialbot · молчит 1 дн 7 ч" in header
     call = FakeCall("hb_show:socialbot")
     await heartbeats.cb_hb_show(call)
-    assert "🟠 Молчит 1 дн 7 ч, а жду отметку раз в сутки." in call.message.texts[-1]
+    assert "🟠 Молчит 1 дн 7 ч, а выходит на связь раз в сутки." in call.message.texts[-1]
 
     await settings_service.add_heartbeat_job("backup", 60)
     await db.set_state("hb_alerted:backup", NOW)                 # the watch already said «never marked»
     header, _ = await menu.build_main_menu()
-    assert header.startswith("🟠 1/1 открывается · ⏰ молчат: 2") and "⚠️ backup · ни одной отметки" in header
+    assert header.startswith("🟠 1/1 открывается · ⏰ молчат: 2") and "⚠️ backup · так и не выходит на связь" in header
 
     # Only tasks, no sites: still a dashboard, not the «add your first site» greeting.
     await db.deactivate_site(sid)
@@ -286,7 +286,7 @@ async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
                                                "fail_since": (datetime.now(UTC) - timedelta(minutes=40)).isoformat()}))
     header, _ = await menu.build_main_menu()
     assert header.startswith("🟠 1/1 открывается · 🟠 сторож healthchecks.io")
-    assert "🟠 сторож healthchecks.io · не принимает отметки 40 мин (отвечает ошибкой 404)" in header
+    assert "🟠 сторож healthchecks.io · не на связи 40 мин (отвечает ошибкой 404)" in header
     await integrations.set_value("self_heartbeat_url", None)
 
 
@@ -628,7 +628,7 @@ async def test_bots_page_says_everything_and_hands_out_a_backup(bot, db, cfg, tm
     await settings_service.add_heartbeat_job("socialbot", 1440)
     await db.heartbeat_ping("socialbot")
     text, kb = await blocks.bots_page()
-    assert text.startswith("🤖 Боты и системы\n\n✅ socialbot — работает, отметка только что (жду раз в сутки)")
+    assert text.startswith("🤖 Боты и системы\n\n✅ socialbot — на связи, только что (выходит на связь раз в сутки)")
     assert "🛡 Внешнего сторожа нет" in text and "⏳ Резервная копия базы — первую сделаю сегодня ночью." in text
     assert buttons(kb) == ["⚙️ socialbot", "🛡 Подключить сторожа", "💾 Скачать копию базы",
                            "➕ Бот или задача", "🏠 Главная"]

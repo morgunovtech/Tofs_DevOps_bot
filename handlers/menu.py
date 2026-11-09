@@ -15,18 +15,16 @@ from config import config
 from db.database import (
     get_active_host_urls,
     get_active_incidents,
-    get_active_site_urls,
     get_all_sites,
 )
 from handlers import seo as seo_screen
 from handlers.blocks import backup_state
-from handlers.common import ack, back_button, render
-from monitors.availability import check_all
-from reports.formatter import format_compact_status_report, incident_line
+from handlers.common import ack, render
+from reports.formatter import incident_line
 from services import heartbeats, humanize, maintenance, notifier, sitestatus, updates
 from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
-from utils.text import clip, esc, fmt_duration, plural
+from utils.text import esc, fmt_duration, plural
 from utils.urls import is_api_check, site_label
 
 router = Router(name="menu")
@@ -141,7 +139,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
             [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")]])
         return ("👋 Пока ни за чем не слежу. Добавь первый сайт — и я начну проверять его каждые "
                 f"{config.check_interval_minutes} мин и напишу, только если что-то сломается. Там же "
-                "можно добавить бота или задачу по расписанию: скажу, если перестанет отмечаться.", kb)
+                "можно добавить бота или задачу по расписанию: скажу, если замолчит.", kb)
 
     states = [(s, *await site_state(s)) for s in sites]
     ages = [age for *_, age in states if age is not None]
@@ -160,7 +158,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     inc_icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in incidents))
 
     if not total:
-        headline = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой отметки"
+        headline = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой связи"
     elif incidents or fine < total:
         worst = next((i for i in ("🔴", "🟠", humanize.UNCHECKED) if i in icons), "✅")
         parts = []
@@ -231,7 +229,6 @@ async def send_main_menu(target: Message | CallbackQuery):
 
 
 @router.message(Command("menu"))
-@router.message(F.text.in_({"📱 Меню", "📊 Статус"}))
 async def cmd_menu(message: Message, state: FSMContext):
     await state.clear()  # a menu tap always aborts any pending input flow
     await send_main_menu(message)
@@ -256,33 +253,3 @@ async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
     await ack(call, "Отменено")
     await state.clear()
     await send_main_menu(call)
-
-
-# ── Check everything now ─────────────────────────────────────────────────────
-
-_NO_SITES = "Сайтов пока нет — добавь: 🏠 Главная → «🌐 Сайты» → «➕ Добавить сайт»."
-
-
-@router.message(Command("status"))
-async def cmd_status(message: Message, state: FSMContext):
-    await state.clear()
-    urls = await get_active_site_urls()
-    if not urls:
-        await message.answer(_NO_SITES)
-        return
-    progress = await message.answer("▱▱▱ Проверяю...")
-    report = format_compact_status_report(await check_all(urls, manage=False),
-                                          await get_active_incidents())
-    await progress.edit_text(clip(report), reply_markup=back_button())
-
-
-@router.message(Command("sites"))
-async def cmd_sites(message: Message):
-    urls, jobs = await get_active_site_urls(), await job_states()
-    if not urls and not jobs:
-        await message.answer(_NO_SITES)
-        return
-    lines = ["🌍 Слежу за:", *(f"  • {esc(u)}" for u in urls)] if urls else []
-    if jobs:
-        lines += ([""] if lines else []) + ["⏰ Боты и задачи:", *job_lines(jobs)]
-    await message.answer("\n".join(lines))

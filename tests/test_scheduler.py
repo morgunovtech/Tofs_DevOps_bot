@@ -87,7 +87,7 @@ async def test_heartbeat_watch_and_recovery_flag(bot, db, monkeypatch):
     monkeypatch.setattr(scheduler, "_started_at", datetime.now(UTC) - timedelta(hours=2))
     await scheduler.run_heartbeat_watch()
     # Never marked = not connected: no «крон упал», and both ways out are one tap.
-    assert bot.sent[-1]["text"].startswith("⚠️ Задача «backup» ещё ни разу не отметилась") and await get_state("hb_alerted:backup")
+    assert bot.sent[-1]["text"].startswith("⚠️ «backup» так и не выходит на связь") and await get_state("hb_alerted:backup")
     assert "крон" not in bot.sent[-1]["text"]
     buttons = [b.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row]
     assert buttons == ["hb_how:backup", "hb_rm:backup"]
@@ -215,10 +215,10 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     assert "📈 За неделю: все сайты без сбоев" in text
     assert "Поиск и ИИ" not in text                                 # a.test is in «Открытых проблем»
     assert "backup" not in text                                     # under the sites, not in the tail
-    assert (await scheduler._watch_lines(morning=True))[0] == ("⏳ backup — отметок ещё не было, жду раз в сутки", True)
+    assert (await scheduler._watch_lines(morning=True))[0] == ("⏳ backup — пока не выходит на связь (жду раз в сутки)", True)
     await set_state("hb_alerted:backup", "1")                       # the watch has said «never marked»
     assert (await scheduler._watch_lines(morning=True))[0] == (
-        "⚠️ backup — ни одной отметки: подключи или удали, кнопки ниже", False)
+        "⚠️ backup — так и не выходит на связь: подключи или удали, кнопки ниже", False)
 
     await db.save_check(b, "availability", "error", details="Timeout (15s)")
     await db.save_check(b, "seo", "error", details="site unreachable, audit skipped")
@@ -236,7 +236,7 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     await db.heartbeat_ping("backup")
     # «1 дн назад» alone read like trouble: the expected rhythm says it is on time.
     assert (await scheduler._watch_lines(morning=True))[0] == (
-        "✅ backup — работает, отметка только что (жду раз в сутки)", True)
+        "✅ backup — на связи, только что (выходит на связь раз в сутки)", True)
     await scheduler.send_morning_report()
     assert bot.sent[-1]["reply_markup"] is None
     await settings.remove_heartbeat_job("backup")
@@ -273,19 +273,19 @@ async def test_watchdog_on_watch_is_seen_and_a_deaf_one_is_said_once(bot, db, mo
     assert (await heartbeats.watchdog()).icon == "✅"                # one refused mark is a blip
     await failing_for(20)
     line, fine = (await scheduler._watch_lines(morning=False))[-1]
-    assert line == ("🟠 Сторож healthchecks.io — не принимает отметки 20 мин (check не найден): "
+    assert line == ("🟠 Сторож healthchecks.io — не на связи 20 мин (check не найден): "
                     "если я упаду, никто не узнает") and not fine
     await scheduler.run_self_heartbeat()
     assert len(bot.sent) == n                                       # not yet worth a message
     await failing_for(35)
     await scheduler.run_self_heartbeat()
     assert len(bot.sent) == n + 1
-    assert bot.sent[-1]["text"].startswith("🟠 Сторож healthchecks.io не принимает мои отметки уже 35 мин: check не найден")
+    assert bot.sent[-1]["text"].startswith("🟠 Сторож healthchecks.io не на связи уже 35 мин: check не найден")
     await scheduler.run_self_heartbeat()
     assert len(bot.sent) == n + 1                                   # said once
     answer[0] = None
     await scheduler.run_self_heartbeat()
-    assert "снова принимает отметки" in bot.sent[-1]["text"] and not await get_state("watchdog_alerted")
+    assert "снова на связи" in bot.sent[-1]["text"] and not await get_state("watchdog_alerted")
     await scheduler.run_self_heartbeat()
     assert len(bot.sent) == n + 2
     await integrations.set_value("self_heartbeat_url", None)

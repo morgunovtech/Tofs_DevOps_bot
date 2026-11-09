@@ -64,7 +64,7 @@ async def test_heartbeat_secrets(bot):
         await set_state("hb_alerted:backup", "1")
         assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200
         assert await get_state("hb_alerted:backup") is None
-        assert "снова отмечается" in bot.sent[-1]["text"]
+        assert "снова на связи" in bot.sent[-1]["text"]
 
 
 SOCIAL = {"title": "📣 Соцсети", "open_url": "https://t.me/social_tracker_bot",

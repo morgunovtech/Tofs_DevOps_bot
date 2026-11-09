@@ -145,21 +145,6 @@ def pending_note(pending: list) -> str:
             f"если так и останется.")
 
 
-def links_summary(results: list[LinksResult]) -> list[str]:
-    """For the manual check: every link that does not open, grouped by the
-    page it is on, with the reason and what to do — not a bare count."""
-    hit = [r for r in results if r.broken]
-    if not hit:
-        return []
-    n = sum(len(r.broken) for r in hit)
-    lines = [f"🟠 {n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}:"]
-    for r in hit:
-        lines.append(f"{esc(site_label(r.url))}:")
-        lines += link_lines(r.broken)
-    lines.append(LINK_FIX)
-    return lines
-
-
 def format_deep_alert(r) -> str:
     expl = explain("deep", r.error)
     errors = "\n".join(f"  • {esc(u)} — {esc(describe_error(f'HTTP {code}'))}" for u, code in r.errors[:5])

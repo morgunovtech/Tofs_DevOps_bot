@@ -41,7 +41,7 @@ def is_late(interval: int, ago: float) -> bool:
 
 class Job(NamedTuple):
     name: str
-    icon: str            # ✅ on time · 🟠 late · ⏳ waits for its first mark · ⚠️ none even after the alert
+    icon: str            # ✅ on time · 🟠 late · ⏳ not in touch yet · ⚠️ still not, after the alert
     state: str           # short words, as on the main screen
     interval: int        # minutes
     ago: float | None    # minutes since the last mark; None — never marked
@@ -66,11 +66,12 @@ async def job_states() -> list[Job]:
         if ago is not None and is_late(interval, ago):
             icon, state = "🟠", f"молчит {fmt_duration(ago)}"
         elif ago is not None:
-            icon, state = "✅", "отметка только что" if ago < 1 else f"отметка {fmt_duration(ago)} назад"
+            icon, state = "✅", ("на связи, только что" if ago < 1
+                                 else f"на связи, последний раз {fmt_duration(ago)} назад")
         elif await get_state(f"hb_alerted:{name}"):
-            icon, state = humanize.UNCHECKED, "ни одной отметки — не подключили?"
+            icon, state = humanize.UNCHECKED, "так и не выходит на связь — подключали?"
         else:
-            icon, state = "⏳", "ждёт первой отметки"
+            icon, state = "⏳", "пока не выходит на связь"
         out.append(Job(name, icon, state, interval, ago))
     return out
 
@@ -80,12 +81,13 @@ def digest_line(job: Job) -> tuple[str, bool]:
     expected rhythm next to the last mark says why «1 дн назад» is fine."""
     name, rhythm = esc(job.name), every(job.interval)
     if job.icon == "✅":
-        return f"✅ {name} — работает, {job.state} (жду {rhythm})", True
+        return f"✅ {name} — {job.state} (выходит на связь {rhythm})", True
     if job.icon == "🟠":
-        return f"🟠 {name} — молчит {fmt_duration(job.ago or 0)}, а жду отметку {rhythm}: проверь, запускается ли", False
+        return (f"🟠 {name} — молчит {fmt_duration(job.ago or 0)}, а выходит на связь {rhythm}: "
+                f"проверь, запускается ли"), False
     if job.icon == "⏳":
-        return f"⏳ {name} — отметок ещё не было, жду {rhythm}", True
-    return f"{job.icon} {name} — ни одной отметки: подключи или удали, кнопки ниже", False
+        return f"⏳ {name} — пока не выходит на связь (жду {rhythm})", True
+    return f"{job.icon} {name} — так и не выходит на связь: подключи или удали, кнопки ниже", False
 
 
 # ── Status that a bot sends with its mark ────────────────────────────────────
@@ -173,7 +175,7 @@ def status_items(job: Job, status: dict) -> list[tuple[str, str, str]]:
 # ── The bot's own watchdog ───────────────────────────────────────────────────
 
 class Watchdog(NamedTuple):
-    icon: str     # ✅ takes the marks · 🟠 has not for a while · ⏳ no answer yet
+    icon: str     # ✅ in touch · 🟠 not for a while · ⏳ not yet
     name: str     # «healthchecks.io» or the host of another service
     state: str
 
@@ -239,10 +241,10 @@ async def watchdog() -> Watchdog | None:
     rec, name = await _watchdog_record(), watchdog_name(url)
     failing = failing_minutes(rec)
     if failing >= WATCHDOG_FAIL_MIN:
-        return Watchdog("🟠", name, f"не принимает отметки {fmt_duration(failing)} ({rec.get('error')})")
+        return Watchdog("🟠", name, f"не на связи {fmt_duration(failing)} ({rec.get('error')})")
     if rec.get("ok_at"):
         return Watchdog("✅", name, "на связи")
-    return Watchdog("⏳", name, "жду первого ответа")
+    return Watchdog("⏳", name, "пока не на связи")
 
 
 def watchdog_digest_line(w: Watchdog | None) -> tuple[str, bool]:

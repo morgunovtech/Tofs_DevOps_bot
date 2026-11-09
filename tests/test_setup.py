@@ -218,7 +218,7 @@ async def test_watchdog_wizard(bot, db, monkeypatch):
     monkeypatch.setattr(heartbeats, "ping_watchdog", fake_ping)
     msg = FakeMessage("https://hc-ping.com/bad")
     await setup.msg_watchdog_url(msg, state)
-    assert "не принял отметку: check не найден" in msg.texts[-1] and not integrations.self_heartbeat_url()
+    assert "Сторож не на связи: check не найден" in msg.texts[-1] and not integrations.self_heartbeat_url()
     msg = FakeMessage("https://hc-ping.com/good")
     await setup.msg_watchdog_url(msg, state)
     assert "Сторож подключён" in msg.texts[-1] and (await heartbeats.watchdog()).icon == "✅"

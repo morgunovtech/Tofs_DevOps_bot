@@ -21,7 +21,6 @@ from reports.formatter import (
     format_recovery_alert,
     format_seo_alert,
     format_ssl_alert,
-    links_summary,
 )
 
 NOW = datetime.now(UTC).isoformat(timespec="seconds")
@@ -58,11 +57,11 @@ def test_bots_and_watchdog_sit_under_the_sites():
     """Bots, tasks and the watchdog are a block of their own right under the
     sites, and a silent one takes «Всё спокойно» away like a fallen site."""
     avail = [AvailabilityResult(url="https://ex.com", site_id=1, response_time_ms=95, status_code=200)]
-    fine = [("✅ socialtracker — работает, отметка 1 дн назад (жду раз в сутки)", True)]
+    fine = [("✅ socialtracker — на связи, последний раз 1 дн назад (выходит на связь раз в сутки)", True)]
     text = format_compact_status_report(avail, [], report_type="morning", extras=["📈 x"], watch=fine)
     lines = text.split("\n")
     assert lines[2:7] == ["✅ ex.com — в порядке, быстро (0.10 с)", "", fine[0][0], "", "Всё спокойно 🐕"]
-    silent = fine + [("⚠️ backup — ни одной отметки: подключи или удали, кнопки ниже", False)]
+    silent = fine + [("⚠️ backup — так и не выходит на связь: подключи или удали, кнопки ниже", False)]
     text = format_compact_status_report(avail, [], report_type="morning", watch=silent)
     assert "⚠️ backup" in text and "Всё спокойно" not in text
     # Only tasks, no sites: no empty gap under the header.
@@ -158,6 +157,4 @@ def test_a_dead_link_is_a_problem_wherever_it_points():
     assert "адрес сайта не находится" in text and "чужих" not in text and "не считаю проблемой" not in text
     assert text.splitlines()[-1].startswith("Что сделать:")
     clean = LinksResult(url="https://b.ex", site_id=2)
-    lines = links_summary([r, clean])
-    assert lines[0] == "🟠 3 ссылки не открываются:" and "ex.com:" in lines and "b.ex:" not in lines
-    assert links_summary([clean]) == [] and format_links_report(clean) == ""
+    assert format_links_report(clean) == ""
