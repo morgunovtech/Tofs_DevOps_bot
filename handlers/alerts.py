@@ -36,7 +36,7 @@ async def cb_alert_action(call: CallbackQuery):
     if action == "recheck":
         await ack(call, "Проверяю…")
         r = await check_availability(url, manage=False)
-        speed = f", {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
+        speed = f" {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
         if r.ok:
             text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
                     else f"✅ {label} сейчас отвечает{speed}.")

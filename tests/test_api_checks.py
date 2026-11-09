@@ -151,7 +151,7 @@ async def test_card_menu_and_report_show_an_api_check_as_one(bot, db):
     call = FakeCall(f"check_site:{api}")
     await sites.cb_check_single_site(call)
     card = call.message.texts[-1]
-    assert "🔌 API-проверка: POST, в ответе должно быть «scoreLabel»" in card and "Отвечает, быстро" in card
+    assert "API-проверка: POST, в ответе должно быть «scoreLabel»" in card and "✅ Отвечает за 0.12 с" in card
     assert "Сертификат и домен — на карточке good-pass.pages.dev" in card
     assert "Поиск и ИИ" not in card and "Сертификат действует" not in card
     assert "🔎 Поиск и ИИ" not in buttons(call.message.reply_markup)
@@ -177,7 +177,7 @@ async def test_card_menu_and_report_show_an_api_check_as_one(bot, db):
     r_page = availability.AvailabilityResult(url=GOOD_PASS, site_id=page, response_time_ms=100)
     r_api = availability.AvailabilityResult(url=ANALYZE, site_id=api, response_time_ms=100, api=True)
     report = format_compact_status_report([r_page, r_api], [], ssl_results=[], domain_results=[])
-    assert "✅ good-pass.pages.dev/api/v1/analyze — в порядке" in report
+    assert "✅ good-pass.pages.dev/api/v1/analyze — отвечает за 0.10 с" in report
 
 
 async def test_adding_an_api_address_says_what_is_watched(bot, db):

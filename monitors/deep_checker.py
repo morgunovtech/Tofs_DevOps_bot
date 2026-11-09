@@ -4,6 +4,7 @@ Sites without a sitemap are skipped silently."""
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -21,6 +22,14 @@ from services import sitestatus
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
+
+
+def _path(page: str, site_url: str) -> str:
+    """«/privacy» for a page of the site itself, the whole address otherwise."""
+    p, home = urlparse(page), urlparse(site_url)
+    if p.netloc.lower() != home.netloc.lower():
+        return page
+    return (p.path or "/") + (f"?{p.query}" if p.query else "")
 
 
 async def check_deep(url: str) -> DeepResult:
@@ -54,8 +63,11 @@ async def check_deep(url: str) -> DeepResult:
 
         r.errors = [p for p in await asyncio.gather(*(probe(p) for p in sample)) if p]
 
-    # The card says how the rest of the site is, not only the home page.
-    await sitestatus.update(site_id, "deep", sampled=r.sampled, errors=len(r.errors))
+    # The card says how the rest of the site is, not only the home page —
+    # each page with its own mark.
+    failed = dict(r.errors)
+    await sitestatus.update(site_id, "deep", sampled=r.sampled, errors=len(r.errors),
+                            pages=[[_path(page, url), failed.get(page)] for page in sample])
     # One 5xx out of ten can be a fluke; several mean the site is broken.
     threshold = 1 if r.sampled <= 3 else 2
     if len(r.errors) >= threshold:

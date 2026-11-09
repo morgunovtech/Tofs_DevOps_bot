@@ -115,8 +115,7 @@ async def test_card_screen_and_the_check_from_the_screen(bot, db, monkeypatch):
     assert await get_active_incidents() == []                      # the alert belongs to the scheduled check
 
     lines = await card_lines(await db.get_site(sid))
-    assert "🟠 Безопасность: 1 помеха" in lines
-    assert "    1. 🟠 Не хватает 1 защитного заголовка из 4" in lines
+    assert lines[0] == "🟠 Защита: не хватает 1 защитного заголовка из 4"     # a problem: at the top
 
     call = FakeCall(f"sec:{sid}")
     await security_screen.cb_security(call)
@@ -134,7 +133,7 @@ async def test_card_screen_and_the_check_from_the_screen(bot, db, monkeypatch):
     await security_screen.cb_security_check(FakeCall(f"sec_check:{sid}"))
     assert await get_active_incidents() == []
     assert security_screen.security_lines((await sc.sitestatus.get(sid))["security"]) == \
-        ["✅ Безопасность: только https, защитные заголовки на месте, .git и .env снаружи не видны"]
+        ["✅ Защита: только https, защитные заголовки, служебные файлы снаружи не видны"]
 
 
 async def test_a_site_that_does_not_answer_keeps_the_last_result(bot, db, monkeypatch):

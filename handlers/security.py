@@ -9,6 +9,7 @@ from handlers.common import ack, back_button, render, site_by_cb
 from monitors.security_checker import HEADERS, check_security, is_https
 from reports.formatter import finding_block
 from services import sitestatus
+from services.humanize import lower_first
 from utils.text import esc, fmt_duration, plural
 from utils.urls import is_web_page, site_label
 
@@ -27,12 +28,14 @@ def security_lines(sec: dict | None) -> list[str]:
     if not findings:
         parts = ["только https"] if sec.get("plain_http") is False else []
         if sec.get("hosting") != "github":
-            parts.append("защитные заголовки на месте")
-        parts.append(".git и .env снаружи не видны")
-        return [f"✅ Безопасность: {', '.join(parts)}"]
+            parts.append("защитные заголовки")
+        parts.append("служебные файлы снаружи не видны")
+        return [f"✅ Защита: {', '.join(parts)}"]
+    if len(findings) == 1:
+        return [f"{_icon(findings[0])} Защита: {esc(lower_first(findings[0]['title']))}"]
     n = len(findings)
     worst = "🔴" if any(_icon(f) == "🔴" for f in findings) else "🟠"
-    lines = [f"{worst} Безопасность: {n} {plural(n, 'помеха', 'помехи', 'помех')}"]
+    lines = [f"{worst} Защита: {n} {plural(n, 'помеха', 'помехи', 'помех')}"]
     lines += [f"    {i}. {_icon(f)} {esc(f['title'])}" for i, f in enumerate(findings, 1)]
     return lines
 

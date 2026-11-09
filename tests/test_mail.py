@@ -197,9 +197,10 @@ async def test_card_and_mail_screen(bot, db, monkeypatch):
     await scheduler.run_mail_checks()
 
     lines = await card_lines(await db.get_site(sid))
-    assert "✅ Почта: Proton, принимает письма" in "\n".join(lines)
-    assert any(line.startswith("🟠 Настройки почты: 1 помеха") for line in lines)
-    assert "    1. 2 записи SPF вместо одной" in lines
+    assert "✅ Почта принимает письма · Proton" in lines
+    # The problem, said whole, is lifted to the top of the card — once.
+    assert lines[0] == "🟠 Почта ex.test: 2 записи SPF вместо одной — письма могут уходить в спам"
+    assert sum("SPF" in line for line in lines) == 1
     assert not any("Почта" in line for line in await card_lines(await db.get_site(other)))
 
     call = FakeCall(f"mail:{sid}")
@@ -220,9 +221,12 @@ async def test_card_and_mail_screen(bot, db, monkeypatch):
 def test_all_fine_is_one_line_and_no_mail_is_said_plainly():
     fine = {"mx": PROTON_MX, "provider": "Proton", "accepts": True, "spf": 1, "dkim": True,
             "dmarc": "reject", "findings": []}
-    assert mail_screen.mail_lines(fine) == ["✅ Почта: Proton, принимает письма · SPF, DKIM, DMARC в порядке"]
+    assert mail_screen.mail_lines(fine) == ["✅ Почта принимает письма · Proton"]
     assert mail_screen.mail_lines({"mx": [], "locked": True, "findings": []}) == \
-        ["✅ Почты на этом домене нет, слать письма от его имени запрещено"]
+        ["✅ Почты на домене нет, слать письма от его имени запрещено"]
+    assert mail_screen.mail_brief(fine) == ("✅", "Proton")
+    assert mail_screen.mail_brief({**fine, "findings": [{"title": "Нет DMARC"}, {"title": "x"}]}) == \
+        ("🟠", "нет DMARC и ещё 1 помеха")
     assert mail_screen.mail_lines(None) == ["⏳ Почта: ещё не проверял"]
 
 

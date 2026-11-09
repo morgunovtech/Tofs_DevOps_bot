@@ -64,8 +64,9 @@ def test_downtime_and_speed():
     assert downtime(100, 100, 5) == "без сбоев"
     assert downtime(100, 97, 5) == "недоступен ≈15 мин"
     assert downtime(2000, 1900, 1) == "недоступен ≈1 ч 40 мин"
-    assert speed(120) == "быстро (0.12 с)" and speed(900) == "нормально (0.90 с)"
-    assert speed(4200) == "медленно (4.2 с)" and fmt_seconds(15000) == "15 с"
+    # The number, never «быстро»: a threshold nobody set.
+    assert speed(120) == "за 0.12 с" and speed(900, "из России") == "за 0.90 с из России"
+    assert speed(4200) == "за 4.2 с" and speed(None) == "нет данных" and fmt_seconds(15000) == "15 с"
 
 
 def test_incident_headline():

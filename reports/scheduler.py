@@ -243,7 +243,7 @@ async def _track_slow(r, slow_ms: int):
         return
     _slow_streak[r.site_id] = 0
     if await resolve_incident(r.site_id, "performance"):
-        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается быстро ({humanize.fmt_seconds(ms)}). "
+        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается за {humanize.fmt_seconds(ms)}. "
                             f"Ничего делать не нужно.", Priority.NORMAL, site_id=r.site_id)
 
 

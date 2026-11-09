@@ -60,7 +60,7 @@ def test_bots_and_watchdog_sit_under_the_sites():
     fine = [("✅ socialtracker — на связи, последний раз 1 дн назад (выходит на связь раз в сутки)", True)]
     text = format_compact_status_report(avail, [], report_type="morning", extras=["📈 x"], watch=fine)
     lines = text.split("\n")
-    assert lines[2:7] == ["✅ ex.com — в порядке, быстро (0.10 с)", "", fine[0][0], "", "Всё спокойно 🐕"]
+    assert lines[2:7] == ["✅ ex.com — открывается за 0.10 с", "", fine[0][0], "", "Всё спокойно 🐕"]
     silent = fine + [("⚠️ backup — так и не выходит на связь: подключи или удали, кнопки ниже", False)]
     text = format_compact_status_report(avail, [], report_type="morning", watch=silent)
     assert "⚠️ backup" in text and "Всё спокойно" not in text
@@ -78,7 +78,7 @@ def test_compact_report_chips():
     assert "Доброе утро" in text and "домен" not in text and "📈 x" in text
     # A 14-day ladder step is 🟠 (act, not today); ≤3 days is 🔴, like the alert.
     assert "🟠 ex.com — открывается, но сертификат истекает через 10 дн." in text
-    assert "ex.com:25 — в порядке, быстро (0.01 с)" in text
+    assert "ex.com:25 — отвечает за 0.01 с" in text
     soon = [SslResult(url="https://ex.com", site_id=1, ssl_info=SslInfo("ex.com", "LE", "", "", 2, "1"))]
     assert "🔴 ex.com — открывается, но сертификат истекает через 2 дн." in format_compact_status_report(avail, [], soon, dom)
     unchecked = [SslResult(url="https://ex.com", site_id=1, status="error", error="SSL check failed: x", transient=True)]
