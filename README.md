@@ -29,16 +29,31 @@ Either way, first create a bot at [@BotFather](https://t.me/BotFather) and copy 
 
 ### Free: your own server with Docker
 
-Any machine that runs around the clock will do: a VPS, a home server, a NAS, a Raspberry Pi.
+Any machine that runs around the clock will do: a VPS, a home server, a NAS, a Raspberry Pi. A ready image for amd64 and arm64 is published by itself after every change that passed the tests — nothing to clone or build.
 
-```bash
-git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
-cd Tofs_DevOps_bot
-cp .env.example .env   # set TELEGRAM_BOT_TOKEN — the only required value
-docker compose up -d --build
+Make a folder with two files. `.env` — one line:
+
+```
+TELEGRAM_BOT_TOKEN=token-from-BotFather
 ```
 
-Send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `git pull && docker compose up -d --build`.
+`docker-compose.yml`:
+
+```yaml
+services:
+  bot:
+    image: ghcr.io/morgunovtech/tofs_devops_bot:latest
+    restart: always
+    env_file: .env
+    volumes:
+      - bot_data:/app/data
+volumes:
+  bot_data:
+```
+
+Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
+
+Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
 
 **A server in Russia.** api.telegram.org is often unreachable from there directly, and the bot cannot talk to Telegram. Set a proxy in `.env`: `TELEGRAM_PROXY=socks5://user:password@host:1080` (`socks4://` and `http://host:3128` work too). Only the traffic to Telegram goes through it; the sites are checked directly.
 
