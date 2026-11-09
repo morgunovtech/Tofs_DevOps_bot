@@ -25,7 +25,6 @@ from db.database import (
     get_last_check,
     get_state,
     get_uptime_over_days,
-    purge_rum_samples,
     resolve_incident,
     rollup_old_checks,
     save_incident,
@@ -66,6 +65,7 @@ from reports.formatter import (
 )
 from reports.weekly import build_weekly_report
 from services import (
+    crux,
     github,
     gsc,
     heartbeats,
@@ -74,7 +74,6 @@ from services import (
     integrations,
     notifier,
     recommend,
-    rum,
     screenshots,
     settings,
     sitestatus,
@@ -460,8 +459,7 @@ def _security_keyboard(r):
 
 
 async def run_visitor_checks():
-    """Daily: real visitors' speed — Google's Chrome data when a key is set,
-    the owner's own measurement when it has enough page views."""
+    """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
     urls = await get_active_page_urls()
     await close_inapplicable(("visitors",), urls)
     await _notify_transitions(await check_all_visitors(urls), format_visitors_alert, format_visitors_recovery,
@@ -470,7 +468,7 @@ async def run_visitor_checks():
 
 def _visitors_keyboard(r):
     return explain_keyboard(r.incident_id,
-                            [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=rum.pagespeed_url(r.url))],
+                            [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(r.url))],
                             [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
 
 
@@ -733,7 +731,6 @@ async def run_retention():
         n = await rollup_old_checks(config.retention_days)
         if n:
             logger.info("Retention: rolled up %d old check rows", n)
-        await purge_rum_samples(rum.WINDOW_DAYS)
     except Exception as e:
         logger.error("Retention job failed: %s", e)
 

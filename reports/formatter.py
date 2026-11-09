@@ -16,7 +16,7 @@ from monitors.base import (
 from monitors.mail_checker import MailResult
 from monitors.security_checker import SecurityResult
 from monitors.visitor_checker import VisitorsResult
-from services import humanize, rum, seo_fixes
+from services import crux, humanize, seo_fixes
 from services.humanize import (
     UNCHECKED,
     describe_error,
@@ -270,13 +270,13 @@ def format_security_recovery(r: SecurityResult) -> str:
 def format_visitors_alert(r: VisitorsResult) -> str:
     expl = explain("visitors", r.error)
     return (f"🟠 {esc(site_label(r.url))}: медленно у настоящих посетителей\n"
-            f"{esc(rum.describe(r.values))} — так у 3 из 4 посетителей, у остальных ещё дольше "
-            f"({esc(rum.source_words(r.source, r.values))}).\n{esc(expl.meaning)}\n\n"
+            f"{esc(crux.describe(r.values))} — так у 3 из 4 посетителей, у остальных ещё дольше "
+            f"({crux.SOURCE}).\n{esc(expl.meaning)}\n\n"
             f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
 
 
 def format_visitors_recovery(r: VisitorsResult) -> str:
-    return f"✅ {esc(site_label(r.url))}: у посетителей снова не медленно — {esc(rum.describe(r.values))}."
+    return f"✅ {esc(site_label(r.url))}: у посетителей снова не медленно — {esc(crux.describe(r.values))}."
 
 
 # ── Status report (one line per site) ────────────────────────────────────────
