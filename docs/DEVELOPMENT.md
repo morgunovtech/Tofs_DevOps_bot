@@ -30,6 +30,21 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
 
+## Шаблон Railway (кнопка «Deploy on Railway»)
+
+Кнопка в README и SETUP ведёт на шаблон https://railway.com/deploy/lVRuwW — он живёт в Railway-воркспейсе владельца (Workspace → Templates → TofsDevOps) и собран с нуля, не из боевого проекта: иначе в шаблон попали бы значения переменных, включая токен. Что в нём:
+
+| Что | Значение |
+|---|---|
+| Сервис | GitHub-репозиторий `morgunovtech/Tofs_DevOps_bot`, ветка `main` |
+| `TELEGRAM_BOT_TOKEN` | обязательная, пустая, с подсказкой «токен от @BotFather» |
+| `DB_PATH` | `/app/data/bot.db` |
+| `TRUST_PROXY` | `1` |
+| Диск | `/app/data` |
+| Сеть | HTTP proxy на порт `8080` |
+
+Поменялись переменные или порт в коде — поправь и шаблон (Workspace → Templates → TofsDevOps → Apply). В маркетплейс Railway шаблон не опубликован: кнопка работает и так.
+
 ## Архитектура
 
 ```
