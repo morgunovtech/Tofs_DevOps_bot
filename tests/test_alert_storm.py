@@ -249,5 +249,7 @@ async def test_a_group_follow_up_is_one_edit_for_all_the_sites(bot, db, monkeypa
         return [AvailabilityResult(url=u, site_id=n, status="ok" if n else "error", error="HTTP 503")
                 for n, u in enumerate(urls)]
     monkeypatch.setattr(scheduler, "check_all", mixed)
+    for url in ("https://a.test", "https://b.test"):
+        await db.activate_or_create_site(url)         # a site removed by then is not re-checked
     await scheduler._group_followup(["https://a.test", "https://b.test"], 7, "🔴 text", None, 2)
     assert sent == [(7, "🔴 text\n\n🔁 Через 2 мин: уже открываются: b.test; всё ещё не открываются: a.test.")]

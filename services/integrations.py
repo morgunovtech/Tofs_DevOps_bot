@@ -57,7 +57,8 @@ async def set_value(key: str, value: str | None):
 
 
 def stored() -> dict[str, str]:
-    """What was entered in the chat (not .env) — for export and rollback."""
+    """What was entered in the chat (not .env) — the Yandex wizard puts the
+    old token back when a new one fails the live check."""
     return {k: v for k, v in _values.items() if k in KEYS and v}
 
 

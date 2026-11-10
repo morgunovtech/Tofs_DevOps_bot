@@ -1,8 +1,8 @@
-"""⚙️ Settings: the hub for everything that is not «is it OK» — digests
-and quiet hours, mute, timezone, maintenance windows, diagnostics and
-connections (the test alert lives there), status page, feedback,
-export/import. What is watched — sites, tasks and bots — is on the main
-screen, not here."""
+"""⚙️ Settings: the hub for everything that is not «is it OK» — «🔔 Когда
+писать» (digests, quiet hours, mute, planned work, the test alert),
+«👥 Помощники», «🔌 Подключения», «🌍 Для посетителей» (status page,
+feedback widget) and «🕐 Часовой пояс». What is watched — sites, tasks
+and bots — is on the main screen, not here."""
 
 import secrets as _secrets
 from datetime import datetime

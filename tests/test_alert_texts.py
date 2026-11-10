@@ -251,7 +251,7 @@ async def test_the_quiet_first_audit_is_said_in_the_next_morning_digest(bot, db,
     monkeypatch.setattr(scheduler, "check_all_seo", fake_seo)
     await scheduler.run_seo_checks()                      # added minutes ago: audited quietly
     assert bot.sent == []
-    extras = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    extras = "\n".join(await scheduler._morning_extras([], await get_active_incidents()))
     assert "🔎 Первый аудит new-shop.test для поиска и ИИ: 🔴 сайт закрыт от поиска" in extras
-    again = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    again = "\n".join(await scheduler._morning_extras([], await get_active_incidents()))
     assert "Первый аудит" not in again                    # said once

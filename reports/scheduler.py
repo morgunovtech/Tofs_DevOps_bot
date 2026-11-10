@@ -1010,7 +1010,15 @@ def _schedule_followups(url: str, site_id: int, message_id: int, text: str, kb):
                            id=f"followup:{message_id}:{minutes}", replace_existing=True)
 
 
+async def _site_still_watched(site_id: int) -> bool:
+    """A follow-up edits an alert minutes later; the site may be gone by then."""
+    site = await get_site(site_id)
+    return bool(site and site["active"])
+
+
 async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minutes: int):
+    if not await _site_still_watched(site_id):
+        return
     r = await check_availability(url, manage=False)
     if r.ok:
         line = f"\n\n🔁 Через {minutes} мин: уже открывается. Подтвержу отдельным сообщением."
@@ -1039,6 +1047,12 @@ def _schedule_group_followups(urls: list[str], message_id: int, text: str, kb):
 
 
 async def _group_followup(urls: list[str], message_id: int, text: str, kb, minutes: int):
+    # A site removed in the meantime is not re-checked; none left — the
+    # alert stays as it was.
+    watched = set(await get_active_site_urls())
+    urls = [u for u in urls if u in watched]
+    if not urls:
+        return
     results = await check_all(urls, manage=False)
     up = [esc(site_label(r.url)) for r in results if r.ok]
     down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
@@ -1057,6 +1071,8 @@ async def _group_followup(urls: list[str], message_id: int, text: str, kb, minut
 
 
 async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb, slow_ms: int):
+    if not await _site_still_watched(site_id):
+        return
     r = await check_availability(url, manage=False)
     ms = r.response_time_ms or 0
     if r.ok and ms < slow_ms:
@@ -1869,10 +1885,10 @@ async def run_escalation_watch():
         return
     for inc, sent_n in due:
         with _isolated(f"Escalation of incident #{inc['id']}"):
-            await _escalate_one(inc, sent_n, now, repeat_min)
+            await _escalate_one(inc, sent_n, now)
 
 
-async def _escalate_one(inc: dict, sent_n: int, now: datetime, repeat_min: int):
+async def _escalate_one(inc: dict, sent_n: int, now: datetime):
     site = await get_site(inc["site_id"]) or {}
     every = humanize.every_minutes(_interval_min(site))
     # «лежит уже …» counts from the first failed check; whether it is
@@ -2254,7 +2270,7 @@ async def send_db_backup_to_telegram():
 
 # ── Reports ──────────────────────────────────────────────────────────────────
 
-async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) -> list[str]:
+async def _morning_extras(domain_results, incidents: list[dict]) -> list[str]:
     extras: list[str] = []
     sites = await get_all_sites()
     # One phrase for a clean week; a list only of the sites that went down.
@@ -2350,7 +2366,7 @@ async def _status_snapshot(report_type: str, extras: bool):
     return format_compact_status_report(
         availability=availability, incidents=incidents,
         ssl_results=ssl_results, domain_results=domain_results, report_type=report_type,
-        extras=await _morning_extras(ssl_results, domain_results, listed) if extras else None,
+        extras=await _morning_extras(domain_results, listed) if extras else None,
         watch=await _watch_lines(morning=extras, short=short), short=short)
 
 

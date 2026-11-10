@@ -6,11 +6,16 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_all_sites, get_state, set_state
 from monitors.pagemeta import suggest_keyword
-from services import gsc, integrations, settings, yandex_webmaster
+from services import gsc, integrations, public_urls, settings, yandex_webmaster
 from utils.text import esc
 from utils.urls import is_web_page, site_label
 
 Buttons = list[tuple[str, str]]   # (label, callback_data)
+
+# Tips a «Не предлагать» switches off for good (the phrase tip has its own
+# «Не надо» per site); bot_state key: DECLINED + tip.
+TIPS = ("status_page", "gsc", "heartbeat", "yandex", "cloudflare")
+DECLINED = "rec_declined:"
 
 
 async def _keyword_idea(http_sites: list[dict]) -> tuple[str, str, Buttons] | None:
@@ -35,14 +40,16 @@ async def _keyword_idea(http_sites: list[dict]) -> tuple[str, str, Buttons] | No
 
 
 async def _candidates() -> list[tuple[str, str, Buttons]]:
-    """(key, text, buttons) in priority order."""
+    """(key, text, buttons) in priority order — only the tips that can help
+    here and were not switched off with «Не предлагать»."""
     sites = await get_all_sites()
     http_sites = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
+    hostings = {await get_state(f"hosting:{s['id']}") for s in http_sites}   # None — not known yet
     out = []
     idea = await _keyword_idea(http_sites)
     if idea:
         out.append(idea)
-    if not settings.status_page_enabled():
+    if not settings.status_page_enabled() and public_urls.is_public():   # no address — no page to give
         out.append(("status_page",
                     "Могу вести публичную страницу «всё ли работает» с аптаймом — удобно давать ссылку "
                     "клиентам или в README.",
@@ -61,12 +68,21 @@ async def _candidates() -> list[tuple[str, str, Buttons]]:
         out.append(("yandex",
                     "Подключи Яндекс.Вебмастер — увижу проблемы сайта глазами Яндекса.",
                     [("🔎 Подключить Яндекс", "setup:yx")]))
-    if http_sites and not integrations.deploy_hooks():
+    # Also while the hosting is not known yet (None), so a site added this
+    # week still gets the tip; not when every known hosting is another one.
+    if http_sites and not integrations.deploy_hooks() and ("cloudflare" in hostings or None in hostings):
         out.append(("cloudflare",
                     "Если сайт на Cloudflare Pages, дай мне deploy hook — при падении пересоберу сайт сам, "
                     "не дожидаясь тебя.",
                     [("☁️ Подключить Cloudflare", "setup:cf")]))
-    return out
+    kept = []
+    for key, text, buttons in out:
+        if key in TIPS:
+            if await get_state(f"{DECLINED}{key}"):
+                continue
+            buttons = [*buttons, ("Не предлагать", f"rec_no:{key}")]
+        kept.append((key, text, buttons))
+    return kept
 
 
 async def weekly_recommendation() -> tuple[str, InlineKeyboardMarkup] | None:

@@ -237,7 +237,7 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     await save_incident(a, "seo", "2 помехи в поиске, напр.: Нет карты сайта (sitemap.xml)", "warning")
     await db.save_check(b, "seo", "ok")
     await settings.add_heartbeat_job("backup", 1440)
-    extras = await scheduler._morning_extras([], [], await get_active_incidents())
+    extras = await scheduler._morning_extras([], await get_active_incidents())
     text = "\n".join(extras)
     assert "📈 За неделю: все сайты без сбоев" in text
     assert "Поиск и ИИ" not in text                                 # a.test is in «Открытых проблем»
@@ -249,7 +249,7 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
 
     await db.save_check(b, "availability", "error", details="Timeout (15s)")
     await db.save_check(b, "seo", "error", details="site unreachable, audit skipped")
-    text = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    text = "\n".join(await scheduler._morning_extras([], await get_active_incidents()))
     assert "📈 За неделю:\n• b.test — недоступен" in text and "\n• остальные — без сбоев" in text
     assert "🔎 Поиск и ИИ: b.test ⚠️" in text and "a.test" not in text.split("Поиск и ИИ")[1]
 

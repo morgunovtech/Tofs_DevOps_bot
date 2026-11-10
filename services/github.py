@@ -30,7 +30,7 @@ import aiohttp
 
 from db.database import get_state, set_state
 from services import integrations, updates
-from utils.text import err_text, esc, plural
+from utils.text import err_text, esc, esc_attr, plural
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ def _short(full: str, owner: str) -> str:
 
 
 def _link(url: str, text: str) -> str:
-    return f'<a href="{esc(url)}">{esc(text)}</a>' if url.startswith("https://") else esc(text)
+    return f'<a href="{esc_attr(url)}">{esc(text)}</a>' if url.startswith("https://") else esc(text)
 
 
 def _listing(items: list[str]) -> str:

@@ -10,10 +10,17 @@ SAFE_LIMIT = TG_MESSAGE_LIMIT - 100
 
 
 def esc(value) -> str:
-    """HTML-escape a value for ParseMode.HTML."""
+    """HTML-escape a value for the text of a ParseMode.HTML message; inside
+    a tag attribute (href="…") use esc_attr."""
     if value is None:
         return ""
     return html.escape(str(value), quote=False)
+
+
+def esc_attr(value) -> str:
+    """esc() plus the double quote, for a value inside href="…": a quote in
+    a URL would end the attribute and Telegram would refuse the message."""
+    return esc(value).replace('"', "&quot;")
 
 
 def err_text(e: BaseException) -> str:

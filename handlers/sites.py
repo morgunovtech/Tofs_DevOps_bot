@@ -1,5 +1,5 @@
 """🌍 Sites: the card (opened from the main screen), add/remove, pause,
-export/import."""
+restore from a database copy or an old JSON export sent to the chat."""
 
 import asyncio
 import contextlib
@@ -78,6 +78,7 @@ from services import (
     humanize,
     integrations,
     maintenance,
+    recommend,
     runtime,
     screenshots,
     secrets,
@@ -328,12 +329,18 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
     return problems, blocks
 
 
-async def card_lines(site: dict) -> list[str]:
-    """The card's text under its headline: problems, then the blocks."""
-    problems, blocks = await card_parts(site)
-    lines = [line for item in problems for line in item]
+def _card_body(found: list[list[str]], blocks: list[tuple[str, list[str]]]) -> list[str]:
+    """Problems first, then a titled block each, every part after an empty
+    line — the one assembly the card shows (render_card) and tests read."""
+    lines = ["", *(line for item in found for line in item)] if found else []
     for title, rest in blocks:
         lines += ["", f"<b>{title}</b>", *rest]
+    return lines
+
+
+async def card_lines(site: dict) -> list[str]:
+    """The card's text under its headline, exactly as render_card shows it."""
+    lines = _card_body(*await card_parts(site))
     return lines[1:] if lines and lines[0] == "" else lines
 
 
@@ -549,10 +556,7 @@ async def render_card(call: CallbackQuery, site: dict):
     lines = [f"<b>{esc(site_label(url))}</b>{await hosting_words(site)}", head]
     pause_row, notes = await _pause_rows(sid)
     lines += notes
-    if found:
-        lines += ["", *(line for item in found for line in item)]
-    for title, rest in blocks:
-        lines += ["", f"<b>{title}</b>", *rest]
+    lines += _card_body(found, blocks)
     problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
     rows = []
     # One way to the fix, only when there is something to fix: search
@@ -812,6 +816,17 @@ async def cb_keyword_decline(call: CallbackQuery, state: FSMContext):
         await set_state(f"kw_suggest:{site['id']}", None)
     await ack(call, "Ок, больше не предложу")
     await cb_main_menu(call, state)
+
+
+@router.callback_query(F.data.startswith("rec_no:"))
+async def cb_tip_decline(call: CallbackQuery):
+    """«Не предлагать» under a weekly tip: that tip never comes back. The
+    tip's text stays, only its buttons go."""
+    key = call.data.split(":", 1)[1]
+    if key in recommend.TIPS:
+        await set_state(f"{recommend.DECLINED}{key}", "1")
+    await ack(call, "Ок, больше не предложу")
+    await call.message.edit_reply_markup(reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("kwok:"))
