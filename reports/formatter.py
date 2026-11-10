@@ -14,6 +14,7 @@ from monitors.base import (
     SslResult,
 )
 from monitors.mail_checker import MailResult
+from monitors.region import region_words
 from monitors.security_checker import SecurityResult
 from monitors.visitor_checker import VisitorsResult
 from services import crux, humanize, seo_fixes
@@ -53,8 +54,21 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
         noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
         header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
         situation = expl.meaning
-        if r.external_ok is False:
+        if r.cert_failed:
+            situation += (" Проверил дважды подряд: сервер отвечает, но его сертификат не принимается — "
+                          "так его видят и посетители.")
+        elif r.external_ok is False:
             situation += " Проверил дважды подряд и с внешних серверов: не открывается ни у кого."
+        elif r.external_region and r.external_ups:
+            situation += (f" Проверил дважды подряд; снаружи открывается (с {r.external_ups} из "
+                          f"{r.external_total} серверов), но не {region_words(r.external_region)} — "
+                          f"посетители оттуда его тоже не видят.")
+        elif r.external_region:
+            situation += (f" Проверил дважды подряд; {region_words(r.external_region)} тоже не открывается, "
+                          f"остальные внешние серверы не успели ответить.")
+        elif r.external_ups and r.external_total >= 2:
+            situation += (f" Проверил дважды подряд; снаружи открывается только с {r.external_ups} из "
+                          f"{r.external_total} серверов — похоже, сайт лежит не везде.")
         elif second_opinion:
             situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:

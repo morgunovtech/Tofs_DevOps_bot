@@ -212,7 +212,7 @@ async def _availability_tick():
         if r.incident_new:
             _enqueue(_send_availability_alert, r, site, incident_id=r.incident_id)
         elif r.external_ok is True:
-            _enqueue(_note_local_network_problem, r.url, r.site_id)
+            _enqueue(_note_local_network_problem, r.url, r.site_id, r.external_ups, r.external_total)
         elif r.transient and not r.own_outage:
             _enqueue(_note_cannot_check, r.url, r.site_id, r.error)
         elif r.recovered:
@@ -493,7 +493,10 @@ async def _send_recovery(r):
 
 
 async def _site_is_up(r, slow_ms: int):
-    _ext_ok_noted.discard(r.site_id)
+    if r.site_id in _ext_ok_noted:
+        _ext_ok_noted.discard(r.site_id)
+        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается и с моего сервера.",
+                            Priority.NORMAL, site_id=r.site_id)
     await _track_slow(r, slow_ms)
 
 
@@ -560,15 +563,18 @@ async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb,
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
-async def _note_local_network_problem(url: str, site_id: int):
-    """Down from the bot's network but fine externally — a fact about the
-    bot's own network, said once per episode (nothing repeats while the
-    situation has not changed)."""
+async def _note_local_network_problem(url: str, site_id: int, ups: int = 0, total: int = 0):
+    """Down from the bot's server but open from most external nodes — said
+    once per episode, without a ring. Either the bot's network or the bot's
+    region (a block, a provider, a CDN node): the owner knows which."""
     if site_id in _ext_ok_noted:
         return
+    where = f"с {ups} из {total} внешних серверов" if total else "с внешних серверов"
     sent = await notifier.send(
-        f"🤔 {esc(site_label(url))} не открылся с моего сервера, но у всех остальных открывается. "
-        f"Похоже, сеть шалит на моей стороне — тревогу не поднимаю, продолжаю проверять.",
+        f"🟠 {esc(site_label(url))} не открылся с моего сервера, но открывается {where}. Если посетители "
+        f"сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
+        f"(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
+        f"не поднимаю; напишу, когда снова откроется.",
         Priority.NORMAL, site_id=site_id)
     if sent:
         _ext_ok_noted.add(site_id)

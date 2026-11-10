@@ -9,7 +9,7 @@ from conftest import FakeCall, FakeMessage, FakeState, buttons
 
 from db.database import get_active_incidents, save_incident
 from handlers import links, menu, site_settings, sites
-from monitors import availability
+from monitors import availability, second_opinion
 from monitors.second_opinion import repeatable
 from reports import scheduler
 from reports.formatter import format_compact_status_report
@@ -119,10 +119,10 @@ async def test_post_api_check_end_to_end(bot, db, monkeypatch):
     app.router.add_route("*", "/api/v1/analyze", analyze)
     asked = []
 
-    async def no_second_opinion(url):
+    async def no_second_opinion(url, region=None):
         asked.append(url)
-        return True
-    monkeypatch.setattr(availability, "second_opinion_up", no_second_opinion)
+        return second_opinion.Verdict(True, 3, 3)
+    monkeypatch.setattr(availability, "second_opinion", no_second_opinion)
     await integrations.set_value("second_opinion", "on")
     async with TestServer(app) as server:
         url = str(server.make_url("/api/v1/analyze"))

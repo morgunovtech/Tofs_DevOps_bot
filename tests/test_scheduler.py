@@ -9,7 +9,7 @@ from aiohttp.test_utils import TestServer
 
 from db.database import get_active_incidents, get_state, save_incident, set_state
 from monitors import host_checker
-from monitors.base import SslInfo, SslResult
+from monitors.base import AvailabilityResult, SslInfo, SslResult
 from reports import scheduler
 from services import gsc, heartbeats, integrations, settings, sitestatus, updates
 from utils.clock import now_local
@@ -168,14 +168,20 @@ async def test_index_checks_write_the_snapshot_and_alert_on_change(bot, db, monk
 async def test_local_network_note_is_said_once_per_episode(bot, db):
     sid = await db.activate_or_create_site("https://ext.test")
     scheduler._ext_ok_noted.clear()
-    await scheduler._note_local_network_problem("https://ext.test", sid)
+    await scheduler._note_local_network_problem("https://ext.test", sid, 2, 3)
     n = len(bot.sent)
-    assert "не открылся с моего сервера" in bot.sent[-1]["text"]
-    await scheduler._note_local_network_problem("https://ext.test", sid)
+    text = bot.sent[-1]["text"]
+    assert text.startswith("🟠") and "не открылся с моего сервера, но открывается с 2 из 3 внешних серверов" in text
+    assert "в том же регионе" in text and "у всех остальных" not in text and bot.sent[-1]["silent"] is True
+    await scheduler._note_local_network_problem("https://ext.test", sid, 2, 3)
     assert len(bot.sent) == n
-    scheduler._ext_ok_noted.discard(sid)                             # what an OK check does
-    await scheduler._note_local_network_problem("https://ext.test", sid)
+    up = AvailabilityResult(url="https://ext.test", site_id=sid, status="ok", response_time_ms=120)
+    await scheduler._site_is_up(up, 3000)                            # the site opens from here again
+    assert len(bot.sent) == n + 1 and bot.sent[-1]["text"] == "✅ ext.test снова открывается и с моего сервера."
+    await scheduler._site_is_up(up, 3000)                            # said once; an ordinary OK is silent
     assert len(bot.sent) == n + 1
+    await scheduler._note_local_network_problem("https://ext.test", sid)
+    assert len(bot.sent) == n + 2 and "открывается с внешних серверов" in bot.sent[-1]["text"]
 
 
 async def test_host_checks_disk_thresholds(bot, db, cfg, monkeypatch):

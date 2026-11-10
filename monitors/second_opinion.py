@@ -3,16 +3,23 @@
 Before paging about "site down" we ask external nodes to fetch the URL.
 tcp:// and ping:// monitors are routed to check-tcp / check-ping.
 
-Three-valued result: True — at least one external node reached the site
-(problem is on the bot's side, don't page); False — external nodes can't
-reach it either (confirmed down); None — the verdict service itself was
-unreachable (fail open: alert, but mark as unconfirmed).
+Three-valued verdict: True — most external nodes reached the site (the
+problem is on the bot's side or in its region: no page); False — none of
+them did (confirmed down); None — no verdict: the service was unreachable
+or slow, or the nodes disagree (fail open: alert, marked unconfirmed).
+One node opening the site is not «everyone else»: the nodes are picked at
+random, usually outside the audience's region, so a split is an alert.
+
+Beside the three random nodes the caller may name the country of the
+owner's audience: the node there is asked too, and if it cannot open the
+site the verdict is never True — the audience sees the same.
 """
 
 import asyncio
 import ipaddress
 import json
 import logging
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import aiohttp
@@ -22,7 +29,15 @@ from utils.urls import PAGE_METHODS, is_http_url
 logger = logging.getLogger(__name__)
 
 API = "https://check-host.net"
-TIMEOUT = aiohttp.ClientTimeout(total=20)
+# One request to the service; monitors/region.py takes the same.
+TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
+# The whole verdict — start, polls, the region node — fits in this: the tick
+# that asks runs once a minute.
+BUDGET_SEC = 30
+# Pauses before each poll of /check-result: nodes answer within seconds; a
+# hung site keeps them busy for longer.
+POLL_PAUSES = (2, 4, 8)
+RANDOM_NODES = 3
 
 
 def repeatable(site: dict) -> bool:
@@ -98,43 +113,143 @@ def node_up(endpoint: str, node_result) -> bool | None:
     return None
 
 
-async def second_opinion_up(url: str) -> bool | None:
+@dataclass
+class Verdict:
+    up: bool | None = None
+    ups: int = 0             # nodes that opened it
+    total: int = 0           # nodes asked (answered + still silent)
+    # The node in the owner's country was asked and could not open the site:
+    # whatever the random nodes say, the audience does not see the page.
+    region_down: bool = False
+
+
+def tally(endpoint: str, results: dict | None) -> tuple[int, int, int]:
+    """(ups, answered, pending) over one /check-result answer."""
+    ups = answered = pending = 0
+    for node_result in (results or {}).values():
+        if node_result is None:
+            pending += 1
+            continue
+        verdict = node_up(endpoint, node_result)
+        if verdict is not None:
+            answered += 1
+            ups += verdict
+    return ups, answered, pending
+
+
+def decide(ups: int, answered: int, pending: int) -> bool | None:
+    """True when most nodes opened it (pending ones count against); False
+    when every node answered and none did; None otherwise — a split or
+    silent nodes is no verdict."""
+    if ups * 2 > answered + pending:
+        return True
+    if not pending and answered and not ups:
+        return False
+    return None
+
+
+def region_node(country: str | None) -> str | None:
+    """check-host node name for a country code: «ru» → ru1.node.check-host.net."""
+    country = (country or "").strip().lower()
+    return f"{country}1.node.check-host.net" if country.isalpha() and len(country) == 2 else None
+
+
+async def second_opinion(url: str, region: str | None = None) -> Verdict:
+    """Ask the external nodes; `region` is the check-host country code of
+    the audience's node to ask as well (None — the random nodes only)."""
     target = endpoint_for(url)
     if not target:
-        return None
-    endpoint, host_param = target
+        return Verdict()
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT,
-                                         headers={"Accept": "application/json"}) as session:
-            async with session.get(f"{API}/{endpoint}",
-                                   params={"host": host_param, "max_nodes": 3}) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-            request_id = data.get("request_id")
-            if not request_id:
-                return None
-            for _ in range(4):  # nodes report asynchronously; poll a few times
-                await asyncio.sleep(4)
-                async with session.get(f"{API}/check-result/{request_id}") as resp:
-                    if resp.status != 200:
-                        continue
-                    results = await resp.json()
-                verdicts, pending = [], 0
-                for node_result in results.values():
-                    if node_result is None:
-                        pending += 1
-                        continue
-                    verdict = node_up(endpoint, node_result)
-                    if verdict is not None:
-                        verdicts.append(verdict)
-                # One reachable node is enough to call the site UP; but
-                # "confirmed down" needs ALL nodes to have reported.
-                if any(verdicts):
-                    return True
-                if verdicts and not pending:
-                    return False
-            return None
+        async with asyncio.timeout(BUDGET_SEC):
+            return await _ask(*target, region_node(region))
+    except TimeoutError:
+        logger.warning("Second opinion for %s: no verdict in %s s", url, BUDGET_SEC)
     except Exception as e:
         logger.warning("Second opinion for %s failed: %s", url, e)
+    return Verdict()
+
+
+async def _ask(endpoint: str, host_param: str, node: str | None) -> Verdict:
+    async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"Accept": "application/json"}) as session:
+        verdict, region_up = await asyncio.gather(
+            _ask_random_nodes(session, endpoint, host_param),
+            _ask_region_node(session, endpoint, host_param, node))
+    if region_up is False:
+        verdict.region_down = True
+        if verdict.up is True:
+            verdict.up = None            # open elsewhere, not where the visitors are
+    return verdict
+
+
+async def _start(session: aiohttp.ClientSession, endpoint: str, params: dict) -> str | None:
+    """Begin a check; the request id to poll, None when the service refuses."""
+    async with session.get(f"{API}/{endpoint}", params=params) as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+    if not isinstance(data, dict):
         return None
+    return data.get("request_id") or None
+
+
+async def _results(session: aiohttp.ClientSession, request_id: str) -> dict | None:
+    async with session.get(f"{API}/check-result/{request_id}") as resp:
+        if resp.status != 200:
+            return None
+        data = await resp.json()
+    return data if isinstance(data, dict) else None
+
+
+async def _ask_random_nodes(session: aiohttp.ClientSession, endpoint: str, host_param: str) -> Verdict:
+    """Three nodes of the service's choice; no verdict when it misbehaves
+    (an error page instead of JSON, a refused request)."""
+    try:
+        request_id = await _start(session, endpoint, {"host": host_param, "max_nodes": RANDOM_NODES})
+        if not request_id:
+            return Verdict()
+        ups = answered = pending = 0
+        for pause in POLL_PAUSES:
+            await asyncio.sleep(pause)
+            results = await _results(session, request_id)
+            if results is None:
+                continue
+            ups, answered, pending = tally(endpoint, results)
+            up = decide(ups, answered, pending)
+            if up is not None or not pending:
+                return Verdict(up, ups, answered + pending)
+        return Verdict(None, ups, answered + pending)
+    except Exception as e:
+        logger.warning("Second opinion for %s failed: %s", host_param, e)
+        return Verdict()
+
+
+async def _ask_region_node(session: aiohttp.ClientSession, endpoint: str, host_param: str,
+                           node: str | None) -> bool | None:
+    """The one node in the audience's country: True/False when it answered,
+    None when there is no such node, it stayed silent or the request failed —
+    the random nodes decide alone then."""
+    if not node:
+        return None
+    try:
+        request_id = await _start(session, endpoint, {"host": host_param, "node": node})
+        if not request_id:
+            return None
+        for pause in POLL_PAUSES:
+            await asyncio.sleep(pause)
+            results = await _results(session, request_id)
+            if results is None:
+                continue
+            ups, answered, pending = tally(endpoint, results)
+            if answered:
+                return ups > 0
+            if not pending:
+                return None              # no such node: an empty answer
+    except Exception as e:
+        logger.debug("Region node %s gave no verdict: %s", node, e)
+    return None
+
+
+async def second_opinion_up(url: str) -> bool | None:
+    """Only the verdict — for checks that need no node counts (mail)."""
+    return (await second_opinion(url)).up

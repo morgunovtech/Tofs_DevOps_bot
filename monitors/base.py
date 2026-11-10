@@ -48,11 +48,20 @@ class CheckResult:
 class AvailabilityResult(CheckResult):
     status_code: int | None = None
     response_time_ms: int | None = None
-    # Second-opinion verdict: True = up externally, False = confirmed down,
-    # None = not checked / verdict service unreachable.
+    # Second-opinion verdict: True = up from most external nodes, False =
+    # confirmed down, None = not checked / no verdict (service unreachable,
+    # the nodes split, or the audience's node could not open it).
     external_ok: bool | None = None
+    external_ups: int = 0        # external nodes that opened it
+    external_total: int = 0      # external nodes asked
+    # The node in the audience's country (check-host country code) could not
+    # open the site while others did: the visitors see the same.
+    external_region: str | None = None
     # HTTP succeeded but the keyword/stop-phrase check failed.
     keyword_failed: bool = False
+    # The server answered with a certificate a browser will not accept: every
+    # visitor sees the warning page — no second opinion, no network check.
+    cert_failed: bool = False
     # Hosting guessed from response headers (services.hosting key).
     hosting: str | None = None
     # An API check (utils.urls.is_api_check): «отвечает», not «открывается».

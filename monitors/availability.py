@@ -19,6 +19,7 @@ import aiohttp
 
 from db.database import (
     get_active_incidents,
+    get_last_incident,
     get_recent_check_statuses,
     get_site_by_url,
     get_state,
@@ -28,10 +29,10 @@ from db.database import (
     save_incident,
     set_state,
 )
-from monitors import netcheck
+from monitors import netcheck, region
 from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
-from monitors.second_opinion import repeatable, second_opinion_up
-from services import health, hosting, humanize, integrations, sitestatus
+from monitors.second_opinion import repeatable, second_opinion
+from services import health, hosting, humanize, integrations, settings, sitestatus
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
 from utils.text import parse_iso_utc
@@ -129,6 +130,11 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                         r.error = f"{where} нет фразы «{keyword}»"
     except TimeoutError:
         r.status, r.error = "error", f"Timeout ({int(TIMEOUT.total)}s)"
+        r.response_time_ms = int((time.monotonic() - start) * 1000)
+    except aiohttp.ClientConnectorCertificateError as e:   # a ClientError too: must come first
+        # The server is there and answered: its certificate is what every
+        # visitor's browser rejects. Nothing to ask the outside about.
+        r.status, r.error, r.cert_failed = "error", _error_text(e), True
         r.response_time_ms = int((time.monotonic() - start) * 1000)
     except aiohttp.ClientError as e:
         r.status, r.error = "error", _error_text(e)
@@ -250,7 +256,8 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
 
     if r.ok or r.status_code is not None:
         netcheck.note_answer()                 # the network is up: a site answered
-    if not r.ok and not r.transient and r.status_code is None and not await netcheck.own_network_ok():
+    if (not r.ok and not r.transient and r.status_code is None and not r.cert_failed
+            and not await netcheck.own_network_ok()):
         # No answer at all, and the bot's own network is down: nothing is known
         # about the site. No incident, no downtime; one summary when it is back.
         logger.info("%s: %s — the bot's own network is down", url, r.error)
@@ -309,10 +316,18 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         return r  # a single flap is normal on the public internet
     # Second opinion from external nodes before paging: reachable from
     # outside means the problem is on our side. Skipped for keyword
-    # failures — our own fetch succeeded, so the content problem is real —
-    # and for a request check-host cannot repeat (a POST, own headers).
-    if integrations.second_opinion_enabled() and not r.keyword_failed and repeatable(site):
-        r.external_ok = await second_opinion_up(url)
+    # failures — our own fetch succeeded, so the content problem is real —,
+    # for a rejected certificate — the server answered, every browser sees
+    # it —, for a request check-host cannot repeat (a POST, own headers),
+    # and while the incident is already open: the verdict was taken when it
+    # opened, the re-checks need not hold the tick for it.
+    if (integrations.second_opinion_enabled() and not r.keyword_failed and not r.cert_failed
+            and repeatable(site) and not await _incident_open(r.site_id)):
+        country = region.country_for_timezone(settings.timezone())
+        verdict = await second_opinion(url, country)
+        r.external_ok, r.external_ups, r.external_total = verdict.up, verdict.ups, verdict.total
+        if verdict.region_down:
+            r.external_region = country
     if r.external_ok is True:
         logger.warning("%s: down from here but UP externally — skipping incident", url)
         await _write(set_state(f"ext_ok:{r.site_id}", datetime.now(UTC).isoformat()))
@@ -336,6 +351,19 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         r.incident_new = r.site_id not in _down_without_db and not open_before
         _down_without_db.add(r.site_id)
     return r
+
+
+async def _incident_open(site_id: int) -> bool:
+    """An availability incident is already open for the site — in the
+    database, or in memory while the database refuses writes."""
+    if site_id in _down_without_db:
+        return True
+    try:
+        last = await get_last_incident(site_id, "availability")
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
+        return False
+    return bool(last) and not last["resolved"]
 
 
 async def _outside_is_up(r: AvailabilityResult, relabel: int):
