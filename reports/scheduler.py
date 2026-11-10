@@ -1117,6 +1117,18 @@ def _cron_specs() -> dict[str, dict]:
     }
 
 
+def pause_jobs():
+    """Hold every job while the database file is swapped (handlers/sites.py):
+    a job started in that window would write into a closed connection."""
+    if _scheduler is not None and _scheduler.running:
+        _scheduler.pause()
+
+
+def resume_jobs():
+    if _scheduler is not None and _scheduler.running:
+        _scheduler.resume()
+
+
 def reschedule_all():
     """Apply UI-changed hours or timezone to the running scheduler."""
     if _scheduler is None:

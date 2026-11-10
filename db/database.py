@@ -7,13 +7,17 @@ can't interleave statements into each other's transactions.
 """
 
 import asyncio
+import contextlib
 import os
+import shutil
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import aiosqlite
 
 from config import config
+from db import migrations as _migrations
 from db.migrations import migrate
 from utils.urls import host_key, is_api_check, is_http_url, is_web_page
 
@@ -661,34 +665,146 @@ async def backup_db(dest_path: str):
             await db.execute("VACUUM INTO ?", (dest_path,))
 
 
-async def restore_from_bytes(data: bytes) -> int:
-    """Replace the live database with an uploaded copy (the weekly Telegram
-    backup, for instance). Validated first; the old file stays as .bak.
-    Returns the number of active sites in the restored copy."""
-    if not data.startswith(b"SQLite format 3"):
-        raise ValueError("not an SQLite file")
-    tmp = _db_path + ".restore"
-    with open(tmp, "wb") as f:
-        f.write(data)
+# Who owns the bot and who gets its alerts: always as in the LIVE database.
+# A copy is data, not a grant of access.
+ACCESS_KEYS = ("admin_chat_id", "admin_user_id", "admin_chat_moved", "helpers", "helper_invite")
+# The bot's own secrets and their revocation marks (services.secrets).
+SECRET_KEYS = ("secret:webhook", "secret:heartbeat", "secret:shots",
+               "secret:webhook:revoked", "secret:heartbeat:revoked")
+RESTORE_BAK_KEEP = 3
+
+
+def db_dir() -> str:
+    """The folder of the live database: same disk, same volume."""
+    return os.path.dirname(_db_path) or "."
+
+
+def _ro_uri(path: str) -> str:
+    # immutable: no -wal/-shm next to an uploaded file, nothing written to it.
+    # resolve(): DB_PATH is relative by default (config.py), and a file URI
+    # needs an absolute path.
+    return Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+
+
+def _harden(con: sqlite3.Connection):
+    con.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)
+    con.execute("PRAGMA trusted_schema = OFF")
+
+
+def probe_copy(path: str) -> dict:
+    """Read-only checks of an uploaded copy — call it in a worker thread.
+    ValueError says why the file is refused, in words for the owner."""
     try:
-        probe = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        con = sqlite3.connect(_ro_uri(path), uri=True)
         try:
-            tables = {r[0] for r in probe.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            _harden(con)
+            if con.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise ValueError("файл повреждён")
+            odd = con.execute("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view') "
+                              "OR (type = 'table' AND sql LIKE 'CREATE VIRTUAL%')").fetchone()
+            if odd:
+                raise ValueError(f"в файле есть {odd[0]} «{odd[1]}» — я такого не создаю, это не моя копия")
+            version = con.execute("PRAGMA user_version").fetchone()[0]
+            if version > len(_migrations.MIGRATIONS):
+                raise ValueError("копию сделала более новая версия бота — сначала обнови бота")
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             if "sites" not in tables:
-                raise ValueError("no sites table")
-            count = probe.execute("SELECT COUNT(*) FROM sites WHERE active = 1").fetchone()[0]
+                raise ValueError("в файле нет таблицы sites")
+            urls = [r[0] for r in con.execute("SELECT url FROM sites WHERE active = 1 ORDER BY url")]
+            state = dict(con.execute("SELECT key, value FROM bot_state")) if "bot_state" in tables else {}
+            return {"urls": urls, "state": state, "version": version}
         finally:
-            probe.close()
+            con.close()
     except sqlite3.DatabaseError as e:
-        os.remove(tmp)
-        raise ValueError(f"damaged file: {e}") from e
+        raise ValueError(f"файл не читается как база: {e}") from e
+
+
+def _copy_rows(src: str, dst: str, keep: dict[str, str | None]) -> dict[str, int]:
+    """Worker thread. `dst` is a fresh database with OUR migrations; the copy's
+    rows of OUR tables go in column by column, so nothing of the file's own
+    schema gets in. Keys in `keep` get the live database's values (None =
+    removed). Rows per table returned."""
+    con = sqlite3.connect(Path(dst).resolve().as_uri(), uri=True)
+    try:
+        _harden(con)
+        con.execute("ATTACH DATABASE ? AS src", (_ro_uri(src),))
+        theirs = {r[0] for r in con.execute("SELECT name FROM src.sqlite_master WHERE type = 'table'")}
+        ours = [r[0] for r in con.execute("SELECT name FROM main.sqlite_master WHERE type = 'table' "
+                                          "AND name NOT LIKE 'sqlite_%'")]
+        counts: dict[str, int] = {}
+        for table in ours:
+            if table in theirs:
+                have = {r[1] for r in con.execute(f'PRAGMA src.table_info("{table}")')}
+                cols = ", ".join(f'"{r[1]}"' for r in con.execute(f'PRAGMA main.table_info("{table}")')
+                                 if r[1] in have)
+                if cols:
+                    con.execute(f'INSERT INTO main."{table}" ({cols}) SELECT {cols} FROM src."{table}"')
+            counts[table] = con.execute(f'SELECT COUNT(*) FROM main."{table}"').fetchone()[0]
+        for key, value in keep.items():
+            con.execute("DELETE FROM main.bot_state WHERE key = ?", (key,))
+            if value is not None:
+                con.execute("INSERT INTO main.bot_state (key, value) VALUES (?, ?)", (key, value))
+        con.commit()
+        return counts
+    finally:
+        con.close()
+
+
+def _remove_files(path: str, *, with_main: bool = True):
+    for suffix in ("", "-wal", "-shm") if with_main else ("-wal", "-shm"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path + suffix)
+
+
+def _rotate_baks():
+    """Keep the newest RESTORE_BAK_KEEP «<db>.<UTC>.bak» files."""
+    folder = Path(_db_path).parent
+    baks = sorted(folder.glob(Path(_db_path).name + ".*.bak"))
+    for old in baks[:-RESTORE_BAK_KEEP]:
+        old.unlink(missing_ok=True)
+
+
+async def restore_from_file(path: str) -> tuple[int, str]:
+    """Replace the live database with an uploaded copy. Only the copy's DATA
+    is taken; access keys stay as they are; the swap happens only after the
+    new file is complete, and a failure after the swap puts the previous
+    database back. Returns (active sites, path of the .bak)."""
+    info = await asyncio.to_thread(probe_copy, path)
+    keep = {key: await get_state(key) for key in ACCESS_KEYS}
+    if await count_sites_total():
+        # An install in use keeps its secrets: a file must not plant a known
+        # heartbeat secret. With no sites (moving to a new server) the copy's
+        # secrets come along, and the old task links keep working.
+        keep.update({key: await get_state(key) for key in SECRET_KEYS})
+    fresh = _db_path + ".restoring"
+    _remove_files(fresh)
+    try:
+        # The copy's own schema version first, its rows in, then the catch-up:
+        # a migration that fills a new column reaches the restored rows too.
+        async with aiosqlite.connect(fresh) as conn:
+            await migrate(conn, upto=max(info["version"], 1))
+            await conn.commit()
+        await asyncio.to_thread(_copy_rows, path, fresh, keep)
+        async with aiosqlite.connect(fresh) as conn:
+            await migrate(conn)
+            await conn.commit()
+    except (sqlite3.Error, ValueError) as e:
+        _remove_files(fresh)
+        raise ValueError(f"копия не подходит к этой версии бота: {e}") from e
+    bak = f"{_db_path}.{datetime.now(UTC):%Y%m%d-%H%M%S-%f}.bak"
     async with _write_lock:
+        async with aiosqlite.connect(_db_path) as live:      # a consistent copy, WAL included
+            await live.execute("VACUUM INTO ?", (bak,))
         await close_db()
-        if os.path.exists(_db_path):
-            os.replace(_db_path, _db_path + ".bak")
-        for suffix in ("-wal", "-shm"):
-            if os.path.exists(_db_path + suffix):
-                os.remove(_db_path + suffix)
-        os.replace(tmp, _db_path)
-    await init_db()
-    return count
+        _remove_files(_db_path, with_main=False)   # a stale WAL must never meet the new file
+        os.replace(fresh, _db_path)
+    try:
+        await init_db()
+    except Exception as e:
+        await close_db()
+        _remove_files(_db_path)
+        shutil.copyfile(bak, _db_path)
+        await init_db()
+        raise ValueError(f"не смог открыть восстановленную базу ({e}) — вернул прежнюю") from e
+    _rotate_baks()
+    return len(info["urls"]), bak

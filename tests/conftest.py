@@ -87,6 +87,7 @@ class FakeMessage:
         self.previews: list = []     # the picture drawn above each text, or None
         self.preview_options: list = []   # the LinkPreviewOptions object as sent
         self.chat = SimpleNamespace(id=1, type="private")
+        self.message_id = 1
         self.sender_chat = None
         self.date = datetime.now(UTC)
         self.reply_markup = None

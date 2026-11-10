@@ -187,13 +187,16 @@ MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m
               m6_visitor_speed, m7_drop_visitor_samples]
 
 
-async def migrate(db) -> int:
-    """Apply pending migrations; returns the number applied."""
+async def migrate(db, upto: int | None = None) -> int:
+    """Apply pending migrations; returns the number applied. `upto` stops
+    after that step: a restore builds the copy's own schema version first,
+    moves the rows in, and only then catches up — so migrations that change
+    data reach the restored rows too (db.database.restore_from_file)."""
     cursor = await db.execute("PRAGMA user_version")
     version = (await cursor.fetchone())[0]
     applied = 0
     for number, step in enumerate(MIGRATIONS, start=1):
-        if number <= version:
+        if number <= version or (upto is not None and number > upto):
             continue
         logger.info("DB migration %d: %s", number, step.__name__)
         await step(db)
