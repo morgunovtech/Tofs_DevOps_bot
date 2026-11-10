@@ -3,11 +3,15 @@
 # this image, so the next bump goes in only once it builds.
 FROM python:3.14-slim
 
-# iputils-ping powers ping:// monitors (ICMP needs the binary); everything
-# Python ships as wheels, so no compiler is needed.
+# iputils-ping powers ping:// monitors. Debian's ping has no setuid and no
+# capabilities: it opens an ICMP datagram socket, which the kernel allows
+# only to groups in net.ipv4.ping_group_range — hence the fixed GID 10001
+# (docker-compose.yml opens the range for it). Everything Python ships as
+# wheels, so no compiler is needed.
 RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin bot
+    && groupadd --system --gid 10001 bot \
+    && useradd --system --uid 10001 --gid 10001 --home /app --shell /usr/sbin/nologin bot
 
 WORKDIR /app
 

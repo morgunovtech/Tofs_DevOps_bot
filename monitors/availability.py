@@ -12,6 +12,7 @@ import re
 import sqlite3
 import time
 from collections import deque
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import aiohttp
@@ -21,16 +22,19 @@ from db.database import (
     get_recent_check_statuses,
     get_site_by_url,
     get_state,
+    relabel_recent_failures,
     resolve_incident,
     save_check,
     save_incident,
     set_state,
 )
+from monitors import netcheck
 from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
 from monitors.second_opinion import repeatable, second_opinion_up
-from services import health, hosting, integrations, sitestatus
+from services import health, hosting, humanize, integrations, sitestatus
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
+from utils.text import parse_iso_utc
 from utils.urls import USER_AGENT, is_api_check
 
 logger = logging.getLogger(__name__)
@@ -166,11 +170,16 @@ async def _probe_tcp(url: str, r: AvailabilityResult):
 
 
 _PING_RTT_RE = re.compile(r"time[=<]([\d.]+)\s*ms")
+_PING_NO_SOCKET = ("socket:", "cap_net_raw", "operation not permitted")
+# «Down from here, up from outside»: while the episode lasts, failures are
+# the bot's, and the outside is asked again no more often than this.
+EXT_OK_RECHECK = timedelta(minutes=10)
 
 
 async def _probe_ping(url: str, r: AvailabilityResult):
-    """ping://host — ICMP echo via the system ping binary (raw sockets need
-    root; the cap-equipped binary is the portable way)."""
+    """ping://host — ICMP echo via the system ping binary. Debian's ping has
+    no setuid and no capabilities: it opens an ICMP datagram socket, which
+    the kernel allows only to groups in net.ipv4.ping_group_range."""
     host = urlparse(url).hostname
     if not host:
         r.status, r.error = "error", "нужен хост: ping://host"
@@ -178,7 +187,9 @@ async def _probe_ping(url: str, r: AvailabilityResult):
     start = time.monotonic()
     try:
         proc = await asyncio.create_subprocess_exec(
-            "ping", "-n", "-c", "1", host,
+            # -W 5: ping gives up before our 10 s timeout and prints «0 received»;
+            # «--»: the host is never read as an option.
+            "ping", "-n", "-c", "1", "-W", "5", "--", host,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except FileNotFoundError:
         r.status, r.error = "error", "ping недоступен на хосте бота — используй tcp://host:порт"
@@ -204,8 +215,12 @@ async def _probe_ping(url: str, r: AvailabilityResult):
     if any(s in low for s in ("unknown host", "name or service not known",
                               "cannot resolve", "failure in name resolution")):
         r.error = "хост не резолвится (DNS)"
-    elif "permission" in low or "operation not permitted" in low:
-        r.error = "нет прав на ICMP — используй tcp://host:порт"
+    elif proc.returncode == 2 and any(s in low for s in _PING_NO_SOCKET):
+        # The bot's environment, not the host: no incident, no second opinion.
+        logger.warning("%s: ping cannot open an ICMP socket: %s", url, out_text.strip()[:200])
+        r.status, r.transient = "unknown", True
+        r.error = ("ping на сервере бота не может открыть ICMP-сокет (нужен net.ipv4.ping_group_range) "
+                   "— используй tcp://host:порт")
     else:
         r.error = "хост не отвечает на ping"
 
@@ -221,10 +236,27 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
             await _probe_ping(url, r)
         else:
             await _probe_http(url, site, r)
+    except ValueError as e:
+        # The request could not even be built (a header with a line break, a
+        # host IDNA cannot encode): our settings, not the site.
+        logger.warning("%s: request settings rejected: %s", url, e)
+        r.status, r.transient = "unknown", True
+        r.error = f"настройки запроса не принимаются: {e}"
     except Exception as e:
-        # An exotic error (IDNA encoding of a weird host, subprocess quirk)
-        # must degrade to ONE failed check, not escape into the batch.
+        # Anything else must degrade to ONE failed check, not escape into the
+        # batch — but loudly: a bug here would read as «all sites are down».
+        logger.exception("Availability probe crashed for %s", url)
         r.status, r.error = "error", str(e) or type(e).__name__
+
+    if r.ok or r.status_code is not None:
+        netcheck.note_answer()                 # the network is up: a site answered
+    if not r.ok and not r.transient and r.status_code is None and not await netcheck.own_network_ok():
+        # No answer at all, and the bot's own network is down: nothing is known
+        # about the site. No incident, no downtime; one summary when it is back.
+        logger.info("%s: %s — the bot's own network is down", url, r.error)
+        await netcheck.mark_outage()
+        r.status, r.transient, r.own_outage = "unknown", True, True
+        r.error = "у сервера бота нет сети"
 
     memory = _recent.setdefault(r.site_id, deque(maxlen=RECENT_IN_MEMORY))
     memory.append(r.status)
@@ -244,11 +276,13 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     if stored:
         await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms,
                                        error=r.error, code=r.status_code))
-    if not manage:
+    if not manage or r.transient:
         return r
 
     threshold = site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD
     if r.ok:
+        if await get_state(f"ext_ok:{r.site_id}"):
+            await _write(set_state(f"ext_ok:{r.site_id}", None))   # the episode «up from outside» is over
         if r.site_id in _down_without_db:            # alerted from memory: say it is back
             _down_without_db.discard(r.site_id)
             r.recovered = True
@@ -261,6 +295,12 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
             r.recovered, r.resolved_incident = True, resolved
         return r
 
+    ext_since = parse_iso_utc(await get_state(f"ext_ok:{r.site_id}"))
+    if ext_since and datetime.now(UTC) - ext_since < EXT_OK_RECHECK:
+        # Still inside «down from here, up from outside»: this failure is the
+        # bot's too — no flicker between 🔴 and ⚠️, no downtime counted.
+        await _outside_is_up(r, 1)
+        return r
     if stored:
         recent = await get_recent_check_statuses(r.site_id, "availability", limit=threshold)
     else:
@@ -275,7 +315,11 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         r.external_ok = await second_opinion_up(url)
     if r.external_ok is True:
         logger.warning("%s: down from here but UP externally — skipping incident", url)
+        await _write(set_state(f"ext_ok:{r.site_id}", datetime.now(UTC).isoformat()))
+        await _outside_is_up(r, threshold)
         return r
+    if ext_since:
+        await _write(set_state(f"ext_ok:{r.site_id}", None))   # confirmed down this time
     prefix = "Bad content" if r.keyword_failed else "Site down"
     try:
         r.incident_id, r.incident_new = await save_incident(
@@ -294,6 +338,16 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     return r
 
 
+async def _outside_is_up(r: AvailabilityResult, relabel: int):
+    """The failures of this streak say nothing about the site: out of uptime,
+    the card and the public page say «cannot check», not «down»."""
+    await _write(relabel_recent_failures(r.site_id, relabel))
+    r.status, r.transient = "unknown", True
+    r.error = f"с сервера бота не открывается ({humanize.describe_error(r.error)}), снаружи открывается"
+    await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms, error=r.error,
+                                   code=r.status_code))
+
+
 async def _write(coro) -> bool:
     """Await one write; a database that refuses it (full disk, «database is
     locked») is noted in services.health instead of killing the check."""
@@ -306,4 +360,13 @@ async def _write(coro) -> bool:
 
 
 async def check_all(urls: list[str], manage: bool = True) -> list[AvailabilityResult]:
-    return await gather_checks(urls, check_availability, "availability", manage=manage)
+    results = await gather_checks(urls, check_availability, "availability", manage=manage)
+    if any(r.own_outage for r in results) and netcheck.recently_answered():
+        # The checks ran side by side: a site answered in this very tick, so
+        # the network is up and the «no network» verdicts were premature —
+        # those sites are asked again, now with the answer on record.
+        await netcheck.end_outage()
+        redo = [r.url for r in results if r.own_outage]
+        fixed = {r.url: r for r in await gather_checks(redo, check_availability, "availability", manage=manage)}
+        results = [fixed.get(r.url, r) for r in results]
+    return results

@@ -49,6 +49,8 @@ services:
     env_file: .env
     volumes:
       - bot_data:/app/data
+    sysctls:
+      - net.ipv4.ping_group_range=10001 10001   # ping:// monitors
 volumes:
   bot_data:
 ```

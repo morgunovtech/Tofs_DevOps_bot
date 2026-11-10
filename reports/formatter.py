@@ -56,7 +56,7 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
         if r.external_ok is False:
             situation += " Проверил дважды подряд и с внешних серверов: не открывается ни у кого."
         elif second_opinion:
-            situation += " Проверил дважды подряд; внешнюю проверку сделать не удалось."
+            situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:
             situation += " Проверил дважды подряд."
     return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, когда поднимется."
@@ -285,6 +285,8 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     """One line per site with the worst level among its notes: 🔴 / 🟠 by
     the SSL and domain ladders, ⚠️ when something could not be checked."""
     label = esc(site_label(r.url))
+    if r.status == "unknown":
+        return f"{UNCHECKED} {label} — не могу проверить: {esc(describe_error(r.error))}", False
     if not r.ok:
         return f"🔴 {label} — {esc(describe_error(r.error))}", False
     notes: list[tuple[str | None, str]] = []   # (severity or None = unchecked, words)

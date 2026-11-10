@@ -44,6 +44,7 @@ _PRIVATE_TYPES = frozenset({"exposed", "security", "mail_auth"})
 _STATE = {
     "up": ("dot-up", "работает"), "down": ("dot-down", "недоступен"),
     "maint": ("dot-maint", "тех. работы"), "pending": ("dot-pending", "ждёт первой проверки"),
+    "nodata": ("dot-pending", "нет свежих данных"),    # the monitoring server could not check: not «недоступен»
 }
 
 
@@ -62,6 +63,8 @@ async def build_payload() -> dict:
             state = "pending"
         elif last["status"] == "ok":
             state = "up"
+        elif last["status"] == "unknown":
+            state = "nodata"
         else:
             state, any_down = "down", True
         sites.append({

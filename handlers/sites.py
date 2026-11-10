@@ -282,6 +282,8 @@ async def _avail_line(site: dict, st: dict, page: bool) -> str:
     avail = st.get("avail")
     if not avail:
         return "⏳ Ещё не проверял — первая проверка в течение минуты"
+    if avail.get("status") == "unknown":
+        return f"{humanize.UNCHECKED} Не могу проверить: {esc(humanize.describe_error(avail.get('error')))}"
     if avail.get("status") != "ok":
         return f"🔴 {'Не открывается' if page else 'Не отвечает'}: {esc(humanize.describe_error(avail.get('error')))}"
     ms, region = best_ms(st)
@@ -641,6 +643,8 @@ async def msg_site_add(message: Message, state: FSMContext):
     lines = [f"✅ {esc(label)} под присмотром.\n"]
     if r.ok:
         lines.append(f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(r.response_time_ms)}")
+    elif r.transient:
+        lines.append(f"{humanize.UNCHECKED} Проверить не могу: {esc(humanize.describe_error(r.error))}.")
     else:
         lines.append(f"🔴 Сейчас {'не открывается' if page else 'не отвечает'}: "
                      f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда поднимется.")

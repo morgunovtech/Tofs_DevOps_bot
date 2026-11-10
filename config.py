@@ -80,6 +80,10 @@ def _timezone(name: str, default: str = "Europe/Moscow") -> str:
         return default
 
 
+DEFAULT_NET_CANARIES = ("1.1.1.1,8.8.8.8,9.9.9.9,2606:4700:4700::1111,2001:4860:4860::8888,"
+                        "one.one.one.one,dns.google,dns.quad9.net")
+
+
 @dataclass(frozen=True)
 class Config:
     bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -87,6 +91,11 @@ class Config:
     # (persisted in the DB, see services.runtime).
     admin_chat_id: str = _tg_id("TELEGRAM_ADMIN_CHAT_ID")
     admin_user_id: str = _tg_id("TELEGRAM_ADMIN_USER_ID")
+    # ── Own-network self-check (monitors.netcheck) ──────────────────────────
+    # An IP gets a TCP connect on :443, a name a DNS lookup. Unset → the
+    # defaults; set but empty → the self-check is off.
+    net_canaries: tuple[str, ...] = field(default_factory=lambda: tuple(
+        s.strip() for s in os.getenv("NET_CANARIES", DEFAULT_NET_CANARIES).split(",") if s.strip()))
     # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
     trust_proxy: bool = _bool("TRUST_PROXY")
     # Optional: every call to Telegram goes through this proxy

@@ -40,7 +40,7 @@ from db.database import (
     set_state,
     shareable_copy,
 )
-from monitors import region
+from monitors import netcheck, region
 from monitors.availability import check_all, check_availability
 from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
@@ -120,6 +120,9 @@ _slow_streak: dict[int, int] = {}
 # Sites already told about «down from here, up from outside» — said once per
 # episode, forgotten as soon as the site opens from the bot's network again.
 _ext_ok_noted: set[int] = set()
+_cannot_check_noted: set[int] = set()   # sites already told «не могу проверить» this episode
+OUTAGE_REMIND_AFTER = timedelta(hours=1)
+OUTAGE_REMIND_EVERY = timedelta(hours=24)
 # Per-site schedule (site_id → next due, UTC). The job ticks every minute
 # and checks only the sites whose time has come. In-memory on purpose:
 # after a restart everything is due immediately — a "check everything on
@@ -181,6 +184,10 @@ async def run_availability_checks():
 
 async def _availability_tick():
     now = datetime.now(UTC)
+    back_since = await _own_network_back()
+    if back_since:
+        _next_avail_check.clear()           # the network is back: look at every site in this very tick
+    await _remind_long_outage(now)
     sites = await get_all_sites()
     by_url = {s["url"]: s for s in sites}
     for sid in [sid for sid in _next_avail_check if sid not in {s["id"] for s in sites}]:
@@ -193,20 +200,103 @@ async def _availability_tick():
         if due_cutoff >= _next_avail_check.get(s["id"], now):
             _next_avail_check[s["id"]] = now + timedelta(minutes=_interval_min(s))
             due.append(s["url"])
-    if not due:
-        return
+    results = await check_all(due) if due else []
     # The tick only checks; every message goes to the alert worker, so a
     # silent Telegram or a slow deploy hook never holds up the next check.
-    for r in await check_all(due):
+    for r in results:
         site = by_url.get(r.url, {})
         if r.incident_new:
             _enqueue(_send_availability_alert, r, site, incident_id=r.incident_id)
         elif r.external_ok is True:
             _enqueue(_note_local_network_problem, r.url, r.site_id)
+        elif r.transient and not r.own_outage:
+            _enqueue(_note_cannot_check, r.url, r.site_id, r.error)
         elif r.recovered:
             _enqueue(_send_recovery, r)
         if r.ok:
+            _cannot_check_noted.discard(r.site_id)
             _enqueue(_site_is_up, r, _slow_ms(site))
+    if back_since:
+        _enqueue(_report_own_outage, back_since, now, results)
+
+
+async def _own_network_back() -> datetime | None:
+    """When the bot's own network has just come back: since when it was gone."""
+    since = await netcheck.outage_since()
+    if since is None or not await netcheck.own_network_ok():
+        return None
+    await netcheck.end_outage()
+    await set_state("net_outage_reminded", None)
+    return since
+
+
+async def _remind_long_outage(now: datetime):
+    """A «no network» episode that lasts for hours is more likely canaries a
+    firewall blocks than a real outage: said once a day while it lasts."""
+    since = await netcheck.outage_since()
+    if since is None or now - since < OUTAGE_REMIND_AFTER:
+        return
+    reminded = parse_iso_utc(await get_state("net_outage_reminded"))
+    if reminded and now - reminded < OUTAGE_REMIND_EVERY:
+        return
+    await set_state("net_outage_reminded", now.isoformat())
+    _enqueue(notifier.send,
+             f"⚠️ Уже {fmt_duration((now - since).total_seconds() / 60)} сервер бота считает, что у него нет сети: "
+             f"не отвечают адреса из NET_CANARIES. Всё это время сайт без ответа я считаю сбоем своей сети и "
+             f"тревогу не поднимаю. Если сеть на самом деле есть — впиши в NET_CANARIES адреса, которые сервер "
+             f"пропускает, или оставь переменную пустой.", Priority.NORMAL)
+
+
+async def _report_own_outage(since: datetime, until: datetime, results: list):
+    """ONE message for the whole episode instead of an alert per site."""
+    minutes = (until - since).total_seconds() / 60
+    fmt = "%H:%M" if minutes < 20 * 60 else "%d.%m %H:%M"
+    lines = [f"⚠️ С {to_local(since).strftime(fmt)} до {to_local(until).strftime(fmt)} у сервера бота "
+             f"не было сети или не работал DNS: проверить сайты было нельзя, тревоги о них я не поднимал."]
+    down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
+    if down:
+        lines.append(f"Сейчас не открываются: {', '.join(down)}. Если не поднимутся — пришлю обычную тревогу.")
+    elif results:
+        lines.append("Сейчас всё открывается.")
+    await notifier.send("\n".join(lines), Priority.NORMAL)
+
+
+async def check_own_network_at_start():
+    """Once, soon after a start. Canaries that never answer (a firewall that
+    lets out only the monitored sites) would make every unanswered check look
+    like «no network on the bot's server» — and silence real alerts. When the
+    sites answer while the canaries do not, the self-check switches itself off."""
+    if not netcheck.enabled() or await netcheck.probe():
+        return
+    if netcheck.recently_answered():
+        netcheck.disable()
+        await _say_fail_open()
+        return
+    await notifier.send(
+        "⚠️ Не проходит проверка сети сервера бота: не отвечают адреса из NET_CANARIES "
+        "(по умолчанию 1.1.1.1, 8.8.8.8, 9.9.9.9 и имена DNS-сервисов). Пока так, сайт без ответа я "
+        "посчитаю сбоем своей сети и тревогу не подниму. Если сервер за файрволом — впиши в NET_CANARIES "
+        "адреса, которые он пропускает, или оставь переменную пустой, чтобы выключить проверку.",
+        Priority.NORMAL)
+
+
+async def _say_fail_open():
+    await notifier.send(
+        "⚠️ Адреса из NET_CANARIES не отвечают, а сайты отвечают — похоже, сервер за файрволом. Самопроверку "
+        "сети я выключил до перезапуска: сайт без ответа снова считается сбоем сайта. Чтобы она работала, "
+        "впиши в NET_CANARIES адреса, которые сервер пропускает.", Priority.NORMAL)
+
+
+async def _note_cannot_check(url: str, site_id: int, reason: str | None):
+    """The check itself cannot run (no ICMP socket, request settings
+    rejected): said once per episode — this is not «the site is down»."""
+    if site_id in _cannot_check_noted:
+        return
+    sent = await notifier.send(
+        f"⚠️ {esc(site_label(url))}: не могу проверить — {esc(reason or 'неизвестная причина')}. "
+        f"Тревоги по нему не будет, пока это не исправить.", Priority.NORMAL, site_id=site_id)
+    if sent:
+        _cannot_check_noted.add(site_id)
 
 
 # ── Alert delivery: at least once ────────────────────────────────────────────
@@ -447,6 +537,8 @@ async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minu
                 job = _scheduler.get_job(f"followup:{message_id}:{other}")
                 if job:
                     job.remove()
+    elif r.transient:
+        line = f"\n\n🔁 Через {minutes} мин: проверить не смог — {esc(r.error)}."
     else:
         line = f"\n\n🔁 Через {minutes} мин: всё ещё не открывается ({esc(humanize.describe_error(r.error))})."
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
@@ -936,6 +1028,8 @@ async def run_escalation_watch():
     repeat_min = config.escalation_repeat_min
     if not repeat_min:
         return
+    if await netcheck.outage_since():
+        return              # «лежит уже …» without a network is a guess; it would only pile up in the outbox
     now = datetime.now(UTC)
     for inc in await get_active_incidents():
         with _isolated(f"Escalation of incident #{inc['id']}"):
@@ -1582,6 +1676,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     # Ticks every minute; the job decides which sites are due.
     job(run_availability_checks, IntervalTrigger(minutes=1), "availability_checks",
         misfire_grace_time=60)
+    job(check_own_network_at_start, DateTrigger(run_date=soon, timezone=UTC), "net_canaries_soon")
     # SSL + domain once a day — the alert ladder prevents repeat noise.
     job(run_ssl_checks, _cron(**specs["ssl_checks"]), "ssl_checks")
     job(run_domain_checks, _cron(**specs["domain_checks"]), "domain_checks")

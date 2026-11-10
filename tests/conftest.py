@@ -10,6 +10,7 @@ os.environ.update({
     "WEBHOOK_SECRET": "unit-test-webhook-secret",
     "HEARTBEAT_SECRET": "unit-test-heartbeat-secret",
     "SECOND_OPINION": "0",
+    "NET_CANARIES": "",
     "QUIET_HOURS": "",
     "DEPENDENCY_WATCH": "0",
     "TIMEZONE": "Europe/Moscow",
@@ -32,7 +33,7 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from monitors import availability  # noqa: E402
+from monitors import availability, netcheck  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     health,
@@ -183,6 +184,9 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
+    monkeypatch.setattr(netcheck, "_lock", asyncio.Lock())
+    netcheck.reset()
+    scheduler._cannot_check_noted.clear()
 
 
 @pytest.fixture
