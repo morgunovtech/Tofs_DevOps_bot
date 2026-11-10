@@ -36,6 +36,7 @@ from db import database  # noqa: E402
 from monitors import availability, netcheck  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
+    automation,
     health,
     integrations,
     maintenance,
@@ -192,6 +193,7 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
     monkeypatch.setattr(netcheck, "_lock", asyncio.Lock())
+    monkeypatch.setattr(automation, "_lock", asyncio.Lock())
     netcheck.reset()
     scheduler._cannot_check_noted.clear()
 

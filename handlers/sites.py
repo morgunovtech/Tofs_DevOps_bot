@@ -46,6 +46,7 @@ from db.database import (
 from handlers import seo as seo_screen
 from handlers.common import (
     MAX_SITES,
+    STALE_TAP,
     ack,
     back_button,
     cancel_kb,
@@ -772,7 +773,9 @@ async def cb_site_del_confirm(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("delok:"))
 async def cb_site_del_do(call: CallbackQuery):
-    await ack(call)
+    if not await ack(call):                     # «🗑 Да, убрать» from the queue after a restart: no
+        await call.message.answer(STALE_TAP)
+        return
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])

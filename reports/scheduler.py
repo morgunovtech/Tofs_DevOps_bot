@@ -81,6 +81,7 @@ from reports.formatter import (
 )
 from reports.weekly import build_weekly_report
 from services import (
+    automation,
     crux,
     github,
     gsc,
@@ -108,7 +109,6 @@ from services.actions import (
     explain_keyboard,
     heartbeat_keyboard,
     seo_fix_keyboard,
-    trigger_redeploy,
 )
 from services.notifier import Priority
 from utils import validate
@@ -468,7 +468,8 @@ async def deliver_missed_alerts():
             sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
                                      always_ring=availability, to_helpers=availability)
             if availability and sent is not None:
-                _after_availability_alert(inc["url"], inc["site_id"], getattr(sent, "message_id", None), text, kb)
+                _after_availability_alert(inc["url"], inc["site_id"], inc["id"],
+                                          getattr(sent, "message_id", None), text, kb)
         except Exception:
             logger.exception("Re-sending the alert of incident %s failed", inc["id"])
 
@@ -478,7 +479,7 @@ async def _send_availability_alert(r, site: dict):
     kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
     sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True, to_helpers=True)
     if sent is not None:
-        _after_availability_alert(r.url, r.site_id, getattr(sent, "message_id", None), msg, kb)
+        _after_availability_alert(r.url, r.site_id, r.incident_id, getattr(sent, "message_id", None), msg, kb)
 
 
 async def _send_recovery(r):
@@ -501,18 +502,25 @@ async def _site_is_up(r, slow_ms: int):
     await _track_slow(r, slow_ms)
 
 
-def _after_availability_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
-    """Once the alert is out: the deploy hook (AUTO_REDEPLOY) — it reports
-    into the same message — and the 2- and 5-minute re-checks."""
-    if config.auto_redeploy and deploy_hook_for(url):
-        _enqueue(_redeploy_after_alert, url, site_id, message_id, text, kb)
+def _after_availability_alert(url: str, site_id: int, incident_id: int | None, message_id: int | None,
+                              text: str, kb):
+    """Once the alert is out: the deploy hook — whether to fire it is
+    services.automation's call (the «🚀» switch, the pause, the hook's
+    budget); it reports into the same message — and the 2- and 5-minute
+    re-checks."""
+    if deploy_hook_for(url):
+        _enqueue(_redeploy_after_alert, url, site_id, incident_id, message_id, text, kb)
     elif message_id is not None:
         _schedule_followups(url, site_id, message_id, text, kb)
 
 
-async def _redeploy_after_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
-    res = await trigger_redeploy(url)
-    line = f"🤖 Уже сделал сам: 🚀 {res.text}" if res.ok else f"🤖 Пробовал пересобрать сайт — не вышло. {res.text}"
+async def _redeploy_after_alert(url: str, site_id: int, incident_id: int | None, message_id: int | None,
+                                text: str, kb):
+    line = await automation.auto_redeploy(url, site_id, incident_id)
+    if line is None:            # switched off: nothing to say, only the re-checks
+        if message_id is not None:
+            _schedule_followups(url, site_id, message_id, text, kb)
+        return
     if message_id is None:      # the alert sits in the outbox or the quiet queue — say it separately
         await notifier.send(f"{esc(site_label(url))}: {line}", Priority.NORMAL, site_id=site_id)
         return
@@ -1099,10 +1107,14 @@ async def run_container_watch():
                                     f"(было: {esc(e['problem'])}). Ничего делать не нужно.")
             elif not await get_state(key):
                 expl = humanize.EXPLANATIONS["container"]
+                # Not restarted because the owner said so (the «🔁» switch, the pause): the
+                # container is still down, and the owner hears that — and why nothing was done.
+                verdict = ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
+                           else f"Сам больше не перезапускаю: {esc(e['skipped'])}. Нужен человек."
+                           if e.get("skipped") else "Перезапустить не удалось.")
                 sent = await notifier.send(
-                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. "
-                    + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
-                       else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{_container_steps(name)}",
+                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. {verdict}"
+                    f"\n{expl.meaning}\n\n{_container_steps(name)}",
                     Priority.CRITICAL)
                 if sent:
                     await set_state(key, "1")

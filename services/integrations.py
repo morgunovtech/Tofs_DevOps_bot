@@ -3,9 +3,11 @@ chat. Values entered in the bot live in bot_state and win over .env; .env
 stays the fallback so existing deployments keep working unchanged.
 
 Keys: yandex_token, gsc_property, gsc_key (service-account JSON text),
-deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id,
-second_opinion ("on"/"off"), github_token, github_owner, crux_key (Google
-API key for the Chrome UX Report).
+deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id, cf_zone_name
+(learnt from Cloudflare on the first purge), second_opinion ("on"/"off"),
+github_token, github_owner, crux_key (Google API key for the Chrome UX
+Report), auto_redeploy / auto_restart / auto_cleanup ("on"/"off": the
+switches of «🤖 Что бот делает сам», they win over .env).
 """
 
 import json
@@ -17,8 +19,9 @@ from config import config
 from db.database import get_state, set_state
 
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
-        "cf_api_token", "cf_zone_id", "second_opinion", "self_heartbeat_url", "status_page_slug",
-        "github_token", "github_owner", "crux_key")
+        "cf_api_token", "cf_zone_id", "cf_zone_name", "second_opinion", "self_heartbeat_url",
+        "status_page_slug", "github_token", "github_owner", "crux_key",
+        "auto_redeploy", "auto_restart", "auto_cleanup")
 _values: dict[str, str] = {}
 
 
@@ -39,6 +42,8 @@ async def set_value(key: str, value: str | None):
     else:
         _values.pop(key, None)
     await set_state(f"int:{key}", value or None)
+    if key == "cf_zone_id" and _values.get("cf_zone_name"):
+        await set_value("cf_zone_name", None)   # another zone: its name is learnt again
 
 
 def stored() -> dict[str, str]:
@@ -151,6 +156,22 @@ def cf_purge_configured() -> bool:
     return bool(cf_api_token() and cf_zone_id())
 
 
+def cf_zone_name() -> str:
+    """example.com once Cloudflare named the zone (the first purge); '' until then."""
+    return _values.get("cf_zone_name", "")
+
+
+# ── Auto-actions ─────────────────────────────────────────────────────────────
+
+def auto_enabled(kind: str) -> bool:
+    """redeploy / restart / cleanup. The switch from the chat wins over .env."""
+    v = _values.get(f"auto_{kind}")
+    if v in ("on", "off"):
+        return v == "on"
+    return {"redeploy": config.auto_redeploy, "restart": bool(config.autorestart_containers),
+            "cleanup": config.auto_cleanup}[kind]
+
+
 # ── Watchdog & status page ───────────────────────────────────────────────────
 
 def self_heartbeat_url() -> str:
@@ -219,4 +240,8 @@ RULES: dict[str, Callable[[object], bool]] = {
     "self_heartbeat_url": _like(r"https://[^\s]{10,300}"),
     "status_page_slug": _like(r"[A-Za-z0-9_-]{8,64}"),
     "second_opinion": lambda v: v in ("on", "off"),
+    "cf_zone_name": _like(r"[a-z0-9.-]{3,253}"),
+    "auto_redeploy": lambda v: v in ("on", "off"),
+    "auto_restart": lambda v: v in ("on", "off"),
+    "auto_cleanup": lambda v: v in ("on", "off"),
 }

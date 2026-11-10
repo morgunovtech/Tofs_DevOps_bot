@@ -6,6 +6,7 @@ the meaningful actions are: re-run the check, trigger a Pages deploy hook
 """
 
 import logging
+import re
 from typing import NamedTuple
 
 import aiohttp
@@ -19,6 +20,8 @@ from utils.urls import host_of, is_http_url
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
+CF_API = "https://api.cloudflare.com/client/v4"   # a constant so tests can point it at a local server
+_ZONE_ID = re.compile(r"[0-9a-f]{32}")
 
 
 def deploy_hook_for(url: str) -> str | None:
@@ -27,6 +30,18 @@ def deploy_hook_for(url: str) -> str | None:
     if not is_http_url(url):
         return None
     return integrations.deploy_hooks().get(host_of(url))
+
+
+def in_cf_zone(url: str, hosting: str | None = None) -> bool:
+    """Can «🧹» help this site: the host is in the configured zone (its name is
+    learnt on the first purge); until the name is known — when the site is
+    served by Cloudflare."""
+    if not is_http_url(url) or not integrations.cf_purge_configured():
+        return False
+    zone, host = integrations.cf_zone_name(), host_of(url)
+    if zone:
+        return host == zone or host.endswith("." + zone)
+    return hosting == "cloudflare"
 
 
 def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = None,
@@ -49,10 +64,14 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     extra = []
     if http and deploy_hook_for(url):
         extra.append(InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}"))
-    if http and integrations.cf_purge_configured():
+    if in_cf_zone(url, hosting):
         extra.append(InlineKeyboardButton(text="🧹 Сбросить кэш", callback_data=f"act:purge:{site_id}"))
     if extra:
         rows.append(extra)
+    if http and deploy_hook_for(url) and integrations.auto_enabled("redeploy"):
+        # The bot will rebuild this site by itself (services.automation): one tap to stop that
+        # for a while — the owner may be rolling back by hand. The panel link stays last.
+        rows.append([InlineKeyboardButton(text="⏸ Не чинить самому 2 ч", callback_data="auto:pause:2:a")])
     panel = hosting_svc.panel_url(hosting)
     if panel:
         rows.append([InlineKeyboardButton(text=f"🔗 Открыть панель {hosting_svc.label(hosting)}", url=panel)])
@@ -152,27 +171,53 @@ async def trigger_redeploy(url: str) -> RedeployResult:
 
 
 async def purge_cf_cache(url: str) -> str:
-    """Purge the whole Cloudflare zone cache (per-host purge needs an
-    Enterprise plan; purge_everything works everywhere)."""
+    """Purge the Cloudflare cache of this site's host only — the rest of the
+    zone (www, api, other subdomains) keeps its cache. Purge by hostname is
+    documented for every plan since 2025, but that was not verified against
+    a Free zone: if Cloudflare refuses, its own words are shown, and a
+    full purge stays one click away in the Cloudflare panel."""
     if not integrations.cf_purge_configured():
         return "❌ Cloudflare API token / zone id не настроены (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
-    zone = f"https://api.cloudflare.com/client/v4/zones/{integrations.cf_zone_id()}"
+    zone_id = integrations.cf_zone_id()
+    if not _ZONE_ID.fullmatch(zone_id):
+        return "❌ Zone ID Cloudflare испорчен — задай его заново (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
+    zone = f"{CF_API}/zones/{zone_id}"
     auth = {"Authorization": f"Bearer {integrations.cf_api_token()}"}
     host = host_of(url)
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
+            async with s.get(zone, headers=auth) as resp:
+                body, status = await _cf_json(resp), resp.status
+            if not body.get("success"):
+                return (f"❌ Cloudflare не дал прочитать зону: {esc(_cf_error(body, status))}. "
+                        f"Проверь токен (права на зону) и Zone ID")
+            name = str((body.get("result") or {}).get("name") or "").lower()
+            if name and name != integrations.cf_zone_name():
+                await integrations.set_value("cf_zone_name", name)
             # The configured zone is one domain: never purge it for a site
             # that lives elsewhere (another zone, Vercel, …).
-            async with s.get(zone, headers=auth) as resp:
-                name = str(((await resp.json()).get("result") or {}).get("name") or "").lower()
             if not name or not (host == name or host.endswith("." + name)):
                 return f"❌ {esc(host)} не в зоне Cloudflare {esc(name or '?')} — кэш не трогаю"
-            async with s.post(zone + "/purge_cache", json={"purge_everything": True}, headers=auth) as resp:
-                data = await resp.json()
-                if data.get("success"):
-                    return "🧹 Кэш Cloudflare сброшен — посетители увидят свежую версию сайта"
-                errs = data.get("errors") or [{"message": f"HTTP {resp.status}"}]
-                return "❌ Cloudflare: " + esc(errs[0].get("message", "ошибка"))
+            async with s.post(zone + "/purge_cache", json={"hosts": [host]}, headers=auth) as resp:
+                body, status = await _cf_json(resp), resp.status
+            if body.get("success"):
+                return f"🧹 Кэш Cloudflare для {esc(host)} сброшен — посетители увидят свежую версию сайта"
+            return "❌ Cloudflare: " + esc(_cf_error(body, status))
     except Exception as e:
-        logger.warning("CF cache purge failed: %s", e)
-        return f"❌ Не удалось сбросить кэш: {esc(str(e) or type(e).__name__)}"
+        logger.warning("CF cache purge failed: %s", type(e).__name__)
+        return f"❌ Не удалось сбросить кэш: {esc(type(e).__name__)} — попробуй через минуту"
+
+
+async def _cf_json(resp: aiohttp.ClientResponse) -> dict:
+    """The v4 envelope, or {} when the answer is not JSON (an HTML error page)."""
+    try:
+        body = await resp.json(content_type=None)
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _cf_error(body: dict, status: int) -> str:
+    errors = body.get("errors") or []
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    return str(first.get("message") or f"HTTP {status}")

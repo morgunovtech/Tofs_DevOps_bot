@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import ack, render
+from handlers.common import STALE_TAP, ack, render
 from reports.scheduler import backup_info, send_copy_to_owner
 from services import heartbeats, settings, updates
 from services.heartbeats import job_states
@@ -71,7 +71,9 @@ async def cb_backup_now(call: CallbackQuery):
     ones stay as they were; to the owner's private chat only, without
     tokens and secrets (reports.scheduler.send_copy_to_owner). A double tap
     is safe: the copies are made one after another."""
-    await ack(call, "Делаю копию…")
+    if not await ack(call, "Делаю копию…"):
+        await call.message.answer(STALE_TAP)
+        return
     problem = await send_copy_to_owner(
         f"💾 Копия базы бота на {to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')}: сайты, настройки, "
         f"история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.")

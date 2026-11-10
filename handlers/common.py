@@ -95,15 +95,23 @@ async def render(target: Message | CallbackQuery, text: str,
         await target.answer(text, reply_markup=kb, **extra)
 
 
-async def ack(call: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
-    """Answer a button tap. A tap that reaches us after a restart is older
-    than Telegram's answer window and gets 'query is too old' — the screen
-    should still render, so that error is swallowed here."""
+STALE_TAP = ("⌛ Это нажатие пришло, пока я был выключен или перезапускался, — ничего не сделал. "
+             "Если это ещё нужно, нажми кнопку снова.")
+
+
+async def ack(call: CallbackQuery, text: str | None = None, show_alert: bool = False) -> bool:
+    """Answer a button tap. False when Telegram says the tap is too old to
+    answer ('query is too old') — it was pressed while the bot was down and
+    came from the queue after a restart. A screen may still render then, but
+    a handler that changes something (a rebuild, a purge, deleting, a new
+    secret) must call ack FIRST and do nothing on False (reply STALE_TAP)."""
     try:
         await call.answer(text, show_alert=show_alert)
     except TelegramBadRequest as e:
         if "query is too old" not in str(e) and "query ID is invalid" not in str(e):
             raise
+        return False
+    return True
 
 
 def cb_args(call: CallbackQuery, n: int) -> list[str] | None:
