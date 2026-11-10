@@ -172,6 +172,7 @@ def _fresh_module_state(monkeypatch):
                    webhook._held, webhook._warned):
         window.clear()
     monkeypatch.setattr(webhook, "_origins", None)
+    webhook._widget_noted.clear()
     monkeypatch.setattr(runtime, "_bot_username", "")
     scheduler._next_avail_check.clear()
     scheduler._failed_jobs.clear()

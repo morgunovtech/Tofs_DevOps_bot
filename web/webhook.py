@@ -17,7 +17,7 @@ import re
 import time
 from collections import defaultdict, deque
 from datetime import UTC, datetime
-from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
@@ -29,7 +29,7 @@ from services import health, heartbeats, integrations, notifier, screenshots, se
 from services.notifier import Priority
 from utils.text import esc, plural
 from utils.urls import bare_host, host_of, is_http_url
-from web import status_page
+from web import status_page, widget
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ _notified: dict[str, deque] = defaultdict(deque)
 _held: dict[str, int] = defaultdict(int)
 _warned: dict[str, float] = {}                  # log lines said at most once an hour, by key
 _origins: tuple[float, list[str]] | None = None  # (when fetched, site hosts); None — not yet
-_WIDGET = Path(__file__).parent / "feedback-widget.js"
+WIDGET_SERVED = "widget:served"                 # the widget version sites have loaded
+_widget_noted: set[str] = set()
 UNKNOWN_SITE = "без адреса сайта"
 # The server shares the process — and the container's file-descriptor limit,
 # 1024 by default — with every check the bot makes. A real client sends its
@@ -206,6 +207,16 @@ def _text(value, limit: int) -> str:
     return str(value).encode("utf-8", "replace").decode("utf-8")[:limit]
 
 
+def _without_query(url: str) -> str:
+    """Query strings carry reset tokens, e-mails and order numbers; the
+    owner needs only the page. The widget asks for more with fullUrl:true."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url.split("?", 1)[0].split("#", 1)[0]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
 async def read_json(request: web.Request) -> tuple[object, web.Response | None]:
     """(data, None) or (None, the answer to give): 413 for a body over
     client_max_size, 400 for anything that is not JSON — never a 500."""
@@ -256,12 +267,16 @@ async def handle_feedback(request: web.Request) -> web.Response:
     if not message:
         return _cors(web.Response(status=400, text="message is required"), allow)
     site_url = _text(data.get("site_url") or "unknown", MAX_URL_LEN)
-    page_url = _text(data.get("page_url") or site_url, MAX_URL_LEN)
-    user_agent = _text(request.headers.get("User-Agent", ""), MAX_URL_LEN)
+    page_url = str(data.get("page_url") or site_url)
+    if data.get("full_url") is not True:
+        page_url = _without_query(page_url)
+    page_url = _text(page_url, MAX_URL_LEN)
     # «Сайт:» in the chat is what the browser vouches for (Origin), not what the body claims.
     verified = site is not None and _under(host_of(site_url), site)
     try:
-        feedback_id = await save_feedback(site_url, page_url, message, user_agent, ip)
+        # The User-Agent is not kept: nothing showed it, and it is one more
+        # thing about the visitor that the owner never asked for.
+        feedback_id = await save_feedback(site_url, page_url, message, "", ip)
         if _may_notify(site_key):
             await notifier.send(format_feedback(site_url, page_url, message, feedback_id, ip,
                                                 verified=verified), Priority.NORMAL)
@@ -418,11 +433,39 @@ async def handle_status_badge(request: web.Request) -> web.Response:
                                  "X-Robots-Tag": "noindex, nofollow"})
 
 
+def _widget(cache: str) -> web.Response:
+    # ACAO * is what lets a site load the file with crossorigin="anonymous"
+    # and check its integrity — do not narrow it, and never add
+    # Cross-Origin-Resource-Policy: same-origin to this answer.
+    return web.Response(body=widget.BODY, content_type="application/javascript", charset="utf-8",
+                        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": cache})
+
+
 async def handle_widget(request: web.Request) -> web.Response:
-    return web.Response(text=_WIDGET.read_text("utf-8"), content_type="application/javascript",
-                        charset="utf-8",
-                        headers={"Access-Control-Allow-Origin": "*",
-                                 "Cache-Control": "public, max-age=3600"})
+    """The unversioned address that old snippets load: same bytes, short cache."""
+    return _widget("public, max-age=3600")
+
+
+async def handle_widget_versioned(request: web.Request) -> web.Response:
+    """The address the snippet pins with its integrity hash: a year in the
+    cache, since a different file lives at a different address."""
+    if request.match_info["ver"] != widget.VERSION:
+        return web.Response(status=404, text="Not Found")
+    if widget.VERSION not in _widget_noted:      # one write per run, not per visitor
+        _widget_noted.add(widget.VERSION)
+        await set_state(WIDGET_SERVED, widget.VERSION)
+    return _widget("public, max-age=31536000, immutable")
+
+
+async def widget_changed_notice() -> None:
+    """Sites pin the widget by its hash: after an update that changed the
+    file, a snippet with the old hash loads nothing. Say so once."""
+    served = await get_state(WIDGET_SERVED)
+    if served and served != widget.VERSION:
+        await set_state(WIDGET_SERVED, None)
+        await notifier.send("📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом "
+                            "он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь.",
+                            Priority.NORMAL)
 
 
 async def _harden(request: web.Request, response: web.StreamResponse) -> None:
@@ -447,6 +490,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/heartbeat/{token}/{job}", handle_heartbeat, allow_head=False)
     app.router.add_post("/api/heartbeat/{token}/{job}", handle_heartbeat)
     app.router.add_get("/feedback-widget.js", handle_widget)
+    app.router.add_get("/feedback-widget.{ver:[0-9a-f]{12}}.js", handle_widget_versioned)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/shot/{sig}/{sid}", handle_shot)
     # Registration order matters: literal segments before the {slug} catch-all.
@@ -477,6 +521,7 @@ def _cap_connections(server: web.Server, limit: int) -> None:
 
 
 async def start_web_server(host: str = "0.0.0.0", port: int | None = None) -> web.AppRunner:
+    await widget_changed_notice()       # notifier is configured before the server starts (main.py)
     # No access log: request lines carry the heartbeat secret and the status
     # page slug in the path, and stdout ends up in the hosting's logs.
     # A request in flight must not stretch a stop past the container's grace period.

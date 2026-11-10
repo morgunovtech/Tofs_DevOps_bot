@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from config import config
 from services import integrations, secrets
+from web import widget
 
 PLACEHOLDER_HOST = "YOUR_SERVER"
 NOT_PUBLIC = ("⚠️ У бота нет публичного адреса, поэтому ссылка ниже не заработает: вместо YOUR_SERVER "
@@ -48,7 +49,9 @@ def heartbeat_url(job: str) -> str:
 
 
 def widget_url() -> str:
-    return f"{base_url()}/feedback-widget.js"
+    """The widget file under its version: the snippet pins the exact bytes
+    (SRI), and a changed file gets a new address, so caches never mix them."""
+    return f"{base_url()}/feedback-widget.{widget.VERSION}.js"
 
 
 def feedback_url() -> str:
