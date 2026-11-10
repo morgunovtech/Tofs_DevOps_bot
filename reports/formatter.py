@@ -398,25 +398,15 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     return f"✅ {label} — {verb} {humanize.speed(r.response_time_ms)}", True
 
 
-def format_compact_status_report(availability: list[AvailabilityResult],
-                                 incidents: list[dict],
-                                 ssl_results: list[SslResult] | None = None,
-                                 domain_results: list[DomainResult] | None = None,
-                                 report_type: str = "status",
-                                 extras: list[str] | None = None,
-                                 watch: list[tuple[str, bool]] | None = None) -> str:
-    """watch: (line, fine) for the bots and tasks that mark in and for the
-    bot's own watchdog — a block of their own under the sites, counted in
-    «Всё спокойно» like a site."""
-    now = now_local().strftime("%d.%m %H:%M")
-    header = {"morning": f"🌅 Доброе утро · {now}",
-              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
-              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
+def _site_lines(availability: list[AvailabilityResult],
+                ssl_results: list[SslResult] | None,
+                domain_results: list[DomainResult] | None) -> list[tuple[str, str, bool]]:
+    """(url, line, fine) per site — the one place that decides what a site's
+    line says, so the digest and the «already said above» set agree."""
     ssl_by_url = {r.url: r for r in (ssl_results or [])}
     domain_by_root = {registrable_domain(host_of(r.url)): r for r in (domain_results or [])}
     domain_urls = {r.url for r in (domain_results or [])}
-    lines: list[str] = [header, ""]
-    all_ok = True
+    out = []
     for r in availability:
         http = is_http_url(r.url)
         # An API check carries the certificate and domain notes only when it
@@ -426,19 +416,75 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         if r.api and r.url not in domain_urls:
             dom = None
         line, ok = _site_line(r, ssl_by_url.get(r.url) if (ssl_results is not None and http) else None, dom)
-        lines.append(line)
-        all_ok &= ok
+        out.append((r.url, line, ok))
+    return out
+
+
+def problem_site_urls(availability: list[AvailabilityResult],
+                      ssl_results: list[SslResult] | None = None,
+                      domain_results: list[DomainResult] | None = None) -> set[str]:
+    """The sites whose line in the digest already shows a problem."""
+    return {url for url, _, ok in _site_lines(availability, ssl_results, domain_results) if not ok}
+
+
+DIGEST_INCIDENTS = 5
+_ON_SITE_LINE = ("availability", "ssl", "domain")
+
+
+def digest_incidents(incidents: list[dict], site_urls: set[str]) -> tuple[list[dict], int]:
+    """(what to list under «Открытых проблем», how many more): every 🔴,
+    then 🟠 up to five lines — an old 🔴 is never pushed out by five new 🟠.
+    site_urls — the sites whose line above already shows the problem: what
+    it said (availability, certificate, domain) is not said twice."""
+    listable = [i for i in incidents if not (i["check_type"] in _ON_SITE_LINE and i["url"] in site_urls)]
+    crit = [i for i in listable if i.get("severity") == "critical"]
+    rest = [i for i in listable if i.get("severity") != "critical"]
+    shown = crit + rest[:max(0, DIGEST_INCIDENTS - len(crit))]
+    return shown, len(listable) - len(shown)
+
+
+def format_compact_status_report(availability: list[AvailabilityResult],
+                                 incidents: list[dict],
+                                 ssl_results: list[SslResult] | None = None,
+                                 domain_results: list[DomainResult] | None = None,
+                                 report_type: str = "status",
+                                 extras: list[str] | None = None,
+                                 watch: list[tuple[str, bool]] | None = None,
+                                 short: bool = False) -> str:
+    """watch: (line, fine) for the bots and tasks that mark in and for the
+    bot's own watchdog — a block of their own under the sites, counted in
+    «Всё спокойно» like a site. short: only the lines that say something is
+    wrong, and the sites in order as one count — the daily screen of the
+    same «всё хорошо» teaches to scroll past the day with a 🔴 in it."""
+    now = now_local().strftime("%d.%m %H:%M")
+    header = {"morning": f"🌅 Доброе утро · {now}",
+              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
+              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
+    site_lines = _site_lines(availability, ssl_results, domain_results)
+    lines: list[str] = [header, ""]
+    all_ok = all(ok for _, _, ok in site_lines)
+    if short:
+        bad = [line for _, line, ok in site_lines if not ok]
+        good = len(site_lines) - len(bad)
+        lines += bad
+        if good:
+            lines.append(f"✅ {'Остальные' if bad else 'Сайты'} в порядке: {good}")
+    else:
+        lines += [line for _, line, _ in site_lines]
     if watch:
         lines += ([""] if availability else []) + [line for line, _ in watch]
         all_ok &= all(ok for _, ok in watch)
     if incidents:
         worst = worst_severity(i.get("severity") for i in incidents)
-        lines += ["", f"{level_icon(worst)} Открытых проблем: {len(incidents)}"]
+        said = {url for url, _, ok in site_lines if not ok}
+        shown, more = digest_incidents(incidents, said)
+        head = f"{level_icon(worst)} Открытых проблем: {len(incidents)}"
+        lines += ["", head if shown else f"{head} — в строках сайтов выше"]
         # No leading spaces: Telegram wraps a long line back to column 0,
         # and the indent only makes the wrap look crooked.
-        lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in incidents[:5]]
-        if len(incidents) > 5:
-            lines.append(f"… и ещё {len(incidents) - 5}")
+        lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in shown]
+        if more:
+            lines.append(f"… и ещё {more} — весь список: 🏠 Главная → «Что не так»")
     elif all_ok:
         lines += ["", "Всё спокойно 🐕"]
     if extras:

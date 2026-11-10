@@ -130,7 +130,7 @@ async def test_reports_do_not_crash_on_empty_and_populated_db(bot, db, cfg, tmp_
     await scheduler.send_weekly_report()
     texts = [m.get("text", "") for m in bot.sent]
     assert any("Итоги недели" in t and "за месяц" in t for t in texts)
-    assert any("Как быстро открывались" in t and "<pre>" in t for t in texts)
+    assert not any("<pre>" in t for t in texts)
     assert any(m.get("document") is not None for m in bot.sent)   # DB copy sent
 
 
@@ -257,15 +257,28 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
         return "🌅 Доброе утро"
 
     monkeypatch.setattr(scheduler, "_status_snapshot", snapshot)
+    # The short digest names the missing watchdog on Mondays only — and its
+    # button comes with the line, never under a digest that does not say it.
+    monkeypatch.setattr(scheduler, "now_local", lambda: datetime(2026, 11, 9, 9, 0, tzinfo=UTC))   # a Monday
     await scheduler.send_morning_report()
     buttons = [btn.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for btn in row]
     assert buttons == ["hb_how:backup", "hb_rm:backup", "onb:watchdog"]   # no watchdog: its button stays
+    assert (await scheduler._watch_lines(morning=True, short=True))[-1][0].startswith("🛡 Внешнего сторожа нет")
     await db.heartbeat_ping("backup")
     # «1 дн назад» alone read like trouble: the expected rhythm says it is on time.
     assert (await scheduler._watch_lines(morning=True))[0] == (
         "✅ backup — на связи, только что (выходит на связь раз в сутки)", True)
     await scheduler.send_morning_report()
     assert [b.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row] == ["onb:watchdog"]
+    monkeypatch.setattr(scheduler, "now_local", lambda: datetime(2026, 11, 10, 9, 0, tzinfo=UTC))  # a Tuesday
+    assert not any(line.startswith("🛡") for line, _ in await scheduler._watch_lines(morning=True, short=True))
+    await scheduler.send_morning_report()
+    assert bot.sent[-1]["reply_markup"] is None                         # no line about the watchdog: no button
+    await settings.set_digest_full(True)                                # the full view says it every day
+    assert any(line.startswith("🛡") for line, _ in await scheduler._watch_lines(morning=True))
+    await scheduler.send_morning_report()
+    assert [b.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row] == ["onb:watchdog"]
+    await settings.set_digest_full(False)
     await settings.remove_heartbeat_job("backup")
 
 

@@ -208,6 +208,10 @@ def _reports_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔔 Будить: только «сайт лёг»" if ring_on else "🔔 Будить: всё критичное",
                               callback_data=f"set_ring:{'off' if ring_on else 'on'}")],
         [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}") for h in MORNING_HOURS],
+        # The morning view: what is wrong and a count of the sites in order,
+        # or the old line per site — the current one is marked.
+        [InlineKeyboardButton(text=("" if settings.digest_full() else "✅ ") + "🌅 Коротко", callback_data="set_dg:short"),
+         InlineKeyboardButton(text=("✅ " if settings.digest_full() else "") + "🌅 Каждый сайт", callback_data="set_dg:full")],
         [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}") for h in EVENING_HOURS]
         + [InlineKeyboardButton(text="🌙 выкл", callback_data="set_e:off")],
         [InlineKeyboardButton(text=f"📊 вс {h}:00", callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
@@ -227,11 +231,11 @@ def _reports_kb() -> InlineKeyboardMarkup:
 def _reports_text() -> str:
     evening, quiet = settings.evening_hour(), settings.quiet_hours()
     return ("🔔 Когда писать\n\n"
-            f"🌅 Утренняя сводка: {settings.morning_hour()}:00 — одно короткое «всё в порядке» "
-            f"или список того, что не так.\n"
-            f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если есть проблемы'}.\n"
+            f"🌅 Утренняя сводка: {settings.morning_hour()}:00 — "
+            f"{'строка на каждый сайт' if settings.digest_full() else 'только то, что не так, и число сайтов в порядке'}.\n"
+            f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если появилось новое после утренней сводки или что-то лежит (🔴)'}.\n"
             f"📊 Недельная: воскресенье {settings.weekly_hour()}:00 — простой за неделю и месяц, "
-            f"график, одна идея.\n"
+            f"строки скорости только для сайтов, где она менялась, одна идея.\n"
             f"🗄 Копия базы: {'по воскресеньям тебе в личку, без ключей подключений' if settings.weekly_backup() else 'не присылаю'}.\n"
             f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} — некритичное "
             f"ждёт до утра, «сайт лежит» приходит всегда.\n"
@@ -266,6 +270,8 @@ async def cb_settings_pick(call: CallbackQuery):
         await settings.set_ring_only_down(value == "on")
     elif kind == "set_wb" and value in ("on", "off"):
         await settings.set_weekly_backup(value == "on")
+    elif kind == "set_dg" and value in ("short", "full"):
+        await settings.set_digest_full(value == "full")
     elif kind == "set_tz" and value.isdigit() and int(value) < len(TIMEZONES):
         await settings.set_timezone(TIMEZONES[int(value)][1])
     elif kind == "set_tz" and value == "env":

@@ -134,21 +134,15 @@ def fmt_duration(minutes: float, units: tuple[str, str, str] = ("мин", "ч", 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 
-def sparkline(values: list) -> str:
-    """▂▃▂▁▅▂ for response-time trends; '' when there is too little data."""
+def sparkline(values: list, min_rel_range: float = 0.0) -> str:
+    """▂▃▂▁▅▂ for response-time trends; '' when there is too little data.
+    min_rel_range: a spread smaller than this share of the peak is drawn
+    flat — millisecond noise must not look like a jump."""
     vals = [v for v in values if v is not None]
     if len(vals) < 3:
         return ""
     lo, hi = min(vals), max(vals)
-    if hi <= lo:
+    if hi <= lo or hi - lo < min_rel_range * hi:
         return SPARK_CHARS[1] * len(vals)
     return "".join(
         SPARK_CHARS[min(7, int((v - lo) / (hi - lo) * 7 + 0.5))] for v in vals)
-
-
-def bar(value: float, max_value: float, width: int = 20) -> str:
-    """Monospace bar for ASCII charts: '▇▇▇▇▇     '."""
-    if max_value <= 0 or value <= 0:
-        return " " * width
-    n = max(1, round(value / max_value * width))
-    return "▇" * n + " " * (width - n)

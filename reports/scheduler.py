@@ -68,6 +68,7 @@ from monitors.seo_checker import check_all_seo
 from monitors.ssl_checker import check_all_ssl
 from monitors.visitor_checker import check_all_visitors
 from reports.formatter import (
+    digest_incidents,
     format_availability_alert,
     format_compact_status_report,
     format_deep_alert,
@@ -85,6 +86,7 @@ from reports.formatter import (
     format_visitors_recovery,
     incident_duration_line,
     incident_line,
+    problem_site_urls,
 )
 from reports.weekly import build_weekly_report
 from services import (
@@ -123,7 +125,6 @@ from utils import validate
 from utils.clock import local_tz, now_local, to_local
 from utils.net import is_private_target
 from utils.text import (
-    SAFE_LIMIT,
     chunks,
     clip,
     esc,
@@ -2339,18 +2340,33 @@ async def _status_snapshot(report_type: str, extras: bool):
     ssl_results = await check_all_ssl(host_urls, manage=False)
     domain_results = await check_all_domains(host_urls, manage=False)
     incidents = await get_active_incidents()
+    # The evening is always the short view; the morning — unless the owner
+    # asked for «🌅 Каждый сайт». One set of «already said by a site line»
+    # for the list of problems and for the «🔎 Поиск и ИИ» line: a 🟠 that
+    # takes the slot of a down site's own incident must not come back there.
+    short = report_type == "evening" or not settings.digest_full()
+    said = problem_site_urls(availability, ssl_results, domain_results)
+    listed, _ = digest_incidents(incidents, said)
     return format_compact_status_report(
         availability=availability, incidents=incidents,
         ssl_results=ssl_results, domain_results=domain_results, report_type=report_type,
-        extras=await _morning_extras(ssl_results, domain_results, incidents) if extras else None,
-        watch=await _watch_lines(morning=extras))
+        extras=await _morning_extras(ssl_results, domain_results, listed) if extras else None,
+        watch=await _watch_lines(morning=extras, short=short), short=short)
 
 
-async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
+def _watchdog_nag(short: bool) -> bool:
+    """The full digest says «Внешнего сторожа нет» every morning; the short
+    one once a week, on Mondays. The «🛡 Внешний сторож» button under the
+    digest comes with that line, never without it."""
+    return not short or now_local().weekday() == 0
+
+
+async def _watch_lines(morning: bool, short: bool = False) -> list[tuple[str, bool]]:
     """Bots and tasks under the sites, a line each like a site's, and last
     the watchdog — the answer to «and if the bot itself goes down?». A
     silent task gets its «🔗 Подключить / 🗑 Удалить» buttons under the
-    digest; a missing watchdog is mentioned in the morning only."""
+    digest; a missing watchdog is mentioned in the morning only. short:
+    only what needs the owner (and the Monday watchdog reminder)."""
     jobs = await heartbeats.job_states()
     lines: list[tuple[str, bool]] = []
     for j in jobs:   # what bots report comes first, a block of its own
@@ -2364,6 +2380,9 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     w = await heartbeats.watchdog()
     if w or morning:
         lines.append(heartbeats.watchdog_digest_line(w))
+    if short:
+        nag = w is None and morning and _watchdog_nag(short)
+        lines = [(line, fine) for line, fine in lines if not fine or (nag and line.startswith("🛡"))]
     return lines
 
 
@@ -2371,43 +2390,44 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
-    text = clip(await _status_snapshot("morning_late" if late else "morning", extras=True))
+    # Split, not clipped: sixty down sites are sixty lines the owner needs.
+    text = await _status_snapshot("morning_late" if late else "morning", extras=True)
     silent = [j for j in await heartbeats.job_states() if j.needs_you]
     kb = heartbeat_keyboard([j.name for j in silent], seen={j.name for j in silent if j.ago is not None})
-    if await heartbeats.watchdog() is None:
+    if await heartbeats.watchdog() is None and _watchdog_nag(not settings.digest_full()):
         # The digest says there is no watchdog: the way to one is a tap away.
         kb = InlineKeyboardMarkup(inline_keyboard=[*(kb.inline_keyboard if kb else []),
                                                   *_WATCHDOG_KB.inline_keyboard])
-    await notifier.send(text, Priority.DIGEST, reply_markup=kb)
+    parts = chunks(text)
+    for part in parts[:-1]:
+        await notifier.send(part, Priority.DIGEST)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=kb)
+    # The evening compares against this: it comes only for what is new since.
+    await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
 
 
 @_once("evening_report", mark=True)
 async def send_evening_report():
-    """Evening report — only if there's something to worry about."""
-    if settings.evening_hour() is None or not await get_active_incidents():
+    """Evening report — only for a 🔴 or for a problem opened since the
+    morning digest: an old 🟠 that the morning already said must not bring
+    the same screen back every evening. Compared by the second: SQLite's
+    created_at has no fractions."""
+    if settings.evening_hour() is None:
         return
-    await notifier.send(clip(await _status_snapshot("evening", extras=False)), Priority.DIGEST)
-
-
-def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
-    """Pack independent text blocks into as few messages as fit the limit."""
-    messages, current = [], ""
-    for block in blocks:
-        candidate = f"{current}\n\n{block}" if current else block
-        if current and len(candidate) > limit:
-            messages.append(current)
-            current = block
-        else:
-            current = candidate
-    if current:
-        messages.append(current)
-    return messages
+    since = parse_iso_utc(await get_state("morning_sent_at"))
+    news = [i for i in await get_active_incidents()
+            if i["severity"] == "critical" or since is None
+            or (parse_sqlite_utc(i["created_at"]) or since) >= since.replace(microsecond=0)]
+    if not news:
+        return
+    for part in chunks(await _status_snapshot("evening", extras=False)):
+        await notifier.send(part, Priority.DIGEST)
 
 
 @_once("weekly_report", mark=True)
 async def send_weekly_report():
-    """Sunday: dependency check, GitHub hygiene, weekly digest, ASCII
-    response-time chart, off-host DB copy. A failed side check never
+    """Sunday: dependency check, GitHub hygiene, weekly digest, the response
+    time where it moved, off-host DB copy. A failed side check never
     stops the digest."""
     try:
         await updates.run_dependency_watch()
@@ -2419,13 +2439,13 @@ async def send_weekly_report():
         logger.exception("GitHub hygiene check failed")
     failed = None
     try:
-        text, chart_blocks = await build_weekly_report()
+        text, speed = await build_weekly_report()
         # Split, not clipped: the sections at the end (dependencies, GitHub)
         # are the ones a long site list would cut off.
         for part in chunks(text):
             await notifier.send(part, Priority.DIGEST)
-        if chart_blocks:
-            for msg in pack_blocks(["⏱ Как быстро открывались сайты по дням:", *chart_blocks]):
+        if speed:   # only the sites whose speed moved; nothing when none did
+            for msg in chunks("\n".join(["⏱ Скорость за неделю — где она менялась:", *speed])):
                 await notifier.send(msg, Priority.DIGEST)
         tip = await recommend.weekly_recommendation()
         if tip:

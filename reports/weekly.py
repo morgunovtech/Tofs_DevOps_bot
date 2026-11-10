@@ -1,12 +1,16 @@
-"""Weekly report: per-site downtime over the week and the month, an ASCII response-time
-chart (monospace, no image libraries), what is open now and what was
-solved this week, facts of normal operation (certificates that renewed by
-themselves), search metrics and the dependency check — sent every Sunday.
-This is where everything 🟠 is promised to show up."""
+"""Weekly report: per-site downtime over the week and the month (the sites
+without a single outage as one line), the response time of the week only
+where it moved (a sparkline per such site, no image libraries), what is
+open now and what was solved this week, facts of normal operation
+(certificates that renewed by themselves), search metrics and the
+dependency check — sent every Sunday. This is where everything 🟠 is
+promised to show up."""
 
 import logging
+import statistics
 from datetime import UTC, date, datetime, timedelta
 
+from config import config
 from db.database import (
     get_active_incidents,
     get_all_sites,
@@ -16,12 +20,14 @@ from db.database import (
 )
 from services import github, gsc, humanize, index_status, integrations, sitestatus, updates, yandex_webmaster
 from utils.clock import to_local
-from utils.text import bar, esc, parse_iso_utc, parse_sqlite_utc, plural
+from utils.text import esc, parse_iso_utc, parse_sqlite_utc, plural, sparkline
 from utils.urls import is_http_url, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
-CHART_WIDTH = 18
+# A day at least this many times the site's usual answer time is a change
+# worth a line; below it the week was level.
+SPEED_JUMP = 1.3
 
 
 def _pct_change(cur: int, prev: int) -> str:
@@ -31,24 +37,29 @@ def _pct_change(cur: int, prev: int) -> str:
     return f"+{delta}%" if delta >= 0 else f"{delta}%"
 
 
-def render_ascii_chart(series: dict[str, list[dict]]) -> list[str]:
-    """Per-site daily average response time as monospace bars — one <pre>
-    block per site so long charts can be packed into several messages.
-    One shared scale so sites are comparable."""
-    peak = max((r["avg_ms"] or 0 for rows in series.values() for r in rows), default=0)
-    if peak <= 0:
-        return []
-    blocks: list[str] = []
+def _range(values: list[int]) -> str:
+    """«0.12 с–0.40 с», or one number when they are all the same."""
+    lo, hi = humanize.fmt_seconds(min(values)), humanize.fmt_seconds(max(values))
+    return lo if lo == hi else f"{lo}–{hi}"
+
+
+def speed_lines(series: dict[str, list[dict]], slow_ms: dict[str, int]) -> list[str]:
+    """A line per site whose speed moved this week — a sparkline, the
+    median, the name; the level ones as one line. Nothing when nothing
+    moved: a chart of twenty straight lines says only «still fine»."""
+    moved, steady = [], []
     for label, rows in series.items():
-        if not rows:
+        vals = [r["avg_ms"] for r in rows if r["avg_ms"]]
+        if len(vals) < 3:
             continue
-        lines = [esc(label)]
-        for r in rows:
-            ms = r["avg_ms"] or 0
-            day = f"{r['day'][8:10]}.{r['day'][5:7]}"
-            lines.append(f"{day} {bar(ms, peak, CHART_WIDTH)} {humanize.fmt_seconds(ms):>7}")
-        blocks.append("<pre>" + "\n".join(lines) + "</pre>")
-    return blocks
+        mid = statistics.median(vals)
+        if max(vals) >= SPEED_JUMP * mid or max(vals) >= slow_ms.get(label, config.slow_response_ms):
+            moved.append(f"{sparkline(vals, min_rel_range=0.3)} {humanize.fmt_seconds(mid)} · {esc(label)}")
+        else:
+            steady.append(round(mid))
+    if moved and steady:
+        moved.append(f"Ровно у остальных {len(steady)}: {_range(steady)}")
+    return moved
 
 
 async def search_metrics_lines(site_urls: list[str]) -> list[str]:
@@ -111,15 +122,18 @@ async def _reason(name: str) -> str:
 
 
 async def build_weekly_report() -> tuple[str, list[str]]:
-    """(summary text, chart blocks) — the chart goes out as separate
-    message(s) so a long one never pushes the summary past the limit."""
+    """(summary text, speed lines) — the speed goes out as a separate
+    message so a long one never pushes the summary past the limit."""
     sites = await get_all_sites()
     lines = ["📊 Итоги недели\n"]
     series: dict[str, list[dict]] = {}
+    slow: dict[str, int] = {}
+    clean: list[int | None] = []   # the answer times of the sites without an outage
     for s in sites:
         rows = await get_daily_availability(s["id"], days=7)
         label = site_label(s["url"])   # tcp://example.com:25 ≠ example.com
         series[label] = rows
+        slow[label] = s.get("slow_ms") or config.slow_response_ms
         total = sum(r["total"] for r in rows)
         if not total:
             lines.append(f"⏳ {esc(label)} — нет данных")
@@ -127,6 +141,11 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         week = await get_uptime_over_days(s["id"], 7)
         month = await get_uptime_over_days(s["id"], 30)
         avg_ms = week["avg_response_ms"]
+        # A site without a single outage over the week and the month is
+        # one of a count below, not a line of its own twenty times over.
+        if not week["down_min"] and not month["down_min"]:
+            clean.append(avg_ms)
+            continue
         # Last week's downtime is history, not an open problem: ✅ when there
         # was none, 📉 otherwise — never a level icon.
         icon = "📉" if week["down_min"] else "✅"
@@ -135,8 +154,12 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         verb = "Открывается" if is_web_page(s["url"], s.get("http_method")) else "Отвечает"
         lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
                      f"{verb} {humanize.speed(avg_ms)}.")
+    if clean:
+        n, ms = len(clean), [v for v in clean if v]
+        lines.append(f"✅ {n} {plural(n, 'сайт', 'сайта', 'сайтов')} — без сбоев за неделю и за месяц"
+                     + (f", {'отвечает' if n == 1 else 'отвечают'} за {_range(ms)}" if ms else ""))
 
-    chart = render_ascii_chart(series)
+    chart = speed_lines(series, slow)
 
     async def search() -> list[str]:
         found = await search_metrics_lines([s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))])
@@ -182,15 +205,16 @@ async def incidents_block() -> list[str]:
     """Everything open now, each with its level (however old it is — this is
     where 🟠 waits), then what was solved this week. Counters carry no
     problem icon: the icon belongs to the problem, not to the number."""
-    active = await get_active_incidents()
+    # Every open one, 🔴 first and the oldest first within a level, no cut:
+    # the report is split into messages anyway, and a cut would hide
+    # exactly the old 🔴 behind five new 🟠.
+    active = sorted(await get_active_incidents(), key=lambda i: (i["severity"] != "critical", i["created_at"]))
     solved = [i for i in await get_incidents_since(days=7) if i["resolved"]]
     lines: list[str] = []
     if active:
         lines.append(f"\nОткрыто сейчас ({len(active)}):")
         lines += [f"{humanize.level_icon(inc['severity'])} {_headline(inc)} — с {_day(inc['created_at'])}"
-                  for inc in active[:5]]
-        if len(active) > 5:
-            lines.append(f"… и ещё {len(active) - 5}")
+                  for inc in active]
     if solved:
         lines.append(f"\nРешено за неделю: {len(solved)}")
         lines += [f"✓ {_day(inc.get('resolved_at') or inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
