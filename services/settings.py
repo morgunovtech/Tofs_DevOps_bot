@@ -27,6 +27,7 @@ class Overrides:
     timezone: str | None = None          # IANA key; None → .env
     ring_only_down: bool = False         # ring only for «site down»; the rest waits quietly
     weekly_backup: bool = True           # Sunday: a copy of the DB (without tokens) to the owner's private chat
+    digest_full: bool = False            # morning digest: a line per site («🌅 Каждый сайт») instead of the short view
 
 
 _o = Overrides()
@@ -62,6 +63,7 @@ async def load():
     clock.set_timezone(o.timezone)
     o.ring_only_down = (await get_state("cfg:ring_only_down")) == "1"
     o.weekly_backup = (await get_state("cfg:weekly_backup")) != "off"
+    o.digest_full = (await get_state("cfg:digest_full")) == "1"
     _o = o
 
 
@@ -86,6 +88,12 @@ def ring_only_down() -> bool:
 def weekly_backup() -> bool:
     """Sunday copy of the database to the owner's private chat — on by default."""
     return _o.weekly_backup
+
+
+def digest_full() -> bool:
+    """Morning digest with a line per site; off by default — the short view
+    says only what is wrong and how many sites are fine."""
+    return _o.digest_full
 
 
 # ── Effective values (override → env default) ────────────────────────────────
@@ -198,6 +206,11 @@ async def set_ring_only_down(on: bool):
 async def set_weekly_backup(on: bool):
     _o.weekly_backup = on
     await set_state("cfg:weekly_backup", "on" if on else "off")
+
+
+async def set_digest_full(on: bool):
+    _o.digest_full = on
+    await set_state("cfg:digest_full", "1" if on else "0")
 
 
 MAX_HB_JOBS = 12

@@ -2,10 +2,14 @@
 keyboards, the running progress bar, the error handler and the ⛔ router."""
 
 import asyncio
+import contextlib
 import logging
+import time
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.filters import StateFilter
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -61,15 +65,38 @@ BOTTOM = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=HOME), KeyboardButton(text=ABOUT), KeyboardButton(text=ICONS)]],
     resize_keyboard=True, is_persistent=True)
 MAX_SITES = 20
+# One word for one thing on every screen: the way home, a check again, a
+# way out of a step (UX-051).
+RECHECK, CANCEL = "🔄 Проверить снова", "✖️ Отмена"
+STALE_BUTTON = "Кнопка устарела — нажми «🏠 Главная» под полем ввода"
+NOT_UNDERSTOOD = "Не понял. Всё — кнопками под полем ввода: 🏠 Главная, 📖 Что я умею, ❓ Значки."
 
 
-def back_button(text: str = "← Главное меню", callback: str = "menu_main") -> InlineKeyboardMarkup:
+def back_button(text: str = HOME, callback: str = "menu_main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=callback)]])
 
 
-def cancel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
+    """«✖️ Отмена» under an input step; back — the callback of the screen
+    the step was opened from, which «Отмена» draws again (handlers.menu)."""
+    data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=CANCEL, callback_data=data)]])
+
+
+class DropInputOnNavigation(BaseMiddleware):
+    """Any button but the step's own ones ends a pending input step: a
+    forgotten «пришли токен» must not swallow the next text or file. KEEP
+    lists the prefixes of buttons that live inside a step (checked against
+    the wizards of planned work and tasks, and the step buttons of the
+    phrase form); a new button inside a step goes here. The pending
+    restore file (handlers.sites) is kept without a state and is not touched."""
+    KEEP = ("fsm_cancel", "hbint:", "sskwf:")
+
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        if state is not None and await state.get_state() and not (event.data or "").startswith(self.KEEP):
+            await state.clear()
+        return await handler(event, data)
 
 
 async def render(target: Message | CallbackQuery, text: str,
@@ -95,6 +122,27 @@ async def render(target: Message | CallbackQuery, text: str,
                 raise
     else:
         await _waiting_out_flood(lambda: target.answer(text, reply_markup=kb, **extra))
+
+
+def on_alert(call: CallbackQuery) -> bool:
+    """The button lives on an alert or a digest: «:a» in its data or — on
+    alerts from before the marker — a neighbouring «ℹ️ Что делать»
+    (inc_explain:…:a) or an act: button. Such a screen must not replace
+    the alert text."""
+    if (call.data or "").endswith(":a"):
+        return True
+    markup = getattr(call.message, "reply_markup", None)
+    datas = [b.callback_data or "" for row in (markup.inline_keyboard if markup else []) for b in row]
+    return any(d.startswith("act:") or (d.startswith("inc_explain:") and d.endswith(":a")) for d in datas)
+
+
+async def show(call: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+    """A screen from a button: below the message when the button sits on an
+    alert (the alert and its buttons stay), in place everywhere else."""
+    if on_alert(call) and call.message is not None:
+        await _waiting_out_flood(lambda: call.message.answer(clip(text), reply_markup=kb))
+    else:
+        await render(call, text, kb)
 
 
 # A screen waits out Telegram's flood control (429) when the wait is short;
@@ -147,10 +195,13 @@ async def site_by_cb(arg: str | None) -> dict | None:
 
 async def with_running_bar(message: Message, base_text: str, coro, tick: float = 4.0):
     """Await a long coroutine while a runner segment (▰▱▱ → ▱▰▱ → ▱▱▰)
-    metronomes on the status message. The task is cancelled if the
-    animation itself fails, so nothing is left running as an orphan."""
+    metronomes on the status message. A frame that cannot be drawn — a
+    message too old to edit, flood control, the network — never cancels
+    the check: the animation is decoration. The task is cancelled only if
+    the caller itself is, so nothing is left running as an orphan."""
     task = asyncio.ensure_future(coro)
     frames = ("▰▱▱", "▱▰▱", "▱▱▰", "▱▰▱")
+    can_edit = hasattr(message, "edit_text")   # not an InaccessibleMessage
     i = 0
     try:
         while True:
@@ -160,10 +211,9 @@ async def with_running_bar(message: Message, base_text: str, coro, tick: float =
                 if task.done():   # a TimeoutError from INSIDE the task
                     return task.result()
                 i += 1
-                try:
-                    await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
-                except TelegramBadRequest:
-                    pass
+                if can_edit:
+                    with contextlib.suppress(TelegramAPIError):
+                        await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
     except BaseException:
         if not task.done():
             task.cancel()
@@ -201,20 +251,25 @@ async def on_handler_error(event: ErrorEvent):
     logger.exception("Handler error: %s", event.exception)
     try:
         data = (call.data or "") if call else ""
-        if call and (data.startswith(("act:", "hb_how:", "hb_rm:")) or data.endswith(":a")):
+        if call and (data.startswith(("act:", "hb_how:", "hb_rm:", "hb_rm_ok:")) or data.endswith(":a")):
             # Buttons that live ON alert messages and digests — never
             # overwrite that text with an error screen; reply separately.
             await call.message.answer("❌ Действие не удалось. Попробуй ещё раз чуть позже.")
         elif call and call.message:
+            # «во время проверки» only where a check was running: a screen
+            # that failed to draw was not checking anything.
+            checking = data.startswith("check_") or data.endswith("_live") or data == "setup:check" \
+                or data.split(":")[0].endswith("_live")
             await call.message.edit_text(
-                "❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже.",
+                "❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже." if checking
+                else "❌ Не получилось открыть экран. Попробуй ещё раз чуть позже.",
                 reply_markup=back_button())
         elif update and update.message:
             await update.message.answer("❌ Что-то пошло не так. Попробуй ещё раз чуть позже.")
     except Exception:
         if call:  # message too old to edit (48h+) — at least acknowledge the tap
             try:
-                await call.answer("Сообщение устарело — открой /menu", show_alert=True)
+                await call.answer(STALE_BUTTON, show_alert=True)
             except Exception:
                 pass
     return True
@@ -229,7 +284,16 @@ stale_router = Router(name="stale")
 async def stale_callback(call: CallbackQuery):
     """A button no handler knows any more (an old alert, a removed feature):
     say so instead of leaving the spinner hanging."""
-    await ack(call, "Кнопка устарела — открой /menu", show_alert=True)
+    await ack(call, STALE_BUTTON, show_alert=True)
+
+
+@stale_router.message(StateFilter(None), F.chat.type == "private")
+async def unknown_message(message: Message):
+    """Text from the admin outside any input step (a key-like one is taken
+    by handlers.setup before this): say where the buttons are, not nothing.
+    In the admin group a word under an alert («смотрю») gets no answer —
+    the reply keyboard would be shown to the whole group."""
+    await message.answer(NOT_UNDERSTOOD, reply_markup=BOTTOM)
 
 
 # ── Non-admins ───────────────────────────────────────────────────────────────
@@ -252,14 +316,86 @@ def refusal(message: Message) -> str:
     return ELSEWHERE if _admin_elsewhere(message) else DENIED
 
 
+# A stranger hears «⛔» once in DENY_EVERY_S, not for every message: a flood
+# of strangers' messages must not take the connection pool from the alerts
+# (SEC-014). In memory — a restart forgives, that is fine.
+DENY_EVERY_S = 600
+_denied: dict[int, float] = {}
+
+
+def deny_due(who: int) -> bool:
+    """True when this person may hear the refusal now (and is marked as told)."""
+    now = time.monotonic()
+    if now - _denied.get(who, -DENY_EVERY_S) < DENY_EVERY_S:
+        return False
+    if len(_denied) >= 1000:
+        _denied.clear()
+    _denied[who] = now
+    return True
+
+
+async def deny(message: Message, text: str = DENIED) -> None:
+    """The refusal (or a helper's own note) — at most once in DENY_EVERY_S
+    per person, and never into a foreign group (a bot that answers every
+    stranger there is a toy for them). The owner's own mistakes — a foreign
+    chat, a missing TELEGRAM_ADMIN_USER_ID — are answered every time: the
+    limit is for strangers and helpers, who may be many. Each refusal that
+    is said goes to the log, no more."""
+    who = message.from_user.id if message.from_user else message.chat.id
+    if (message.chat.type != "private" and str(message.chat.id) != str(runtime.admin_chat_id())
+            and not _admin_elsewhere(message)):
+        return
+    if text in (ELSEWHERE, NO_OWNER):
+        await message.answer(text)
+        return
+    if deny_due(who):
+        logger.info("Refused user %s in chat %s", who, message.chat.id)
+        await message.answer(text)
+
+
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
 async def deny_command(message: Message):
     if await helpers.is_helper(message.chat.id):
-        await message.answer(HELPER_NOTE)
+        await deny(message, HELPER_NOTE)
         return
-    await message.answer(refusal(message))
+    await deny(message, refusal(message))
 
 
 @deny_router.callback_query(~AdminFilter())
 async def deny_callback(call: CallbackQuery):
-    await ack(call, ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён", show_alert=True)
+    who = call.from_user.id if call.from_user else 0
+    text = ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён"
+    await ack(call, text if deny_due(who) else None, show_alert=True)
+
+
+# ── FSM storage ──────────────────────────────────────────────────────────────
+
+class LeanMemoryStorage(MemoryStorage):
+    """MemoryStorage creates a record for every key it is asked about —
+    every stranger who writes once leaves an entry for ever (STAB-016).
+    This one reads without creating and drops a record that became empty."""
+
+    async def get_state(self, key):
+        rec = self.storage.get(key)
+        return rec.state if rec else None
+
+    async def get_data(self, key):
+        rec = self.storage.get(key)
+        return rec.data.copy() if rec else {}
+
+    async def get_value(self, storage_key, dict_key, default=None):
+        rec = self.storage.get(storage_key)
+        return rec.data.get(dict_key, default) if rec else default
+
+    async def set_state(self, key, state=None):
+        await super().set_state(key, state)
+        self._drop_if_empty(key)
+
+    async def set_data(self, key, data):
+        await super().set_data(key, data)
+        self._drop_if_empty(key)
+
+    def _drop_if_empty(self, key):
+        rec = self.storage.get(key)
+        if rec is not None and rec.state is None and not rec.data:
+            del self.storage[key]

@@ -13,7 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_state
-from handlers.common import HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
+from handlers.common import CANCEL, HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.text import esc
@@ -130,8 +130,8 @@ async def cb_hb_bot(call: CallbackQuery):
     await render(call, f"🤖 Подключить «{esc(name)}»\n\n{_not_public_note()}"
                        f"Дай этому боту адрес — нажми на него, он скопируется:\n{_url_line(name)}\n\n"
                        f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
-                       f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
-                       f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
+                       f"поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> "
+                       f"или «Ping URL».\n\n"
                        f"{HEARTBEAT_SECRET_NOTE}\n\n"
                        f"Как только связь появится, строка на главном экране станет ✅.", _connect_kb(name))
 
@@ -214,7 +214,7 @@ async def msg_hb_name(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[:2]],
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[2:]],
-        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+        [InlineKeyboardButton(text=CANCEL, callback_data="fsm_cancel")]])
     await message.answer(f"Как часто «{esc(name)}» будет выходить на связь?", reply_markup=kb)
 
 
@@ -240,9 +240,33 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data.startswith("hb_rm:"))
+async def cb_hb_remove_ask(call: CallbackQuery):
+    """«🗑 Удалить» under an alert or the digest: one tap only asks, below
+    the message — the alert itself does not change (CR-515)."""
+    name = call.data.split(":", 1)[1]
+    if await _job_gone(call, name):
+        return
+    await ack(call)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, не ждать", callback_data=f"hb_rm_ok:{name}"),
+         InlineKeyboardButton(text="Оставить", callback_data="noop")]])
+    await call.message.answer(f"Перестать ждать «{esc(name)}»? Если она сломается, я не узнаю.", reply_markup=kb)
+
+
+@router.callback_query(F.data == "noop")
+async def cb_noop(call: CallbackQuery):
+    """«Оставить»: the question loses its buttons, nothing else happens."""
+    await ack(call, "Ок, оставил")
+    if call.message is not None and hasattr(call.message, "edit_reply_markup"):
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_reply_markup(reply_markup=None)
+
+
+@router.callback_query(F.data.startswith("hb_rm_ok:"))
 async def cb_hb_remove_here(call: CallbackQuery):
-    """«🗑 Удалить» under an alert or the digest: remove the task and drop its
-    buttons — the message itself stays as it was."""
+    """«🗑 Да, не ждать»: remove the task; the question becomes the answer.
+    On a «hb_rm:» button of a message from before the question (an old
+    alert) — the task goes and its buttons go, the text stays as it was."""
     name = call.data.split(":", 1)[1]
     known = name in settings.heartbeat_jobs()
     if not await ack(call, f"Удалил «{name}» — больше не жду" if known else "Её уже нет"):
@@ -251,6 +275,10 @@ async def cb_hb_remove_here(call: CallbackQuery):
     removed = known and await settings.remove_heartbeat_job(name)
     if removed:
         await heartbeats.forget_status(name)
+    if call.data.startswith("hb_rm_ok:"):
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_text(f"🗑 «{esc(name)}» больше не жду." if removed else "Её уже нет.")
+        return
     markup = getattr(call.message, "reply_markup", None)
     if removed and markup is not None:
         rows = [row for row in markup.inline_keyboard
@@ -261,6 +289,19 @@ async def cb_hb_remove_here(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("hb_del:"))
 async def cb_hb_del(call: CallbackQuery):
+    """«🗑 Убрать» on the card: asks first, in place; «Оставить» is the card again."""
+    name = call.data.split(":", 1)[1]
+    if await _job_gone(call, name):
+        return
+    await ack(call)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Да, не ждать", callback_data=f"hb_del_ok:{name}"),
+         InlineKeyboardButton(text="Оставить", callback_data=f"hb_show:{name}")]])
+    await render(call, f"Перестать ждать «{esc(name)}»? Если она сломается, я не узнаю.", kb)
+
+
+@router.callback_query(F.data.startswith("hb_del_ok:"))
+async def cb_hb_del_ok(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
     from_env = settings.heartbeat_job_from_env(name)
     if name not in settings.heartbeat_jobs():

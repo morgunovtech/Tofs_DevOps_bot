@@ -16,6 +16,7 @@ from urllib.parse import quote
 import aiohttp
 
 from services import humanize, integrations
+from services.integrations import Probe
 from utils.clock import to_local
 from utils.text import err_text, esc, parse_iso_utc
 
@@ -110,6 +111,12 @@ async def key_works(key: str) -> bool | None:
     except KeyRejected:
         return False
     return None if data is None else bool(data)
+
+
+async def check_key(key: str) -> Probe:
+    """key_works as the wizard's three-way answer."""
+    works = await key_works(key)
+    return Probe.UNREACHABLE if works is None else (Probe.OK if works else Probe.REJECTED)
 
 
 def has_data(values: dict | None) -> bool:

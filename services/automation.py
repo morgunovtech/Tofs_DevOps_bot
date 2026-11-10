@@ -210,7 +210,7 @@ async def auto_redeploy(url: str, site_id: int, incident_id: int | None = None) 
     if target is None or not integrations.auto_enabled("redeploy"):
         return None
     if await maintenance.is_paused(site_id):
-        return "🤖 Сам не пересобирал: сайт на паузе или в тех. окне."
+        return "🤖 Сам не пересобирал: сайт на паузе или в плановых работах."
     trigger = f"инцидент #{incident_id}" if incident_id else "сайт упал"
     row, why = await claim("redeploy", target, trigger, label=host_of(url))
     if row is None:

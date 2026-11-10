@@ -9,10 +9,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
-from db.database import set_state
-from handlers.common import BOTTOM, DENIED, HELPER_NOTE, back_button, refusal
+from db.database import get_all_sites, get_state, set_state
+from handlers.common import BOTTOM, HELPER_NOTE, back_button, deny, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
+from handlers.setup import last_steps
 from services import helpers, notifier, railway, runtime, settings
 from utils.clock import now_local
 from utils.text import esc
@@ -37,15 +38,23 @@ HELP = (
     "🟠 — нужно действие, но не сегодня: например, сертификат скоро закончится. Приходит без звука.\n"
     "✅ — всё в порядке или снова работает.\n"
     "⚠️ — не смог проверить: сам попробую ещё раз.\n"
-    "⏳ — жду первой проверки или первой связи.\n\n"
+    "⏳ — жду первой проверки или первой связи.\n"
+    "🔧 — ты чинишь сайт («🔧 Я чиню»): проверяю, но не пишу о нём.\n\n"
     "Где что:\n"
-    "🏠 Главная (кнопка под полем ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
-    "системы. Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
+    "🏠 Главная (кнопка под полем ввода) — всё на одном экране, по блокам: сайты, почта, боты и "
+    "системы (и то, что о себе присылают твои боты). Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
     "⚙️ Настройки — во сколько присылать сводку, ночная тишина, пробная тревога.\n\n"
     "Нужно, чтобы я помолчал: /mute 8h — приходят только звонящие: сайт лёг, а при «🔔 Будить: всё "
     "критичное» ещё снова работает, смена настроек домена, сайт закрыт от поисковиков; остальное — когда "
-    "тишина кончится. Снова обо всём — /unmute. Будить только когда сайт лёг — ⚙️ Настройки → 🔔 Когда писать."
+    "тишина кончится. Будить только когда сайт лёг — ⚙️ Настройки → 🔔 Когда писать.\n\n"
+    "Команды: /menu — главный экран, /mute 8h — помолчать, /unmute — снова писать обо всём, /help — эта справка."
 )
+
+# Set once the owner has seen «Как я работаю» (/start or the first site) and
+# once the «last steps» after the first thing under watch were offered.
+RULES_SHOWN = "ui:rules_shown"
+LAST_STEPS_SHOWN = "ui:last_steps_shown"
+BOTTOM_NOTE = "Главные кнопки — под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки."
 
 
 def rules_of_the_game() -> str:
@@ -120,11 +129,11 @@ async def on_group_upgraded(message: Message):
 @router.message(Command("stop"))
 async def cmd_stop(message: Message):
     if runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer("Ты владелец. Чтобы я помолчал — /mute 8h, тревога «сайт лёг» всё равно придёт.")
+        await message.answer(f"Ты владелец. Чтобы я помолчал — /mute 8h. {notifier.what_rings_through_mute()}")
         return
     gone = await helpers.remove(message.chat.id)
     if not gone:
-        await message.answer(DENIED)
+        await deny(message)
         return
     await message.answer("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца.")
     await notifier.send(f"👥 {esc(gone['name'])} больше не получает «сайт лёг» и «снова работает».")
@@ -144,37 +153,60 @@ def _claim_refusal(message: Message) -> str | None:
     return None
 
 
+async def offer_last_steps(message: Message):
+    """«Ещё два шага…» (the test alert, the watchdog) once, as soon as
+    something is under watch — whichever way it got there: typed in, seeded
+    from SITES, restored from a copy, a task."""
+    if await get_state(LAST_STEPS_SHOWN) or not (await get_all_sites() or settings.heartbeat_jobs()):
+        return
+    steps = await last_steps()
+    if steps:
+        await message.answer(steps[0], reply_markup=steps[1])
+    await set_state(LAST_STEPS_SHOWN, "1")
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    """The /start that takes the seat gets the greeting and «Как я
+    работаю»; every later /start is the main screen (and the bottom
+    buttons, once) — not the welcome speech again."""
     await state.clear()  # /start always aborts any pending input flow
+    claimed = False
     if not runtime.has_admin() and message.from_user:
         refusal_text = _claim_refusal(message)
         if refusal_text:
             await message.answer(refusal_text)
             return
-        if await runtime.claim(message.chat.id, message.from_user.id):
+        claimed = await runtime.claim(message.chat.id, message.from_user.id)
+        if claimed:
             await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
             await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
                                  "и тревоги будут приходить сюда.")
             if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
                 await message.answer(runtime.NO_VOLUME)
     if not in_admin_chat(message):
-        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
+        await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
-    await message.answer(
-        "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
-        "Всё под рукой — кнопки под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки.\n\n"
-        "Назван в честь Тофса — ирландского терьера, который принимает "
-        "аптайм близко к сердцу.",
-        reply_markup=BOTTOM)
-    await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
-    await message.answer(rules_of_the_game(), reply_markup=TZ_BUTTON)
+    if claimed:
+        await message.answer(
+            "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
+            "Всё под рукой — кнопки под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки.\n\n"
+            "Назван в честь Тофса — ирландского терьера, который принимает "
+            "аптайм близко к сердцу.",
+            reply_markup=BOTTOM)
+        await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
+        await message.answer(rules_of_the_game(), reply_markup=TZ_BUTTON)
+        await set_state(RULES_SHOWN, "1")
+    elif not await get_state(BOTTOM_SHOWN):
+        await message.answer(BOTTOM_NOTE, reply_markup=BOTTOM)
+        await set_state(BOTTOM_SHOWN, "1")
     await send_main_menu(message)
+    await offer_last_steps(message)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     if not in_admin_chat(message):
-        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
+        await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
     await message.answer(HELP, reply_markup=back_button())

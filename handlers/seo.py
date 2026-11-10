@@ -11,14 +11,14 @@ live audit (~30 s) and refreshes the index data too."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import get_site, get_state, resolve_incident, set_state
+from db.database import get_state, resolve_incident, set_state
 from handlers.common import ack, render, site_by_cb, with_running_bar
 from monitors.seo_checker import check_all_seo
 from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
 from services import hosting as hosting_svc
 from services.actions import seo_fix_keyboard
 from services.humanize import level_icon
-from utils.text import esc, fmt_duration, plural
+from utils.text import clip, esc, fmt_duration, plural
 from utils.urls import is_web_page, site_label
 
 router = Router(name="seo")
@@ -173,6 +173,7 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
         for i, (code, sev, msgs) in enumerate(groups[:MAX_ITEMS], 1):
             f = seo_fixes.fix(code)
             lines.append(f"{i}. {level_icon(sev)} <b>{esc(f.title)}</b>")
+            msgs = [m for m in msgs if m.casefold() != f.title.casefold()]   # the title said it already
             lines += [f"    {esc(m)}" for m in msgs[:3]]
             if len(msgs) > 3:
                 lines.append(f"    … и ещё {len(msgs) - 3} стр.")
@@ -192,9 +193,11 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     if unseen:
         caption += (". ИИ-ассистентов robots.txt пускает, и запрос с их подписью проходит, но настоящих ботов "
                     "Cloudflare узнаёт по адресу — пускает ли он их, видно только в его панели (кнопка ниже)")
-    caption += ". Критичное (🔴) присылаю сразу, как замечу; остальное (🟠) не шлю — оно здесь, в «Проблемах» и в сводках."
-    if not google_on and not yandex_on:
-        caption += " В индексе ли сайт, знают только Google и Яндекс — подключи Search Console или Вебмастер."
+    if any(sev == "warning" for _, sev, _ in groups):
+        caption += ". Критичное (🔴) присылаю сразу, как замечу; остальное (🟠) не шлю — оно здесь, в «Проблемах» и в сводках"
+    if not google_on and not yandex_on:   # the button to connect them is right below
+        caption += ". В индексе ли сайт, знают только Google и Яндекс"
+    caption += "."
     lines += ["", f"<i>{caption}</i>"]
     return "\n".join(lines)
 
@@ -307,7 +310,7 @@ async def cb_seo_fix(call: CallbackQuery):
     parts = call.data.split(":")
     args = parts[1:3] if len(parts) in (3, 4) else None
     on_alert = len(parts) == 4 and parts[3] == "a"
-    site = await get_site(int(args[0])) if args and args[0].isdigit() else None
+    site = await site_by_cb(args[0]) if args else None   # an active site, like every other button
     if not site:
         await ack(call, "Сайт не найден", show_alert=True)
         return
@@ -319,6 +322,6 @@ async def cb_seo_fix(call: CallbackQuery):
     text = fix_text(site["url"], code, snap.get("seo") or {}, snap.get("hosting"))
     kb = fix_keyboard(site["id"], site["url"], code, snap.get("hosting"))
     if on_alert and call.message is not None:
-        await call.message.answer(text, reply_markup=kb)   # the 🔴 alert stays as it was
+        await call.message.answer(clip(text), reply_markup=kb)   # the 🔴 alert stays as it was
     else:
         await render(call, text, kb)

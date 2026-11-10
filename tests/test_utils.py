@@ -7,7 +7,7 @@ from utils.parse import (
     parse_hour_range,
     parse_time_window,
 )
-from utils.text import bar, chunks, clip, fmt_duration, parse_sqlite_utc, plural, sparkline
+from utils.text import chunks, clip, esc_attr, fmt_duration, parse_sqlite_utc, plural, sparkline
 from utils.urls import registrable_domain, same_site, site_label
 
 
@@ -19,13 +19,20 @@ def test_plural():
     assert plural(21, "символ", "символа", "символов") == "символ"
 
 
-def test_sparkline_and_bar():
+def test_sparkline():
     assert sparkline([1, 2]) == ""
     assert sparkline([5, 5, 5]) == "▂▂▂"
     s = sparkline([0, 50, 100])
     assert s[0] == "▁" and s[-1] == "█"
-    assert bar(50, 100, 10) == "▇▇▇▇▇     "
-    assert bar(0, 100, 4) == "    "
+    assert sparkline([300, 310, 305], min_rel_range=0.3) == "▂▂▂"   # millisecond noise is flat
+    assert sparkline([300, 310, 2500], min_rel_range=0.3)[-1] == "█"
+
+
+def test_a_quote_cannot_end_a_link_attribute():
+    """A quote inside href="…" must not end the attribute — Telegram would
+    refuse the whole message."""
+    assert esc_attr('https://e.example/a"b?x=1&y=<2>') == "https://e.example/a&quot;b?x=1&amp;y=&lt;2&gt;"
+    assert esc_attr(None) == ""
 
 
 def test_clip_and_chunks():

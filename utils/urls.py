@@ -48,7 +48,7 @@ def ssl_applies(url: str) -> bool:
     """THE rule for certificates: only an https:// monitor has one to check.
     On an http:// one port 443 answers with the hosting's default
     certificate (a false «недействителен»), and http://host:8080 has no TLS
-    at all. The daily check, the card, the main screen, «🔄 Перепроверить»
+    at all. The daily check, the card, the main screen, «🔄 Проверить снова»
     and adding a site all ask this."""
     return url.lower().startswith("https://")
 

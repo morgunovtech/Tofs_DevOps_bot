@@ -10,6 +10,17 @@ Report), auto_redeploy / auto_restart / auto_cleanup ("on"/"off": the
 switches of «🤖 Что бот делает сам», they win over .env), region_speed
 ("on"/"off": the «⏱ Скорость из региона» switch of «🌐 Вторая точка»).
 
+«🗑 Отключить» in the chat must mean off even when .env still carries the
+value: such a key gets a tombstone (bot_state int_off:<key>, switch_off)
+that hides the .env value until a new one is entered here or «↩️ Брать из
+.env» is pressed. Old code never reads the tombstones, so a rollback
+brings the .env values back by itself.
+
+Probe is the three-way answer of a live check of a key (the wizards and
+the «🔌 Подключения» screen): the service said yes, the service refused
+the key, or the service could not be reached — which is not the key's
+fault and must never read as «не принял».
+
 The end of the module keeps the health of every external service the bot
 talks to (HEALTH, record_result): a refused key or a day without a single
 success is said once by reports.scheduler.run_integration_health, and the
@@ -22,6 +33,7 @@ import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 
 from config import config
 from db.database import get_state, set_state
@@ -33,18 +45,30 @@ KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
         "status_page_slug", "github_token", "github_owner", "crux_key",
         "auto_redeploy", "auto_restart", "auto_cleanup", "region_speed")
 _values: dict[str, str] = {}
+_off: set[str] = set()      # switched off in the chat while .env still has a value
+
+
+class Probe(StrEnum):
+    """The answer of a live check of a key or token."""
+    OK = "ok"
+    REJECTED = "rejected"         # the service answered and turned the key down
+    UNREACHABLE = "unreachable"   # network, timeout, 5xx — not the key's fault
 
 
 async def load():
-    global _values
-    _values = {}
+    global _values, _off
+    _values, _off = {}, set()
     for key in KEYS:
         v = await get_state(f"int:{key}")
         if v:
             _values[key] = v
+        if await get_state(f"int_off:{key}"):
+            _off.add(key)
 
 
 async def set_value(key: str, value: str | None):
+    """A value from the chat; None forgets it and .env is the fallback
+    again — the tombstone of «🗑 Отключить» goes away either way."""
     if key not in KEYS:
         raise ValueError(key)
     if value:
@@ -52,20 +76,33 @@ async def set_value(key: str, value: str | None):
     else:
         _values.pop(key, None)
     await set_state(f"int:{key}", value or None)
+    if key in _off:
+        _off.discard(key)
+        await set_state(f"int_off:{key}", None)
     if key == "cf_zone_id" and _values.get("cf_zone_name"):
         await set_value("cf_zone_name", None)   # another zone: its name is learnt again
 
 
+async def switch_off(key: str) -> bool:
+    """«🗑 Отключить»: forget the chat value, and when .env has one too —
+    hide it as well (True) until a new value is entered here."""
+    await set_value(key, None)
+    hide = bool(env_value(key))
+    if hide:
+        _off.add(key)
+        await set_state(f"int_off:{key}", "1")
+    return hide
+
+
 def stored() -> dict[str, str]:
-    """What was entered in the chat (not .env) — for export and rollback."""
+    """What was entered in the chat (not .env) — the Yandex wizard puts the
+    old token back when a new one fails the live check."""
     return {k: v for k, v in _values.items() if k in KEYS and v}
 
 
-def source(key: str) -> str | None:
-    """'bot' when entered in the chat, 'env' when it comes from .env, None."""
-    if _values.get(key):
-        return "bot"
-    env = {
+def env_value(key: str):
+    """What .env says for the key ('' or {} when nothing)."""
+    return {
         "yandex_token": config.yandex_webmaster_token,
         "gsc_property": config.gsc_property,
         "gsc_key": config.gsc_service_account_file,
@@ -78,19 +115,34 @@ def source(key: str) -> str | None:
         "github_owner": config.github_owner,
         "crux_key": config.crux_api_key,
     }.get(key)
-    return "env" if env else None
+
+
+def source(key: str) -> str | None:
+    """'bot' when entered in the chat, 'env' when it comes from .env, 'off'
+    when switched off in the chat over a value in .env, None."""
+    if key in _off:
+        return "off"
+    if _values.get(key):
+        return "bot"
+    return "env" if env_value(key) else None
+
+
+def _get(key: str, env: str) -> str:
+    if key in _off:
+        return ""
+    return _values.get(key) or env
 
 
 # ── Yandex.Webmaster ─────────────────────────────────────────────────────────
 
 def yandex_token() -> str:
-    return _values.get("yandex_token") or config.yandex_webmaster_token
+    return _get("yandex_token", config.yandex_webmaster_token)
 
 
 # ── Google Search Console ────────────────────────────────────────────────────
 
 def gsc_property() -> str:
-    return _values.get("gsc_property") or config.gsc_property
+    return _get("gsc_property", config.gsc_property)
 
 
 _gsc_key_problem: str | None = None    # what is wrong with GSC_SERVICE_ACCOUNT_FILE, for the screens
@@ -101,6 +153,9 @@ def gsc_credentials() -> dict | None:
     Both go through valid_gsc_key; a file that cannot be read is named in
     the log once per new reason and on the screens (gsc_key_problem)."""
     global _gsc_key_problem
+    if "gsc_key" in _off:
+        _gsc_key_problem = None
+        return None
     raw = _values.get("gsc_key")
     if not raw:
         path = config.gsc_service_account_file
@@ -145,7 +200,9 @@ def valid_gsc_key(raw: str) -> dict | None:
 # ── Cloudflare ───────────────────────────────────────────────────────────────
 
 def deploy_hooks() -> dict[str, str]:
-    hooks = {str(k).lower(): v for k, v in config.deploy_hooks.items()}
+    """{host: hook url} from .env and the chat; a hook hidden in the chat
+    (an empty url, or «🗑 Отключить» over .env) is not there."""
+    hooks = {} if "deploy_hooks" in _off else {str(k).lower(): v for k, v in config.deploy_hooks.items()}
     raw = _values.get("deploy_hooks")
     if raw:
         try:
@@ -154,28 +211,33 @@ def deploy_hooks() -> dict[str, str]:
                 hooks.update({str(k).lower(): str(v) for k, v in extra.items()})
         except ValueError:
             pass
-    return hooks
+    return {h: u for h, u in hooks.items() if u}
 
 
 async def set_deploy_hook(host: str, url: str | None):
+    """None removes the host's hook; for a host from .env that means hiding
+    it (an empty url): the .env line stays, the bot stops using it."""
     raw = _values.get("deploy_hooks")
     try:
         hooks = json.loads(raw) if raw else {}
     except ValueError:
         hooks = {}
+    host = host.lower()
     if url:
-        hooks[host.lower()] = url
+        hooks[host] = url
+    elif host in {str(k).lower() for k in config.deploy_hooks}:
+        hooks[host] = ""
     else:
-        hooks.pop(host.lower(), None)
+        hooks.pop(host, None)
     await set_value("deploy_hooks", json.dumps(hooks) if hooks else None)
 
 
 def cf_api_token() -> str:
-    return _values.get("cf_api_token") or config.cf_api_token
+    return _get("cf_api_token", config.cf_api_token)
 
 
 def cf_zone_id() -> str:
-    return _values.get("cf_zone_id") or config.cf_zone_id
+    return _get("cf_zone_id", config.cf_zone_id)
 
 
 def cf_purge_configured() -> bool:
@@ -201,28 +263,28 @@ def auto_enabled(kind: str) -> bool:
 # ── Watchdog & status page ───────────────────────────────────────────────────
 
 def self_heartbeat_url() -> str:
-    return _values.get("self_heartbeat_url") or config.self_heartbeat_url
+    return _get("self_heartbeat_url", config.self_heartbeat_url)
 
 
 def status_page_slug() -> str:
-    return _values.get("status_page_slug") or config.status_page_slug
+    return _get("status_page_slug", config.status_page_slug)
 
 
 # ── GitHub ───────────────────────────────────────────────────────────────────
 
 def github_token() -> str:
-    return _values.get("github_token") or config.github_token
+    return _get("github_token", config.github_token)
 
 
 def github_owner() -> str:
     """'' means «the token's own account»."""
-    return _values.get("github_owner") or config.github_owner
+    return _get("github_owner", config.github_owner)
 
 
 # ── Chrome UX Report ─────────────────────────────────────────────────────────
 
 def crux_key() -> str:
-    return _values.get("crux_key") or config.crux_api_key
+    return _get("crux_key", config.crux_api_key)
 
 
 # ── Second opinion ───────────────────────────────────────────────────────────

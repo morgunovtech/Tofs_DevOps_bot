@@ -11,6 +11,7 @@ from handlers import speed as speed_screen
 from handlers.sites import card_lines
 from reports import scheduler
 from services import crux, integrations, sitestatus
+from services.integrations import Probe
 from web.webhook import create_app
 
 
@@ -131,11 +132,12 @@ async def test_own_measurement_is_gone(db):
     assert await cursor.fetchone() is None
 
 
-async def test_google_key_wizard(bot, db, monkeypatch):
-    async def works(key):
-        return key.startswith("AIzaGood")
+async def _probe(key):
+    return Probe.OK if key.startswith("AIzaGood") else Probe.REJECTED
 
-    monkeypatch.setattr(crux, "key_works", works)
+
+async def test_google_key_wizard(bot, db, monkeypatch):
+    monkeypatch.setattr(crux, "check_key", lambda key: _probe(key))
     msg = FakeMessage("short")
     await setup.msg_crux_key(msg, FakeState())
     assert "Не похоже" in msg.texts[-1]

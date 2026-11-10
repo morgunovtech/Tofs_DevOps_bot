@@ -361,9 +361,9 @@ async def test_the_connections_screen_leads_to_the_switches(db, hook):
 
 async def test_queued_taps_do_not_delete(bot, db):
     await settings.add_heartbeat_job("backup", 60)
-    await hb_handlers.cb_hb_remove_here(StaleCall("hb_rm:backup"))
+    await hb_handlers.cb_hb_remove_here(StaleCall("hb_rm_ok:backup"))
     assert "backup" in settings.heartbeat_jobs()
-    await hb_handlers.cb_hb_del(StaleCall("hb_del:backup"))
+    await hb_handlers.cb_hb_del_ok(StaleCall("hb_del_ok:backup"))
     assert "backup" in settings.heartbeat_jobs()
     sid = await db.activate_or_create_site(SITE)
     await save_incident(sid, "availability", "Site down: HTTP 502", severity="critical")

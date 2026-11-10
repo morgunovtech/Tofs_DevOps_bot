@@ -913,7 +913,7 @@ async def peek_notifications(limit: int = PENDING_MAX) -> list[dict]:
     explicitly after a successful send, or a failed send loses the digest."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, text, reply_markup FROM pending_notifications ORDER BY id LIMIT ?", (limit,))
+        "SELECT id, text, reply_markup, created_at FROM pending_notifications ORDER BY id LIMIT ?", (limit,))
     return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -983,6 +983,16 @@ async def count_feedback() -> int:
     db = await get_db()
     cursor = await db.execute("SELECT COUNT(*) FROM feedback")
     return (await cursor.fetchone())[0]
+
+
+async def delete_feedback(max_id: int, min_id: int) -> int:
+    """Remove the visitors' messages with ids in [min_id, max_id] (one page of
+    the chat's list, by the ids it showed); how many went."""
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute("DELETE FROM feedback WHERE id BETWEEN ? AND ?", (min_id, max_id))
+        await db.commit()
+    return cursor.rowcount
 
 
 # ── Retention & backup ───────────────────────────────────────────────────────

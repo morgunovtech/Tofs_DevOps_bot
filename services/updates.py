@@ -33,7 +33,7 @@ from config import config
 from db.database import get_state, set_state
 from services import integrations, notifier
 from services.notifier import Priority
-from utils.text import err_text, esc, fmt_date, plural
+from utils.text import err_text, esc, esc_attr, fmt_date, plural
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ async def report_startup_changes() -> bool:
     the direct dependencies by name, the rest as one «и ещё N» line. A new
     build with the same versions (a commit that touched only the code or
     requirements-dev.txt) is a log line — the build number stays visible in
-    «🩺 Диагностика». True when anything changed, build included: main.py
+    «🔌 Подключения». True when anything changed, build included: main.py
     re-runs the SEO audit on that."""
     current = {
         "commit": config.app_commit,
@@ -406,7 +406,7 @@ async def last_check() -> dict | None:
 
 def _pr_links(prs: list[dict]) -> str:
     # A result stored before «label» existed has only the title.
-    return ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(p.get("label") or short_bump(p.get("title") or ""))}</a>'
+    return ", ".join(f'<a href="{esc_attr(p.get("url") or "")}">{esc(p.get("label") or short_bump(p.get("title") or ""))}</a>'
                      for p in prs[:4])
 
 

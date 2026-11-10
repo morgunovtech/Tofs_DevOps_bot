@@ -14,14 +14,50 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
 from services import humanize, integrations, maintenance, seo_fixes
+from services.integrations import Probe
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
+_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=10)
 CF_API = "https://api.cloudflare.com/client/v4"   # a constant so tests can point it at a local server
 _ZONE_ID = re.compile(r"[0-9a-f]{32}")
+# The same words as handlers.common.RECHECK (a test keeps them equal): the
+# handlers package cannot be imported from a service without a cycle.
+RECHECK = "🔄 Проверить снова"
+
+
+async def cf_token_status(token: str) -> Probe:
+    """Is the Cloudflare API token any good — asked before «✅ сохранён».
+    With a Zone ID in hand the question is the one «🧹» asks first, GET
+    /zones/{id}: a refusal there is a refusal (the token must read the
+    zone to purge it). Without one, GET /user/tokens/verify: an active
+    token is OK; a 4xx there is not called a refusal — an account-owned
+    token has a verify endpoint of its own (/accounts/{id}/tokens/verify,
+    docs: developers.cloudflare.com/api/resources/accounts/subresources/
+    tokens/methods/verify/), and such a token would be turned away here
+    [not verified against the real API] — it is saved unconfirmed and the
+    first purge tells."""
+    zone_id = integrations.cf_zone_id()
+    by_zone = bool(_ZONE_ID.fullmatch(zone_id))
+    url = f"{CF_API}/zones/{zone_id}" if by_zone else f"{CF_API}/user/tokens/verify"
+    try:
+        async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as s:
+            async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as resp:
+                body, status = await _cf_json(resp), resp.status
+    except Exception as e:
+        logger.warning("Cloudflare token probe failed: %s", type(e).__name__)
+        return Probe.UNREACHABLE
+    if status == 200 and body.get("success"):
+        if by_zone or str((body.get("result") or {}).get("status")) == "active":
+            return Probe.OK
+        return Probe.REJECTED                       # verify answered: disabled or expired
+    if status in (400, 401, 403):
+        logger.warning("Cloudflare token probe: HTTP %s (%s)", status, _cf_error(body, status))
+        return Probe.REJECTED if by_zone else Probe.UNREACHABLE
+    return Probe.UNREACHABLE
 
 
 def deploy_hook_for(url: str) -> str | None:
@@ -53,7 +89,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     check has no page to photograph."""
     http = is_http_url(url)
     rows = [[InlineKeyboardButton(text=f"🔧 Я чиню, {maintenance.fix_length()} тишины", callback_data=f"act:fix:{site_id}"),
-             InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
+             InlineKeyboardButton(text=RECHECK, callback_data=f"act:recheck:{site_id}")]]
     second = []
     if http and not api:
         second.append(InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{site_id}"))
@@ -91,7 +127,7 @@ def group_keyboard(group_id: int) -> InlineKeyboardMarkup:
 
 def deep_alert_keyboard(url: str, site_id: int, incident_id: int | None) -> InlineKeyboardMarkup | None:
     """«5xx на страницах»: the home page opens, so «🔧 Я чиню» (silences the
-    whole site), «🔍 Проверить сейчас» (checks the home page only) and «📸»
+    whole site), «🔄 Проверить снова» (checks the home page only) and «📸»
     (photographs the home page) would answer a different question."""
     redeploy = ([InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}")]
                 if deploy_hook_for(url) else [])
@@ -119,14 +155,17 @@ def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False, 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def heartbeat_keyboard(jobs: list[str]) -> InlineKeyboardMarkup | None:
-    """Per silent task, the two ways out in one tap: «🔗 Подключить» (its
-    card, answered below) and «🗑 Удалить» when there is no such task."""
+def heartbeat_keyboard(jobs: list[str], seen: frozenset[str] | set[str] = frozenset()) -> InlineKeyboardMarkup | None:
+    """Per silent task, the two ways out in one tap: its card (answered
+    below) — «🔍 Что с …» for a task that has been in touch (seen), «🔗
+    Подключить» for one that never was — and «🗑 Удалить» when there is no
+    such task."""
     rows = []
     for job in jobs[:3]:
         if len(f"hb_how:{job}".encode()) > 64:   # an .env name may be anything
             continue
-        rows.append([InlineKeyboardButton(text=f"🔗 Подключить {job}", callback_data=f"hb_how:{job}"),
+        rows.append([InlineKeyboardButton(text=f"🔍 Что с {job}" if job in seen else f"🔗 Подключить {job}",
+                                          callback_data=f"hb_how:{job}"),
                      InlineKeyboardButton(text="🗑 Удалить", callback_data=f"hb_rm:{job}")])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
@@ -214,9 +253,13 @@ async def purge_cf_cache(url: str) -> str:
             if body.get("success"):
                 return f"🧹 Кэш Cloudflare для {esc(host)} сброшен — посетители увидят свежую версию сайта"
             return "❌ Cloudflare: " + esc(_cf_error(body, status))
+    except (TimeoutError, aiohttp.ClientError) as e:
+        logger.warning("CF cache purge failed: %s", type(e).__name__)
+        return (f"❌ Cloudflare не ответил за {int(_TIMEOUT.total)} с — попробуй через минуту или сбрось кэш "
+                f"в панели Cloudflare")
     except Exception as e:
         logger.warning("CF cache purge failed: %s", type(e).__name__)
-        return f"❌ Не удалось сбросить кэш: {esc(type(e).__name__)} — попробуй через минуту"
+        return "❌ Не удалось сбросить кэш — подробности в логе бота; попробуй через минуту"
 
 
 async def _cf_json(resp: aiohttp.ClientResponse) -> dict:

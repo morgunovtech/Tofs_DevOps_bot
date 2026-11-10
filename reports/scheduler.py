@@ -68,6 +68,7 @@ from monitors.seo_checker import check_all_seo
 from monitors.ssl_checker import check_all_ssl
 from monitors.visitor_checker import check_all_visitors
 from reports.formatter import (
+    digest_incidents,
     format_availability_alert,
     format_compact_status_report,
     format_deep_alert,
@@ -85,6 +86,7 @@ from reports.formatter import (
     format_visitors_recovery,
     incident_duration_line,
     incident_line,
+    problem_site_urls,
 )
 from reports.weekly import build_weekly_report
 from services import (
@@ -120,10 +122,9 @@ from services.actions import (
 )
 from services.notifier import Priority
 from utils import validate
-from utils.clock import local_tz, to_local
+from utils.clock import local_tz, now_local, to_local
 from utils.net import is_private_target
 from utils.text import (
-    SAFE_LIMIT,
     chunks,
     clip,
     esc,
@@ -133,7 +134,15 @@ from utils.text import (
     parse_sqlite_utc,
     plural,
 )
-from utils.urls import is_api_check, is_http_url, is_web_page, short_host, site_label
+from utils.urls import (
+    host_of,
+    is_api_check,
+    is_http_url,
+    is_web_page,
+    registrable_domain,
+    short_host,
+    site_label,
+)
 from web.status_page import public_label
 from web.webhook import send_feedback_summary
 
@@ -562,6 +571,8 @@ async def deliver_missed_alerts():
                            if availability else None)
             sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
                                      always_ring=availability, to_helpers=availability, helper_text=helper_text)
+            if availability:
+                await _remember_alert(inc["id"], sent, text)
             if availability and sent is not None:
                 _after_availability_alert(inc["url"], inc["site_id"], inc["id"],
                                           getattr(sent, "message_id", None), text, kb)
@@ -589,6 +600,7 @@ async def _send_availability_alert(r, site: dict):
     sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True,
                              to_helpers=True, helper_text=format_availability_alert(
                                  r, second, label=helper_label(r.url, site.get("http_method")), **dials))
+    await _remember_alert(r.incident_id, sent, msg)
     if sent is not None:
         _after_availability_alert(r.url, r.site_id, r.incident_id, getattr(sent, "message_id", None), msg, kb)
 
@@ -665,6 +677,14 @@ async def _alert_down(results: list, by_url: dict):
     within GROUP_WINDOW_MIN after it. A paused site always goes on its own:
     its alert is held until the silence ends."""
     now = datetime.now(UTC)
+    for r in results:
+        # One problem, not two: a site that is down is not also «медленно» —
+        # whether it is said on its own or in a group message.
+        forget_slow_streak(r.site_id)
+        try:
+            await resolve_incident(r.site_id, "performance")
+        except sqlite3.OperationalError as e:
+            logger.warning("Could not close the «медленно» of site %s: %s", r.site_id, e)
     fresh = await _not_paused(results)
     for r in results:
         if r not in fresh:
@@ -784,11 +804,22 @@ async def _recover_one(r):
 
 
 async def _alert_up(results: list):
-    """«Снова открывается»: one by one while they are few; one message when
-    several come back, which then takes the sites coming back within
-    GROUP_WINDOW_MIN after it. A paused site goes on its own: whether its ✅
-    passes the pause is notifier's rule (the fall was announced), and the
-    «🔧» pause it ends is lifted there (_send_recovery)."""
+    """«Снова открывается» (_say_up), then the single alerts and reminders
+    of every incident that is over are settled: they say «✅ Поднялся» and
+    lose their «🔧» (_settle_alerts). A group message is edited by _say_up
+    itself and is not touched here."""
+    await _say_up(results)
+    for r in results:
+        with _isolated(f"Settling the alerts of {site_label(r.url)}"):
+            await _settle_alerts(r.resolved_incident)
+
+
+async def _say_up(results: list):
+    """One by one while they are few; one message when several come back,
+    which then takes the sites coming back within GROUP_WINDOW_MIN after
+    it. A paused site goes on its own: whether its ✅ passes the pause is
+    notifier's rule (the fall was announced), and the «🔧» pause it ends is
+    lifted there (_send_recovery)."""
     now = datetime.now(UTC)
     fresh = await _not_paused(results)
     for r in results:
@@ -911,6 +942,60 @@ async def _redeploy_after_alert(url: str, site_id: int, incident_id: int | None,
 
 
 FOLLOWUP_MINUTES = (2, 5)
+ALERT_MSGS = "alert_msgs:"      # <incident id> → [[message_id, text], …] of its single alerts and reminders
+REMEMBERED_ALERTS = 5
+
+
+def _known_alerts(raw: str | None) -> list[tuple[int, str]]:
+    try:
+        items = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [(int(m), str(t)) for m, t in items if isinstance(m, int) and isinstance(t, str)] \
+        if isinstance(items, list) else []
+
+
+async def _remember_alert(incident_id: int | None, sent, text: str):
+    """The message of a single alert or reminder, to settle after the ✅
+    (ALERT_MSGS, the last REMEMBERED_ALERTS). True — queued or kept for a
+    retry: nothing to edit. A group message is _alert_up's to edit and is
+    never remembered here."""
+    message_id = getattr(sent, "message_id", None)
+    if not incident_id or not message_id:
+        return
+    key = f"{ALERT_MSGS}{incident_id}"
+    try:
+        known = _known_alerts(await get_state(key))
+        await set_state(key, json.dumps([*known, [message_id, text]][-REMEMBERED_ALERTS:]))
+    except sqlite3.OperationalError as e:
+        logger.warning("Could not remember the alert of incident %s: %s", incident_id, e)
+
+
+async def _settle_alerts(incident: dict | None):
+    """After the ✅ the alert and the reminders of the incident say
+    «✅ Поднялся» and keep only «ℹ️ Что делать»: «🔧» on an old alert would
+    pause a working site for an hour. The 2- and 5-minute re-checks of
+    those messages are cancelled."""
+    if not incident:
+        return
+    key = f"{ALERT_MSGS}{incident['id']}"
+    known = _known_alerts(await get_state(key))
+    if not known:
+        return
+    duration = incident_duration_line(incident)
+    when = f"{now_local():%H:%M}"
+    if (incident.get("message") or "").startswith("Bad content: "):
+        head = f"✅ Снова как надо в {when}" + (f", было не так {duration}" if duration else "")
+    else:
+        head = f"✅ Поднялся в {when}" + (f", лежал {duration}" if duration else "")
+    for message_id, text in known:
+        if _scheduler is not None:
+            for minutes in FOLLOWUP_MINUTES:
+                job = _scheduler.get_job(f"followup:{message_id}:{minutes}")
+                if job:
+                    job.remove()
+        await notifier.edit(message_id, clip(f"{head}. Было:\n{text}"), reply_markup=explain_keyboard(incident["id"]))
+    await set_state(key, None)
 
 
 def _schedule_followups(url: str, site_id: int, message_id: int, text: str, kb):
@@ -925,7 +1010,15 @@ def _schedule_followups(url: str, site_id: int, message_id: int, text: str, kb):
                            id=f"followup:{message_id}:{minutes}", replace_existing=True)
 
 
+async def _site_still_watched(site_id: int) -> bool:
+    """A follow-up edits an alert minutes later; the site may be gone by then."""
+    site = await get_site(site_id)
+    return bool(site and site["active"])
+
+
 async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minutes: int):
+    if not await _site_still_watched(site_id):
+        return
     r = await check_availability(url, manage=False)
     if r.ok:
         line = f"\n\n🔁 Через {minutes} мин: уже открывается. Подтвержу отдельным сообщением."
@@ -954,6 +1047,12 @@ def _schedule_group_followups(urls: list[str], message_id: int, text: str, kb):
 
 
 async def _group_followup(urls: list[str], message_id: int, text: str, kb, minutes: int):
+    # A site removed in the meantime is not re-checked; none left — the
+    # alert stays as it was.
+    watched = set(await get_active_site_urls())
+    urls = [u for u in urls if u in watched]
+    if not urls:
+        return
     results = await check_all(urls, manage=False)
     up = [esc(site_label(r.url)) for r in results if r.ok]
     down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
@@ -972,6 +1071,8 @@ async def _group_followup(urls: list[str], message_id: int, text: str, kb, minut
 
 
 async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb, slow_ms: int):
+    if not await _site_still_watched(site_id):
+        return
     r = await check_availability(url, manage=False)
     ms = r.response_time_ms or 0
     if r.ok and ms < slow_ms:
@@ -1163,7 +1264,9 @@ async def run_seo_checks():
     await close_inapplicable(("seo",), urls)
     fresh = await _recently_added()
     if fresh:
-        await check_all_seo([u for u in urls if u in fresh], manage=False)
+        # Audited quietly: the next morning digest says it (seo_first_audit:<id>), once.
+        for r in await check_all_seo([u for u in urls if u in fresh], manage=False):
+            await set_state(f"seo_first_audit:{r.site_id}", "1")
     results = await check_all_seo([u for u in urls if u not in fresh])
     await _notify_transitions(
         results, format_seo_alert,
@@ -1210,6 +1313,28 @@ def rerun_seo_after_update(minutes: int = 3):
                            id="seo_after_update", replace_existing=True, misfire_grace_time=600)
 
 
+def rerun_visitors_soon(minutes: int = 1):
+    """The CrUX key just answered a live request: ask about the sites now,
+    not tomorrow morning."""
+    if _scheduler is not None:
+        _scheduler.add_job(run_visitor_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes), timezone=UTC),
+                           id="visitor_checks_now", replace_existing=True, misfire_grace_time=600)
+
+
+def next_run_words(job_id: str) -> str | None:
+    """«завтра в 08:10» · «12.11 в 08:10» (or «сегодня в …») — when the job
+    really runs next, in the owner's time; None without a scheduler, so the
+    text falls back to a promise it can keep."""
+    job = _scheduler.get_job(job_id) if _scheduler is not None else None
+    when = getattr(job, "next_run_time", None)
+    if when is None:
+        return None
+    local, today = to_local(when), now_local().date()
+    day = ("сегодня" if local.date() == today else "завтра" if local.date() == today + timedelta(days=1)
+           else local.strftime("%d.%m"))
+    return f"{day} в {local:%H:%M}"
+
+
 REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
 
 
@@ -1235,13 +1360,27 @@ async def run_region_checks():
             await asyncio.sleep(REGION_PAUSE)
 
 
+async def _registrar_of(host: str) -> str | None:
+    """The registrar from the domain snapshot of a site on this host — that
+    is where DNS is fixed."""
+    for s in await get_all_sites():
+        h = host_of(s["url"])
+        if h and host in (h, registrable_domain(h)):
+            registrar = ((await sitestatus.get(s["id"])).get("domain") or {}).get("registrar")
+            if registrar:
+                return registrar
+    return None
+
+
 async def run_dns_checks():
     """The new baseline is committed only after the alert is delivered or
-    queued — otherwise a failed send would swallow the change forever."""
+    queued — otherwise a failed send would swallow the change forever.
+    The registrar's panel (when known) is a tap away: DNS is fixed there."""
     for change in await check_all_dns(await get_active_host_urls()):
         with _isolated(f"DNS alert for {change['host']} {change['rtype']}"):
             sent = await notifier.send(format_dns_change(change),
-                                       Priority.CRITICAL if change["critical"] else Priority.NORMAL)
+                                       Priority.CRITICAL if change["critical"] else Priority.NORMAL,
+                                       reply_markup=domain_keyboard(await _registrar_of(change["host"])))
             # A name that stopped answering keeps its baseline: «не отвечает»
             # is not an answer, and the last known one is what the owner compares with.
             if sent and not change.get("failing"):
@@ -1278,7 +1417,7 @@ def schedule_mail_recheck():
 def _mail_keyboard(r):
     status = ([InlineKeyboardButton(text=f"↗️ Статус {r.provider}", url=r.status_page)]
               if r.kind == "mail" and r.status_page else [])
-    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}")]
+    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}:a")]
     return explain_keyboard(r.incident_id, status, mail)
 
 
@@ -1297,7 +1436,7 @@ async def run_security_checks():
 
 def _security_keyboard(r):
     return explain_keyboard(r.incident_id, [InlineKeyboardButton(text="🛡 Безопасность",
-                                                                 callback_data=f"sec:{r.site_id}")])
+                                                                 callback_data=f"sec:{r.site_id}:a")])
 
 
 @_once("visitor_checks", mark=True)
@@ -1315,7 +1454,7 @@ async def run_visitor_checks():
 def _visitors_keyboard(r):
     return explain_keyboard(r.incident_id,
                             [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(r.url))],
-                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
+                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}:a")])
 
 
 @_once("index_checks", mark=True)
@@ -1492,7 +1631,7 @@ async def run_heartbeat_watch():
                             f"работает ли «{esc(job)}».\n\n"
                             f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
                             f"Нет — «Удалить».")
-                sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
+                sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job], seen={job} if last else set()))
                 if sent:
                     await set_state(f"hb_alerted:{job}", now.isoformat())
             elif not overdue and alerted:
@@ -1746,10 +1885,10 @@ async def run_escalation_watch():
         return
     for inc, sent_n in due:
         with _isolated(f"Escalation of incident #{inc['id']}"):
-            await _escalate_one(inc, sent_n, now, repeat_min)
+            await _escalate_one(inc, sent_n, now)
 
 
-async def _escalate_one(inc: dict, sent_n: int, now: datetime, repeat_min: int):
+async def _escalate_one(inc: dict, sent_n: int, now: datetime):
     site = await get_site(inc["site_id"]) or {}
     every = humanize.every_minutes(_interval_min(site))
     # «лежит уже …» counts from the first failed check; whether it is
@@ -1764,13 +1903,14 @@ async def _escalate_one(inc: dict, sent_n: int, now: datetime, repeat_min: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[*kb.inline_keyboard, _quiet_button(inc["id"])])
     # The helpers get the first reminder only (it is still «сайт лёг»):
     # the public name of the site and no talk of buttons they do not have.
+    text = (f"{_escalation_head(inc, age_min, every)}\n\n"
+            f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
+            f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.")
     sent = await notifier.send(
-        f"{_escalation_head(inc, age_min, every)}\n\n"
-        f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
-        f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.",
-        Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
+        text, Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
         to_helpers=sent_n == 0,
         helper_text=_escalation_head(inc, age_min, every, helper_label(inc["url"], inc.get("http_method"))))
+    await _remember_alert(inc["id"], sent, text)
     if sent:
         await set_state(f"escalated:{inc['id']}", now.isoformat())
         await set_state(f"escalated_n:{inc['id']}", str(sent_n + 1))
@@ -2007,12 +2147,18 @@ async def run_self_heartbeat():
             f"🟠 Сторож {name} не на связи уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
             f"Пока так, если я упаду, тебе никто не напишет.\n\n"
             f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
-            f"вставь новую: ⚙️ Настройки → 🔌 Подключения → 🛡 Внешний сторож.")
+            f"вставь новую: кнопка ниже.", reply_markup=_WATCHDOG_KB)
         if sent:
             await set_state("watchdog_alerted", "1")
     elif not failing and alerted:
         await set_state("watchdog_alerted", None)
         await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
+
+
+# «onb:watchdog» answers below the message (handlers.setup): the alert and
+# the digest stay as they were.
+_WATCHDOG_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🛡 Внешний сторож", callback_data="onb:watchdog")]])
 
 
 @_once("retention", mark=True)
@@ -2124,7 +2270,7 @@ async def send_db_backup_to_telegram():
 
 # ── Reports ──────────────────────────────────────────────────────────────────
 
-async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) -> list[str]:
+async def _morning_extras(domain_results, incidents: list[dict]) -> list[str]:
     extras: list[str] = []
     sites = await get_all_sites()
     # One phrase for a clean week; a list only of the sites that went down.
@@ -2154,10 +2300,8 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
     # Search findings are open incidents and already listed above. This line
     # says only what that list cannot: all clear, or which audits failed.
     # API checks are not audited — a stale audit from before must not speak.
-    now = datetime.now(UTC)
     pages = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
-    first_audit = [s for s in pages if (added := parse_sqlite_utc(s.get("added_at")))
-                   and timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)]
+    first_audit = [s for s in pages if await get_state(f"seo_first_audit:{s['id']}")]
     listed = {i["site_id"] for i in incidents if i["check_type"] == "seo"} | {s["id"] for s in first_audit}
     seo_chips, audited, all_clear = [], False, True
     for s in pages:
@@ -2183,6 +2327,7 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
                        "🔴 сайт закрыт от поиска" if last["status"] == "critical" else "⚠️ не смог проверить")
             extras.append(f"🔎 Первый аудит {esc(site_label(s['url']))} для поиска и ИИ: {verdict} — "
                           f"подробности в «🔎 Поиск и ИИ»")
+            await set_state(f"seo_first_audit:{s['id']}", None)      # said once
 
     try:
         disk = await check_disk(auto_cleanup=False)
@@ -2211,18 +2356,33 @@ async def _status_snapshot(report_type: str, extras: bool):
     ssl_results = await check_all_ssl(host_urls, manage=False)
     domain_results = await check_all_domains(host_urls, manage=False)
     incidents = await get_active_incidents()
+    # The evening is always the short view; the morning — unless the owner
+    # asked for «🌅 Каждый сайт». One set of «already said by a site line»
+    # for the list of problems and for the «🔎 Поиск и ИИ» line: a 🟠 that
+    # takes the slot of a down site's own incident must not come back there.
+    short = report_type == "evening" or not settings.digest_full()
+    said = problem_site_urls(availability, ssl_results, domain_results)
+    listed, _ = digest_incidents(incidents, said)
     return format_compact_status_report(
         availability=availability, incidents=incidents,
         ssl_results=ssl_results, domain_results=domain_results, report_type=report_type,
-        extras=await _morning_extras(ssl_results, domain_results, incidents) if extras else None,
-        watch=await _watch_lines(morning=extras))
+        extras=await _morning_extras(domain_results, listed) if extras else None,
+        watch=await _watch_lines(morning=extras, short=short), short=short)
 
 
-async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
+def _watchdog_nag(short: bool) -> bool:
+    """The full digest says «Внешнего сторожа нет» every morning; the short
+    one once a week, on Mondays. The «🛡 Внешний сторож» button under the
+    digest comes with that line, never without it."""
+    return not short or now_local().weekday() == 0
+
+
+async def _watch_lines(morning: bool, short: bool = False) -> list[tuple[str, bool]]:
     """Bots and tasks under the sites, a line each like a site's, and last
     the watchdog — the answer to «and if the bot itself goes down?». A
     silent task gets its «🔗 Подключить / 🗑 Удалить» buttons under the
-    digest; a missing watchdog is mentioned in the morning only."""
+    digest; a missing watchdog is mentioned in the morning only. short:
+    only what needs the owner (and the Monday watchdog reminder)."""
     jobs = await heartbeats.job_states()
     lines: list[tuple[str, bool]] = []
     for j in jobs:   # what bots report comes first, a block of its own
@@ -2236,6 +2396,9 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     w = await heartbeats.watchdog()
     if w or morning:
         lines.append(heartbeats.watchdog_digest_line(w))
+    if short:
+        nag = w is None and morning and _watchdog_nag(short)
+        lines = [(line, fine) for line, fine in lines if not fine or (nag and line.startswith("🛡"))]
     return lines
 
 
@@ -2243,38 +2406,44 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
-    text = clip(await _status_snapshot("morning_late" if late else "morning", extras=True))
-    silent_jobs = [j.name for j in await heartbeats.job_states() if j.needs_you]
-    await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
+    # Split, not clipped: sixty down sites are sixty lines the owner needs.
+    text = await _status_snapshot("morning_late" if late else "morning", extras=True)
+    silent = [j for j in await heartbeats.job_states() if j.needs_you]
+    kb = heartbeat_keyboard([j.name for j in silent], seen={j.name for j in silent if j.ago is not None})
+    if await heartbeats.watchdog() is None and _watchdog_nag(not settings.digest_full()):
+        # The digest says there is no watchdog: the way to one is a tap away.
+        kb = InlineKeyboardMarkup(inline_keyboard=[*(kb.inline_keyboard if kb else []),
+                                                  *_WATCHDOG_KB.inline_keyboard])
+    parts = chunks(text)
+    for part in parts[:-1]:
+        await notifier.send(part, Priority.DIGEST)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=kb)
+    # The evening compares against this: it comes only for what is new since.
+    await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
 
 
 @_once("evening_report", mark=True)
 async def send_evening_report():
-    """Evening report — only if there's something to worry about."""
-    if settings.evening_hour() is None or not await get_active_incidents():
+    """Evening report — only for a 🔴 or for a problem opened since the
+    morning digest: an old 🟠 that the morning already said must not bring
+    the same screen back every evening. Compared by the second: SQLite's
+    created_at has no fractions."""
+    if settings.evening_hour() is None:
         return
-    await notifier.send(clip(await _status_snapshot("evening", extras=False)), Priority.DIGEST)
-
-
-def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
-    """Pack independent text blocks into as few messages as fit the limit."""
-    messages, current = [], ""
-    for block in blocks:
-        candidate = f"{current}\n\n{block}" if current else block
-        if current and len(candidate) > limit:
-            messages.append(current)
-            current = block
-        else:
-            current = candidate
-    if current:
-        messages.append(current)
-    return messages
+    since = parse_iso_utc(await get_state("morning_sent_at"))
+    news = [i for i in await get_active_incidents()
+            if i["severity"] == "critical" or since is None
+            or (parse_sqlite_utc(i["created_at"]) or since) >= since.replace(microsecond=0)]
+    if not news:
+        return
+    for part in chunks(await _status_snapshot("evening", extras=False)):
+        await notifier.send(part, Priority.DIGEST)
 
 
 @_once("weekly_report", mark=True)
 async def send_weekly_report():
-    """Sunday: dependency check, GitHub hygiene, weekly digest, ASCII
-    response-time chart, off-host DB copy. A failed side check never
+    """Sunday: dependency check, GitHub hygiene, weekly digest, the response
+    time where it moved, off-host DB copy. A failed side check never
     stops the digest."""
     try:
         await updates.run_dependency_watch()
@@ -2286,13 +2455,13 @@ async def send_weekly_report():
         logger.exception("GitHub hygiene check failed")
     failed = None
     try:
-        text, chart_blocks = await build_weekly_report()
+        text, speed = await build_weekly_report()
         # Split, not clipped: the sections at the end (dependencies, GitHub)
         # are the ones a long site list would cut off.
         for part in chunks(text):
             await notifier.send(part, Priority.DIGEST)
-        if chart_blocks:
-            for msg in pack_blocks(["⏱ Как быстро открывались сайты по дням:", *chart_blocks]):
+        if speed:   # only the sites whose speed moved; nothing when none did
+            for msg in chunks("\n".join(["⏱ Скорость за неделю — где она менялась:", *speed])):
                 await notifier.send(msg, Priority.DIGEST)
         tip = await recommend.weekly_recommendation()
         if tip:

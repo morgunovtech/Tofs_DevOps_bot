@@ -63,8 +63,8 @@ async def test_admin_is_routed_and_strangers_are_denied(bot, db, monkeypatch):
 
     await DP.feed_raw_update(tg, _message(777, "/start", 1))
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
-    assert any("Привет" in m.text for m in sent)
-    assert any("Пока ни за чем не слежу" in m.text for m in sent)   # the main menu came right after
+    assert not any("Привет" in m.text for m in sent)                # the seat was taken: no welcome speech
+    assert any("Пока ни за чем не слежу" in m.text for m in sent)   # the main menu came right away
 
     session.calls.clear()
     await DP.feed_raw_update(tg, _message(999, "/start", 2))

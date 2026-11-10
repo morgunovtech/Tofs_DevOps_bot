@@ -23,11 +23,11 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiohttp import web
 
 from config import config
-from db.database import get_all_sites, get_state, heartbeat_ping, save_feedback, set_state
+from db.database import get_all_sites, get_heartbeats, get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
 from services import health, heartbeats, integrations, notifier, public_urls, screenshots, secrets, settings
 from services.notifier import Priority
-from utils.text import esc, plural
+from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import bare_host, host_of, is_http_url
 from web import status_page, widget
 
@@ -349,10 +349,13 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         mark = data.get("heartbeat", True) is not False
         await heartbeats.save_status(job, status)
     if mark:
+        last = parse_sqlite_utc((await get_heartbeats()).get(job))
         await heartbeat_ping(job)
         if await get_state(f"hb_alerted:{job}"):
             await set_state(f"hb_alerted:{job}", None)
-            await notifier.send(f"✅ «{esc(job)}» снова на связи.", Priority.NORMAL)
+            away = fmt_duration((datetime.now(UTC) - last).total_seconds() / 60) if last else None
+            await notifier.send(f"✅ «{esc(job)}» снова на связи — без связи было {away}." if away
+                                else f"✅ «{esc(job)}» вышел на связь — теперь слежу за ним.", Priority.NORMAL)
     return web.Response(text="ok")
 
 

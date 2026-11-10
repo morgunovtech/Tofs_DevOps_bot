@@ -5,6 +5,7 @@ do. Technical details go last, in italics."""
 
 from datetime import UTC, datetime
 
+from monitors import domain_checker, ssl_checker
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
@@ -159,7 +160,7 @@ def format_domain_alert(r: DomainResult) -> str:
     icon = level_icon(r.severity)
     registrar = r.domain_info.registrar if r.domain_info and r.domain_info.registrar not in ("", "Unknown") else ""
     where = f" Продлевается у регистратора: {esc(registrar)}." if registrar else ""
-    return (f"{icon} Домен {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
+    return (f"{icon} {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
             + _tech(r.error))
 
 
@@ -243,18 +244,26 @@ def format_dns_failing(change: DnsChange) -> str:
             f"Последний известный ответ: {esc(change['old'])}\n\n{steps}")
 
 
+# (what, «changed», «gone») — the verb agrees with the noun, and a record that
+# is gone is said to be gone, not «changed» with «пока ничего не сломалось».
+_DNS_KINDS = {"A": ("адрес сервера (запись A)", "изменился", "пропал"),
+              "AAAA": ("адрес сервера IPv6 (запись AAAA)", "изменился", "пропал"),
+              "CNAME": ("псевдоним адреса (запись CNAME)", "изменился", "пропал"),
+              "NS": ("NS-серверы домена", "изменились", "пропали"),
+              "MX": ("почтовые серверы (запись MX)", "изменились", "пропали")}
+
+
 def format_dns_change(change: DnsChange) -> str:
     if change.get("failing"):
         return format_dns_failing(change)
-    key = {"NS": "ns_change", "MX": "mx_gone" if change["new"] == "—" else "mx_change"}.get(change["rtype"],
-                                                                                         "dns_change")
+    gone = change["new"] == "—"
+    key = {"NS": "ns_change", "MX": "mx_gone" if gone else "mx_change"}.get(
+        change["rtype"], "addr_gone" if gone else "dns_change")
     expl = humanize.EXPLANATIONS[key]
-    kinds = {"A": "адрес сервера (запись A)", "AAAA": "адрес сервера IPv6 (запись AAAA)",
-             "CNAME": "псевдоним адреса (запись CNAME)", "NS": "NS-серверы домена",
-             "MX": "почтовые серверы (запись MX)"}
     icon = level_icon("critical" if change["critical"] else "warning")
-    what = kinds.get(change["rtype"], change["rtype"])
-    return (f"{icon} У {esc(change['host'])} изменились {what}\n{expl.meaning}\n\n"
+    what, changed, vanished = _DNS_KINDS.get(change["rtype"],
+                                             (f"запись {change['rtype']}", "изменилась", "пропала"))
+    return (f"{icon} У {esc(change['host'])} {vanished if gone else changed} {what}\n{expl.meaning}\n\n"
             f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}\n\n"
             f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
 
@@ -322,7 +331,7 @@ def format_security_alert(r: SecurityResult) -> str:
     n = len(r.findings)
     if r.kind == "exposed":
         head = f"🔴 На {label} наружу видны служебные файлы — их может скачать любой"
-        tail = "Убрал — нажми «🔄 Перепроверить» на карточке сайта, я скажу, что их больше не видно."
+        tail = "Убрал — нажми «🔄 Проверить снова» на карточке сайта, я скажу, что их больше не видно."
     else:
         head = f"🟠 {label}: защиту сайта стоит усилить"
         tail = "Я перепроверяю каждые 6 часов и напишу, когда всё будет в порядке."
@@ -369,17 +378,17 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
             notes.append((None, "сертификат не удалось проверить"))
         elif ssl.ssl_info.days_left < 0:
             notes.append(("critical", f"сертификат истёк {abs(ssl.ssl_info.days_left)} дн. назад"))
-        elif ssl.ssl_info.days_left <= 14:
-            notes.append(("critical" if ssl.ssl_info.days_left <= 3 else "warning",
-                          f"сертификат истекает через {ssl.ssl_info.days_left} дн."))
+        elif ssl.ssl_info.days_left <= ssl_checker.WARN_DAYS:
+            notes.append(("critical" if ssl.ssl_info.days_left <= ssl_checker.CRITICAL_DAYS else "warning",
+                          humanize.expires_words("сертификат", ssl.ssl_info.days_left)))
     if dom is not None and not dom.unsupported:
         if not dom.domain_info or dom.domain_info.days_left is None:
             notes.append((None, "срок домена не удалось проверить"))
         elif dom.domain_info.days_left < 0:
             notes.append(("critical", f"домен истёк {abs(dom.domain_info.days_left)} дн. назад"))
-        elif dom.domain_info.days_left <= 30:
-            notes.append(("critical" if dom.domain_info.days_left <= 7 else "warning",
-                          f"домен истекает через {dom.domain_info.days_left} дн."))
+        elif dom.domain_info.days_left <= domain_checker.WARN_DAYS:
+            notes.append(("critical" if dom.domain_info.days_left <= domain_checker.CRITICAL_DAYS else "warning",
+                          humanize.expires_words("домен", dom.domain_info.days_left)))
     if notes:
         worst = worst_severity(s for s, _ in notes)
         icon = level_icon(worst) if worst else UNCHECKED
@@ -389,25 +398,15 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     return f"✅ {label} — {verb} {humanize.speed(r.response_time_ms)}", True
 
 
-def format_compact_status_report(availability: list[AvailabilityResult],
-                                 incidents: list[dict],
-                                 ssl_results: list[SslResult] | None = None,
-                                 domain_results: list[DomainResult] | None = None,
-                                 report_type: str = "status",
-                                 extras: list[str] | None = None,
-                                 watch: list[tuple[str, bool]] | None = None) -> str:
-    """watch: (line, fine) for the bots and tasks that mark in and for the
-    bot's own watchdog — a block of their own under the sites, counted in
-    «Всё спокойно» like a site."""
-    now = now_local().strftime("%d.%m %H:%M")
-    header = {"morning": f"🌅 Доброе утро · {now}",
-              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
-              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
+def _site_lines(availability: list[AvailabilityResult],
+                ssl_results: list[SslResult] | None,
+                domain_results: list[DomainResult] | None) -> list[tuple[str, str, bool]]:
+    """(url, line, fine) per site — the one place that decides what a site's
+    line says, so the digest and the «already said above» set agree."""
     ssl_by_url = {r.url: r for r in (ssl_results or [])}
     domain_by_root = {registrable_domain(host_of(r.url)): r for r in (domain_results or [])}
     domain_urls = {r.url for r in (domain_results or [])}
-    lines: list[str] = [header, ""]
-    all_ok = True
+    out = []
     for r in availability:
         http = is_http_url(r.url)
         # An API check carries the certificate and domain notes only when it
@@ -417,19 +416,75 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         if r.api and r.url not in domain_urls:
             dom = None
         line, ok = _site_line(r, ssl_by_url.get(r.url) if (ssl_results is not None and http) else None, dom)
-        lines.append(line)
-        all_ok &= ok
+        out.append((r.url, line, ok))
+    return out
+
+
+def problem_site_urls(availability: list[AvailabilityResult],
+                      ssl_results: list[SslResult] | None = None,
+                      domain_results: list[DomainResult] | None = None) -> set[str]:
+    """The sites whose line in the digest already shows a problem."""
+    return {url for url, _, ok in _site_lines(availability, ssl_results, domain_results) if not ok}
+
+
+DIGEST_INCIDENTS = 5
+_ON_SITE_LINE = ("availability", "ssl", "domain")
+
+
+def digest_incidents(incidents: list[dict], site_urls: set[str]) -> tuple[list[dict], int]:
+    """(what to list under «Открытых проблем», how many more): every 🔴,
+    then 🟠 up to five lines — an old 🔴 is never pushed out by five new 🟠.
+    site_urls — the sites whose line above already shows the problem: what
+    it said (availability, certificate, domain) is not said twice."""
+    listable = [i for i in incidents if not (i["check_type"] in _ON_SITE_LINE and i["url"] in site_urls)]
+    crit = [i for i in listable if i.get("severity") == "critical"]
+    rest = [i for i in listable if i.get("severity") != "critical"]
+    shown = crit + rest[:max(0, DIGEST_INCIDENTS - len(crit))]
+    return shown, len(listable) - len(shown)
+
+
+def format_compact_status_report(availability: list[AvailabilityResult],
+                                 incidents: list[dict],
+                                 ssl_results: list[SslResult] | None = None,
+                                 domain_results: list[DomainResult] | None = None,
+                                 report_type: str = "status",
+                                 extras: list[str] | None = None,
+                                 watch: list[tuple[str, bool]] | None = None,
+                                 short: bool = False) -> str:
+    """watch: (line, fine) for the bots and tasks that mark in and for the
+    bot's own watchdog — a block of their own under the sites, counted in
+    «Всё спокойно» like a site. short: only the lines that say something is
+    wrong, and the sites in order as one count — the daily screen of the
+    same «всё хорошо» teaches to scroll past the day with a 🔴 in it."""
+    now = now_local().strftime("%d.%m %H:%M")
+    header = {"morning": f"🌅 Доброе утро · {now}",
+              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
+              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
+    site_lines = _site_lines(availability, ssl_results, domain_results)
+    lines: list[str] = [header, ""]
+    all_ok = all(ok for _, _, ok in site_lines)
+    if short:
+        bad = [line for _, line, ok in site_lines if not ok]
+        good = len(site_lines) - len(bad)
+        lines += bad
+        if good:
+            lines.append(f"✅ {'Остальные' if bad else 'Сайты'} в порядке: {good}")
+    else:
+        lines += [line for _, line, _ in site_lines]
     if watch:
         lines += ([""] if availability else []) + [line for line, _ in watch]
         all_ok &= all(ok for _, ok in watch)
     if incidents:
         worst = worst_severity(i.get("severity") for i in incidents)
-        lines += ["", f"{level_icon(worst)} Открытых проблем: {len(incidents)}"]
+        said = {url for url, _, ok in site_lines if not ok}
+        shown, more = digest_incidents(incidents, said)
+        head = f"{level_icon(worst)} Открытых проблем: {len(incidents)}"
+        lines += ["", head if shown else f"{head} — в строках сайтов выше"]
         # No leading spaces: Telegram wraps a long line back to column 0,
         # and the indent only makes the wrap look crooked.
-        lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in incidents[:5]]
-        if len(incidents) > 5:
-            lines.append(f"… и ещё {len(incidents) - 5}")
+        lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in shown]
+        if more:
+            lines.append(f"… и ещё {more} — весь список: 🏠 Главная → «Что не так»")
     elif all_ok:
         lines += ["", "Всё спокойно 🐕"]
     if extras:

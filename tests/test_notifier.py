@@ -98,7 +98,7 @@ async def test_deferred_message_keeps_its_buttons(bot):
     await notifier.set_mute(None)
     await notifier.flush_queue()
     assert bot.sent[-2]["text"].startswith("🌙 Накопилось") and bot.sent[-2]["reply_markup"] is None
-    assert bot.sent[-1]["text"] == "⚠️ Задача «backup»"
+    assert bot.sent[-1]["text"].startswith("🕒 ") and bot.sent[-1]["text"].endswith("⚠️ Задача «backup»")
     assert bot.sent[-1]["reply_markup"].inline_keyboard[0][0].callback_data == "hb_how:backup"
     assert await peek_notifications() == []
 

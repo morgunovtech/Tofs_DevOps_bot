@@ -4,8 +4,8 @@ card and the screen behind it."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import ack, render, site_by_cb
-from reports.scheduler import audit_time
+from handlers.common import ack, show, site_by_cb
+from reports.scheduler import next_run_words
 from services import crux, humanize, sitestatus
 from utils.text import esc
 from utils.urls import is_web_page, site_label
@@ -42,7 +42,7 @@ async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         lines.append("Не подключено: 🔌 Подключения → ⚡ Скорость у посетителей Chrome. Бесплатно, нужен ключ "
                      "Google; на сайт ничего ставить не нужно.")
     elif chrome is None:
-        lines.append(f"Спрошу у Google сегодня в {audit_time('visitor_checks')}.")
+        lines.append(f"Спрошу у Google {next_run_words('visitor_checks') or 'в ближайшее утро'}.")
     elif not crux.has_data(chrome):
         lines.append("У Google мало данных по сайту — так у большинства небольших сайтов: Google считает только "
                      "сайты, у которых достаточно посетителей в Chrome. Как сайт открывается сейчас, покажет "
@@ -54,14 +54,16 @@ async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     rows = [[InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(site["url"]))],
             [InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{site['id']}"),
              InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]]
+    if not crux.available():
+        rows.insert(0, [InlineKeyboardButton(text="⚡ Подключить данные Google", callback_data="setup:crux")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.callback_query(F.data.startswith("spd:"))
 async def cb_speed(call: CallbackQuery):
-    site = await site_by_cb(call.data.split(":", 1)[1])
+    site = await site_by_cb(call.data.split(":")[1])        # «spd:<id>:a» from an alert
     if not site or not is_web_page(site["url"], site.get("http_method")):
         await ack(call, "Скорость у посетителей знаю только для страниц сайта", show_alert=True)
         return
     await ack(call)
-    await render(call, *await speed_page(site))
+    await show(call, *await speed_page(site))

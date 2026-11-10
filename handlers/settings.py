@@ -1,14 +1,13 @@
-"""⚙️ Settings: the hub for everything that is not «is it OK» — digests
-and quiet hours, mute, timezone, maintenance windows, diagnostics and
-connections (the test alert lives there), status page, feedback,
-export/import. What is watched — sites, tasks and bots — is on the main
-screen, not here."""
+"""⚙️ Settings: the hub for everything that is not «is it OK» — «🔔 Когда
+писать» (digests, quiet hours, mute, planned work, the test alert),
+«👥 Помощники», «🔌 Подключения», «🌍 Для посетителей» (status page,
+feedback widget) and «🕐 Часовой пояс». What is watched — sites, tasks
+and bots — is on the main screen, not here."""
 
 import secrets as _secrets
 from datetime import datetime
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -202,20 +201,34 @@ def _offered(value: str, hours: tuple[int, ...]) -> int | None:
     return int(value) if value in {str(h) for h in hours} else None
 
 
+def _mark(on: bool, text: str) -> str:
+    """✅ before the value that is current — every row says what is chosen."""
+    return f"✅ {text}" if on else text
+
+
 def _reports_kb() -> InlineKeyboardMarkup:
     ring_on = settings.ring_only_down()
+    morning, evening, weekly = settings.morning_hour(), settings.evening_hour(), settings.weekly_hour()
+    quiet = settings.quiet_hours()
+    quiet_now = f"{quiet[0]}-{quiet[1]}" if quiet else None
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔔 Будить: только «сайт лёг»" if ring_on else "🔔 Будить: всё критичное",
-                              callback_data=f"set_ring:{'off' if ring_on else 'on'}")],
-        [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}") for h in MORNING_HOURS],
-        [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}") for h in EVENING_HOURS]
-        + [InlineKeyboardButton(text="🌙 выкл", callback_data="set_e:off")],
-        [InlineKeyboardButton(text=f"📊 вс {h}:00", callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
+        # Two buttons, the current one marked — not one whose label is the state and whose tap is the opposite.
+        [InlineKeyboardButton(text=_mark(not ring_on, "🔔 Будить: всё критичное"), callback_data="set_ring:off"),
+         InlineKeyboardButton(text=_mark(ring_on, "🔔 Только «сайт лёг»"), callback_data="set_ring:on")],
+        [InlineKeyboardButton(text=_mark(h == morning, f"🌅 {h}:00"), callback_data=f"set_m:{h}") for h in MORNING_HOURS],
+        # The morning view: what is wrong and a count of the sites in order,
+        # or the old line per site — the current one is marked.
+        [InlineKeyboardButton(text=_mark(not settings.digest_full(), "🌅 Коротко"), callback_data="set_dg:short"),
+         InlineKeyboardButton(text=_mark(settings.digest_full(), "🌅 Каждый сайт"), callback_data="set_dg:full")],
+        [InlineKeyboardButton(text=_mark(h == evening, f"🌙 {h}:00"), callback_data=f"set_e:{h}") for h in EVENING_HOURS]
+        + [InlineKeyboardButton(text=_mark(evening is None, "🌙 выкл"), callback_data="set_e:off")],
+        [InlineKeyboardButton(text=_mark(h == weekly, f"📊 вс {h}:00"), callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
         [InlineKeyboardButton(text="🗄 Копия базы по воскресеньям: вкл" if settings.weekly_backup()
                               else "🗄 Копия базы по воскресеньям: выкл",
                               callback_data=f"set_wb:{'off' if settings.weekly_backup() else 'on'}")],
-        [InlineKeyboardButton(text=f"🔕 {q.replace('-', '–')}", callback_data=f"set_q:{q}") for q in QUIET_CHOICES]
-        + [InlineKeyboardButton(text="🔕 выкл", callback_data="set_q:off")],
+        [InlineKeyboardButton(text=_mark(q == quiet_now, f"🔕 {q.replace('-', '–')}"), callback_data=f"set_q:{q}")
+         for q in QUIET_CHOICES]
+        + [InlineKeyboardButton(text=_mark(quiet is None, "🔕 выкл"), callback_data="set_q:off")],
         # Everything about «when» in one place: a pause, planned work, and
         # the test that the phone actually rings.
         [InlineKeyboardButton(text="🔕 Помолчать…", callback_data="menu_mute"),
@@ -227,11 +240,11 @@ def _reports_kb() -> InlineKeyboardMarkup:
 def _reports_text() -> str:
     evening, quiet = settings.evening_hour(), settings.quiet_hours()
     return ("🔔 Когда писать\n\n"
-            f"🌅 Утренняя сводка: {settings.morning_hour()}:00 — одно короткое «всё в порядке» "
-            f"или список того, что не так.\n"
-            f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если есть проблемы'}.\n"
+            f"🌅 Утренняя сводка: {settings.morning_hour()}:00 — "
+            f"{'строка на каждый сайт' if settings.digest_full() else 'только то, что не так, и число сайтов в порядке'}.\n"
+            f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если появилось новое после утренней сводки или что-то лежит (🔴)'}.\n"
             f"📊 Недельная: воскресенье {settings.weekly_hour()}:00 — простой за неделю и месяц, "
-            f"график, одна идея.\n"
+            f"строки скорости только для сайтов, где она менялась, одна идея.\n"
             f"🗄 Копия базы: {'по воскресеньям тебе в личку, без ключей подключений' if settings.weekly_backup() else 'не присылаю'}.\n"
             f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} — некритичное "
             f"ждёт до утра, «сайт лежит» приходит всегда.\n"
@@ -266,6 +279,8 @@ async def cb_settings_pick(call: CallbackQuery):
         await settings.set_ring_only_down(value == "on")
     elif kind == "set_wb" and value in ("on", "off"):
         await settings.set_weekly_backup(value == "on")
+    elif kind == "set_dg" and value in ("short", "full"):
+        await settings.set_digest_full(value == "full")
     elif kind == "set_tz" and value.isdigit() and int(value) < len(TIMEZONES):
         await settings.set_timezone(TIMEZONES[int(value)][1])
     elif kind == "set_tz" and value == "env":
@@ -275,15 +290,13 @@ async def cb_settings_pick(call: CallbackQuery):
         return
     failed = reschedule_all()  # apply new hours / timezone to the running scheduler now
     await ack(call, "Сохранено, но расписание не обновилось — подробности в логе" if failed else "Сохранено ✅")
-    try:
-        if kind == "set_sp":
-            await show_status_page(call)
-        elif kind == "set_tz":
-            await render(call, _tz_text(), _tz_kb())
-        else:
-            await render(call, _reports_text(), _reports_kb())
-    except TelegramBadRequest:
-        pass
+    # The same value again («not modified») is not an error: render() knows.
+    if kind == "set_sp":
+        await show_status_page(call)
+    elif kind == "set_tz":
+        await render(call, _tz_text(), _tz_kb())
+    else:
+        await render(call, _reports_text(), _reports_kb())
 
 
 # ── Timezone ─────────────────────────────────────────────────────────────────
@@ -310,7 +323,7 @@ def _tz_kb() -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="✏️ Другой", callback_data="tz_custom"),
-                 InlineKeyboardButton(text=f"↩︎ Из .env ({config.timezone})", callback_data="set_tz:env")])
+                 InlineKeyboardButton(text=f"↩︎ Как на сервере ({config.timezone})", callback_data="set_tz:env")])
     rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -326,7 +339,7 @@ async def cb_tz_custom(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(TzForm.key)
     await render(call, "Пришли ключ часового пояса из базы IANA, например <code>Europe/Prague</code> "
-                       "или <code>Asia/Tashkent</code>.", cancel_kb())
+                       "или <code>Asia/Tashkent</code>.", cancel_kb("menu_tz"))
 
 
 @router.message(TzForm.key)
@@ -334,7 +347,7 @@ async def msg_tz(message: Message, state: FSMContext):
     key = (message.text or "").strip()
     if not await settings.set_timezone(key):
         await message.answer("Такого пояса не знаю. Формат: <code>Регион/Город</code>, например "
-                             "<code>Europe/Prague</code>.", reply_markup=cancel_kb())
+                             "<code>Europe/Prague</code>.", reply_markup=cancel_kb("menu_tz"))
         return
     await state.clear()
     reschedule_all()

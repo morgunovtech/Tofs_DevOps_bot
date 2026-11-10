@@ -181,6 +181,9 @@ async def test_a_helper_who_types_start_or_help_is_told_who_he_is(bot, db):
     msg = _visitor(555)
     msg.text = "/help"
     await start.cmd_help(msg)
+    assert msg.texts == []                                 # said a moment ago: once in ten minutes (SEC-014)
+    common._denied.clear()
+    await start.cmd_help(msg)
     assert msg.texts[-1] == common.HELPER_NOTE
     stranger = _visitor(999)
     await start.cmd_help(stranger)

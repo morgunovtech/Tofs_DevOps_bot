@@ -51,7 +51,7 @@ from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramRetryAfter,
 )
-from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import (
     OUTBOX_MAX,
@@ -179,6 +179,15 @@ async def _call(method, **kwargs):
         logger.warning("Telegram flood control: waiting %s s", e.retry_after)
         await asyncio.sleep(e.retry_after)
     return await method(chat_id=runtime.admin_chat_id(), **kwargs)
+
+
+def what_rings_through_mute() -> str:
+    """What passes a /mute — exactly what send() and _defer() let through."""
+    if settings.ring_only_down():
+        return "Если сайт ляжет — всё равно позвоню. Остальное пришлю сводкой, когда тишина закончится."
+    return ("Все 🔴 — сайт лёг или снова открылся, истекает сертификат, открыт .env — придут сразу, со звуком. "
+            "Остальное пришлю сводкой, когда тишина закончится. Будить только когда сайт лёг: "
+            "⚙️ Настройки → 🔔 Когда писать.")
 
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
@@ -561,9 +570,40 @@ async def send_document_to_owner(document, caption: str) -> str | None:
         return "Telegram не принял файл (сеть или сбой на его стороне)"
 
 
+DIGEST_BUTTONS = 8      # «ℹ️ N» buttons under one digest message: two rows of four
+
+
+def _stamp(created_at: str | None) -> str:
+    """«03:12» today, «08.11 23:15» earlier — when it happened, not when it arrived."""
+    at = parse_sqlite_utc(created_at)
+    if not at:
+        return ""
+    local = to_local(at)
+    return local.strftime("%H:%M" if local.date() == now_local().date() else "%d.%m %H:%M")
+
+
+def _explain_only(markup: InlineKeyboardMarkup | None) -> str | None:
+    """The callback of a keyboard that is only «ℹ️ Что делать»: such a message
+    joins the digest under a numbered button; any other keyboard does
+    something and travels with its own message."""
+    datas = [b.callback_data for row in (markup.inline_keyboard if markup else []) for b in row]
+    return datas[0] if len(datas) == 1 and (datas[0] or "").startswith("inc_explain:") else None
+
+
+def _digest_kb(explains: list[tuple[int, str]]) -> InlineKeyboardMarkup | None:
+    buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=data) for n, data in explains]
+    rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 async def flush_queue():
-    """Deliver deferred notifications as a digest — several messages when
-    the backlog is long, deleting only the rows that were actually sent."""
+    """Deliver deferred notifications as ONE digest: the items numbered,
+    each with the time it happened, an «ℹ️ N» button for every item whose
+    only button was «ℹ️ Что делать». A message with any other buttons goes
+    alone, with them, in its place, with its time above; so does one too
+    long for the digest (a part of the weekly report) — whole, not cut.
+    Several messages when the backlog is long, deleting only the rows that
+    were actually sent."""
     if _bot is None or not runtime.admin_chat_id() or in_quiet_hours() or await is_muted() \
             or health.db_failing():
         return      # a delivered batch could not be deleted: it would come again in ten minutes
@@ -575,28 +615,30 @@ async def flush_queue():
     if dropped > 0:
         header += (f"(ещё {dropped} {plural(dropped, 'старое сообщение', 'старых сообщения', 'старых сообщений')} "
                    f"не сохранил — очередь держит последние {PENDING_MAX})\n\n")
-    batch: list[dict] = []
-    text = header
+    text, batch, explains = header, [], []
     for row in rows:
+        stamp = _stamp(row.get("created_at"))
         markup = _markup(row.get("reply_markup"))
-        if markup is not None:
-            # A message with buttons goes alone, with them, in its place.
+        explain = _explain_only(markup)
+        if (markup is not None and explain is None) or len(row["text"]) > SAFE_LIMIT - len(header) - 20:
             if batch:
-                if not await _deliver_batch(text, batch):
+                if not await _deliver_batch(text, batch, _digest_kb(explains)):
                     return
-                text, batch = "🌙 (продолжение)\n\n", []
-            if not await _deliver_batch(clip(row["text"]), [row], markup):
+                text, batch, explains = "🌙 (продолжение)\n\n", [], []
+            alone = f"🕒 {stamp}\n{row['text']}" if stamp and len(row["text"]) + 20 < SAFE_LIMIT else row["text"]
+            if not await _deliver_batch(clip(alone), [row], markup):
                 return
             continue
-        # Each item is cut HTML-safely to fit one message; a batch is never cut.
-        item = clip(f"— {row['text']}", SAFE_LIMIT - len(header) - 60) + "\n\n"
-        if batch and len(text) + len(item) > SAFE_LIMIT:
-            if not await _deliver_batch(text, batch):
+        body = f"{stamp} · {row['text']}" if stamp else row["text"]
+        if batch and (len(text) + len(body) + 8 > SAFE_LIMIT or (explain and len(explains) >= DIGEST_BUTTONS)):
+            if not await _deliver_batch(text, batch, _digest_kb(explains)):
                 return
-            text, batch = "🌙 (продолжение)\n\n", []
-        text += item
+            text, batch, explains = "🌙 (продолжение)\n\n", [], []
         batch.append(row)
-    if batch and not await _deliver_batch(text, batch):
+        text += f"{len(batch)}. {body}\n\n"         # numbered within its message: «ℹ️ N» points at it
+        if explain:
+            explains.append((len(batch), explain))
+    if batch and not await _deliver_batch(text, batch, _digest_kb(explains)):
         return
     if dropped:
         await set_state(PENDING_DROPPED, None)      # said once — and only when the digest got through

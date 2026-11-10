@@ -142,7 +142,7 @@ async def test_a_queued_message_telegram_never_takes_does_not_jam_the_queue(bot,
     original = bot.send_message
 
     async def telegram(chat_id, text, reply_markup=None, **kwargs):
-        if text.startswith("⚠️ с кнопкой"):
+        if "⚠️ с кнопкой" in text:                      # below its «🕒 ЧЧ:ММ» line
             raise bad_request("Bad Request: BUTTON_DATA_INVALID")
         return await original(chat_id, text, reply_markup=reply_markup, **kwargs)
 

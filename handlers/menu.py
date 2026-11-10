@@ -7,10 +7,10 @@ button per block opens its full page; nothing else on the screen."""
 import re
 from datetime import datetime, timedelta
 
-from aiogram import F, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 
 from config import config
 from db.database import (
@@ -22,6 +22,7 @@ from handlers import seo as seo_screen
 from handlers.blocks import backup_state
 from handlers.common import ack, render
 from handlers.mail import mail_brief
+from monitors import domain_checker, ssl_checker
 from monitors.mail_checker import MAIL_CHECKS, carriers
 from services import heartbeats, humanize, maintenance, notifier, sitestatus, updates
 from services.heartbeats import Job, Watchdog, job_states
@@ -34,6 +35,11 @@ router = Router(name="menu")
 # The region's timing is measured every 6 hours (reports.scheduler): a
 # number younger than seven is the current one.
 FRESH_REGION_MINUTES = 7 * 60
+
+# The sites block shows this many lines, the worst first; the rest are a
+# count with how many of them are problems.
+MAIN_SITES = 10
+_RANK = {"🔴": 0, "🟠": 1, "⚠️": 2, "🔧": 3, "⏳": 4, "✅": 5}
 
 
 async def mute_until_local() -> str | None:
@@ -62,6 +68,14 @@ def _without_label(text: str, label: str) -> str:
     return text
 
 
+def _due(what: str, days: int) -> str:
+    """«сертификат истёк» · «сертификат истекает сегодня» · «сертификат через 5 дн.» —
+    short, for the main screen; the last days in words (services.humanize)."""
+    if days < 0:
+        return f"{what} истёк"
+    return humanize.expires_words(what, days) if days <= 1 else f"{what} через {days} дн."
+
+
 async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[str, str, float | None]:
     """(icon, short state, minutes since the last availability check) from
     the stored snapshot — no network, the menu must open instantly. The
@@ -85,13 +99,11 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
     ssl = (st.get("ssl") or {}) if ssl_applies(site["url"]) else {}
     dom = st.get("domain") or {}
     days = ssl.get("days_left")
-    if days is not None and days <= 14:
-        notes.append(("ssl", "critical" if days <= 3 else "warning",
-                      "сертификат истёк" if days < 0 else f"сертификат через {days} дн."))
+    if days is not None and days <= ssl_checker.WARN_DAYS:
+        notes.append(("ssl", "critical" if days <= ssl_checker.CRITICAL_DAYS else "warning", _due("сертификат", days)))
     days = dom.get("days_left")
-    if not dom.get("unsupported") and days is not None and days <= 30:
-        notes.append(("domain", "critical" if days <= 7 else "warning",
-                      "домен истёк" if days < 0 else f"домен через {days} дн."))
+    if not dom.get("unsupported") and days is not None and days <= domain_checker.WARN_DAYS:
+        notes.append(("domain", "critical" if days <= domain_checker.CRITICAL_DAYS else "warning", _due("домен", days)))
     links = st.get("links") or {}
     n = links.get("broken", links.get("internal"))   # «internal»: snapshots from before 11.2026
     if n:
@@ -176,14 +188,6 @@ def headline(problem_icons: list[str], checked: str) -> str:
     return f"{worst} {n} {plural(n, 'проблема', 'проблемы', 'проблем')}{checked}"
 
 
-def job_lines(jobs: list[Job], watchdog: Watchdog | None = None) -> list[str]:
-    """A line per task (and the watchdog last) — for /sites."""
-    lines = [f"{j.icon} {esc(j.name)} · {esc(j.state)}" for j in jobs]
-    if watchdog:
-        lines.append(f"{watchdog.icon} сторож {esc(watchdog.name)} · {esc(watchdog.state)}")
-    return lines
-
-
 async def status_blocks(jobs: list[Job]) -> list[tuple[Job, str, list[tuple[str, str, str]]]]:
     """(job, title, [(icon, name, text)]) for every bot that reports what it
     sees; a late bot's block is one «не знаю» line."""
@@ -223,7 +227,10 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                 "можно добавить бота или задачу по расписанию: скажу, если замолчит.", kb)
 
     incidents = await get_active_incidents()
+    # Problems first (a stable sort: within a level the sites keep their
+    # order), so a down site is never below the fold of the first ten.
     states = [(s, *await site_state(s, incidents)) for s in sites]
+    states.sort(key=lambda t: _RANK.get(t[1], 9))
     avail = [(await sitestatus.get(s["id"])).get("avail") for s in sites]
     newest = max((a for a in avail if a and a.get("at")), key=lambda a: a["at"], default=None)
     mail = await mail_rows(sites)
@@ -232,10 +239,12 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     lines: list[str] = []
     if states:
+        shown, hidden = states[:MAIN_SITES], states[MAIN_SITES:]
         lines += ["", "<b>Сайты</b>", *(f"{icon} {esc(site_label(s['url']))} · {esc(state)}"
-                                        for s, icon, state, _ in states[:10])]
-        if len(states) > 10:
-            lines.append(f"… и ещё {len(states) - 10}")
+                                        for s, icon, state, _ in shown)]
+        if hidden:
+            bad = sum(1 for _, icon, _, _ in hidden if icon in PROBLEM_ICONS)
+            lines.append(f"… и ещё {len(hidden)}" + (f", из них с проблемами: {bad}" if bad else ""))
     if mail:
         lines += ["", "<b>Почта</b>", *(f"{icon} {esc(domain)} · {esc(words)}" for icon, domain, words in mail)]
     for _, title, rows in reported:
@@ -245,7 +254,14 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
               *(f"{icon} {esc(name)}{f' · {esc(state)}' if state else ''}".lstrip()
                 for icon, name, state in systems)]
 
-    problems = [icon_of(line) for line in lines if line.startswith(PROBLEM_ICONS)]
+    # Counted by the things themselves, not by the lines on the screen: a
+    # site below the fold still counts, and a silent bot's «не знаю» block
+    # is the same problem as its line under «Боты и системы».
+    problems = [icon for _, icon, _, _ in states if icon in PROBLEM_ICONS]
+    problems += [icon for icon, _, _ in mail if icon in PROBLEM_ICONS]
+    problems += [icon for j, _, rows in reported if j.icon == "✅" for icon, _, _ in rows if icon in PROBLEM_ICONS]
+    problems += [j.icon for j in jobs if j.icon in PROBLEM_ICONS]
+    problems += [icon for icon, _, _ in systems if icon in PROBLEM_ICONS]
     if not newest and not any(j.ago is not None for j in jobs):
         head = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой связи"
     else:
@@ -271,6 +287,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     blocks = []
     if states:
         blocks.append(InlineKeyboardButton(text="🌐 Сайты", callback_data="blk:sites"))
+    else:   # tasks without sites: the way to the first site stays on the screen
+        blocks.append(InlineKeyboardButton(text="➕ Сайт", callback_data="site_add"))
     blocks += [InlineKeyboardButton(text=title.split(" · ")[0], callback_data=f"blk:seen:{j.name}")
                for j, title, _ in reported if len(f"blk:seen:{j.name}".encode()) <= 64]
     blocks.append(InlineKeyboardButton(text="🤖 Боты", callback_data="blk:bots"))
@@ -304,8 +322,20 @@ async def cb_main_menu(call: CallbackQuery, state: FSMContext):
     await send_main_menu(call)
 
 
-@router.callback_query(F.data == "fsm_cancel")
-async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
-    await ack(call, "Отменено")
+@router.callback_query(F.data.startswith("fsm_cancel"))
+async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext, dispatcher: Dispatcher, bot: Bot):
+    """«✖️ Отмена» under an input step: back to the screen the step was
+    opened from (fsm_cancel:<its callback>, drawn by its own handler through
+    the dispatcher), else the main screen. On a prompt whose step is already
+    closed (a bottom button, another tap, a restart) the way back is the
+    same — only the toast differs."""
+    closed = await state.get_state() is None
     await state.clear()
-    await send_main_menu(call)
+    back = call.data.partition(":")[2]
+    if not back or back == "menu_main":
+        await ack(call, "Нечего отменять — этот шаг уже закрыт" if closed else "Отменено")
+        await send_main_menu(call)
+        return
+    if closed:
+        await ack(call, "Нечего отменять — этот шаг уже закрыт")
+    await dispatcher.feed_update(bot, Update(update_id=0, callback_query=call.model_copy(update={"data": back})))
