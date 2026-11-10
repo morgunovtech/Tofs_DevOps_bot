@@ -55,6 +55,11 @@ async def alt_host_note(url: str) -> str | None:
                 if resp.status == 200:
                     return (f"ℹ️ {alt} открывается как отдельный сайт, а не перенаправляет на {host}. "
                             f"Поисковики могут считать это двумя сайтами; обычно настраивают редирект.")
+    except aiohttp.ClientConnectorCertificateError:
+        # The twin answers, but with a certificate for another name: whoever
+        # types the address that way meets the browser's warning page.
+        return (f"⚠️ {alt} открывается с ошибкой сертификата — кто наберёт адрес так, увидит "
+                f"предупреждение браузера. Выпусти сертификат и на {alt} или настрой редирект на {host}.")
     except Exception:
         return None                                   # no twin — nothing to say
     return None

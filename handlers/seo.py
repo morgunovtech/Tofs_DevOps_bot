@@ -124,6 +124,13 @@ def headline(seo: dict, groups: list[tuple[str, str, list[str]]], absent: list[s
     an index verdict → only when Search Console / Webmaster said so, access
     for AI assistants → only where the probe can see it (not on Cloudflare)."""
     n = len(groups)
+    if not seo or seo.get("status") is None:
+        return "⏳ Аудита ещё не было — нажми «🔄 Проверить снова»."
+    if seo.get("incomplete"):
+        # robots.txt or the homepage did not answer: the audit saw a part of
+        # the site and has no verdict — and closed nothing (monitors.seo_checker).
+        return ("⚠️ Часть проверки не удалась (robots.txt или главная не ответили) — вердикта нет; "
+                "открытые проблемы остаются в «Что сейчас не так».")
     if seo.get("status") == "error":
         return "⚠️ Сайт не открывался, когда я проверял — аудит пропущен. Нажми «🔄 Проверить снова»."
     if any(g[1] == "critical" for g in groups):
@@ -238,19 +245,23 @@ async def run_live(call: CallbackQuery, site: dict):
     base = (f"Смотрю на {esc(site_label(site['url']))} глазами Google, Яндекса и ИИ-ассистентов…\n"
             "(это занимает около 30 секунд)")
     await render(call, f"▰▱▱ {base}")
-    await with_running_bar(call.message, base, audit_now(site))
+    done = await with_running_bar(call.message, base, audit_now(site))
     await show_seo(call, site)
+    if not done:
+        await call.message.answer("⚠️ Проверка не удалась — на экране прошлые данные. Попробуй ещё раз позже.")
 
 
-async def audit_now(site: dict):
-    """A live audit for a screen. Read-only, with one exception: a clean
-    audit closes an open search finding — the screen says «помех нет», the
-    list must not disagree. A new finding still waits for the daily audit
-    to become an incident."""
+async def audit_now(site: dict) -> bool:
+    """A live audit for a screen; False when the audit itself did not run
+    (an error inside the check — the snapshot shows the previous data).
+    Read-only, with one exception: a clean audit closes an open search
+    finding — the screen says «помех нет», the list must not disagree. A
+    new finding still waits for the daily audit to become an incident."""
     results = await check_all_seo([site["url"]], manage=False)
     if results and results[0].status == "ok":
         await resolve_incident(site["id"], "seo")
     await index_status.refresh(site["id"], site["url"])
+    return bool(results)
 
 
 async def _auditable(call: CallbackQuery, site: dict | None) -> bool:

@@ -690,7 +690,7 @@ async def msg_site_add(message: Message, state: FSMContext):
     if page and r.ok:
         note = await alt_host_note(url)
         if note:
-            lines.append("\n" + note)
+            lines.append("\n" + esc(note))
         phrase = await suggest_keyword(url)
         if phrase:
             await set_state(f"kw_suggest:{site_id}", phrase)

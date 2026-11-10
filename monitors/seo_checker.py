@@ -400,7 +400,12 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
 
         status, _, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
-            problems.append(_p("soft404", "warning", "несуществующий адрес ответил «всё хорошо» (HTTP 200)"))
+            # A homepage that is nearly empty without JavaScript is an
+            # application in the browser: its catch-all rule must stay, so
+            # the steps differ (services.seo_fixes «soft404_spa»).
+            spa = r.no_js_chars is not None and r.no_js_chars < config.seo_min_text_chars
+            problems.append(_p("soft404_spa" if spa else "soft404", "warning",
+                               "несуществующий адрес ответил «всё хорошо» (HTTP 200)"))
 
         # A closed port 80 or an http:// that answers 4xx/5xx is not reported:
         # nothing to intercept. Only an http:// that shows the site itself

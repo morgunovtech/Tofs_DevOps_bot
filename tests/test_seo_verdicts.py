@@ -4,21 +4,26 @@ nothing closes nothing, a vanished sitemap is not «all pages answer»."""
 
 import asyncio
 import gzip
+import ssl
 import time
+from types import SimpleNamespace
 
 import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
+from conftest import FakeCall
 
 from db.database import get_active_incidents, save_incident
+from handlers import seo as seo_screen
+from handlers.seo import headline
 from handlers.sites import _pages_lines
-from monitors import deep_checker, seo_checker
+from monitors import deep_checker, pagemeta, seo_checker
 from monitors.base import DeepResult, SeoResult
 from monitors.seo_checker import _key, _page, analyze_page, analyze_robots
 from monitors.sitemap import scan_sitemap
 from reports import scheduler
 from reports.formatter import format_deep_alert
-from services import sitestatus
+from services import seo_fixes, sitestatus
 from services.humanize import describe_error
 
 GOOD = ("<html lang='ru'><head><title>Магазин кофе в Ташкенте</title>"
@@ -92,6 +97,61 @@ def test_page_labels_and_keys():
     assert _page("/%D0%BE-%D0%BD%D0%B0%D1%81") == "/о-нас"
     assert len(_page("/" + "x" * 200)) == 60
     assert _key("https://www.ex.test/") == _key("http://ex.test") == ("ex.test", "/")
+
+
+def test_the_screen_says_when_there_is_no_verdict():
+    assert headline({}, [], []) == "⏳ Аудита ещё не было — нажми «🔄 Проверить снова»."
+    # robots.txt silent, the homepage clean: not «the site did not open».
+    incomplete = {"status": "error", "incomplete": True, "problems": [], "pages": 1}
+    assert headline(incomplete, [], []) == ("⚠️ Часть проверки не удалась (robots.txt или главная не ответили) "
+                                            "— вердикта нет; открытые проблемы остаются в «Что сейчас не так».")
+    # An incomplete audit with 🟠 findings and an open 🔴: the snapshot keeps
+    # «critical», and the screen says «no verdict», not «closed» or «N things».
+    groups = [("og_title", "warning", ["нет заголовка для превью"])]
+    assert headline({"status": "critical", "incomplete": True}, groups, []).startswith("⚠️ Часть проверки не удалась")
+    assert headline({"status": "error", "problems": []}, [], []).startswith("⚠️ Сайт не открывался")
+    assert headline({"status": "warning"}, groups, []).startswith("🟠 Сайт открыт для поисковиков, но есть 1 помеха")
+
+
+async def test_a_failed_live_audit_keeps_the_old_screen_and_says_so(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://seo.test")
+    await sitestatus.update(sid, "seo", status="warning", critical=0, improve=1, pages=3, no_js_chars=500,
+                            problems=[{"code": "og_image", "severity": "warning", "message": "нет картинки (og:image)"}])
+
+    async def nothing(urls, manage=True):
+        return []          # the check itself failed: gather_checks returns no result
+
+    async def no_index(site_id, url):
+        return None, None
+
+    monkeypatch.setattr(seo_screen, "check_all_seo", nothing)
+    monkeypatch.setattr(seo_screen.index_status, "refresh", no_index)
+    call = FakeCall(f"seo_live:{sid}")
+    await seo_screen.cb_seo_live(call)
+    assert "🟠 Сайт открыт для поисковиков, но есть 1 помеха" in call.message.texts[-2]     # the previous data
+    assert call.message.texts[-1] == "⚠️ Проверка не удалась — на экране прошлые данные. Попробуй ещё раз позже."
+
+
+async def test_the_www_twin_with_a_bad_certificate_is_named(monkeypatch):
+    class FailingSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def get(self, url, **kwargs):
+            raise aiohttp.ClientConnectorCertificateError(
+                SimpleNamespace(host="www.ex.test", port=443, is_ssl=True, ssl=True),
+                ssl.SSLCertVerificationError("hostname mismatch"))
+
+    monkeypatch.setattr(pagemeta.aiohttp, "ClientSession", FailingSession)
+    note = await pagemeta.alt_host_note("https://ex.test/")
+    assert note == ("⚠️ www.ex.test открывается с ошибкой сертификата — кто наберёт адрес так, увидит "
+                    "предупреждение браузера. Выпусти сертификат и на www.ex.test или настрой редирект на ex.test.")
 
 
 async def _audit_site(state: dict):
@@ -289,6 +349,38 @@ def test_a_silent_page_is_not_a_healthy_one_on_the_card_and_in_the_alert():
                    errors=[("https://ex.test/slow", 0), ("https://ex.test/broken", 502)])
     text = format_deep_alert(r)
     assert "https://ex.test/slow — не ответила за 15 секунд" in text and "HTTP 0" not in text
+
+
+def test_fixes_do_not_break_the_site():
+    spa = " ".join(seo_fixes.steps("soft404_spa", None, "https://ex.com"))
+    assert "НЕ удаляй" in spa and "внутренние страницы" in spa and "/* /404.html 404" in spa
+    for hosting in (None, "cloudflare", "netlify", "vercel", "github"):
+        plain = " ".join(seo_fixes.steps("soft404", hosting, "https://ex.com"))
+        assert "2–3 внутренние страницы" in plain and "Проверить снова" in plain, hosting
+    assert "НЕ удаляй" in " ".join(seo_fixes.steps("soft404", None, "https://ex.com"))
+    cf = seo_fixes.steps("https_redirect", "cloudflare", "https://ex.com")
+    assert any("52" in s and "Full (strict)" in s and "сертификат" in s for s in cf)
+    assert not any("поставь режим SSL/TLS" in s for s in cf)
+    no_js = " ".join(seo_fixes.steps("no_js", None, "https://ex.com"))
+    assert "vike" in no_js and "vite-plugin-ssr" not in no_js and "только в этой вкладке" in no_js
+    assert 'lang="en"' in " ".join(seo_fixes.steps("no_lang", None, "https://ex.com"))
+    assert seo_fixes.fix("sitemap_foreign").title != "sitemap_foreign"
+    assert seo_fixes.links("sitemap_foreign", None, "https://ex.com") == [("🗺 Открыть sitemap.xml", "https://ex.com/sitemap.xml")]
+
+
+async def test_an_application_in_the_browser_gets_the_spa_steps(db, cfg, monkeypatch):
+    """Every address answers 200 with a nearly empty shell: the soft-404
+    finding carries the code whose steps keep the catch-all rule."""
+    cfg(seo_pages_sample=1)
+    monkeypatch.setattr(seo_checker, "plain_http_opens", _no)
+    shell = "<html><head><title>App</title></head><body><div id='root'></div></body></html>"
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", lambda r: web.Response(text=shell, content_type="text/html"))
+    async with TestServer(app) as server:
+        r = await seo_checker.check_seo(str(server.make_url("")).rstrip("/"), manage=False)
+    codes = {p.code for p in r.problems}
+    assert "soft404_spa" in codes and "soft404" not in codes and "no_js" in codes
+    assert "sitemap_missing" in codes            # the shell at /sitemap.xml is not a sitemap
 
 
 async def test_the_lifted_ban_is_said_once_and_quietly(bot, db, monkeypatch):
