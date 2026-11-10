@@ -9,15 +9,24 @@ github_token, github_owner, crux_key (Google API key for the Chrome UX
 Report), auto_redeploy / auto_restart / auto_cleanup ("on"/"off": the
 switches of «🤖 Что бот делает сам», they win over .env), region_speed
 ("on"/"off": the «⏱ Скорость из региона» switch of «🌐 Вторая точка»).
+
+The end of the module keeps the health of every external service the bot
+talks to (HEALTH, record_result): a refused key or a day without a single
+success is said once by reports.scheduler.run_integration_health, and the
+screens show «не отвечает» instead of «✅».
 """
 
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 from config import config
 from db.database import get_state, set_state
+
+logger = logging.getLogger(__name__)
 
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
         "cf_api_token", "cf_zone_id", "cf_zone_name", "second_opinion", "self_heartbeat_url",
@@ -84,22 +93,38 @@ def gsc_property() -> str:
     return _values.get("gsc_property") or config.gsc_property
 
 
+_gsc_key_problem: str | None = None    # what is wrong with GSC_SERVICE_ACCOUNT_FILE, for the screens
+
+
 def gsc_credentials() -> dict | None:
-    """Service-account dict from the chat-uploaded JSON, else from the file."""
+    """Service-account dict from the chat-uploaded JSON, else from the file.
+    Both go through valid_gsc_key; a file that cannot be read is named in
+    the log once per new reason and on the screens (gsc_key_problem)."""
+    global _gsc_key_problem
     raw = _values.get("gsc_key")
-    if raw:
-        try:
-            return json.loads(raw)
-        except ValueError:
+    if not raw:
+        path = config.gsc_service_account_file
+        if not path or not os.path.exists(path):
+            _gsc_key_problem = None
             return None
-    path = config.gsc_service_account_file
-    if path and os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
+                raw = f.read()
+        except OSError as e:
+            problem = f"{type(e).__name__}: {e.strerror or e}"
+            if problem != _gsc_key_problem:
+                logger.warning("GSC key %s is unusable for uid %s: %s", path,
+                               getattr(os, "getuid", lambda: "?")(), problem)
+            _gsc_key_problem = problem
             return None
-    return None
+    creds = valid_gsc_key(raw)
+    _gsc_key_problem = None if creds else "это не JSON-ключ сервис-аккаунта (нет client_email или private_key)"
+    return creds
+
+
+def gsc_key_problem() -> str | None:
+    """Why the GSC key is not usable, for «🔌 Подключения»; None when it is."""
+    return _gsc_key_problem
 
 
 def gsc_configured() -> bool:
@@ -256,3 +281,78 @@ RULES: dict[str, Callable[[object], bool]] = {
     "auto_cleanup": lambda v: v in ("on", "off"),
     "region_speed": lambda v: v in ("on", "off"),
 }
+
+
+# ── Health of the external services ──────────────────────────────────────────
+
+HEALTH = {   # name: (как называть владельцу, что он теряет, кнопка мастера или None)
+    "gsc": ("Google Search Console", "тревога «Google убрал сайт из поиска» и клики в воскресном отчёте не работают",
+            "setup:gsc"),
+    "yandex": ("Яндекс.Вебмастер", "тревоги о проблемах в Вебмастере и строки Яндекса в отчёте не работают",
+               "setup:yx"),
+    "crux": ("данные Google о скорости у посетителей", "строка «у посетителей» и её 🟠 не обновляются", "setup:crux"),
+    "github": ("GitHub", "воскресная проверка репозиториев не работает", "setup:gh"),
+    "checkhost": ("check-host.net — вторая точка проверки",
+                  "тревога «сайт лёг» уходит без перепроверки извне, замер из региона не обновляется", None),
+    "osv": ("база уязвимостей OSV", "проверка уязвимостей в пакетах бота не работает", None),
+    "rdap": ("RDAP — сроки доменов", "сроки регистрации доменов не обновляются", None),
+}
+SILENT_FAIL = timedelta(days=1)       # a failure nobody refused is said after this long without success
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+async def health(name: str) -> dict:
+    """{ok_at, fail_since, reason, refused, told} — {} when never recorded."""
+    try:
+        data = json.loads(await get_state(f"int_health:{name}") or "{}")
+    except ValueError:
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _save_health(name: str, data: dict):
+    await set_state(f"int_health:{name}", json.dumps(data, ensure_ascii=False))
+
+
+async def record_result(name: str, ok: bool, reason: str | None = None, refused: bool = False):
+    """How the last call to an external service went. refused — it turned the
+    key or token down (400 invalid_grant, 401, 403). A side note of the call
+    it describes: it never raises into it."""
+    try:
+        h = await health(name)
+        if ok:
+            if not h.get("fail_since") and str(h.get("ok_at") or "")[:13] == _now()[:13]:
+                return                     # healthy and already written this hour
+            h.update(ok_at=_now(), fail_since=None, reason=None, refused=False)
+        else:
+            h.update(fail_since=h.get("fail_since") or _now(), reason=reason,
+                     refused=refused or bool(h.get("refused")))
+        await _save_health(name, h)
+    except Exception as e:
+        logger.debug("Health record for %s not written: %s", name, str(e) or type(e).__name__)
+
+
+def is_broken(h: dict) -> bool:
+    """Worth the owner's attention: a refused key, or a day without success."""
+    since = h.get("fail_since")
+    if not since:
+        return False
+    if h.get("refused"):
+        return True
+    try:
+        return datetime.now(UTC) - datetime.fromisoformat(since) >= SILENT_FAIL
+    except (TypeError, ValueError):
+        return False
+
+
+async def broken(name: str) -> bool:
+    return is_broken(await health(name))
+
+
+async def set_told(name: str, told: bool):
+    h = await health(name)
+    h["told"] = told
+    await _save_health(name, h)

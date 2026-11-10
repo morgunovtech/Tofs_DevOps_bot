@@ -91,8 +91,9 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str]
                 chunk.append(f"ИКС {y['sqi']}")
             problems = y.get("alert_problems") or {}
             if problems:
-                chunk.append(f"{level_icon(index_status.yandex_problem_level(problems))} проблем в Вебмастере: "
-                             f"{len(problems)}")
+                n = index_status.yandex_problem_count(problems)
+                chunk.append(f"{level_icon(index_status.yandex_problem_level(problems))} {n} "
+                             f"{plural(n, 'проблема', 'проблемы', 'проблем')} в Вебмастере")
             if chunk:
                 prefix = f"по данным на {index_status.fmt_day(y.get('at'))}: " if stale else ""
                 lines.append("📇 Яндекс: " + prefix + ", ".join(chunk))

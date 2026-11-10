@@ -64,9 +64,14 @@ async def hub_text() -> str:
              ("Яндекс", yandex_webmaster.available()),
              ("Cloudflare", bool(integrations.cf_api_token() or integrations.deploy_hooks())),
              ("GitHub", github.available())]
-    on = [name for name, ok in known if ok]
+    # A key the service refused, or a day without one answer, is not «✅»:
+    # the record is kept by every call (services.integrations), no probe here.
+    broken = [name for name, key in (("Google", "gsc"), ("Яндекс", "yandex"), ("GitHub", "github"))
+              if dict(known)[name] and await integrations.broken(key)]
+    on = [name for name, ok in known if ok and name not in broken]
     off = [name for name, ok in known if not ok]
     connections = ((f"{', '.join(on)} ✅" if on else "ничего не подключено")
+                   + "".join(f" · {name} ⚠️ не отвечает" for name in broken)
                    + (f" · можно: {', '.join(off)}" if off else ""))
     sp = "статус-страница вкл." if settings.status_page_enabled() else "статус-страница выкл."
     feedback = await count_feedback()

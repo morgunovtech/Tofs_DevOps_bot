@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import aiohttp
 
 from monitors.base import DomainInfo, read_capped
+from utils.text import err_text
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ async def _bootstrap_servers(session: aiohttp.ClientSession) -> dict[str, list[s
             _bootstrap, _bootstrap_at, _bootstrap_failed_at = table, now, None
         except Exception as e:
             _bootstrap_failed_at = now
-            logger.warning("IANA RDAP bootstrap failed (%s) — asking rdap.org, IANA again in an hour", e)
+            logger.warning("IANA RDAP bootstrap failed (%s) — asking rdap.org, IANA again in an hour", err_text(e))
         return _bootstrap
 
 
@@ -167,7 +168,7 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
             last_error = e
             continue
         except Exception as e:
-            last_error = DomainLookupError(str(e) or type(e).__name__)
+            last_error = DomainLookupError(err_text(e))
             continue
         if data is not None:
             try:
@@ -175,7 +176,7 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
             except (AttributeError, TypeError, ValueError) as e:
                 # Not a domain record (an error page as JSON, a list, a
                 # string): the next server may have the real one.
-                last_error = DomainLookupError(f"RDAP: неожиданный ответ ({type(e).__name__}: {e})")
+                last_error = DomainLookupError(f"RDAP: неожиданный ответ ({type(e).__name__}: {err_text(e)})")
                 continue
     if not servers and last_error is None:
         raise RdapUnsupported(f"зона .{tld} без RDAP")
@@ -248,7 +249,7 @@ async def whois_lookup(domain: str, server: str) -> DomainInfo:
         await writer.drain()
         raw = await asyncio.wait_for(_read_until_eof(reader, 64 * 1024), timeout=15)
     except (TimeoutError, OSError) as e:
-        raise DomainLookupError(f"WHOIS {server}: {e}") from e
+        raise DomainLookupError(f"WHOIS {server}: {err_text(e)}") from e
     finally:
         if writer is not None:
             writer.close()

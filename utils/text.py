@@ -16,6 +16,11 @@ def esc(value) -> str:
     return html.escape(str(value), quote=False)
 
 
+def err_text(e: BaseException) -> str:
+    """Never empty: TimeoutError() and friends stringify to ''."""
+    return str(e) or type(e).__name__
+
+
 _TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
 
 

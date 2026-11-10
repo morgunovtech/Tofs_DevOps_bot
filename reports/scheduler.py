@@ -996,7 +996,8 @@ def _visitors_keyboard(r):
 async def run_index_checks():
     """Daily indexing watch via GSC / Yandex.Webmaster (when tokens are set):
     the answers go into the site snapshot for the «🔎 Поиск и ИИ» screen,
-    and a change of state becomes a message — nothing else does."""
+    and a change of state becomes a message — nothing else does. Yandex is
+    asked once for all sites; «did not answer» stays «did not answer»."""
     if not gsc.available() and not yandex_webmaster.available():
         return
     yx = await yandex_webmaster.get_summaries() if yandex_webmaster.available() else None
@@ -1007,48 +1008,128 @@ async def run_index_checks():
                 continue
             google, yandex = await index_status.refresh(site["id"], url, yx)
             if google:
-                key = f"gsc_idx:{short_host(url)}"
-                prev = await get_state(key)
-                current = f"{google['verdict']}|{google['coverage']}"
-                if prev != current:
-                    prev_verdict = (prev or "").split("|", 1)[0]
-                    sent = True
-                    if google["verdict"] == "PASS":
-                        if prev and prev_verdict != "PASS":
-                            sent = await notifier.send(
-                                f"✅ Google снова показывает {esc(site_label(url))} в поиске. Ничего делать не нужно."
-                                + _tech_line(google["coverage"]), site_id=site["id"])
-                    elif prev_verdict != google["verdict"]:
-                        sent = await notifier.send(
-                            f"🔴 Google убрал {esc(site_label(url))} из поиска\n"
-                            f"Люди больше не найдут сайт через Google.\n\n"
-                            f"Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
-                            f"написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
-                            f"проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]), Priority.CRITICAL,
-                            site_id=site["id"])
-                    if sent:
-                        await set_state(key, current)
+                await _google_change(site, google)
             if yandex:
-                host = short_host(url)
-                key = f"yx_problems:{host}"
-                prev = await get_state(key) or ""
-                problems = yandex["alert_problems"]
-                current = ",".join(sorted(problems))
-                if current == prev:
-                    continue
-                sent = True
-                if current:
-                    level = index_status.yandex_problem_level(problems)
-                    plist = "\n".join(f"  • {esc(k)}: {esc(v)}" for k, v in problems.items())
-                    sent = await notifier.send(
-                        f"{humanize.level_icon(level)} Яндекс видит проблемы на {esc(host)}:\n{plist}\n\n"
-                        f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
-                        f"с инструкцией.", notifier.priority_for(level), site_id=site["id"])
-                elif prev:
-                    sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.",
-                                               site_id=site["id"])
-                if sent:
-                    await set_state(key, current)
+                await _yandex_change(site, yandex)
+
+
+def _google_state(raw: str | None) -> dict | None:
+    """The stored Google state: JSON {verdict, coverage, told}; the format
+    before PLAN-36 was «PASS|coverage», where anything but PASS had been
+    said as 🔴."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        verdict, _, coverage = raw.partition("|")
+        return {"verdict": verdict, "coverage": coverage, "told": verdict != "PASS"}
+    return data if isinstance(data, dict) and data.get("verdict") else None
+
+
+def _index_keyboard(site_id: int, label: str, url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{site_id}"),
+        InlineKeyboardButton(text=label, url=url)]])
+
+
+async def _google_change(site: dict, google: dict):
+    """One site's Google verdict against what was seen before — per site,
+    not per host: two monitors of one host (the site and a page of it) kept
+    overwriting each other's state and rang «убрал / снова показывает»
+    every day. The first observation is a quiet baseline, unless it is
+    FAIL; «убрал» is a PASS that stopped being one; «снова показывает»
+    only after a 🔴 was said."""
+    url, site_id = site["url"], site["id"]
+    key = f"gsc_idx:{site_id}"
+    raw = await get_state(key)
+    if raw is None:
+        raw = await get_state(f"gsc_idx:{short_host(url)}")      # the key before PLAN-36: by host, once
+    prev = _google_state(raw)
+    verdict = google["verdict"]
+    state = {"verdict": verdict, "coverage": google["coverage"], "told": bool(prev and prev.get("told"))}
+    label = esc(site_label(url))
+    kb = _index_keyboard(site_id, "↗️ Search Console", "https://search.google.com/search-console")
+    advice = ("Люди больше не найдут сайт через Google.\n\n"
+              "Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
+              "написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
+              "проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]))
+    sent = True
+    if prev is None:
+        if verdict == "FAIL":
+            sent = await notifier.send(f"🔴 Google не показывает {label} в поиске\n{advice}", Priority.CRITICAL,
+                                       reply_markup=kb, site_id=site_id)
+            state["told"] = True
+    elif verdict == "PASS":
+        if prev.get("told"):
+            sent = await notifier.send(
+                f"✅ Google снова показывает {label} в поиске. Ничего делать не нужно."
+                + _tech_line(google["coverage"]), site_id=site_id)
+            state["told"] = False
+    elif prev.get("verdict") == "PASS":
+        sent = await notifier.send(f"🔴 Google убрал {label} из поиска\n{advice}", Priority.CRITICAL,
+                                   reply_markup=kb, site_id=site_id)
+        state["told"] = True
+    if sent and state != prev:
+        await set_state(key, json.dumps(state, ensure_ascii=False))
+
+
+async def _yandex_change(site: dict, yandex: dict):
+    """Problems Yandex.Webmaster sees on the host, said once per set of
+    severities, in words («1 критическая проблема»), not in API codes."""
+    url, site_id = site["url"], site["id"]
+    host = short_host(url)
+    key = f"yx_problems:{host}"
+    prev = await get_state(key) or ""
+    problems = yandex["alert_problems"]
+    current = ",".join(sorted(problems))
+    if current == prev:
+        return
+    sent = True
+    if current:
+        level = index_status.yandex_problem_level(problems)
+        fatal = ("\nКритическая — по классификации Яндекса сайт недоступен для робота или под санкциями."
+                 if level == "critical" else "")
+        sent = await notifier.send(
+            f"{humanize.level_icon(level)} Яндекс.Вебмастер: {esc(index_status.yandex_problems_words(problems))} "
+            f"на {esc(host)}{fatal}\n\n"
+            f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
+            f"с инструкцией.", notifier.priority_for(level), site_id=site_id,
+            reply_markup=_index_keyboard(site_id, "↗️ Вебмастер", "https://webmaster.yandex.ru/"))
+    elif prev:
+        sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.",
+                                   site_id=site_id)
+    if sent:
+        await set_state(key, current)
+
+
+# ── Health of the external services ─────────────────────────────────────────
+
+async def run_integration_health():
+    """Hourly: one 🟠 when an external service stopped working for the bot —
+    its key refused, or a day without a single success — and one ✅ when it
+    works again (services.integrations.record_result keeps the record)."""
+    used = {"gsc": gsc.available(), "yandex": yandex_webmaster.available(), "crux": crux.available(),
+            "github": github.available(), "checkhost": integrations.second_opinion_enabled(),
+            "osv": config.dependency_watch, "rdap": True}
+    for name, (title, loss, setup) in integrations.HEALTH.items():
+        h = await integrations.health(name)
+        if not used.get(name):
+            if h.get("told"):
+                await integrations.set_told(name, False)     # switched off: nothing to say any more
+            continue
+        if integrations.is_broken(h) and not h.get("told"):
+            kb = (InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔌 Проверить подключение",
+                                                                              callback_data=setup)]])
+                  if setup else None)
+            why = f" — {esc(h['reason'])}" if h.get("reason") else ""
+            sent = await notifier.send(f"🟠 {esc(title)}: не работает{why}.\nПока это не починить, {esc(loss)}.",
+                                       Priority.NORMAL, reply_markup=kb)
+            if sent:
+                await integrations.set_told(name, True)
+        elif h.get("told") and not h.get("fail_since"):
+            if await notifier.send(f"✅ {esc(title)}: снова работает.", Priority.NORMAL):
+                await integrations.set_told(name, False)
 
 
 # ── Dead-man switch ──────────────────────────────────────────────────────────
@@ -2033,6 +2114,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(deliver_missed_alerts, lambda: IntervalTrigger(minutes=1, timezone=UTC), "missed_alerts",
         misfire_grace_time=60)
     job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
+    job(run_integration_health, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC),
+        "integration_health")
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:

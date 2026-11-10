@@ -37,6 +37,7 @@ from monitors import availability, dns_checker, links_checker, netcheck, rdap  #
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
+    gsc,
     health,
     integrations,
     maintenance,
@@ -206,6 +207,8 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(dns_checker, "_failures", {})
     monkeypatch.setattr(rdap, "_bootstrap_lock", asyncio.Lock())
     monkeypatch.setattr(rdap, "_bootstrap_failed_at", None)
+    gsc.reset_token_cache()
+    monkeypatch.setattr(integrations, "_gsc_key_problem", None)
 
 
 @pytest.fixture

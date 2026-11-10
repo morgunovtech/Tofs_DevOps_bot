@@ -17,8 +17,9 @@ from db.database import get_or_create_site, save_check
 from monitors import rdap
 from monitors.base import DomainResult, gather_checks
 from monitors.ladder import apply_ladder
-from services import sitestatus
+from services import integrations, sitestatus
 from utils.net import is_private_target
+from utils.text import err_text
 from utils.urls import PLATFORM_DOMAINS, host_of, owned_domain, registrable_domain
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,10 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
     except Exception as e:
         # Lookup failures are flaky (DomainLookupError or anything else) —
         # log, don't manage incidents on them.
-        r.status, r.error, r.transient = "warning", f"Lookup failed: {e}", True
+        r.status, r.error, r.transient = "warning", f"Lookup failed: {err_text(e)}", True
+        await integrations.record_result("rdap", False, err_text(e))
+    else:
+        await integrations.record_result("rdap", True)
 
     if r.domain_info and r.domain_info.days_left is not None:
         details = r.error or f"OK, {r.domain_info.days_left} days left"

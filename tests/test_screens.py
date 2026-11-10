@@ -413,10 +413,10 @@ def test_seo_headline_asserts_only_what_was_measured():
     yx = {"searchable_pages": 0, "sqi": 0, "alert_problems": {"FATAL": 1}, "at": NOW}
     text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
     assert "🔴 <b>В Яндексе сайта нет</b>" in text
-    assert "📇 Яндекс: в поиске 0 страниц 🔴, ИКС 0, 🔴 проблем в Вебмастере: 1" in text
+    assert "📇 Яндекс: в поиске 0 страниц 🔴, ИКС 0, 🔴 1 проблема в Вебмастере" in text
     yx = {"searchable_pages": 12, "sqi": 10, "alert_problems": {"CRITICAL": 2}, "at": NOW}
     text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
-    assert "📇 Яндекс: 12 стр. в поиске, ИКС 10, 🟠 проблем в Вебмастере: 1" in text
+    assert "📇 Яндекс: 12 стр. в поиске, ИКС 10, 🟠 2 проблемы в Вебмастере" in text
 
     hindered = [{"code": "sitemap_missing", "severity": "warning", "message": "нет карты сайта (sitemap.xml)"}]
     text = seo.seo_text(url, _snap("warning", hindered, google=gone), google_on=True)

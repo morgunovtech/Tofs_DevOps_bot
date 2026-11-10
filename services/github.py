@@ -30,7 +30,7 @@ import aiohttp
 
 from db.database import get_state, set_state
 from services import integrations, updates
-from utils.text import esc, plural
+from utils.text import err_text, esc, plural
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,12 @@ _VIEWER = "query { viewer { login } }"
 
 
 class GitHubError(Exception):
-    """GitHub could not be asked; the message is a short human reason."""
+    """GitHub could not be asked; the message is a short human reason.
+    refused — the token itself was turned down (401)."""
+
+    def __init__(self, message: str, refused: bool = False):
+        super().__init__(message)
+        self.refused = refused
 
 
 def available() -> bool:
@@ -83,7 +88,7 @@ async def _graphql(session: aiohttp.ClientSession, query: str, variables: dict |
         async with session.post(GRAPHQL, json={"query": query, "variables": variables or {}},
                                 headers=headers) as resp:
             if resp.status == 401:
-                raise GitHubError("токен не принят: истёк, отозван или скопирован не целиком")
+                raise GitHubError("токен не принят: истёк, отозван или скопирован не целиком", refused=True)
             if resp.status == 403:
                 raise GitHubError("GitHub отказал в доступе или лимит запросов исчерпан")
             if resp.status != 200:
@@ -92,13 +97,15 @@ async def _graphql(session: aiohttp.ClientSession, query: str, variables: dict |
     except GitHubError:
         raise
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-        logger.warning("GitHub GraphQL failed: %s", e)
+        logger.warning("GitHub GraphQL failed: %s", err_text(e))
         raise GitHubError("GitHub не ответил") from e
     data = body.get("data") if isinstance(body, dict) else None
+    errors = body.get("errors") if isinstance(body, dict) else None
+    first = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
     if not data:
-        errors = body.get("errors") if isinstance(body, dict) else None
-        first = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
         raise GitHubError(f"GitHub вернул ошибку: {first}" if first else "пустой ответ GitHub")
+    if errors:
+        logger.warning("GitHub GraphQL answered partially: %s", first or errors)
     return data
 
 
@@ -113,12 +120,14 @@ async def viewer_login(token: str | None = None) -> str | None:
     return ((data.get("viewer") or {}).get("login")) or None
 
 
-async def _repositories(session: aiohttp.ClientSession, fields: str, owner: str) -> tuple[str, list[dict], bool]:
-    """(owner login, repository nodes, complete?) across pages. A page with a
-    hole (a repository node GitHub could not return) is not complete: a
-    repository missing from it must not read as «gone»."""
+async def _repositories(session: aiohttp.ClientSession, fields: str,
+                        owner: str) -> tuple[str, list[dict], bool, int]:
+    """(owner login, repository nodes, complete?, holes) across pages. A page
+    with a hole (a repository node GitHub could not return — usually one the
+    token may not read) is not complete: a repository missing from it must
+    not read as «gone»; holes counts them for the report."""
     nodes: list[dict] = []
-    after, login, complete = None, owner, True
+    after, login, complete, holes = None, owner, True, 0
     for _ in range(MAX_PAGES):
         variables = {"after": after, **({"login": owner} if owner else {})}
         data = await _graphql(session, _query(fields, owner), variables)
@@ -128,13 +137,15 @@ async def _repositories(session: aiohttp.ClientSession, fields: str, owner: str)
         login = root.get("login") or login
         conn = root.get("repositories") or {}
         raw = conn.get("nodes") or []
-        complete &= all(isinstance(n, dict) and n.get("nameWithOwner") for n in raw)
-        nodes += [n for n in raw if isinstance(n, dict) and n.get("nameWithOwner")]
+        good = [n for n in raw if isinstance(n, dict) and n.get("nameWithOwner")]
+        holes += len(raw) - len(good)
+        complete &= len(good) == len(raw)
+        nodes += good
         page = conn.get("pageInfo") or {}
         if not page.get("hasNextPage"):
-            return login, nodes, complete
+            return login, nodes, complete, holes
         after = page.get("endCursor")
-    return login, nodes, False
+    return login, nodes, False, holes
 
 
 def _repo(node: dict) -> dict:
@@ -201,9 +212,9 @@ async def _alerts(session: aiohttp.ClientSession, owner: str) -> dict[str, int] 
     """{repo: open Dependabot alerts} for repositories that have any; None
     when the token may not read them (no permission is not «zero»)."""
     try:
-        _, nodes, _ = await _repositories(session, _ALERT_FIELDS, owner)
+        _, nodes, _, _ = await _repositories(session, _ALERT_FIELDS, owner)
     except GitHubError as e:
-        logger.info("Dependabot alerts unavailable: %s", e)
+        logger.info("Dependabot alerts unavailable: %s", err_text(e))
         return None
     readable = [n for n in nodes if n.get("vulnerabilityAlerts") is not None]
     if not readable:
@@ -218,9 +229,12 @@ async def check() -> dict:
     read."""
     owner = integrations.github_owner()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-        login, nodes, complete = await _repositories(session, _REPO_FIELDS, owner)
+        login, nodes, complete, holes = await _repositories(session, _REPO_FIELDS, owner)
         vulns = await _alerts(session, owner)
     repos = [_repo(n) for n in nodes]
+    # An archive or a fork is nobody's to patch here: its alerts are not a line.
+    readonly = {r["name"] for r in repos if r["archived"] or r["fork"]}
+    vulns = {name: n for name, n in (vulns or {}).items() if name not in readonly}
     key = f"gh:repos:{login.lower()}"
     raw = await get_state(key)
     try:
@@ -230,7 +244,7 @@ async def check() -> dict:
     deps = await updates.last_check() or {}
     skip = frozenset(p.get("url") or "" for p in deps.get("waiting_prs") or [])
     report = analyze(repos, previous if complete else None, skip_pr_urls=skip)
-    report.update(owner=login, vulns=vulns or {},
+    report.update(owner=login, vulns=vulns, partial=holes,
                   checked_at=datetime.now(UTC).isoformat(timespec="minutes"))
     if complete:
         await set_state(key, json.dumps(sorted(r["name"] for r in repos)))
@@ -245,8 +259,10 @@ async def run_watch():
         return
     try:
         report = await check()
+        await integrations.record_result("github", True)
     except GitHubError as e:
         report = {"error": str(e), "checked_at": datetime.now(UTC).isoformat(timespec="minutes")}
+        await integrations.record_result("github", False, str(e), refused=e.refused)
     await set_state("gh:last_report", json.dumps(report, ensure_ascii=False))
 
 
@@ -284,6 +300,11 @@ def summary_lines(report: dict | None) -> list[str]:
         return [f"⚠️ GitHub: не смог проверить — {esc(report['error'])}"]
     owner = report.get("owner") or ""
     lines: list[str] = []
+    partial = int(report.get("partial") or 0)
+    if partial:
+        lines.append(f"⚠️ GitHub: {partial} {plural(partial, 'репозиторий', 'репозитория', 'репозиториев')} "
+                     f"не прочитано — токену не хватает прав (нужны Metadata, Contents, Pull requests, "
+                     f"Commit statuses).")
     gone = report.get("gone") or []
     if gone:
         lines.append(f"🟠 Пропали с прошлой недели: {_listing([esc(_short(g, owner)) for g in gone])} — удалены, "

@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 import aiohttp
 
 from monitors.second_opinion import API, TIMEOUT, endpoint_for
+from services import integrations
+from utils.text import err_text
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +125,11 @@ async def measure(url: str, country: str) -> tuple[int, str] | None:
                     for node, node_result in (results or {}).items():
                         if node_result is None:
                             continue
+                        await integrations.record_result("checkhost", True)
                         ms = parse_ms(node_result)
                         return (ms, node_name(node)) if ms is not None else None
                 return None
     except Exception as e:
-        logger.debug("region measure %s failed: %s", url, e)
+        logger.warning("Region timing via check-host failed for %s: %s", url, err_text(e))
+        await integrations.record_result("checkhost", False, err_text(e))
     return None
