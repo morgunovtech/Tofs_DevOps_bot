@@ -6,9 +6,13 @@ the heartbeat secret guards the dead-man switch. Sharing one value would let
 anyone who views the site source silence heartbeat alerts.
 
 Empty or placeholder env values are replaced by generated secrets stored in
-bot_state, so a bot with only TELEGRAM_BOT_TOKEN set is still safe.
+bot_state, so a bot with only TELEGRAM_BOT_TOKEN set is still safe. A secret
+replaced with «🔑» in the bot stays replaced: the env value is remembered as
+revoked and ignored until it changes. /shot addresses are signed with a key
+of their own, never shown anywhere.
 """
 
+import hashlib
 import logging
 import secrets as _secrets
 
@@ -24,44 +28,78 @@ PLACEHOLDERS = frozenset({
 
 _webhook: str = ""
 _heartbeat: str = ""
+_shots: str = ""
+# Env names whose value is set but not used (equal to the public widget
+# secret, or replaced with «🔑» in the bot) — «🔌 Подключения» says so.
+_ignored_env: set[str] = set()
 
 
 def _usable(value: str) -> bool:
     return value.strip().lower() not in PLACEHOLDERS and len(value.strip()) >= 8
 
 
+def _fingerprint(value: str) -> str:
+    return hashlib.sha256(value.strip().encode()).hexdigest()
+
+
+def _env_name(name: str) -> str:
+    return f"{name.upper()}_SECRET"
+
+
 async def _resolve(name: str, env_value: str) -> str:
-    if _usable(env_value):
-        return env_value.strip()
     key = f"secret:{name}"
-    stored = await get_state(key)
-    if stored:
-        return stored
-    value = _secrets.token_urlsafe(24)
-    await set_state(key, value)
-    logger.warning("%s secret was empty or a placeholder — generated one and "
-                   "stored it in the DB (see ⚙️ Настройки → 🔌 Подключения).", name)
+    if _usable(env_value):
+        if await get_state(f"{key}:revoked") != _fingerprint(env_value):
+            return env_value.strip()
+        _ignored_env.add(_env_name(name))
+        logger.warning("%s was replaced in the bot (🔑) — the new secret is used; "
+                       "remove the old value from the environment", _env_name(name))
+    value, generated = await _stored_or_new(key)
+    if generated:
+        logger.warning("%s secret was empty or a placeholder — generated one and "
+                       "stored it in the DB (see ⚙️ Настройки → 🔌 Подключения).", name)
     return value
 
 
+async def _stored_or_new(key: str) -> tuple[str, bool]:
+    stored = await get_state(key)
+    if stored:
+        return stored, False
+    value = _secrets.token_urlsafe(24)
+    await set_state(key, value)
+    return value, True
+
+
 async def load():
-    global _webhook, _heartbeat
+    global _webhook, _heartbeat, _shots
+    _ignored_env.clear()
     _webhook = await _resolve("webhook", config.webhook_secret_env)
     _heartbeat = await _resolve("heartbeat", config.heartbeat_secret_env)
     if _heartbeat == _webhook:
-        # HEARTBEAT_SECRET explicitly set to the same value — still unsafe.
-        logger.warning("HEARTBEAT_SECRET equals WEBHOOK_SECRET — the webhook "
-                       "secret is public (it is inside the JS widget). "
-                       "Give the heartbeat its own value.")
+        # The webhook secret is public (it is inside the JS widget): a heartbeat
+        # that accepted it would let any visitor keep a dead job «alive».
+        logger.error("HEARTBEAT_SECRET equals the public WEBHOOK_SECRET — ignoring it; the heartbeat "
+                     "uses its own generated secret (⚙️ Настройки → 🔌 Подключения)")
+        _ignored_env.add("HEARTBEAT_SECRET")
+        _heartbeat = await _resolve("heartbeat", "")
+        if _heartbeat == _webhook:
+            _heartbeat = await regenerate("heartbeat")
+    # The key that signs /shot addresses: never shown anywhere, so a leaked
+    # heartbeat address cannot sign them.
+    _shots, _ = await _stored_or_new("secret:shots")
 
 
 async def regenerate(name: str) -> str:
-    """Replace a secret with a fresh random one (stored in the DB). An env
-    value stays in the environment but is no longer used until restart —
-    the checklist tells the user to clear it."""
+    """Replace a secret with a fresh random one (stored in the DB). The env
+    value, if any, is remembered as revoked: it is ignored after a restart
+    too, until the operator changes it."""
     global _webhook, _heartbeat
     value = _secrets.token_urlsafe(24)
     await set_state(f"secret:{name}", value)
+    env_value = config.webhook_secret_env if name == "webhook" else config.heartbeat_secret_env
+    if _usable(env_value):
+        await set_state(f"secret:{name}:revoked", _fingerprint(env_value))
+        _ignored_env.add(_env_name(name))
     if name == "webhook":
         _webhook = value
     else:
@@ -76,3 +114,10 @@ def webhook_secret() -> str:
 def heartbeat_secret() -> str:
     return _heartbeat
 
+
+def shots_key() -> str:
+    return _shots
+
+
+def ignored_env() -> list[str]:
+    return sorted(_ignored_env)

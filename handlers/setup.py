@@ -8,7 +8,6 @@ stored in the DB (services.integrations); .env stays a fallback.
 """
 
 import asyncio
-import contextlib
 import json
 import platform
 import re
@@ -23,7 +22,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import get_all_sites, get_state, set_state
-from handlers.common import ack, back_button, cancel_kb, render
+from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, forget_secret, render
 from services import (
     crux,
     docker_api,
@@ -151,7 +150,12 @@ async def build_items() -> list[Item]:
         items.append(Item("sites", "warn", "сайты", "пока ни одного — нечего мониторить",
                           ("➕ Добавить сайт", "site_add")))
 
-    if secrets.webhook_secret() != secrets.heartbeat_secret():
+    if secrets.ignored_env():
+        items.append(Item("secrets", "warn", "секреты",
+                          f"в окружении задан {', '.join(secrets.ignored_env())}, но я его не использую: он совпадает "
+                          "с публичным секретом виджета или был заменён кнопкой 🔑. Удали переменную из окружения — "
+                          "адреса на карточках задач уже новые"))
+    elif secrets.webhook_secret() != secrets.heartbeat_secret():
         items.append(Item("secrets", "ok", "секреты"))
     else:
         items.append(Item("secrets", "warn", "секреты",
@@ -425,22 +429,32 @@ async def cb_second_opinion(call: CallbackQuery):
 
 
 @router.callback_query(F.data == "setup:hb_regen")
+async def cb_regen_heartbeat_ask(call: CallbackQuery):
+    """Rotation is always one tap away — and never one tap long: every task
+    and bot that marks in with the old address goes silent until updated."""
+    await ack(call)
+    n = len(settings.heartbeat_jobs())
+    await render(call, "🔑 Сменить адрес, по которому задачи и боты выходят на связь?\n\n"
+                       f"Старый адрес перестанет работать сразу у всех ({n}): пока не впишешь им новый, "
+                       "они будут считаться замолчавшими. Делай это, если адрес мог попасть в чужие руки — "
+                       "например, лежал в файле репозитория.",
+                 InlineKeyboardMarkup(inline_keyboard=[
+                     [InlineKeyboardButton(text="🔑 Да, сменить", callback_data="setup:hb_regen_ok")],
+                     [InlineKeyboardButton(text="✖️ Не менять", callback_data="setup:check")]]))
+
+
+@router.callback_query(F.data == "setup:hb_regen_ok")
 async def cb_regen_heartbeat(call: CallbackQuery):
     await secrets.regenerate("heartbeat")
     await ack(call, "Готово")
     jobs = list(settings.heartbeat_jobs())
     example = jobs[0] if jobs else "backup"
-    note = ("\n\n⚠️ В окружении задан HEARTBEAT_SECRET — удали его из переменных, иначе после "
-            "рестарта вернётся старое значение." if config.heartbeat_secret_env else "")
-    await render(call, f"🔑 Новый heartbeat-секрет сохранён. Обнови строку в кроне:\n"
-                       f"<code>curl -fsS {esc(public_urls.heartbeat_url(example))}</code>{note}",
+    note = ("\n\nHEARTBEAT_SECRET в окружении больше не используется — удали переменную."
+            if config.heartbeat_secret_env else "")
+    await render(call, f"🔑 Новый адрес для связи сохранён. Обнови его у каждой задачи и бота, "
+                       f"например:\n<code>curl -fsS {esc(public_urls.heartbeat_url(example))}</code>\n\n"
+                       f"{HEARTBEAT_SECRET_NOTE}{note}",
                  back_button("← К подключениям", "setup:check"))
-
-
-async def _forget(message: Message):
-    """A token, key or hook URL must not stay in the chat history."""
-    with contextlib.suppress(Exception):
-        await message.delete()
 
 
 # ── Guides ───────────────────────────────────────────────────────────────────
@@ -546,12 +560,12 @@ async def cb_watchdog_url(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.watchdog_url)
 async def msg_watchdog_url(message: Message, state: FSMContext):
+    await forget_secret(message)
     url = (message.text or "").strip()
     if not re.fullmatch(r"https://[^\s]{10,300}", url):
         await message.answer("Нужна https-ссылка. Попробуй ещё раз:", reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     error = await heartbeats.ping_watchdog(url)
     if error:
         await message.answer(f"❌ Сторож не на связи: {esc(error)}. Проверь, что скопировал ссылку "
@@ -607,12 +621,12 @@ async def cb_yx_token(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.yx_token)
 async def msg_yx_token(message: Message, state: FSMContext):
+    await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-.]{20,200}", token):
         await message.answer("Не похоже на токен. Попробуй ещё раз:", reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     previous = integrations.stored().get("yandex_token")
     await integrations.set_value("yandex_token", token)
     hosts = await _yandex_probe()
@@ -669,13 +683,13 @@ async def cb_crux_key(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.crux_key)
 async def msg_crux_key(message: Message, state: FSMContext):
+    await forget_secret(message)
     key = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{30,60}", key):
         await message.answer("Не похоже на ключ Google API (он вида AIza…). Попробуй ещё раз:",
                              reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     if not await crux.key_works(key):
         await message.answer("❌ Google не принял ключ. Проверь, что Chrome UX Report API включён в том же "
                              "проекте, где создан ключ, и что ключ скопирован целиком.", reply_markup=_crux_kb())
@@ -767,13 +781,13 @@ async def msg_gsc_key(message: Message, state: FSMContext):
             return
         buf = await message.bot.download(message.document)
         raw = buf.read().decode("utf-8", errors="replace")
+    await forget_secret(message)            # the file is in hand; the key must not stay in the chat
     creds = integrations.valid_gsc_key(raw)
     if not creds:
         await message.answer("Это не JSON-ключ сервис-аккаунта (нужны поля client_email и private_key).",
                              reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     await integrations.set_value("gsc_key", json.dumps(creds))
     gsc.reset_token_cache()
     if not integrations.gsc_property():
@@ -841,6 +855,7 @@ async def cb_cf_hook(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.cf_hook)
 async def msg_cf_hook(message: Message, state: FSMContext):
+    await forget_secret(message)
     parts = re.split(r"[\s=]+", (message.text or "").strip(), maxsplit=1)
     host = host_of("https://" + parts[0]) if parts and parts[0] else ""
     url = parts[1].strip() if len(parts) == 2 else ""
@@ -849,7 +864,6 @@ async def msg_cf_hook(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     await integrations.set_deploy_hook(host, url)
     await message.answer(f"✅ Deploy hook для {esc(host)} сохранён.\n{esc(_cf_state_line())}",
                          reply_markup=_cf_kb())
@@ -864,12 +878,12 @@ async def cb_cf_token(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.cf_token)
 async def msg_cf_token(message: Message, state: FSMContext):
+    await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{30,100}", token):
         await message.answer("Не похоже на API-токен Cloudflare.", reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     await integrations.set_value("cf_api_token", token)
     await message.answer(f"✅ Токен сохранён.\n{esc(_cf_state_line())}", reply_markup=_cf_kb())
 
@@ -947,12 +961,12 @@ async def cb_gh_token(call: CallbackQuery, state: FSMContext):
 
 @router.message(SetupForm.gh_token)
 async def msg_gh_token(message: Message, state: FSMContext):
+    await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_]{30,255}", token):
         await message.answer("Не похоже на токен GitHub. Попробуй ещё раз:", reply_markup=cancel_kb())
         return
     await state.clear()
-    await _forget(message)
     login = await github.viewer_login(token)
     if not login:
         await message.answer("❌ GitHub не принял токен. Проверь, что он скопирован целиком и не истёк.",

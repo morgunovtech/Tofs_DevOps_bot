@@ -308,7 +308,7 @@ async def test_watchdog_ping_reads_the_answer_not_just_the_code(db):
         assert await heartbeats.ping_watchdog(ok_url) is None
         assert await heartbeats.ping_watchdog(str(server.make_url("/gone"))) == "check не найден"
         assert await heartbeats.ping_watchdog(str(server.make_url("/broken"))) == "отвечает ошибкой 503"
-    assert await heartbeats.ping_watchdog(ok_url) == "не отвечает"         # server gone
+    assert await heartbeats.ping_watchdog(ok_url) == "не удаётся подключиться (сеть или DNS на моей стороне)"   # server gone
 
 
 async def test_a_long_absence_is_said_and_the_missed_morning_comes_late(bot, db, monkeypatch):

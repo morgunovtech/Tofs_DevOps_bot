@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from handlers.common import ack, back_button, cancel_kb, render
+from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, render
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.text import esc
@@ -68,8 +68,17 @@ def _url_line(name: str) -> str:
     return f"<code>{esc(public_urls.heartbeat_url(name))}</code>"
 
 
+# A plain string, not an f-string: GitHub reads «${{ }}» itself.
+GITHUB_STEP = ("<code>- run: curl -fsS \"$HEARTBEAT_URL\"\n"
+               "  env:\n"
+               "    HEARTBEAT_URL: ${{ secrets.HEARTBEAT_URL }}</code>")
+
+
 def _back(name: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← Назад", callback_data=f"hb_show:{name}")]])
+    # Rotation is always one tap away, not only when the secrets happen to collide.
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Адрес мог утечь — сменить", callback_data="setup:hb_regen")],
+        [InlineKeyboardButton(text="← Назад", callback_data=f"hb_show:{name}")]])
 
 
 @router.callback_query(F.data.startswith("hb_ask:"))
@@ -92,6 +101,7 @@ async def cb_hb_bot(call: CallbackQuery):
                        f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
                        f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
                        f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
+                       f"{HEARTBEAT_SECRET_NOTE}\n\n"
                        f"Как только связь появится, строка на главном экране станет ✅.", _back(name))
 
 
@@ -102,13 +112,17 @@ async def cb_hb_cron(call: CallbackQuery):
     url = esc(public_urls.heartbeat_url(name))
     await render(call, f"🗓 Подключить «{esc(name)}»\n\n"
                        f"В самом конце задача должна открыть адрес — нажми на него, он скопируется:\n"
-                       f"{_url_line(name)}\n\n"
+                       f"{_url_line(name)}\n{HEARTBEAT_SECRET_NOTE}\n\n"
                        f"Где задача запускается:\n"
-                       f"• <b>GitHub Actions</b> — добавь последний шаг в workflow:\n"
-                       f"<code>- run: curl -fsS {url}</code>\n"
+                       f"• <b>GitHub Actions</b> — адрес в файл workflow не вставляй: репозиторий читают другие. "
+                       f"В репозитории: Settings → Secrets and variables → Actions → New repository secret, "
+                       f"имя <code>HEARTBEAT_URL</code>, значение — адрес выше. Последний шаг workflow:\n"
+                       f"{GITHUB_STEP}\n"
                        f"• <b>cron на своём сервере</b> — допиши в конец строки задачи:\n"
                        f"<code>&& curl -fsS {url}</code>\n"
-                       f"• <b>Планировщик хостинга</b> (Railway Cron, Render…) — допиши то же в конец команды.\n\n"
+                       f"• <b>Планировщик хостинга</b> (Railway Cron, Render…) — положи адрес в переменную "
+                       f"окружения сервиса <code>HEARTBEAT_URL</code> и допиши в конец команды "
+                       f"<code>&& curl -fsS \"$HEARTBEAT_URL\"</code>; в render.yaml и railway.json адрес не пиши.\n\n"
                        f"Задача упадёт раньше — адрес не откроется, и я напишу. Как только связь появится, "
                        f"строка на главном экране станет ✅.", _back(name))
 

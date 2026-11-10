@@ -30,6 +30,7 @@ from monitors.base import AvailabilityResult, decode_body, gather_checks, read_c
 from monitors.second_opinion import repeatable, second_opinion_up
 from services import health, hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
+from utils.redact import without_query
 from utils.urls import USER_AGENT, is_api_check
 
 logger = logging.getLogger(__name__)
@@ -126,8 +127,19 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
         r.status, r.error = "error", f"Timeout ({int(TIMEOUT.total)}s)"
         r.response_time_ms = int((time.monotonic() - start) * 1000)
     except aiohttp.ClientError as e:
-        r.status, r.error = "error", str(e) or type(e).__name__
+        r.status, r.error = "error", _error_text(e)
         r.response_time_ms = int((time.monotonic() - start) * 1000)
+
+
+def _error_text(e: aiohttp.ClientError) -> str:
+    """aiohttp puts the whole request URL, query and all, into str() of its
+    response errors; r.error goes to the history, the alert and the helpers'
+    copy — an API check's token must not."""
+    if isinstance(e, aiohttp.TooManyRedirects):
+        return "слишком много перенаправлений (редирект по кругу)"
+    if isinstance(e, aiohttp.ClientResponseError):
+        return f"HTTP {e.status}" if e.status else type(e).__name__
+    return without_query(str(e)) or type(e).__name__
 
 
 async def _probe_tcp(url: str, r: AvailabilityResult):

@@ -88,6 +88,7 @@ class FakeMessage:
         self.preview_options: list = []   # the LinkPreviewOptions object as sent
         self.chat = SimpleNamespace(id=1, type="private")
         self.message_id = 1
+        self.deleted = False
         self.sender_chat = None
         self.date = datetime.now(UTC)
         self.reply_markup = None
@@ -111,6 +112,10 @@ class FakeMessage:
 
     async def edit_reply_markup(self, reply_markup=None):
         self.reply_markup = reply_markup
+
+    async def delete(self):
+        self.deleted = True
+        return True
 
     async def answer_document(self, document, caption=None):
         self.documents.append(caption)

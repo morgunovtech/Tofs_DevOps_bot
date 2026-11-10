@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -30,6 +30,28 @@ ELSEWHERE = ("Здесь я не управляюсь: пиши мне в наш
 NO_OWNER = ("Мной сейчас никто не может управлять: в .env задан TELEGRAM_ADMIN_CHAT_ID группы, "
             "но не задан TELEGRAM_ADMIN_USER_ID. Впиши туда свой числовой id (его покажет @userinfobot) "
             "и перезапусти бота.")
+# The heartbeat address is a password: whoever has it can mark in for any task.
+HEARTBEAT_SECRET_NOTE = ("🔐 Этот адрес — как пароль: кто его знает, может выходить на связь вместо "
+                         "задачи. Не публикуй его и не клади в файлы репозитория.")
+NOT_DELETED = ("⚠️ Не смог удалить твоё сообщение с ключом — удали его сам. "
+               "В группе для этого мне нужно право администратора «Удаление сообщений».")
+
+
+async def forget_secret(message: Message) -> bool:
+    """A token, key, password or hook URL must not stay in the chat history.
+    Called first, before the input is checked: a mistyped secret is still a
+    secret. When Telegram refuses (a group where the bot is not an admin),
+    the owner is told — silence would leave the key on view."""
+    try:
+        await message.delete()
+        return True
+    except TelegramAPIError as e:
+        logger.warning("Could not delete a message with a secret: %s", type(e).__name__)
+        try:
+            await message.answer(NOT_DELETED)
+        except TelegramAPIError:
+            pass
+        return False
 
 # The bot's three doors, always under the input field (no ☰ menu).
 HOME, ABOUT, ICONS = "🏠 Главная", "📖 Что я умею", "❓ Значки"

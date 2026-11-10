@@ -132,7 +132,7 @@ def shot_path(site_id: int) -> str:
 
 def _sig(site_id: int) -> str:
     """Signed, so the address does not enumerate what the bot watches."""
-    key = secrets.heartbeat_secret().encode()
+    key = secrets.shots_key().encode()
     return hmac.new(key, f"shot:{site_id}".encode(), hashlib.sha256).hexdigest()[:16]
 
 

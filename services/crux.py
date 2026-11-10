@@ -63,7 +63,9 @@ async def query(origin: str, key: str | None = None) -> dict | None:
         return None
     try:
         async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-            async with session.post(API, params={"key": key}, json={"origin": origin}) as resp:
+            # The key travels in a header, not in the URL: a URL ends up in logs and error texts.
+            async with session.post(API, json={"origin": origin}, headers={"X-Goog-Api-Key": key},
+                                    allow_redirects=False) as resp:
                 if resp.status == 404:
                     return {}
                 if resp.status != 200:
@@ -71,7 +73,7 @@ async def query(origin: str, key: str | None = None) -> dict | None:
                     return None
                 return parse((await resp.json()).get("record") or {})
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-        logger.warning("CrUX for %s failed: %s", origin, e)
+        logger.warning("CrUX for %s failed: %s", origin, type(e).__name__)
         return None
 
 

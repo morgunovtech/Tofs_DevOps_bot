@@ -186,7 +186,8 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await heartbeats.cb_hb_cron(call)
     text = call.message.texts[-1]
     assert "GitHub Actions" in text and "- run: curl -fsS" in text and "&& curl -fsS" in text
-    assert buttons(call.message.reply_markup) == ["← Назад"]
+    assert "secrets.HEARTBEAT_URL" in text and "- run: curl -fsS http" not in text
+    assert buttons(call.message.reply_markup) == ["🔑 Адрес мог утечь — сменить", "← Назад"]
     # From the morning digest: the answer goes below, the digest stays as it was.
     call = FakeCall("hb_how:backup")
 

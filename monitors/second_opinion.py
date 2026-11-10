@@ -33,6 +33,8 @@ def repeatable(site: dict) -> bool:
     no second opinion for it; the fail threshold still filters flaps."""
     if not is_http_url(site.get("url") or ""):
         return True                      # tcp/ping are repeated as they are
+    if _carries_secret(site.get("url") or ""):
+        return False
     if (site.get("http_method") or "GET").upper() not in PAGE_METHODS:
         return False
     try:
@@ -40,6 +42,16 @@ def repeatable(site: dict) -> bool:
     except ValueError:
         headers = {}
     return not headers
+
+
+def _carries_secret(url: str) -> bool:
+    """A query or a user:password in the address may be a token — such an
+    address never goes to an outside service."""
+    try:
+        p = urlparse(url)
+        return bool(p.query or p.username or p.password)
+    except ValueError:
+        return True
 
 
 def _is_private_host(host: str | None) -> bool:
@@ -57,7 +69,7 @@ def _is_private_host(host: str | None) -> bool:
 def endpoint_for(url: str) -> tuple[str, str] | None:
     """(check-host endpoint, host param); None = not applicable."""
     parsed = urlparse(url)
-    if _is_private_host(parsed.hostname):
+    if _is_private_host(parsed.hostname) or (is_http_url(url) and _carries_secret(url)):
         return None
     if parsed.scheme == "tcp":
         if not parsed.hostname or not parsed.port:

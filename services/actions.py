@@ -118,9 +118,19 @@ async def trigger_redeploy(url: str) -> str:
                 if resp.status in (200, 201):
                     return "🚀 Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты"
                 return f"❌ Cloudflare не принял команду пересборки (ошибка {resp.status})"
+    except aiohttp.InvalidURL:
+        # Its text IS the hook address — and the address is the secret.
+        logger.warning("Deploy hook for %s is not a valid URL", host_of(url))
+        return "❌ Адрес deploy hook испорчен — задай его заново (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
+    except aiohttp.ClientConnectorError:
+        logger.warning("Deploy hook for %s: cannot connect", host_of(url))
+        return "❌ Не удалось связаться с Cloudflare — пересборка не запущена"
+    except TimeoutError:
+        logger.warning("Deploy hook for %s: timed out", host_of(url))
+        return f"❌ Cloudflare не ответил за {int(_TIMEOUT.total)} с — нажми «🚀» позже"
     except Exception as e:
-        logger.warning("Deploy hook for %s failed: %s", url, e)
-        return f"❌ Не удалось запустить пересборку: {esc(str(e) or type(e).__name__)}"
+        logger.warning("Deploy hook for %s failed: %s", host_of(url), type(e).__name__)
+        return "❌ Не удалось запустить пересборку — подробности в логе бота"
 
 
 async def purge_cf_cache(url: str) -> str:

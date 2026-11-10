@@ -6,6 +6,7 @@ Entry point: запускает бота, планировщик и веб-се�
 import asyncio
 import logging
 import os
+from urllib.parse import urlsplit
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -21,11 +22,28 @@ from handlers.sites import parse_site_input
 from handlers.start import BOTTOM_SHOWN
 from reports.scheduler import catch_up_after_restart, rerun_seo_after_update, setup_scheduler
 from services import integrations, maintenance, notifier, runtime, secrets, settings, updates
+from utils.redact import RedactingFormatter
 from utils.urls import proxy_label, proxy_problem, site_label
 from web.webhook import start_web_server
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+def secret_values() -> list[str]:
+    """What must never reach a log line, as the bot knows it right now."""
+    proxy_password = urlsplit(config.telegram_proxy).password if config.telegram_proxy else None
+    return [config.bot_token, proxy_password or "", secrets.webhook_secret(), secrets.heartbeat_secret(),
+            integrations.self_heartbeat_url(), integrations.crux_key(), integrations.github_token(),
+            integrations.cf_api_token(), integrations.yandex_token(), *integrations.deploy_hooks().values()]
+
+
+def setup_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(RedactingFormatter(LOG_FORMAT, secret_values))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
+
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 

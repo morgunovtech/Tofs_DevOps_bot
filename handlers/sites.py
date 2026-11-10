@@ -50,6 +50,7 @@ from handlers.common import (
     back_button,
     cancel_kb,
     cb_args,
+    forget_secret,
     render,
     site_by_cb,
     with_running_bar,
@@ -624,6 +625,9 @@ async def msg_site_add(message: Message, state: FSMContext):
         await message.answer(error, reply_markup=_add_kb())
         return
     await state.clear()
+    raw = urlparse((message.text or "").strip())
+    if urlparse(url).query or raw.password or "@" in raw.netloc:
+        await forget_secret(message)        # an API address with ?token=… or user:pass@ in it
     first_site = not await get_all_sites()
     site_id = await activate_or_create_site(url)
     label = site_label(url)
