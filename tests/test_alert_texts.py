@@ -26,7 +26,7 @@ from reports import scheduler
 from reports.formatter import format_compact_status_report, format_dns_change, format_domain_alert
 from reports.weekly import renewals_block
 from services import integrations, notifier, settings, sitestatus
-from services.actions import heartbeat_keyboard
+from services.actions import explain_keyboard, heartbeat_keyboard
 from services.humanize import classify, describe_error
 from utils import clock
 
@@ -156,6 +156,25 @@ async def test_ns_change_alert_links_the_registrar(bot, db, monkeypatch):
     await scheduler.run_dns_checks()
     kb = bot.sent[-1]["reply_markup"]
     assert kb is not None and any("namecheap" in (b.url or "") for row in kb.inline_keyboard for b in row)
+
+
+async def test_quiet_queue_is_one_digest_with_times_and_numbered_buttons(bot, db):
+    await notifier.set_mute(timedelta(hours=1))
+    for i in (1, 2, 3):
+        assert await notifier.send(f"🟠 site{i}.test: защиту сайта стоит усилить", reply_markup=explain_keyboard(i))
+    conn = await db.get_db()
+    await conn.execute("UPDATE pending_notifications SET created_at = '2026-11-08 20:15:00'")
+    await conn.commit()
+    await notifier.set_mute(None)
+    await notifier.flush_queue()
+    assert len(bot.sent) == 1
+    text = bot.sent[0]["text"]
+    assert text.startswith("🌙 Накопилось") and text.count("23:15") == 3     # 20:15 UTC in Moscow
+    assert "1. " in text and "3. " in text
+    kb = bot.sent[0]["reply_markup"]
+    assert [b.callback_data for row in kb.inline_keyboard for b in row] == [
+        "inc_explain:1:a", "inc_explain:2:a", "inc_explain:3:a"]
+    assert buttons(kb) == ["ℹ️ 1", "ℹ️ 2", "ℹ️ 3"]
 
 
 async def test_the_quiet_first_audit_is_said_in_the_next_morning_digest(bot, db, monkeypatch):

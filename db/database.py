@@ -913,7 +913,7 @@ async def peek_notifications(limit: int = PENDING_MAX) -> list[dict]:
     explicitly after a successful send, or a failed send loses the digest."""
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id, text, reply_markup FROM pending_notifications ORDER BY id LIMIT ?", (limit,))
+        "SELECT id, text, reply_markup, created_at FROM pending_notifications ORDER BY id LIMIT ?", (limit,))
     return [dict(r) for r in await cursor.fetchall()]
 
 
