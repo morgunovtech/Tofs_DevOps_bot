@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import idna
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -59,7 +60,7 @@ from handlers.common import (
     with_running_bar,
 )
 from handlers.mail import mail_lines
-from handlers.menu import PROBLEM_ICONS, best_ms, cb_main_menu, checked_at, headline, icon_of, site_state
+from handlers.menu import _RANK, PROBLEM_ICONS, best_ms, checked_at, headline, icon_of, site_state
 from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.speed import speed_lines
@@ -463,24 +464,21 @@ async def hosting_words(site: dict) -> str:
 
 
 def _pages_lines(deep: dict | None) -> list[str]:
-    """The rest of the site: pages from the sitemap, hourly — each with its mark."""
+    """The rest of the site: pages from the sitemap, hourly — one line when
+    they all answer, else only the broken ones by name."""
     if not deep or not deep.get("sampled"):
         return []
     n, bad = deep["sampled"], deep.get("errors") or 0
-    pages = deep.get("pages") or []
+    if not bad:
+        return [f"✅ Страницы из карты сайта: {n} из {n} отвечают"]
     # code None — answered fine; 0 — did not answer at all; else a 5xx.
-    silent = any(code == 0 for _, code in pages)
-    if bad:
-        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера"
-                + (" или не отвечают" if silent else ""))
-    else:
-        head = "✅ Страницы из карты сайта" + ("" if pages else f": {n} из {n} отвечают")
-    lines = [head]
-    lines += [f"    ✅ {esc(path)}" if code is None
-              else f"    🔴 {esc(path)} — {'не ответила' if code == 0 else f'ошибка {code}'}"
-              for path, code in pages[:10]]
-    if len(pages) > 10:
-        lines.append(f"    … и ещё {len(pages) - 10}")
+    broken = [(path, code) for path, code in (deep.get("pages") or []) if code is not None]
+    silent = any(code == 0 for _, code in broken)
+    lines = [f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера"
+             + (" или не отвечают" if silent else "")]
+    lines += [f"    🔴 {esc(path)} — {'не ответила' if code == 0 else f'ошибка {code}'}" for path, code in broken[:10]]
+    if len(broken) > 10:
+        lines.append(f"    … и ещё {len(broken) - 10}")
     return lines
 
 
@@ -581,8 +579,9 @@ async def render_card(call: CallbackQuery, site: dict):
     rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])
     if len(sites) > 1:
         prev, nxt = sites[pos - 1], sites[(pos + 1) % len(sites)]
-        rows.append([InlineKeyboardButton(text=f"◀ {site_label(prev['url'])}", callback_data=f"check_site:{prev['id']}"),
-                     InlineKeyboardButton(text=f"{site_label(nxt['url'])} ▶", callback_data=f"check_site:{nxt['id']}")])
+        rows.append([InlineKeyboardButton(text="◀", callback_data=f"check_site:{prev['id']}"),
+                     InlineKeyboardButton(text=f"📋 Все сайты · {pos + 1}/{len(sites)}", callback_data="blk:sites"),
+                     InlineKeyboardButton(text="▶", callback_data=f"check_site:{nxt['id']}")])
     rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
                  InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
     picture = None
@@ -604,21 +603,43 @@ def _later(coro):
     task.add_done_callback(_background.discard)
 
 
-@router.callback_query(F.data == "blk:sites")
+SITES_PAGE = 8
+
+
+def _short(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+@router.callback_query(F.data.startswith("blk:sites"))
 async def cb_sites_block(call: CallbackQuery):
-    """«🌐 Сайты» on the main screen: the card of the first site that needs
-    a look, else of the first site."""
+    """«🌐 Сайты» on the main screen: one site — its card at once; more — a
+    list, the sites that need a look first, SITES_PAGE per page
+    (blk:sites:<page>)."""
     sites = await get_all_sites()
     if not sites:
         await ack(call, "Сайтов пока нет", show_alert=True)
         return
     await ack(call)
-    for site in sites:
-        if (await site_state(site))[0] != "✅":
-            break
-    else:
-        site = sites[0]
-    await render_card(call, site)
+    if len(sites) == 1:
+        await render_card(call, sites[0])
+        return
+    arg = call.data.split(":")[2] if call.data.count(":") == 2 else "0"
+    incidents = await get_active_incidents()
+    states = [(s, (await site_state(s, incidents))[0]) for s in sites]
+    states.sort(key=lambda t: _RANK.get(t[1], 9))
+    pages = -(-len(states) // SITES_PAGE)
+    page = min(int(arg), pages - 1) if arg.isdigit() else 0
+    rows = [[InlineKeyboardButton(text=f"{icon} {_short(site_label(s['url']), 26)}",
+                                  callback_data=f"check_site:{s['id']}")]
+            for s, icon in states[page * SITES_PAGE:(page + 1) * SITES_PAGE]]
+    nav = ([InlineKeyboardButton(text="◀", callback_data=f"blk:sites:{page - 1}")] if page > 0 else []) + \
+          ([InlineKeyboardButton(text="▶", callback_data=f"blk:sites:{page + 1}")] if page < pages - 1 else [])
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
+                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
+    head = f"🌐 Сайты ({len(sites)})" + (f" · страница {page + 1} из {pages}" if pages > 1 else "")
+    await render(call, f"{head}\nСначала те, где что-то не так.", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("check_site:"))
@@ -785,37 +806,41 @@ async def msg_site_add(message: Message, state: FSMContext):
     if first_site:
         lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
-    kb = back_button()
+    rows = [[InlineKeyboardButton(text="🌍 Открыть карточку", callback_data=f"check_site:{site_id}")]]
     if r.api:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📡 Настроить запрос", callback_data=f"ssetx:{site_id}")],
-            *back_button().inline_keyboard])
+        rows.append([InlineKeyboardButton(text="📡 Настроить запрос", callback_data=f"ssetx:{site_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=[*rows, *back_button().inline_keyboard])
+    phrase = None
     if page and r.ok:
         note = await alt_host_note(url)
         if note:
             lines.append("\n" + esc(note))
         phrase = await suggest_keyword(url)
-        if phrase:
-            await set_state(f"kw_suggest:{site_id}", phrase)
-            lines.append(f"\n💡 На главной есть «{esc(phrase)}». Следить, чтобы она не пропадала? "
-                         f"Так я замечу пустую страницу или ошибку вместо сайта.")
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
-                 InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]])
     await status.edit_text("\n".join(lines), reply_markup=kb)
+    if phrase:
+        # A question of its own: its answer removes the buttons, not the result above.
+        await set_state(f"kw_suggest:{site_id}", phrase)
+        await message.answer(f"💡 На главной есть «{esc(phrase)}». Следить, чтобы она не пропадала? "
+                             f"Так я замечу пустую страницу или ошибку вместо сайта.",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                 [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
+                                  InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]]))
     if first_site and (steps := await last_steps()):
         await message.answer(steps[0], reply_markup=steps[1])
 
 
 @router.callback_query(F.data.startswith("kwno:"))
-async def cb_keyword_decline(call: CallbackQuery, state: FSMContext):
-    """«Не надо» is remembered: the weekly tip never re-suggests it."""
+async def cb_keyword_decline(call: CallbackQuery):
+    """«Не надо» is remembered: the weekly tip never re-suggests it. The
+    question loses its buttons; the screen stays where it was."""
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site:
         await set_state(f"kw_declined:{site['id']}", "1")
         await set_state(f"kw_suggest:{site['id']}", None)
     await ack(call, "Ок, больше не предложу")
-    await cb_main_menu(call, state)
+    if call.message is not None and hasattr(call.message, "edit_reply_markup"):
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_reply_markup(reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("rec_no:"))
@@ -890,16 +915,15 @@ async def cb_pause(call: CallbackQuery):
     if not site or (args[1] != "off" and minutes is None):
         await ack(call, "Кнопка устарела — открой карточку сайта заново", show_alert=True)
         return
-    sid, arg, host = site["id"], args[1], site_label(site["url"])
+    sid, arg = site["id"], args[1]
+    # The card itself says «🔧 Режим «я чиню»» and offers «✅ Починил»: a toast and the card again.
     if arg == "off":
         await maintenance.pause_site(sid, None)
-        await ack(call, "Пауза снята")
-        await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
-        return
-    await maintenance.pause_site(sid, minutes)
-    await ack(call, "Пауза включена")
-    await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
-                              f"проверки идут. Раньше снять: 🏠 Главная → «🌐 Сайты» → {esc(host)}.")
+        await ack(call, "Пауза снята — снова пишу обо всём")
+    else:
+        await maintenance.pause_site(sid, minutes)
+        await ack(call, f"🔧 {fmt_duration(minutes)} не пишу про этот сайт, проверки идут")
+    await render_card(call, site)
 
 
 # ── Restore from a file ──────────────────────────────────────────────────────

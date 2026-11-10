@@ -122,7 +122,7 @@ async def test_site_add_flow_and_detail_screen(bot, db):
 
         call = FakeCall(f"pause:{sid}:120")
         await sites.cb_pause(call)
-        assert "чинится" in call.message.texts[-1]
+        assert "🔧 Режим «я чиню»" in call.message.texts[-1]
         assert await maint_service.is_paused(sid)
 
         # An export from an older version, sent to the chat, still restores.
@@ -507,8 +507,10 @@ async def test_declined_keyword_is_not_suggested_again(bot, db, monkeypatch):
     assert "Слежу" in call.message.texts[-1] and (await db.get_site_by_url("https://kw.test"))["keyword"] == "Семён Моргунов"
     await db.update_site_settings(sid, keyword="")
     call = FakeCall(f"kwno:{sid}")
-    await sites.cb_keyword_decline(call, FakeState())
-    assert any(a and a.startswith("Ок") for a in call.answers) and call.message.texts   # back on the main screen
+    call.message.reply_markup = idea[2]
+    await sites.cb_keyword_decline(call)
+    assert any(a and a.startswith("Ок") for a in call.answers)
+    assert call.message.reply_markup is None and not call.message.texts   # the question loses its buttons, nothing else
     assert "keyword" not in [c[0] for c in await recommend._candidates()]
 
 
@@ -621,9 +623,9 @@ async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
     assert await heartbeats_service.job_status("socialtracker") is None
 
 
-async def test_sites_block_is_one_card_with_arrows(bot, db):
-    """«🌐 Сайты» opens the site that needs a look, and ◀ ▶ flip through
-    the rest in the same message — no button per site on the main screen."""
+async def test_sites_block_is_a_list_with_problems_first(bot, db):
+    """«🌐 Сайты» is a list, the site that needs a look first; the card has
+    ◀ ▶ and «📋 Все сайты» back to the list."""
     ids = []
     for name in ("a", "b", "c"):
         sid = await db.activate_or_create_site(f"https://{name}.test")
@@ -632,11 +634,14 @@ async def test_sites_block_is_one_card_with_arrows(bot, db):
     await sitestatus.update(ids[1], "ssl", days_left=5, issuer="LE", not_after=None, error=None)
     call = FakeCall("blk:sites")
     await sites.cb_sites_block(call)
-    text = call.message.texts[-1]
-    assert text.startswith("<b>b.test</b>\n🟠 1 проблема · проверено в ")
-    nav = [b for row in call.message.reply_markup.inline_keyboard for b in row if "◀" in b.text or "▶" in b.text]
-    assert [(b.text, b.callback_data) for b in nav] == [("◀ a.test", f"check_site:{ids[0]}"),
-                                                         ("c.test ▶", f"check_site:{ids[2]}")]
+    assert call.message.texts[-1].startswith("🌐 Сайты (3)")
+    assert [b.callback_data for b in call.message.reply_markup.inline_keyboard[0]] == [f"check_site:{ids[1]}"]
+    call = FakeCall(f"check_site:{ids[1]}")
+    await sites.cb_check_single_site(call)
+    nav = call.message.reply_markup.inline_keyboard[-2]
+    assert [(b.text, b.callback_data) for b in nav] == [("◀", f"check_site:{ids[0]}"),
+                                                         ("📋 Все сайты · 2/3", "blk:sites"),
+                                                         ("▶", f"check_site:{ids[2]}")]
     assert buttons(call.message.reply_markup)[-2:] == ["➕ Добавить сайт", "🏠 Главная"]
 
 
@@ -748,8 +753,8 @@ async def test_site_card_tells_when_it_fell_where_it_lives_and_how_the_rest_is(b
     # Each page with its own mark, when the check kept them.
     await sitestatus.update(sid, "deep", sampled=3, errors=1, pages=[["/", None], ["/a", 502], ["/b", None]])
     lines = await sites.card_lines(await db.get_site(sid))
-    assert lines[:4] == ["🟠 Страницы из карты сайта: 1 из 3 отвечают ошибкой сервера",
-                         "    ✅ /", "    🔴 /a — ошибка 502", "    ✅ /b"]              # a problem: at the top
+    assert lines[:2] == ["🟠 Страницы из карты сайта: 1 из 3 отвечают ошибкой сервера", "    🔴 /a — ошибка 502"]
+    assert "    ✅ /" not in lines                                     # a problem at the top, only the broken ones
 
 
 def test_on_cloudflare_the_screen_does_not_claim_what_it_cannot_see():

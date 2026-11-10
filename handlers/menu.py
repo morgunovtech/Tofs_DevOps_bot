@@ -7,10 +7,10 @@ button per block opens its full page; nothing else on the screen."""
 import re
 from datetime import datetime, timedelta
 
-from aiogram import F, Router
+from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 
 from config import config
 from db.database import (
@@ -322,8 +322,20 @@ async def cb_main_menu(call: CallbackQuery, state: FSMContext):
     await send_main_menu(call)
 
 
-@router.callback_query(F.data == "fsm_cancel")
-async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext):
-    await ack(call, "Отменено")
+@router.callback_query(F.data.startswith("fsm_cancel"))
+async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext, dispatcher: Dispatcher, bot: Bot):
+    """«✖️ Отмена» under an input step: back to the screen the step was
+    opened from (fsm_cancel:<its callback>, drawn by its own handler through
+    the dispatcher), else the main screen. On a prompt whose step is already
+    closed (a bottom button, another tap, a restart) the way back is the
+    same — only the toast differs."""
+    closed = await state.get_state() is None
     await state.clear()
-    await send_main_menu(call)
+    back = call.data.partition(":")[2]
+    if not back or back == "menu_main":
+        await ack(call, "Нечего отменять — этот шаг уже закрыт" if closed else "Отменено")
+        await send_main_menu(call)
+        return
+    if closed:
+        await ack(call, "Нечего отменять — этот шаг уже закрыт")
+    await dispatcher.feed_update(bot, Update(update_id=0, callback_query=call.model_copy(update={"data": back})))

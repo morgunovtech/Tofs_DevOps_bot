@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from handlers.common import ack, back_button, render
+from handlers.common import ack, render
 from services import notifier
 from utils.clock import to_local
 from utils.parse import parse_duration
@@ -64,12 +64,21 @@ async def cb_mute_menu(call: CallbackQuery):
     await render(call, f"{status}На сколько замолчать?\n{notifier.what_rings_through_mute()}", _mute_menu())
 
 
+_BACK = [InlineKeyboardButton(text="← Когда писать", callback_data="menu_reports")]
+
+
 @router.callback_query(F.data.startswith("mute:"))
 async def cb_mute_pick(call: CallbackQuery):
+    """After a pause: the way to lift it and the way back; after lifting — the way back."""
     await ack(call)
     arg = call.data.split(":", 1)[1]
     if arg == "off":
         await notifier.set_mute(None)
-        await render(call, "🔔 Снова пишу обо всём.", back_button())
+        await render(call, "🔔 Снова пишу обо всём.", InlineKeyboardMarkup(inline_keyboard=[_BACK]))
         return
-    await render(call, (await _mute(arg)) or "Не понял длительность.", back_button())
+    text = await _mute(arg)
+    if not text:
+        await render(call, "Не понял длительность.", InlineKeyboardMarkup(inline_keyboard=[_BACK]))
+        return
+    await render(call, text, InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔔 Снять тишину", callback_data="mute:off")], _BACK]))

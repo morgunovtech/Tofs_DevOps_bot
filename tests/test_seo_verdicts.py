@@ -346,7 +346,7 @@ async def test_deep_check_without_sitemap_and_with_silent_pages(bot, db, monkeyp
 def test_a_silent_page_is_not_a_healthy_one_on_the_card_and_in_the_alert():
     lines = _pages_lines({"sampled": 3, "errors": 2, "pages": [["/ok", None], ["/slow", 0], ["/broken", 502]]})
     assert lines == ["🟠 Страницы из карты сайта: 2 из 3 отвечают ошибкой сервера или не отвечают",
-                     "    ✅ /ok", "    🔴 /slow — не ответила", "    🔴 /broken — ошибка 502"]
+                     "    🔴 /slow — не ответила", "    🔴 /broken — ошибка 502"]    # the healthy ones are not listed
     assert _pages_lines({"sampled": 2, "errors": 1, "pages": [["/a", None], ["/b", 500]]})[0] == \
         "🟠 Страницы из карты сайта: 1 из 2 отвечают ошибкой сервера"
     assert describe_error("5xx или нет ответа на 2 из 3 проверенных страниц") == \

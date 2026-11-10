@@ -4,7 +4,7 @@ keyboards, the running progress bar, the error handler and the ⛔ router."""
 import asyncio
 import logging
 
-from aiogram import F, Router
+from aiogram import BaseMiddleware, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     CallbackQuery,
@@ -67,9 +67,27 @@ def back_button(text: str = "← Главное меню", callback: str = "menu
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=callback)]])
 
 
-def cancel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
+    """«✖️ Отмена» under an input step; back — the callback of the screen
+    the step was opened from, which «Отмена» draws again (handlers.menu)."""
+    data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✖️ Отмена", callback_data=data)]])
+
+
+class DropInputOnNavigation(BaseMiddleware):
+    """Any button but the step's own ones ends a pending input step: a
+    forgotten «пришли токен» must not swallow the next text or file. KEEP
+    lists the prefixes of buttons that live inside a step (checked against
+    the wizards of planned work and tasks, and the step buttons of the
+    phrase form); a new button inside a step goes here. The pending
+    restore file (handlers.sites) is kept without a state and is not touched."""
+    KEEP = ("fsm_cancel", "hbint:", "sskwf:")
+
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        if state is not None and await state.get_state() and not (event.data or "").startswith(self.KEEP):
+            await state.clear()
+        return await handler(event, data)
 
 
 async def render(target: Message | CallbackQuery, text: str,

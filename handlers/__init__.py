@@ -30,7 +30,7 @@ from handlers import (
     speed,
     start,
 )
-from handlers.common import deny_router, on_handler_error, stale_router
+from handlers.common import DropInputOnNavigation, deny_router, on_handler_error, stale_router
 from handlers.filters import AdminFilter
 
 router = Router(name="root")
@@ -43,6 +43,8 @@ admin = Router(name="admin")
 # list of types is pinned by a test in tests/test_dispatcher.py.
 admin.message.filter(AdminFilter())
 admin.callback_query.filter(AdminFilter())
+# A tap anywhere but inside the step ends a pending input step (UX-019).
+admin.callback_query.middleware(DropInputOnNavigation())
 admin.include_routers(
     bottom.router,   # first: a bottom button aborts any pending input
     menu.router, about.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,

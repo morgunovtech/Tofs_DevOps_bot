@@ -685,7 +685,7 @@ async def cb_watchdog_url(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.watchdog_url)
     await render(call, "🔗 Пришли ссылку check-а из healthchecks.io (начинается с https://hc-ping.com/).",
-                 cancel_kb())
+                 cancel_kb("setup:watchdog"))
 
 
 @router.message(SetupForm.watchdog_url)
@@ -693,7 +693,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
     await forget_secret(message)
     url = (message.text or "").strip()
     if not re.fullmatch(r"https://[^\s]{10,300}", url):
-        await message.answer("Нужна https-ссылка. Попробуй ещё раз:", reply_markup=cancel_kb())
+        await message.answer("Нужна https-ссылка. Попробуй ещё раз:", reply_markup=cancel_kb("setup:watchdog"))
         return
     await state.clear()
     error = await heartbeats.ping_watchdog(url)
@@ -748,7 +748,7 @@ async def cb_guide_yandex(call: CallbackQuery):
 async def cb_yx_token(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.yx_token)
-    await render(call, "🔑 Пришли OAuth-токен Яндекса одним сообщением.", cancel_kb())
+    await render(call, "🔑 Пришли OAuth-токен Яндекса одним сообщением.", cancel_kb("setup:yx"))
 
 
 @router.message(SetupForm.yx_token)
@@ -756,7 +756,7 @@ async def msg_yx_token(message: Message, state: FSMContext):
     await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-.]{20,200}", token):
-        await message.answer("Не похоже на токен. Попробуй ещё раз:", reply_markup=cancel_kb())
+        await message.answer("Не похоже на токен. Попробуй ещё раз:", reply_markup=cancel_kb("setup:yx"))
         return
     await state.clear()
     previous = integrations.stored().get("yandex_token")
@@ -812,7 +812,7 @@ async def cb_guide_crux(call: CallbackQuery):
 async def cb_crux_key(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.crux_key)
-    await render(call, "🔑 Пришли ключ Google API одним сообщением.", cancel_kb())
+    await render(call, "🔑 Пришли ключ Google API одним сообщением.", cancel_kb("setup:crux"))
 
 
 @router.message(SetupForm.crux_key)
@@ -821,7 +821,7 @@ async def msg_crux_key(message: Message, state: FSMContext):
     key = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{30,60}", key):
         await message.answer("Не похоже на ключ Google API (он вида AIza…). Попробуй ещё раз:",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:crux"))
         return
     await state.clear()
     works = await crux.key_works(key)
@@ -892,7 +892,7 @@ async def cb_gsc_prop(call: CallbackQuery, state: FSMContext):
     await state.set_state(SetupForm.gsc_property)
     await render(call, "1️⃣ Пришли ресурс Search Console: <code>sc-domain:example.com</code> "
                        "(доменный, покрывает поддомены) или <code>https://example.com/</code>.",
-                 cancel_kb())
+                 cancel_kb("setup:gsc"))
 
 
 @router.message(SetupForm.gsc_property)
@@ -900,7 +900,7 @@ async def msg_gsc_prop(message: Message, state: FSMContext):
     prop = (message.text or "").strip()
     if not re.fullmatch(r"(sc-domain:[a-z0-9.-]+|https?://[^\s]+)", prop, re.I):
         await message.answer("Формат: <code>sc-domain:example.com</code> или <code>https://example.com/</code>",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:gsc"))
         return
     await state.clear()
     await integrations.set_value("gsc_property", prop)
@@ -914,7 +914,7 @@ async def cb_gsc_key(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.gsc_key)
     await render(call, "2️⃣ Пришли JSON-ключ сервис-аккаунта файлом (или вставь его текст).",
-                 cancel_kb())
+                 cancel_kb("setup:gsc"))
 
 
 @router.message(SetupForm.gsc_key)
@@ -922,7 +922,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
     raw = message.text or ""
     if message.document:
         if (message.document.file_size or 0) > 64 * 1024:
-            await message.answer("Файл слишком большой для ключа сервис-аккаунта.", reply_markup=cancel_kb())
+            await message.answer("Файл слишком большой для ключа сервис-аккаунта.", reply_markup=cancel_kb("setup:gsc"))
             return
         buf = await message.bot.download(message.document)
         raw = buf.read().decode("utf-8", errors="replace")
@@ -930,7 +930,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
     creds = integrations.valid_gsc_key(raw)
     if not creds:
         await message.answer("Это не JSON-ключ сервис-аккаунта (нужны поля client_email и private_key).",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:gsc"))
         return
     await state.clear()
     await integrations.set_value("gsc_key", json.dumps(creds))
@@ -1004,7 +1004,7 @@ async def cb_cf_hook(call: CallbackQuery, state: FSMContext):
     await state.set_state(SetupForm.cf_hook)
     await render(call, "🚀 Пришли хост и URL deploy hook через пробел:\n"
                        "<code>example.com https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/…</code>",
-                 cancel_kb())
+                 cancel_kb("setup:cf"))
 
 
 @router.message(SetupForm.cf_hook)
@@ -1015,7 +1015,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
     url = parts[1].strip() if len(parts) == 2 else ""
     if not host or "." not in host or not url.startswith("https://"):
         await message.answer("Формат: <code>example.com https://api.cloudflare.com/…</code>",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
     await integrations.set_deploy_hook(host, url)
@@ -1027,7 +1027,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
 async def cb_cf_token(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.cf_token)
-    await render(call, "🧹 Пришли API-токен Cloudflare с правом Zone → Cache Purge.", cancel_kb())
+    await render(call, "🧹 Пришли API-токен Cloudflare с правом Zone → Cache Purge.", cancel_kb("setup:cf"))
 
 
 @router.message(SetupForm.cf_token)
@@ -1035,7 +1035,7 @@ async def msg_cf_token(message: Message, state: FSMContext):
     await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_\-]{30,100}", token):
-        await message.answer("Не похоже на API-токен Cloudflare.", reply_markup=cancel_kb())
+        await message.answer("Не похоже на API-токен Cloudflare.", reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
     await integrations.set_value("cf_api_token", token)
@@ -1047,14 +1047,14 @@ async def cb_cf_zone(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.cf_zone)
     await render(call, "🆔 Пришли Zone ID (32 hex-символа со страницы Overview домена в Cloudflare).",
-                 cancel_kb())
+                 cancel_kb("setup:cf"))
 
 
 @router.message(SetupForm.cf_zone)
 async def msg_cf_zone(message: Message, state: FSMContext):
     zone = (message.text or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{32}", zone):
-        await message.answer("Zone ID — это 32 hex-символа. Попробуй ещё раз:", reply_markup=cancel_kb())
+        await message.answer("Zone ID — это 32 hex-символа. Попробуй ещё раз:", reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
     await integrations.set_value("cf_zone_id", zone)
@@ -1112,7 +1112,7 @@ async def cb_gh_token(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.gh_token)
     await render(call, "🔑 Пришли токен GitHub одним сообщением (начинается с <code>github_pat_</code>).",
-                 cancel_kb())
+                 cancel_kb("setup:gh"))
 
 
 @router.message(SetupForm.gh_token)
@@ -1120,7 +1120,7 @@ async def msg_gh_token(message: Message, state: FSMContext):
     await forget_secret(message)
     token = (message.text or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_]{30,255}", token):
-        await message.answer("Не похоже на токен GitHub. Попробуй ещё раз:", reply_markup=cancel_kb())
+        await message.answer("Не похоже на токен GitHub. Попробуй ещё раз:", reply_markup=cancel_kb("setup:gh"))
         return
     await state.clear()
     login = await github.viewer_login(token)
@@ -1139,14 +1139,14 @@ async def cb_gh_owner(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.gh_owner)
     await render(call, "👤 Пришли логин пользователя или организации, чьи репозитории смотреть. "
-                       "<code>-</code> — репозитории владельца токена.", cancel_kb())
+                       "<code>-</code> — репозитории владельца токена.", cancel_kb("setup:gh"))
 
 
 @router.message(SetupForm.gh_owner)
 async def msg_gh_owner(message: Message, state: FSMContext):
     owner = (message.text or "").strip().lstrip("@")
     if owner != "-" and not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", owner):
-        await message.answer("Логин GitHub — латиница, цифры и дефис, до 39 символов.", reply_markup=cancel_kb())
+        await message.answer("Логин GitHub — латиница, цифры и дефис, до 39 символов.", reply_markup=cancel_kb("setup:gh"))
         return
     await state.clear()
     await integrations.set_value("github_owner", None if owner == "-" else owner)
