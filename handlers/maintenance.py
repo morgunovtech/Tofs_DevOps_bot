@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_all_sites, get_site
-from handlers.common import ack, back_button, cancel_kb, cb_args, render
+from handlers.common import ack, back_button, cancel_kb, cb_args, render, site_by_cb
 from services import maintenance
 from utils.parse import parse_time_window
 from utils.text import esc
@@ -105,10 +105,13 @@ async def cb_mw_days(call: CallbackQuery):
 
 async def _create(target, scope: str, days_key: str, start_min: int, end_min: int):
     site_id = int(scope) or None
-    if site_id and not await get_site(site_id):
-        await render(target, "Сайт не найден.", back_button())
+    if site_id and not await site_by_cb(scope):     # an active site only, like every other button
+        await render(target, "Сайт не найден.", back_button("← Тех. окна", "menu_maint"))
         return
-    await maintenance.add_window(site_id, _DAYS[days_key], start_min, end_min)
+    if await maintenance.add_window(site_id, _DAYS[days_key], start_min, end_min) is None:
+        await render(target, f"Не добавил: время окна неверное или уже есть {maintenance.MAX_MAINT_WINDOWS} окон "
+                             "— удали ненужные.", back_button("← Тех. окна", "menu_maint"))
+        return
     await _show(target, "✅ Окно добавлено.\n\n")
 
 

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
 from db.database import get_state, set_state
-from utils import clock
+from utils import clock, validate
 from utils.parse import parse_hour_range
 
 
@@ -31,19 +31,17 @@ class Overrides:
 _o = Overrides()
 
 
-def _int_or_none(raw: str | None) -> int | None:
-    return int(raw) if raw and raw.isdigit() else None
-
-
 async def load():
     """Populate the cache from bot_state; call once at startup."""
     global _o
     o = Overrides()
-    o.morning_hour = _int_or_none(await get_state("cfg:morning_hour"))
+    # A saved 24 or 99 (an old bug, a restored file) means «not set», not a
+    # scheduler that refuses to start.
+    o.morning_hour = validate.hour(await get_state("cfg:morning_hour"))
     v = await get_state("cfg:evening_hour")
     o.evening_off = v == "off"
-    o.evening_hour = _int_or_none(v)
-    o.weekly_hour = _int_or_none(await get_state("cfg:weekly_hour"))
+    o.evening_hour = validate.hour(v)
+    o.weekly_hour = validate.hour(await get_state("cfg:weekly_hour"))
     v = await get_state("cfg:quiet_hours")
     o.quiet_off = v == "off"
     o.quiet = parse_hour_range(v) if v and v != "off" else None
@@ -67,7 +65,7 @@ async def load():
 
 
 def valid_timezone(key: str | None) -> str | None:
-    if not key:
+    if not key or not isinstance(key, str):     # an import may carry «timezone: 5»
         return None
     try:
         ZoneInfo(key)
@@ -135,27 +133,45 @@ def status_page_enabled() -> bool:
 
 # ── Setters (write-through) ──────────────────────────────────────────────────
 
-async def set_morning_hour(hour: int):
-    _o.morning_hour = hour
-    await set_state("cfg:morning_hour", str(hour))
+async def set_morning_hour(hour: int) -> bool:
+    """False, and nothing saved, for anything but an hour 0..23."""
+    h = validate.hour(hour)
+    if h is None:
+        return False
+    _o.morning_hour = h
+    await set_state("cfg:morning_hour", str(h))
+    return True
 
 
-async def set_evening_hour(hour: int | None):
-    _o.evening_off = hour is None
-    _o.evening_hour = hour
-    await set_state("cfg:evening_hour", "off" if hour is None else str(hour))
+async def set_evening_hour(hour: int | None) -> bool:
+    h = None if hour is None else validate.hour(hour)
+    if hour is not None and h is None:
+        return False
+    _o.evening_off = h is None
+    _o.evening_hour = h
+    await set_state("cfg:evening_hour", "off" if h is None else str(h))
+    return True
 
 
-async def set_weekly_hour(hour: int):
-    _o.weekly_hour = hour
-    await set_state("cfg:weekly_hour", str(hour))
+async def set_weekly_hour(hour: int) -> bool:
+    h = validate.hour(hour)
+    if h is None:
+        return False
+    _o.weekly_hour = h
+    await set_state("cfg:weekly_hour", str(h))
+    return True
 
 
-async def set_quiet_hours(raw: str | None):
-    """raw: '23-8' style or None to disable."""
+async def set_quiet_hours(raw: str | None) -> bool:
+    """raw: '23-8' style or None to disable. False for anything else."""
+    if raw is not None:
+        raw = validate.quiet_hours(raw)
+        if raw is None:
+            return False
     _o.quiet_off = raw is None
     _o.quiet = parse_hour_range(raw) if raw else None
     await set_state("cfg:quiet_hours", raw if raw else "off")
+    return True
 
 
 async def set_status_page(on: bool):
@@ -183,14 +199,8 @@ async def set_weekly_backup(on: bool):
     await set_state("cfg:weekly_backup", "on" if on else "off")
 
 
-HB_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 MAX_HB_JOBS = 12
-
-
-def valid_job_name(name: str) -> bool:
-    """Latin, digits, «-» and «_», up to 20: the name goes into the ping URL
-    and into 64-byte callback_data (20 CJK characters would be 60 bytes)."""
-    return bool(name) and len(name) <= 20 and set(name) <= HB_NAME_CHARS
+valid_job_name = validate.job_name      # handlers.heartbeats asks settings, the rule lives in utils.validate
 
 
 async def add_heartbeat_job(name: str, interval_min: int) -> bool:

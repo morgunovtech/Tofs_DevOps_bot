@@ -23,6 +23,8 @@ router = Router(name="site_settings")
 _INTERVAL_PRESETS = (1, 3, 5, 15, 30, 60)
 _FAIL_PRESETS = (1, 2, 3, 5)
 _SLOW_PRESETS = (1000, 2000, 3000, 5000, 10000)
+# What a «ssv:» button may set: the presets on the screen, or 0 (= default).
+_ALLOWED = {"i": {0, *_INTERVAL_PRESETS}, "f": {0, *_FAIL_PRESETS}, "s": {0, *_SLOW_PRESETS}, "k": {0}}
 
 
 class SiteCodesForm(StatesGroup):
@@ -63,14 +65,18 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         else:
             lines.append("🔍 Ключевая фраза: не задана")
         method = site.get("http_method") or "GET"
-        n_headers = 0
+        # Only a JSON object counts — that is what request_options() sends;
+        # anything else is named in words instead of a wrong number.
         try:
-            n_headers = len(json.loads(site.get("http_headers") or "{}"))
+            parsed = json.loads(site.get("http_headers") or "{}")
         except ValueError:
-            pass
+            parsed = None
+        n_headers = len(parsed) if isinstance(parsed, dict) else 0
         req = f"📡 Запрос: {esc(method)}"
         if n_headers:
             req += f", заголовков: {n_headers}"
+        elif site.get("http_headers"):
+            req += ", заголовки не распознаны — задай заново"
         if site.get("http_body"):
             req += f", тело {len(site['http_body'])} симв."
         lines.append(req)
@@ -255,8 +261,10 @@ async def cb_site_setting_picker(call: CallbackQuery, state: FSMContext):
 async def cb_site_setting_value(call: CallbackQuery):
     """Apply a picked per-site value. Value 0 clears the override."""
     args = cb_args(call, 3)
-    if not args or not args[2].isdigit():
-        await ack(call, "Не понял", show_alert=True)
+    # str.isdigit() passes «²»: isascii() keeps int() honest.
+    if (not args or args[0] not in _ALLOWED or not (args[2].isascii() and args[2].isdigit())
+            or int(args[2]) not in _ALLOWED[args[0]]):
+        await ack(call, "Кнопка устарела — открой настройки заново", show_alert=True)
         return
     kind, sid, raw = args
     site = await site_by_cb(sid)

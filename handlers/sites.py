@@ -61,7 +61,7 @@ from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.speed import speed_lines
 from handlers.start import rules_of_the_game
-from monitors.availability import check_availability
+from monitors.availability import HTTP_METHODS, check_availability
 from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
 from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
@@ -83,7 +83,9 @@ from services import (
     yandex_webmaster,
 )
 from services import hosting as hosting_svc
+from utils import validate
 from utils.clock import to_local, utcnow
+from utils.parse import parse_accepted_codes
 from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import (
     host_key,
@@ -748,12 +750,13 @@ async def cb_site_del_do(call: CallbackQuery):
 @router.callback_query(F.data.startswith("pause:"))
 async def cb_pause(call: CallbackQuery):
     args = cb_args(call, 2)
-    if not args or not args[0].isdigit():
-        await ack(call, "Не понял", show_alert=True)
-        return
-    site = await get_site(int(args[0]))
-    if not site:
-        await ack(call, "Сайт не найден", show_alert=True)
+    site = await site_by_cb(args[0]) if args else None     # an active site only, like every card button
+    # «off» or up to a day: 5000000 minutes from a forged button would be 9.5
+    # years of silence, 99999999999 a crash. The card's own button carries
+    # maintenance.FIX_MINUTES.
+    minutes = validate.int_in(args[1], 1, 24 * 60) if args else None
+    if not site or (args[1] != "off" and minutes is None):
+        await ack(call, "Кнопка устарела — открой карточку сайта заново", show_alert=True)
         return
     sid, arg, host = site["id"], args[1], site_label(site["url"])
     if arg == "off":
@@ -761,7 +764,6 @@ async def cb_pause(call: CallbackQuery):
         await ack(call, "Пауза снята")
         await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
         return
-    minutes = int(arg) if arg.isdigit() else maintenance.FIX_MINUTES
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
@@ -779,90 +781,138 @@ async def cb_pause(call: CallbackQuery):
 _EXPORT_FIELDS = sorted(SITE_SETTING_COLS)
 
 
-async def apply_document(doc: dict) -> dict:
-    """Apply an export document; returns counters for the summary."""
+_IMPORT_CAP = 500     # entries looked at in one file — bounded work, and nothing silently cut at 20
+
+# The chat's own rules for each per-site setting (handlers/site_settings.py):
+# a value from a file passes the same door or is named in «Пропущено».
+_FIELD_RULES = {
+    "check_interval_min": lambda v: validate.int_in(v, *validate.CHECK_INTERVAL_MIN),
+    "fail_threshold": lambda v: validate.int_in(v, *validate.FAIL_THRESHOLD),
+    "slow_ms": lambda v: validate.int_in(v, *validate.SLOW_MS),
+    "accepted_codes": lambda v: v if isinstance(v, str) and len(v) <= 60 and parse_accepted_codes(v) else None,
+    "keyword": lambda v: v.strip() if isinstance(v, str) and 2 <= len(v.strip()) <= 100 else None,
+    "keyword_mode": lambda v: v if v in ("present", "absent") else None,
+    "http_method": lambda v: v.upper() if isinstance(v, str) and v.upper() in HTTP_METHODS else None,
+    "http_headers": validate.headers_json,
+    "http_body": lambda v: v if isinstance(v, str) and len(v) <= 4000 else None,
+}
+
+
+def _site_fields(item: dict) -> tuple[dict, list[str]]:
+    """The settings of one entry that pass the rules, and the names of those that do not."""
+    fields, bad = {}, []
+    for key, value in item.items():
+        if key not in _FIELD_RULES or value in (None, ""):
+            continue
+        clean = _FIELD_RULES[key](value)
+        if clean is None:
+            bad.append(key)
+        else:
+            fields[key] = clean
+    return fields, bad
+
+
+async def apply_document(doc) -> dict:
+    """Apply an export document; returns counters for the summary. Every
+    value passes the rule the chat applies; what does not is named in
+    «Пропущено» and the rest still applies."""
     counters = {"added": 0, "updated": 0, "skipped": [], "settings": 0, "windows": 0, "jobs": 0, "integrations": 0}
+    skipped = counters["skipped"]
     items = doc.get("sites", doc) if isinstance(doc, dict) else doc
+    if not isinstance(items, list):
+        skipped.append("список сайтов: в файле не список")
+        items = []
     by_url: dict[str, int] = {}
-    for item in list(items)[:MAX_SITES]:
-        if not isinstance(item, dict):
-            counters["skipped"].append(str(item)[:60])
-            continue
-        url, _error = parse_site_input(str(item.get("url", "")))
-        if not url:
-            counters["skipped"].append(str(item.get("url", "?"))[:60])
-            continue
-        try:
-            fields = {k: (str(v) if k in ("accepted_codes", "keyword", "keyword_mode",
-                                          "http_method", "http_headers", "http_body")
-                          else int(v)) for k, v in item.items()
-                      if k in SITE_SETTING_COLS and v not in (None, "")}
-        except (TypeError, ValueError):
-            counters["skipped"].append(f"{url} (неверные настройки)")
-            continue
-        existing = await get_all_sites()
-        if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
-            counters["skipped"].append(f"{url} (лимит {MAX_SITES})")
-            continue
-        was = url in {s["url"] for s in existing}
-        site_id = await activate_or_create_site(url)
-        by_url[url] = site_id
-        if fields:
-            await update_site_settings(site_id, **fields)
-        reset_site_schedule(site_id)
-        counters["updated" if was else "added"] += 1
-    version = doc.get("version", 1) if isinstance(doc, dict) else 1
-    if not isinstance(version, int) or version < 2:
-        return counters
-    st = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
+    try:
+        for item in items[:_IMPORT_CAP]:
+            if not isinstance(item, dict):
+                skipped.append(str(item)[:60])
+                continue
+            url, _error = parse_site_input(str(item.get("url", "")))
+            if not url:
+                skipped.append(str(item.get("url", "?"))[:60])
+                continue
+            fields, bad = _site_fields(item)
+            existing = await get_all_sites()
+            if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
+                skipped.append(f"{url} (лимит {MAX_SITES})")
+                continue
+            was = url in {s["url"] for s in existing}
+            site_id = await activate_or_create_site(url)
+            by_url[url] = site_id
+            if fields:
+                await update_site_settings(site_id, **fields)
+            if bad:
+                skipped.append(f"{url}: {', '.join(bad)} (неверные значения)")
+            reset_site_schedule(site_id)
+            counters["updated" if was else "added"] += 1
+        if len(items) > _IMPORT_CAP:
+            skipped.append(f"ещё {len(items) - _IMPORT_CAP} записей сверх {_IMPORT_CAP}")
+        version = doc.get("version", 1) if isinstance(doc, dict) else 1
+        if not isinstance(version, int) or version < 2:
+            return counters
+        await _apply_settings(doc.get("settings") if isinstance(doc.get("settings"), dict) else {}, counters)
+        await _apply_windows(doc.get("maintenance_windows"), by_url, counters)
+        jobs = doc.get("heartbeat_jobs") if isinstance(doc.get("heartbeat_jobs"), dict) else {}
+        for name, interval in jobs.items():
+            minutes = validate.int_in(interval, 1, 525_600)
+            if minutes and await settings.add_heartbeat_job(str(name).strip().lower(), minutes):
+                counters["jobs"] += 1
+            else:
+                skipped.append(f"задача {str(name)[:20]}")
+        links = doc.get("integrations") if isinstance(doc.get("integrations"), dict) else {}
+        for key, value in links.items():
+            rule = integrations.RULES.get(key)
+            if rule and rule(value):
+                await integrations.set_value(key, value)
+                counters["integrations"] += 1
+            else:
+                skipped.append(f"подключение {str(key)[:20]} — задай заново в «🔌 Подключения»")
+    finally:
+        reschedule_all()      # hours in memory and cron jobs must not disagree, whatever happened above
+    return counters
 
-    def hour(v) -> bool:
-        # 24 or -1 would be saved, then crash CronTrigger at every start.
-        return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 23
 
-    if hour(st.get("morning_hour")):
-        await settings.set_morning_hour(st["morning_hour"])
-        counters["settings"] += 1
-    if "evening_hour" in st and (st["evening_hour"] is None or hour(st["evening_hour"])):
-        await settings.set_evening_hour(st["evening_hour"])
-        counters["settings"] += 1
-    if hour(st.get("weekly_hour")):
-        await settings.set_weekly_hour(st["weekly_hour"])
-        counters["settings"] += 1
-    if "quiet_hours" in st:
-        await settings.set_quiet_hours(st["quiet_hours"] or None)
-        counters["settings"] += 1
+async def _apply_settings(st: dict, counters: dict):
+    skipped = counters["skipped"]
+    setters = (("morning_hour", settings.set_morning_hour), ("evening_hour", settings.set_evening_hour),
+               ("weekly_hour", settings.set_weekly_hour),
+               ("quiet_hours", lambda v: settings.set_quiet_hours(v or None)))
+    for key, setter in setters:
+        if key not in st:
+            continue
+        if await setter(st[key]):          # False: not an hour / not a range — nothing saved
+            counters["settings"] += 1
+        else:
+            skipped.append(f"настройка {key}")
     if isinstance(st.get("status_page"), bool):
         await settings.set_status_page(st["status_page"])
         counters["settings"] += 1
-    if st.get("timezone") and await settings.set_timezone(st["timezone"]):
-        counters["settings"] += 1
+    if st.get("timezone"):
+        if await settings.set_timezone(st["timezone"]):
+            counters["settings"] += 1
+        else:
+            skipped.append("настройка timezone")
     if isinstance(st.get("ring_only_down"), bool):
         await settings.set_ring_only_down(st["ring_only_down"])
         counters["settings"] += 1
-    for w in doc.get("maintenance_windows") if isinstance(doc.get("maintenance_windows"), list) else []:
-        try:
-            site_id = by_url.get(w.get("site_url")) if w.get("site_url") else None
-            if w.get("site_url") and site_id is None:
-                continue
-            await maintenance.add_window(site_id, [int(d) for d in w.get("days") or []],
-                                         int(w["start_min"]), int(w["end_min"]))
-            counters["windows"] += 1
-        except (KeyError, TypeError, ValueError):
-            continue
-    jobs = doc.get("heartbeat_jobs") if isinstance(doc.get("heartbeat_jobs"), dict) else {}
-    for name, interval in jobs.items():
-        if str(interval).isdigit() and await settings.add_heartbeat_job(str(name).strip().lower(), int(interval)):
-            counters["jobs"] += 1
+
+
+async def _apply_windows(windows, by_url: dict[str, int], counters: dict):
+    for w in windows if isinstance(windows, list) else []:
+        added = None
+        if isinstance(w, dict):
+            site_url = w.get("site_url")
+            site_id = by_url.get(site_url) if site_url else None
+            if not (site_url and site_id is None):   # a window of a site not in the file is not this file's
+                added = await maintenance.add_window(site_id, w.get("days") or [],
+                                                     validate.int_in(w.get("start_min"), 0, 1439),
+                                                     validate.int_in(w.get("end_min"), 0, 1439))
+        if added is None:
+            counters["skipped"].append(f"тех. окно: неверное время или дни, чужой сайт или уже "
+                                       f"{maintenance.MAX_MAINT_WINDOWS} окон")
         else:
-            counters["skipped"].append(f"задача {str(name)[:20]}")
-    links = doc.get("integrations") if isinstance(doc.get("integrations"), dict) else {}
-    for key, value in links.items():
-        if key in integrations.KEYS and isinstance(value, str):
-            await integrations.set_value(key, value)
-            counters["integrations"] += 1
-    reschedule_all()
-    return counters
+            counters["windows"] += 1
 
 
 _MAX_FILE = 20 * 1024 * 1024   # what the cloud Bot API lets a bot download
@@ -874,8 +924,9 @@ async def _restore_bytes(raw: bytes) -> str:
     try:
         doc = json.loads(raw.decode("utf-8", errors="replace"))
         items = doc["sites"] if isinstance(doc, dict) else doc
-        assert isinstance(items, list)
-    except (ValueError, KeyError, AssertionError):
+    except (ValueError, KeyError):
+        items = None
+    if not isinstance(items, list):     # an explicit check: `python -O` would drop an assert
         return "Не смог разобрать файл. Нужна копия базы (.db), которую я присылаю по воскресеньям."
     c = await apply_document(doc)
     text = f"✅ Из файла: сайтов добавлено {c['added']}, обновлено {c['updated']}."
@@ -888,6 +939,8 @@ async def _restore_bytes(raw: bytes) -> str:
         text += " Также: " + ", ".join(extras) + "."
     if c["skipped"]:
         text += "\nПропущено:\n" + "\n".join(f"  • {esc(x)}" for x in c["skipped"][:10])
+        if len(c["skipped"]) > 10:
+            text += f"\n  … и ещё {len(c['skipped']) - 10}"
     return text
 
 

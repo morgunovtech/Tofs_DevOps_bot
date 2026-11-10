@@ -4,45 +4,93 @@ generated secrets, UI overrides) lives in the services layer, not here."""
 import logging
 import os
 import re
+import string
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
 from utils.parse import parse_hour_range
+from utils.validate import HOURS
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+_TRUE, _FALSE = {"1", "true", "yes", "on"}, {"0", "false", "no", "off"}
+
 
 def _bool(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+    """1/true/yes/on or 0/false/no/off; unset → default. Any other word →
+    warning and default («TRUST_PROXY=ture» must not silently mean «no»).
+    An empty value keeps its old meaning «off» — turning AUTO_REDEPLOY or
+    SECOND_OPINION on behind someone's back is worse — but it is said."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default in _TRUE
+    raw = raw.strip().lower()
+    if raw in _TRUE | _FALSE:
+        return raw in _TRUE
+    if not raw:
+        if default in _TRUE:
+            logger.warning("%s is empty — treated as off; write %s=1 or %s=0", name, name, name)
+        return False
+    logger.warning("Invalid %s=%r — using default %s", name, raw, default)
+    return default in _TRUE
 
 
-def _int(name: str, default: int) -> int:
-    """Env int that survives empty/garbage values instead of crashing boot."""
+def _int(name: str, default: int, lo: int | None = None, hi: int | None = None) -> int:
+    """Env int that survives empty, garbage and out-of-range values instead of
+    crashing boot or the scheduler: a warning names the variable."""
     raw = os.getenv(name, "").strip()
     if not raw:
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         logger.warning("Invalid %s=%r — using default %s", name, raw, default)
         return default
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        logger.warning("%s=%s is out of range %s..%s — using default %s", name, value, lo, hi, default)
+        return default
+    return value
+
+
+def _port(name: str, default: int) -> int:
+    """A wrong port stops the start with a sentence: a silent default would
+    make the server listen where neither HEALTHCHECK nor the owner looks."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    if not (raw.isascii() and raw.isdigit() and 1 <= int(raw) <= 65535):
+        logger.error("%s=%r is not a port (1..65535) — fix it in .env; the default is %s", name, raw, default)
+        raise SystemExit(2)
+    return int(raw)
 
 
 def _csv(name: str) -> list[str]:
     return [s.strip() for s in os.getenv(name, "").split(",") if s.strip()]
 
 
-def _map(name: str) -> dict[str, str]:
-    """Parse "key=value,key2=value2" into a dict."""
+def _hooks(name: str) -> dict[str, str]:
+    """Parse "host=https://…,host2=https://…": a pair without «=», with an
+    empty side or with a URL that is not https is skipped with a warning
+    (the chat wizard accepts only https hooks too)."""
     out: dict[str, str] = {}
     for pair in _csv(name):
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-            out[k.strip()] = v.strip()
+        k, sep, v = pair.partition("=")
+        k, v = k.strip(), v.strip()
+        if not sep or not k or not v.startswith("https://"):
+            # The hook URL is a secret: name the host, never the value.
+            logger.warning("Ignoring a %s entry for host %r — want host=https://…", name, k or "?")
+            continue
+        out[k] = v
     return out
+
+
+# The dead-man switch URL ends in the job name: no «/», ASCII, short
+# enough for the bot's 64-byte buttons. Wider than the chat's own rule
+# (utils.validate.job_name) so that names already in .env keep working.
+_ENV_JOB = re.compile(r"[A-Za-z0-9_-]{1,50}")
 
 
 def _jobs(name: str) -> dict[str, int]:
@@ -50,13 +98,68 @@ def _jobs(name: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for pair in _csv(name):
         k, _, v = pair.rpartition(":")
+        k = k.strip()
         try:
-            out[k.strip()] = int(v)
+            minutes = int(v)
         except ValueError:
+            minutes = 0
+        if not _ENV_JOB.fullmatch(k) or minutes <= 0:
             # A silently dropped entry would disarm the dead-man switch
             # without a trace — say it loudly in the logs.
-            logger.warning("Ignoring malformed %s entry: %r (want name:minutes)", name, pair)
+            logger.warning("Ignoring %s entry %r (want name:minutes — name of A-Z a-z 0-9 - _ up to 50, "
+                           "minutes above 0)", name, pair)
+            continue
+        out[k] = minutes
     return out
+
+
+def _quiet(name: str) -> tuple[int, int] | None:
+    raw = os.getenv(name, "").strip()
+    parsed = parse_hour_range(raw)
+    if raw and parsed is None:
+        logger.warning("Invalid %s=%r — want two different hours like 23-8; quiet hours are off", name, raw)
+    return parsed
+
+
+def _url(name: str, schemes: tuple[str, ...]) -> str:
+    raw = os.getenv(name, "").strip()
+    if raw and not raw.startswith(schemes):
+        # Such URLs carry tokens (hc-ping): the value stays out of the log.
+        logger.warning("Ignoring %s — it must start with %s", name, " or ".join(schemes))
+        return ""
+    return raw
+
+
+def _template(name: str, default: str) -> str:
+    """A URL template whose only field is {url}; anything else breaks later."""
+    raw = os.getenv(name, "").strip() or default
+    try:
+        fields = {f for _, f, _, _ in string.Formatter().parse(raw) if f is not None}
+    except ValueError:
+        fields = set()
+    if fields != {"url"}:
+        logger.warning("Invalid %s — it needs {url} and no other {…} field; using the default", name)
+        return default
+    return raw
+
+
+def _match(name: str, pattern: str, hint: str) -> str:
+    raw = os.getenv(name, "").strip()
+    if raw and not re.fullmatch(pattern, raw):
+        logger.warning("Ignoring %s — %s", name, hint)
+        return ""
+    return raw
+
+
+def _slug(name: str) -> str:
+    """The status page's secret path. Kept as given — dropping it would open
+    the page at bare /status — but a slug that cannot work or is easy to
+    guess is said at the start."""
+    raw = os.getenv(name, "").strip().strip("/")
+    if raw and not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", raw):
+        logger.warning("%s should be 8–64 characters of A-Z a-z 0-9 - _ : a shorter one is easy to guess, "
+                       "and «/», spaces or «?» make the link answer 404", name)
+    return raw
 
 
 def _tg_id(name: str) -> str:
@@ -75,7 +178,8 @@ def _timezone(name: str, default: str = "Europe/Moscow") -> str:
     try:
         ZoneInfo(raw)
         return raw
-    except ZoneInfoNotFoundError:
+    except (ZoneInfoNotFoundError, ValueError):
+        # ValueError: keys like /etc/localtime, Europe/Moscow/ or ../x.
         logger.warning("Unknown %s=%r — using %s", name, raw, default)
         return default
 
@@ -105,13 +209,13 @@ class Config:
     telegram_proxy: str = os.getenv("TELEGRAM_PROXY", "").strip()
     # First-run seed only; afterwards the DB is the source of truth.
     sites: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("SITES")))
-    check_interval_minutes: int = _int("CHECK_INTERVAL_MINUTES", 5)
-    links_check_interval_hours: int = _int("LINKS_CHECK_INTERVAL_HOURS", 6)
-    morning_report_hour: int = _int("MORNING_REPORT_HOUR", 9)
-    evening_report_hour: int = _int("EVENING_REPORT_HOUR", 21)
-    weekly_report_hour: int = _int("WEEKLY_REPORT_HOUR", 11)
+    check_interval_minutes: int = _int("CHECK_INTERVAL_MINUTES", 5, 1, 1440)
+    links_check_interval_hours: int = _int("LINKS_CHECK_INTERVAL_HOURS", 6, 0, 168)   # 0 = no link crawl
+    morning_report_hour: int = _int("MORNING_REPORT_HOUR", 9, *HOURS)
+    evening_report_hour: int = _int("EVENING_REPORT_HOUR", 21, *HOURS)
+    weekly_report_hour: int = _int("WEEKLY_REPORT_HOUR", 11, *HOURS)
     timezone: str = _timezone("TIMEZONE")
-    webhook_port: int = _int("WEBHOOK_PORT", 8080)
+    webhook_port: int = _port("WEBHOOK_PORT", 8080)
     # Raw env values; services.secrets replaces empty/placeholder values
     # with generated ones persisted in the DB.
     webhook_secret_env: str = os.getenv("WEBHOOK_SECRET", "").strip()
@@ -119,7 +223,7 @@ class Config:
     db_path: str = os.getenv("DB_PATH", "data/bot.db").strip() or "data/bot.db"
     # Public address of the web server (https://bot.example.com) — used to
     # render ready-to-paste heartbeat/status URLs.
-    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    public_base_url: str = _url("PUBLIC_BASE_URL", ("https://", "http://")).rstrip("/")
     # Git commit of the running build, when the platform exposes it
     # (Railway sets RAILWAY_GIT_COMMIT_SHA; docker builds can pass APP_COMMIT).
     app_commit: str = (os.getenv("APP_COMMIT") or os.getenv("RAILWAY_GIT_COMMIT_SHA") or "").strip()[:12]
@@ -135,7 +239,7 @@ class Config:
     second_opinion: bool = _bool("SECOND_OPINION", "1")
 
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
-    deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10)
+    deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10, 0, 100)
 
     # ── Index status APIs (optional) ─────────────────────────────────────────
     gsc_service_account_file: str = os.getenv("GSC_SERVICE_ACCOUNT_FILE", "").strip()
@@ -151,49 +255,49 @@ class Config:
     github_owner: str = os.getenv("GITHUB_OWNER", "").strip().lstrip("@")
 
     # ── SEO/GEO monitor ──────────────────────────────────────────────────────
-    seo_pages_sample: int = _int("SEO_PAGES_SAMPLE", 5)
-    seo_min_text_chars: int = _int("SEO_MIN_TEXT_CHARS", 400)
+    seo_pages_sample: int = _int("SEO_PAGES_SAMPLE", 5, 1, 50)
+    seo_min_text_chars: int = _int("SEO_MIN_TEXT_CHARS", 400, 0, 100_000)
 
     # ── Cloudflare Pages actions ─────────────────────────────────────────────
-    deploy_hooks: dict[str, str] = field(default_factory=lambda: _map("DEPLOY_HOOKS"))
+    deploy_hooks: dict[str, str] = field(default_factory=lambda: _hooks("DEPLOY_HOOKS"))
     # On by default: a deploy hook that exists is a fix that exists.
     auto_redeploy: bool = _bool("AUTO_REDEPLOY", "1")
     cf_api_token: str = os.getenv("CLOUDFLARE_API_TOKEN", "").strip()
-    cf_zone_id: str = os.getenv("CLOUDFLARE_ZONE_ID", "").strip()
+    cf_zone_id: str = _match("CLOUDFLARE_ZONE_ID", r"[0-9a-f]{32}", "a zone id is 32 hex characters")
 
     # ── Bot-host monitoring / remediation ────────────────────────────────────
-    docker_socket: str = os.getenv("DOCKER_SOCKET", "/var/run/docker.sock")
+    docker_socket: str = os.getenv("DOCKER_SOCKET", "").strip() or "/var/run/docker.sock"
     autorestart_containers: tuple[str, ...] = field(
         default_factory=lambda: tuple(_csv("AUTORESTART_CONTAINERS")))
-    disk_alert_pct: int = _int("DISK_ALERT_PCT", 85)
+    disk_alert_pct: int = _int("DISK_ALERT_PCT", 85, 50, 99)   # below 50 prune would fire on a near-empty disk
     # Off by default: removes dangling docker images and old build cache on the
     # whole host when the disk is full (services.docker_api.prune).
     auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
 
     # ── SSL renewal watch ────────────────────────────────────────────────────
-    ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10)
+    ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10, 0, 60)
 
     # ── Notifications ────────────────────────────────────────────────────────
-    quiet_hours: tuple[int, int] | None = field(
-        default_factory=lambda: parse_hour_range(os.getenv("QUIET_HOURS", "")))
-    escalation_repeat_min: int = _int("ESCALATION_REPEAT_MIN", 30)
-    slow_response_ms: int = _int("SLOW_RESPONSE_MS", 3000)
+    quiet_hours: tuple[int, int] | None = field(default_factory=lambda: _quiet("QUIET_HOURS"))
+    escalation_repeat_min: int = _int("ESCALATION_REPEAT_MIN", 30, 0, 1440)   # 0 = no repeats
+    slow_response_ms: int = _int("SLOW_RESPONSE_MS", 3000, 100, 120_000)
 
     # ── Page screenshots ─────────────────────────────────────────────────────
-    screenshot_template: str = os.getenv(
+    screenshot_template: str = _template(
         "SCREENSHOT_TEMPLATE",
         "https://api.microlink.io/?url={url}&screenshot=true&meta=false"
         "&waitForTimeout=3500")
 
     # ── Public status page ───────────────────────────────────────────────────
     status_page: bool = _bool("STATUS_PAGE")
-    status_page_slug: str = os.getenv("STATUS_PAGE_SLUG", "").strip().strip("/")
+    status_page_slug: str = _slug("STATUS_PAGE_SLUG")
 
     # ── Self-maintenance ─────────────────────────────────────────────────────
-    retention_days: int = _int("RETENTION_DAYS", 30)
-    db_backup_keep: int = _int("DB_BACKUP_KEEP", 7)
-    self_heartbeat_url: str = os.getenv("SELF_HEARTBEAT_URL", "").strip()
-    # Weekly check of installed packages against PyPI/OSV (see services.updates).
+    retention_days: int = _int("RETENTION_DAYS", 30, 1, 3650)
+    db_backup_keep: int = _int("DB_BACKUP_KEEP", 7, 1, 365)
+    self_heartbeat_url: str = _url("SELF_HEARTBEAT_URL", ("https://", "http://"))
+    # Weekly OSV vulnerability check of the bot's own packages, plus the hourly
+    # GitHub deploy watch (services.updates) — one switch for both.
     dependency_watch: bool = _bool("DEPENDENCY_WATCH", "1")
 
     def seed_site_urls(self) -> list[str]:

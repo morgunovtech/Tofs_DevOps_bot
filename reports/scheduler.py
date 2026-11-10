@@ -104,6 +104,7 @@ from services.actions import (
     trigger_redeploy,
 )
 from services.notifier import Priority
+from utils import validate
 from utils.clock import local_tz, to_local
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
@@ -151,28 +152,27 @@ def _isolated(what: str):
         logger.exception("%s failed", what)
 
 
-MAX_INTERVAL_MIN = 24 * 60
 DEFAULT_SLOW_MS = 3000
 
 
 def _interval_min(site: dict) -> int:
-    """Minutes between checks of one site, always 1..1440: a 0, a negative
-    or an absurd value from an import must not break the tick for every
-    site (OverflowError in the date arithmetic)."""
-    try:
-        minutes = int(site.get("check_interval_min") or config.check_interval_minutes)
-    except (TypeError, ValueError, OverflowError):
-        minutes = 5
-    return min(max(minutes, 1), MAX_INTERVAL_MIN)
+    """Minutes between checks of one site, always 1..1440 (the chat's own
+    rule, utils.validate): a 0, a negative or an absurd value from an old
+    import or a restored DB must not break the tick for every site
+    (OverflowError in the date arithmetic)."""
+    minutes = validate.int_in(site.get("check_interval_min"), *validate.CHECK_INTERVAL_MIN)
+    if minutes is None:
+        minutes = validate.int_in(config.check_interval_minutes, *validate.CHECK_INTERVAL_MIN)
+    return minutes if minutes is not None else 5
 
 
 def _slow_ms(site: dict) -> int:
-    """«Slow» threshold of one site; 0 or negative would call every answer slow."""
-    try:
-        ms = int(site.get("slow_ms") or config.slow_response_ms)
-    except (TypeError, ValueError, OverflowError):
-        ms = 0
-    return ms if ms > 0 else DEFAULT_SLOW_MS
+    """«Slow» threshold of one site, within utils.validate.SLOW_MS; 0 or
+    negative would call every answer slow."""
+    ms = validate.int_in(site.get("slow_ms"), *validate.SLOW_MS)
+    if ms is None:
+        ms = validate.int_in(config.slow_response_ms, *validate.SLOW_MS)
+    return ms if ms is not None else DEFAULT_SLOW_MS
 
 
 # ── Availability ─────────────────────────────────────────────────────────────
@@ -749,7 +749,7 @@ def rerun_seo_after_update(minutes: int = 3):
     false ones — must not wait for 07:30: audit again a few minutes after
     the start, with incidents, so stale ones close and say so."""
     if _scheduler is not None:
-        _scheduler.add_job(run_seo_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes)),
+        _scheduler.add_job(run_seo_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes), timezone=UTC),
                            id="seo_after_update", replace_existing=True, misfire_grace_time=600)
 
 
@@ -803,7 +803,7 @@ async def run_mail_checks():
     await _notify_transitions(results, format_mail_alert, format_mail_recovery, priority=_by_level,
                               keyboard=_mail_keyboard)
     if _scheduler is not None and any(r.kind == "mail" and r.ok and r.delivery.ok is False for r in results):
-        _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN)),
+        _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN), timezone=UTC),
                            id="mail_recheck", replace_existing=True, misfire_grace_time=300)
 
 
@@ -1026,7 +1026,7 @@ async def run_escalation_watch():
     every 30 minutes about an expiring cert would train the user to ignore
     alerts. «🔧 Я чиню» snoozes it for maintenance.FIX_MINUTES."""
     repeat_min = config.escalation_repeat_min
-    if not repeat_min:
+    if repeat_min <= 0:     # 0 = off, as .env.example promises; a negative one is not «every 5 minutes»
         return
     if await netcheck.outage_since():
         return              # «лежит уже …» without a network is a guess; it would only pile up in the outbox
@@ -1192,6 +1192,9 @@ async def catch_up_after_restart():
     """Once at startup. While the bot was gone its silence did not mean
     «всё в порядке» — a pause longer than a redeploy is said out loud, and
     the daily jobs that fell into it run late rather than not at all."""
+    if _failed_jobs:
+        await notifier.send(f"⚠️ Не смог запустить по расписанию: {esc(', '.join(_failed_jobs))}. "
+                            "Остальное работает. Подробности — в логе бота.")
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
     await run_alive()
@@ -1599,11 +1602,18 @@ def _cron(**kwargs) -> CronTrigger:
     return CronTrigger(timezone=local_tz(), **kwargs)
 
 
+def _hour(value, default: int) -> int:
+    """A broken hour (an old .env, a restored DB) falls back to the default
+    instead of stopping the whole scheduler at every start."""
+    h = validate.hour(value)
+    return default if h is None else h
+
+
 def _before_morning(minutes: int) -> dict:
     """The daily audits run so many minutes before the morning report, so the
     digest shows today's results whatever hour the owner picked (at 9:00 —
     the old fixed 07:30–08:10)."""
-    t = (settings.morning_hour() * 60 - minutes) % (24 * 60)
+    t = (_hour(settings.morning_hour(), 9) * 60 - minutes) % (24 * 60)
     return dict(hour=t // 60, minute=t % 60)
 
 
@@ -1631,9 +1641,10 @@ def _cron_specs() -> dict[str, dict]:
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
         "db_backup": dict(hour=3, minute=45),
-        "morning_report": dict(hour=settings.morning_hour(), minute=0),
-        "evening_report": dict(hour=evening if evening is not None else config.evening_report_hour, minute=0),
-        "weekly_report": dict(day_of_week="sun", hour=settings.weekly_hour(), minute=0),
+        "morning_report": dict(hour=_hour(settings.morning_hour(), 9), minute=0),
+        "evening_report": dict(hour=_hour(evening if evening is not None else config.evening_report_hour, 21),
+                               minute=0),
+        "weekly_report": dict(day_of_week="sun", hour=_hour(settings.weekly_hour(), 11), minute=0),
     }
 
 
@@ -1649,13 +1660,27 @@ def resume_jobs():
         _scheduler.resume()
 
 
-def reschedule_all():
-    """Apply UI-changed hours or timezone to the running scheduler."""
+# Jobs setup_scheduler could not register: named to the owner once the bot
+# is up (catch_up_after_restart). Every other job runs.
+_failed_jobs: list[str] = []
+
+
+def reschedule_all() -> list[str]:
+    """Apply UI-changed hours or timezone to the running scheduler. A job
+    whose new trigger cannot be built keeps its old schedule and is
+    returned by id, so the caller can say that the hours did not apply."""
+    failed: list[str] = []
     if _scheduler is None:
-        return
+        return failed
     for job_id, spec in _cron_specs().items():
-        if _scheduler.get_job(job_id):
+        if not _scheduler.get_job(job_id):
+            continue
+        try:
             _scheduler.reschedule_job(job_id, trigger=_cron(**spec))
+        except Exception:
+            logger.exception("Could not reschedule %s — its old schedule stays", job_id)
+            failed.append(job_id)
+    return failed
 
 
 def setup_scheduler() -> AsyncIOScheduler:
@@ -1666,60 +1691,77 @@ def setup_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})
     scheduler.add_listener(_on_job_event, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED | EVENT_JOB_MAX_INSTANCES)
     _scheduler = scheduler
+    _failed_jobs.clear()
 
-    def job(fn, trigger, job_id, **kwargs):
-        scheduler.add_job(fn, trigger=trigger, id=job_id, replace_existing=True,
-                          max_instances=1, **kwargs)
+    def job(fn, make_trigger, job_id, **kwargs):
+        """One broken schedule costs only its own job: logged, named to the
+        owner after the start (catch_up_after_restart), the rest registered.
+        The trigger is built here, inside the try — a bad hour or an absurd
+        interval raises while the trigger is made, not in add_job."""
+        try:
+            scheduler.add_job(fn, trigger=make_trigger(), id=job_id, replace_existing=True,
+                              max_instances=1, **kwargs)
+        except Exception:
+            logger.exception("Could not schedule %s — the other jobs still run", job_id)
+            _failed_jobs.append(job_id)
 
     soon = datetime.now(UTC) + timedelta(minutes=2)
     specs = _cron_specs()
     # Ticks every minute; the job decides which sites are due.
-    job(run_availability_checks, IntervalTrigger(minutes=1), "availability_checks",
+    job(run_availability_checks, lambda: IntervalTrigger(minutes=1, timezone=UTC), "availability_checks",
         misfire_grace_time=60)
-    job(check_own_network_at_start, DateTrigger(run_date=soon, timezone=UTC), "net_canaries_soon")
+    job(check_own_network_at_start, lambda: DateTrigger(run_date=soon, timezone=UTC), "net_canaries_soon")
     # SSL + domain once a day — the alert ladder prevents repeat noise.
-    job(run_ssl_checks, _cron(**specs["ssl_checks"]), "ssl_checks")
-    job(run_domain_checks, _cron(**specs["domain_checks"]), "domain_checks")
+    job(run_ssl_checks, lambda: _cron(**specs["ssl_checks"]), "ssl_checks")
+    job(run_domain_checks, lambda: _cron(**specs["domain_checks"]), "domain_checks")
     # SEO/GEO audit before the morning report, so the digest shows fresh results.
-    job(run_seo_checks, _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
-    job(run_index_checks, _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
-    job(run_card_pictures, _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
-    job(run_card_pictures, DateTrigger(run_date=soon), "card_pictures_soon")
-    # Links: first run shortly after boot, then every N hours.
-    job(run_links_checks, IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon),
-        "links_checks", misfire_grace_time=300)
+    job(run_seo_checks, lambda: _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
+    job(run_index_checks, lambda: _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
+    job(run_card_pictures, lambda: _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
+    job(run_card_pictures, lambda: DateTrigger(run_date=soon, timezone=UTC), "card_pictures_soon")
+    # Links: first run shortly after boot, then every N hours; 0 = never.
+    if config.links_check_interval_hours:
+        job(run_links_checks,
+            lambda: IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon, timezone=UTC),
+            "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
-    job(run_dns_checks, _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
+    job(run_dns_checks, lambda: _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
     # Mail hourly, and soon after a start — so the cards show it right away.
-    job(run_mail_checks, _cron(**specs["mail_checks"]), "mail_checks", misfire_grace_time=600)
-    job(run_mail_checks, DateTrigger(run_date=soon), "mail_checks_soon")
-    job(run_security_checks, _cron(**specs["security_checks"]), "security_checks", misfire_grace_time=600)
-    job(run_security_checks, DateTrigger(run_date=soon + timedelta(minutes=1)), "security_checks_soon")
-    job(run_visitor_checks, _cron(**specs["visitor_checks"]), "visitor_checks", misfire_grace_time=3600)
-    job(run_visitor_checks, DateTrigger(run_date=soon + timedelta(minutes=2)), "visitor_checks_soon")
-    job(run_region_checks, _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
-    job(run_deep_checks, _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
+    job(run_mail_checks, lambda: _cron(**specs["mail_checks"]), "mail_checks", misfire_grace_time=600)
+    job(run_mail_checks, lambda: DateTrigger(run_date=soon, timezone=UTC), "mail_checks_soon")
+    job(run_security_checks, lambda: _cron(**specs["security_checks"]), "security_checks", misfire_grace_time=600)
+    job(run_security_checks, lambda: DateTrigger(run_date=soon + timedelta(minutes=1), timezone=UTC),
+        "security_checks_soon")
+    job(run_visitor_checks, lambda: _cron(**specs["visitor_checks"]), "visitor_checks", misfire_grace_time=3600)
+    job(run_visitor_checks, lambda: DateTrigger(run_date=soon + timedelta(minutes=2), timezone=UTC),
+        "visitor_checks_soon")
+    job(run_region_checks, lambda: _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
+    job(run_deep_checks, lambda: _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
     # Watchers.
-    job(run_heartbeat_watch, IntervalTrigger(minutes=10), "heartbeat_watch")
-    job(run_host_checks, IntervalTrigger(minutes=30), "host_checks")
-    job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
-    job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
-    job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
-    job(runtime.warn_if_seat_free, IntervalTrigger(minutes=30), "seat_free_warning")
-    job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
-    job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
-    job(notifier.release_held, IntervalTrigger(minutes=1), "held_release", misfire_grace_time=60)
-    job(deliver_missed_alerts, IntervalTrigger(minutes=1), "missed_alerts", misfire_grace_time=60)
-    job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
-    job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
+    job(run_heartbeat_watch, lambda: IntervalTrigger(minutes=10, timezone=UTC), "heartbeat_watch")
+    job(run_host_checks, lambda: IntervalTrigger(minutes=30, timezone=UTC), "host_checks")
+    job(run_container_watch, lambda: IntervalTrigger(minutes=10, timezone=UTC), "container_watch")
+    job(run_escalation_watch, lambda: IntervalTrigger(minutes=5, timezone=UTC), "escalation_watch")
+    job(run_self_heartbeat, lambda: IntervalTrigger(minutes=5, timezone=UTC), "self_heartbeat")
+    job(runtime.warn_if_seat_free, lambda: IntervalTrigger(minutes=30, timezone=UTC), "seat_free_warning")
+    job(run_alive, lambda: IntervalTrigger(minutes=1, timezone=UTC), "alive", misfire_grace_time=60)
+    job(notifier.flush_outbox, lambda: IntervalTrigger(minutes=1, timezone=UTC), "outbox_flush",
+        misfire_grace_time=60)
+    job(notifier.release_held, lambda: IntervalTrigger(minutes=1, timezone=UTC), "held_release",
+        misfire_grace_time=60)
+    job(deliver_missed_alerts, lambda: IntervalTrigger(minutes=1, timezone=UTC), "missed_alerts",
+        misfire_grace_time=60)
+    job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
+    job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     if config.on_railway:
         # One reminder around day 25 of Railway's 30-day trial (services.railway).
-        job(railway.remind_if_due, IntervalTrigger(hours=6, start_date=soon), "railway_trial")
+        job(railway.remind_if_due, lambda: IntervalTrigger(hours=6, start_date=soon, timezone=UTC),
+            "railway_trial")
     # Nightly maintenance.
-    job(run_retention, _cron(**specs["retention"]), "retention")
-    job(run_db_backup, _cron(**specs["db_backup"]), "db_backup")
+    job(run_retention, lambda: _cron(**specs["retention"]), "retention")
+    job(run_db_backup, lambda: _cron(**specs["db_backup"]), "db_backup")
     # Reports.
-    job(send_morning_report, _cron(**specs["morning_report"]), "morning_report")
-    job(send_evening_report, _cron(**specs["evening_report"]), "evening_report")
-    job(send_weekly_report, _cron(**specs["weekly_report"]), "weekly_report", misfire_grace_time=3600)
+    job(send_morning_report, lambda: _cron(**specs["morning_report"]), "morning_report")
+    job(send_evening_report, lambda: _cron(**specs["evening_report"]), "evening_report")
+    job(send_weekly_report, lambda: _cron(**specs["weekly_report"]), "weekly_report", misfire_grace_time=3600)
     return scheduler

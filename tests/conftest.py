@@ -167,6 +167,7 @@ def _fresh_module_state(monkeypatch):
     webhook._global_hits.clear()
     monkeypatch.setattr(runtime, "_bot_username", "")
     scheduler._next_avail_check.clear()
+    scheduler._failed_jobs.clear()
     scheduler._slow_streak.clear()
     scheduler._ext_ok_noted.clear()
     notifier._released.clear()

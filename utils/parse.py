@@ -20,9 +20,9 @@ def parse_hour_range(raw: str | None) -> tuple[int, int] | None:
 
 def parse_duration(arg: str | None) -> timedelta | None:
     """'1h', '8h', '30m', '1d', '45' (minutes) → timedelta; None if unparseable."""
-    if not arg:
+    arg = (arg or "").strip().lower()
+    if not arg:         # «   » used to reach arg[-1] and raise IndexError
         return None
-    arg = arg.strip().lower()
     units = {"m": 60, "h": 3600, "d": 86400}
     if arg[-1] in units:
         try:
