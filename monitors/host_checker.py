@@ -1,11 +1,20 @@
 """Bot-host monitoring: disk usage with auto-cleanup, and watching /
-auto-restarting docker containers on the same host. Container features
-silently disable themselves when /var/run/docker.sock isn't mounted."""
+auto-restarting docker containers on the same host. With an empty
+AUTORESTART_CONTAINERS the container features are off; with a non-empty one
+and a Docker that does not answer (no socket, or a socket nobody listens on)
+the watch does not go quiet — it reports that (the `api_down` event), and a
+disk alert says when the cleanup it promised could not happen.
+
+One watch run waits for the verdicts of the containers it restarted for at
+most RUN_BUDGET_SEC in all: the job runs every 10 minutes and must be over
+before the next run starts."""
 
 import asyncio
+import json
 import logging
 import os
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 
 from config import config
@@ -66,7 +75,7 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
     result = {"path": m["path"], "label": m["label"],
               "pct": pct, "used_gb": round(used_gb, 1), "total_gb": round(total_gb, 1),
               "over_threshold": pct >= config.disk_alert_pct,
-              "cleaned": None, "cleaned_bytes": None,
+              "cleaned": None, "cleaned_bytes": None, "cleanup_failed": False,
               "pct_after": pct, "used_gb_after": round(used_gb, 1)}
     if not result["over_threshold"]:
         if auto_cleanup and await get_state("disk_prune_useless"):
@@ -90,58 +99,124 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
         result["total_gb"] = round(after["total_gb"], 1)
         if not cleaned["bytes"]:
             await set_state("disk_prune_useless", "1")
+    else:
+        result["cleanup_failed"] = True       # the alert says so: «почищу сам» did not happen
     return result
 
 
-async def _find(name: str) -> dict | None:
-    for c in await docker_api.list_containers() or []:
-        if c["name"] == name:
-            return c
-    return None
+RESTART_BUDGET = 3                       # restarts without a healthy half hour in between
+HEALTHY_RESET = timedelta(minutes=30)    # healthy this long → a new episode: budget and alert re-armed
+BACKOFF = timedelta(minutes=10)          # after the 1st restart; doubles after each next one
+POLL_SEC = 5                             # how often a restarted container is looked at
+# Verdict waiting per watch run, all containers together: the job runs every
+# 10 minutes, and a container's own window (verdict_window) may be as long.
+RUN_BUDGET_SEC = 480
+
+# Docker's state words → what the owner reads after «Сервис «x» на сервере бота …»
+STATE_WORDS = {"exited": "остановлен", "restarting": "перезапускается снова и снова",
+               "dead": "не запускается (dead)", "created": "создан, но не запущен", "paused": "на паузе"}
+UNHEALTHY_WORDS = "не проходит проверку здоровья (healthcheck)"
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 async def watch_containers() -> list[dict]:
-    """Restart configured containers that are exited or unhealthy.
-    Returns events: [{name, problem, restarted, ok_after}]. Restarts are
-    throttled to one per 10 minutes per container."""
+    """Look at every container in AUTORESTART_CONTAINERS and restart the broken
+    ones — at most RESTART_BUDGET times per episode, with growing gaps. One
+    event per configured container:
+      {"api_down": True, "mounted"}                   Docker does not answer (the only event)
+      {"name", "missing": True}                       no such container
+      {"name", "healthy": True, "healthy_for"}        running, healthcheck passing (or none)
+      {"name", "waiting": True}                       starting up / within the gap: no verdict
+      {"name", "problem", "gave_up": True}            broken, the budget is spent
+      {"name", "problem", "restarted", "ok_after"}    broken: restarted (or the restart failed);
+                                                      with "unverified": True the run's budget
+                                                      ran out before the verdict"""
     if not config.autorestart_containers:
         return []
     containers = await docker_api.list_containers()
     if containers is None:
-        return []
+        return [{"api_down": True, "mounted": docker_api.docker_available()}]
     by_name = {c["name"]: c for c in containers}
+    own = docker_api.own_container_id()
+    now = _now()
+    run_deadline = time.monotonic() + RUN_BUDGET_SEC
     events: list[dict] = []
-    now = datetime.now(UTC)
-
     for name in config.autorestart_containers:
         c = by_name.get(name)
         if not c:
+            logger.warning("AUTORESTART_CONTAINERS: no container named %r (docker ps -a)", name)
+            events.append({"name": name, "missing": True})
             continue
-        unhealthy = "unhealthy" in c["status"].lower()
-        stopped = c["state"] != "running"
+        if own and c["id"].startswith(own):
+            logger.warning("AUTORESTART_CONTAINERS: %r is the bot's own container — never restarted", name)
+            continue
+        status_l = c["status"].lower()
+        unhealthy, stopped = "unhealthy" in status_l, c["state"] != "running"
+        if not (unhealthy or stopped or "starting" in status_l):
+            events.append(await _healthy(name, now))
+            continue
+        await set_state(f"container_healthy_since:{name}", None)
         if not (unhealthy or stopped):
-            await set_state(f"restarted:{name}", None)  # healthy — clear throttle
+            events.append({"name": name, "waiting": True})      # «health: starting»: no verdict yet
             continue
-        last = parse_iso_utc(await get_state(f"restarted:{name}"))
-        if last and (now - last).total_seconds() < 600:
+        problem = UNHEALTHY_WORDS if unhealthy else STATE_WORDS.get(c["state"], f"не запущен ({c['state']})")
+        history = _history(await get_state(f"restarts:{name}"))
+        if len(history) >= RESTART_BUDGET:
+            events.append({"name": name, "problem": problem, "gave_up": True})
             continue
-        problem = "unhealthy" if unhealthy else f"не запущен ({c['state']})"
+        if history and now - history[-1] < BACKOFF * 2 ** (len(history) - 1):
+            events.append({"name": name, "waiting": True})
+            continue
+        # Written before the call: if the restart ever takes this process down,
+        # the next start still sees it.
+        history.append(now)
+        await set_state(f"restarts:{name}", json.dumps([t.isoformat() for t in history]))
         restarted = await docker_api.restart_container(name)
-        await set_state(f"restarted:{name}", now.isoformat())
-        ok_after = False
-        if restarted:
-            await asyncio.sleep(10)
-            for attempt in range(2):
-                found = await _find(name)
-                status_l = found["status"].lower() if found else ""
-                # "health: starting" is neither healthy nor failed — give
-                # the healthcheck one more window before judging.
-                if found and "starting" in status_l and attempt == 0:
-                    await asyncio.sleep(10)
-                    continue
-                ok_after = bool(found and found["state"] == "running"
-                                and "unhealthy" not in status_l and "starting" not in status_l)
-                break
-        events.append({"name": name, "problem": problem, "restarted": restarted,
-                       "ok_after": ok_after})
+        verdict = await _comes_up(name, run_deadline) if restarted else False
+        event = {"name": name, "problem": problem, "restarted": restarted, "ok_after": bool(verdict)}
+        if verdict is None:
+            event["unverified"] = True
+        events.append(event)
     return events
+
+
+def _history(raw: str | None) -> list[datetime]:
+    """Times of this episode's restarts, oldest first."""
+    try:
+        values = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [t for t in (parse_iso_utc(v) for v in values if isinstance(v, str)) if t]
+
+
+async def _healthy(name: str, now: datetime) -> dict:
+    """A healthy look: after HEALTHY_RESET of them in a row the episode is over
+    and the restart budget is full again."""
+    since = parse_iso_utc(await get_state(f"container_healthy_since:{name}"))
+    if since is None:
+        since = now
+        await set_state(f"container_healthy_since:{name}", now.isoformat())
+    if now - since >= HEALTHY_RESET:
+        await set_state(f"restarts:{name}", None)
+    return {"name": name, "healthy": True, "healthy_for": now - since}
+
+
+async def _comes_up(name: str, run_deadline: float) -> bool | None:
+    """After a restart: healthy — or just running, without a healthcheck —
+    within the container's own healthcheck window («health: starting» is
+    waited out, not judged). None when the run's budget (run_deadline, a
+    time.monotonic() value) ran out before the container's window did: no
+    verdict either way."""
+    await asyncio.sleep(POLL_SEC)
+    info = await docker_api.inspect(name)
+    own_deadline = time.monotonic() + (docker_api.verdict_window(info) if info else 0)
+    deadline = min(own_deadline, run_deadline)
+    while info and docker_api.health_of(info) == "starting" and time.monotonic() < deadline:
+        await asyncio.sleep(POLL_SEC)
+        info = await docker_api.inspect(name)
+    if info and docker_api.health_of(info) == "starting" and time.monotonic() < own_deadline:
+        return None
+    return bool(info) and docker_api.health_of(info) in ("healthy", "running")

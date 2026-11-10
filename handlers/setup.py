@@ -234,8 +234,14 @@ async def build_items() -> list[Item]:
                           ("🐙 Подключить GitHub", "setup:gh")))
 
     if not config.on_railway:
-        if docker_api.docker_available():
+        # A live probe, not the file's existence: a socket nobody listens on is a mounted file too.
+        if docker_api.docker_available() and await docker_api.ping():
             items.append(Item("docker", "ok", "docker socket"))
+        elif docker_api.docker_available():
+            items.append(Item("docker", "warn", "docker socket",
+                              "сокет смонтирован, но Docker не отвечает — автоперезапуск и очистка не работают; "
+                              "обычно помогает docker compose up -d",
+                              ("🐳 Как подключить", "setup:docker")))
         else:
             items.append(Item("docker", "off", "🐳 Docker на хосте",
                               "автоперезапуск контейнеров; очистка диска — по желанию, AUTO_CLEANUP=1",
@@ -499,7 +505,8 @@ async def cb_guide_docker(call: CallbackQuery):
                         "1. В docker-compose.yml раскомментируй строку\n"
                         "<code>- /var/run/docker.sock:/var/run/docker.sock</code>\n"
                         "2. В .env перечисли контейнеры: "
-                        "<code>AUTORESTART_CONTAINERS=app,db</code>\n"
+                        "<code>AUTORESTART_CONTAINERS=app,db</code> — кроме контейнера самого бота: "
+                        "его я не перезапускаю\n"
                         "3. <code>docker compose up -d</code> и «🔁 Проверить снова».\n\n"
                         "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
                         "Включай только на сервере, который полностью твой."), _guide_kb())

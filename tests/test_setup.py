@@ -73,7 +73,17 @@ async def test_public_url_warning_and_docker_on_self_host(bot, db, cfg, monkeypa
     assert items["web"].status == "warn"
     assert items["docker"].status == "off" and items["docker"].button[1] == "setup:docker"
     monkeypatch.setattr(docker_api, "docker_available", lambda: True)
+
+    async def answers():
+        return True
+
+    async def silent():
+        return False
+
+    monkeypatch.setattr(docker_api, "ping", answers)
     assert _by_key(await _items(monkeypatch))["docker"].status == "ok"
+    monkeypatch.setattr(docker_api, "ping", silent)          # the socket is there, Docker is not
+    assert _by_key(await _items(monkeypatch))["docker"].status == "warn"
     assert not public_urls.is_public()
     call = FakeCall("setup:url")
     await setup.cb_guide_url(call)

@@ -34,7 +34,7 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **Auto-redeploy**: fires the deploy hook itself when a site goes down (on by default once a hook exists, once per incident) and reports what it did in the alert.
 - **Follow-ups without you**: 2 and 5 minutes after a "site down" alert the bot re-checks and edits the same message — "still down" or "already up". A "I'm on it, one hour of silence" button lives in every alert.
 - **Knows your hosting**: guesses Cloudflare / Vercel / Netlify / GitHub Pages / Railway / Render / Fly / Heroku from response headers and puts an "Open the panel" link into the alert; domain alerts link to the registrar's panel (Cloudflare, reg.ru, Namecheap, GoDaddy…).
-- **Container auto-restart** (`AUTORESTART_CONTAINERS`) and **opt-in disk auto-cleanup** (`AUTO_CLEANUP=1`: dangling images and build cache older than a day, at most every 12 h, with a report of what was removed) — both need the docker socket mounted, which is root-equivalent access to the host.
+- **Container auto-restart** (`AUTORESTART_CONTAINERS`) and **opt-in disk auto-cleanup** (`AUTO_CLEANUP=1`: dangling images and build cache older than a day, at most every 12 h, with a report of what was removed) — both need the docker socket mounted, which is root-equivalent access to the host. A stopped or unhealthy container is restarted and given its own healthcheck window to come up («health: starting» is waited out, not judged); at most 3 restarts per episode, with 10- and 20-minute gaps, then one «I am leaving it to you» message and the container is yours until it has been healthy for half an hour, which re-arms the alert and the budget (a «✅ back up» comes after a fix by hand, too). The bot never restarts its own container, even when it is listed. A container that is not in Docker (a typo, renamed, removed) and a Docker that stopped answering on the socket are said once (🟠) instead of silently switching the feature off; so is `AUTORESTART_CONTAINERS` set without the socket mounted.
 
 ### 📱 Managed entirely from the chat
 - **Three buttons under the input field, no ☰ menu**: «🏠 Главная», «📖 Что я умею» (every function as «what it does → what you get», plus what each optional connection gives and who needs it) and «❓ Значки». A tap aborts any pending input.
@@ -142,7 +142,7 @@ Fork this repo → [Railway](https://railway.com) → **New Project → Deploy f
 3. **Settings → Networking → Generate Domain** (port **8080**), then set `PUBLIC_BASE_URL=https://<your-app>.up.railway.app`.
 
 Full click-by-click walkthrough in plain language (RU): [docs/SETUP.md](docs/SETUP.md).
-Note: the docker-socket features (container auto-restart, disk auto-cleanup) only apply to self-hosting and silently disable themselves on Railway.
+Note: the docker-socket features (container auto-restart, disk auto-cleanup) only apply to self-hosting; on Railway they are simply off. If `AUTORESTART_CONTAINERS` is set but the socket is not mounted, the bot says so (🟠) instead of staying quiet.
 
 ### Self-hosted (Docker Compose)
 
