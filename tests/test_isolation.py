@@ -135,7 +135,9 @@ async def test_a_link_with_a_typo_is_reported_and_the_crawl_survives(db):
 
 
 def test_a_broken_canonical_or_json_ld_is_a_finding_not_a_crash():
-    deep = "[" * 100_000 + "]" * 100_000
+    # Deep AND unterminated: 3.12/3.13 hit RecursionError, 3.14 parses the
+    # depth and reports the missing brackets — invalid either way.
+    deep = "[" * 100_000
     html = (f'<html><head><link rel="canonical" href="https://example.com]/">'
             f'<script type="application/ld+json">{deep}</script></head></html>')
     codes = {p.code for p in seo_checker.analyze_page(html, "https://example.com/")[0]}
