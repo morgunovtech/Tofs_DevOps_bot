@@ -25,6 +25,8 @@ from utils.text import clip
 logger = logging.getLogger(__name__)
 
 DENIED = "⛔ Доступ только для администратора."
+HELPER_NOTE = ("👥 Ты помощник: я присылаю тебе только «сайт лёг» и «снова работает», управляет ботом "
+               "владелец. Перестать — /stop.")
 ELSEWHERE = ("Здесь я не управляюсь: пиши мне в наш личный чат "
              "(или в группу из TELEGRAM_ADMIN_CHAT_ID).")
 NO_OWNER = ("Мной сейчас никто не может управлять: в .env задан TELEGRAM_ADMIN_CHAT_ID группы, "
@@ -227,8 +229,7 @@ def refusal(message: Message) -> str:
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
 async def deny_command(message: Message):
     if await helpers.is_helper(message.chat.id):
-        await message.answer("👥 Ты помощник: я присылаю тебе только тревоги 🔴 о сайтах, управляет ботом "
-                             "владелец. Перестать — /stop.")
+        await message.answer(HELPER_NOTE)
         return
     await message.answer(refusal(message))
 

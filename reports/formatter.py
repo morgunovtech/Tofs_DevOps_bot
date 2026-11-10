@@ -44,14 +44,16 @@ def _tech(*parts) -> str:
 
 def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True, *,
                               threshold: int = 2, interval_min: int = 5,
-                              since: datetime | None = None) -> str:
+                              since: datetime | None = None, label: str | None = None) -> str:
     """threshold and interval_min — the site's own dials: the text says how
     many checks it took and how often the site is checked, not «дважды» and
     «каждую минуту» for everyone. since — when the problem began (the first
-    failed check), so the alert says «не открывается с 14:03»."""
+    failed check), so the alert says «не открывается с 14:03». label — how
+    to name the site instead of site_label (the helpers' copy: a public name
+    without the path, which may carry a token)."""
     if r.ok:
         return ""
-    label = esc(site_label(r.url))
+    label = esc(label or site_label(r.url))
     expl = explain("availability", r.error)
     when = f" с {to_local(since).strftime('%H:%M')}" if since else ""
     if r.keyword_failed:
@@ -114,12 +116,13 @@ def incident_duration_line(incident: dict | None) -> str | None:
     return f"{fmt_duration(minutes)} ({span})"
 
 
-def format_recovery_alert(r: AvailabilityResult) -> str:
-    label = esc(site_label(r.url))
+def format_recovery_alert(r: AvailabilityResult, *, label: str | None = None) -> str:
+    """label — a name for the site instead of site_label (the helpers' copy)."""
+    label = esc(label or site_label(r.url))
     message = (r.resolved_incident or {}).get("message") or ""
     content = message.startswith("Bad content: ")    # the site opened all along; its text was wrong
     if content:
-        lines = [f"✅ На {label} снова всё как надо"]
+        lines = [f"✅ {label}: снова всё как надо"]
     else:
         verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
         lines = [f"✅ {label} {verb}"]
@@ -434,9 +437,10 @@ def format_compact_status_report(availability: list[AvailabilityResult],
     return "\n".join(lines)
 
 
-def incident_line(inc: dict) -> str:
-    """'example.com не открывается: хостинг отвечает ошибкой 502'."""
-    return humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]),
+def incident_line(inc: dict, label: str | None = None) -> str:
+    """'example.com не открывается: хостинг отвечает ошибкой 502'. label —
+    a name for the site instead of site_label (the helpers' copy)."""
+    return humanize.incident_headline(inc["check_type"], inc.get("message"), label or site_label(inc["url"]),
                                       page=is_web_page(inc["url"], inc.get("http_method")))
 
 

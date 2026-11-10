@@ -130,7 +130,8 @@ from utils.text import (
     parse_sqlite_utc,
     plural,
 )
-from utils.urls import is_api_check, is_web_page, short_host, site_label
+from utils.urls import is_api_check, is_http_url, is_web_page, short_host, site_label
+from web.status_page import public_label
 from web.webhook import send_feedback_summary
 
 logger = logging.getLogger(__name__)
@@ -437,11 +438,13 @@ def _alerts_on(*check_types: str):
 
 
 async def _alert_once(incident_id: int | None, site_id: int, text: str, priority: Priority, kb,
-                      *, always_ring: bool = False, to_helpers: bool = False) -> Message | bool | None:
+                      *, always_ring: bool = False, to_helpers: bool = False,
+                      helper_text: str | None = None) -> Message | bool | None:
     """Send an incident's alert and record that it went out. None — the site
     is paused or inside a maintenance window: the full alert is held by the
     notifier (held:<id>) and said once the pause is over; the incident stays
-    owed until then."""
+    owed until then. to_helpers is the caller's call and only «сайт лёг»
+    makes it: security, SSL, NS and the rest never reach a helper."""
     if incident_id is not None:
         _in_flight.add(incident_id)
     try:
@@ -449,7 +452,7 @@ async def _alert_once(incident_id: int | None, site_id: int, text: str, priority
             await _record_alert(incident_id, False)
         paused = await maintenance.is_paused(site_id)
         sent = await notifier.send(text, priority, site_id=site_id, reply_markup=kb, always_ring=always_ring,
-                                   to_helpers=to_helpers, announces=incident_id)
+                                   to_helpers=to_helpers, helper_text=helper_text, announces=incident_id)
         if paused:
             return None
         if incident_id is not None:
@@ -472,11 +475,24 @@ async def _record_alert(incident_id: int, alerted: bool):
             _sent_unrecorded.add(incident_id)
 
 
-def _missed_alert_text(inc: dict) -> str:
+def _missed_alert_text(inc: dict, label: str | None = None) -> str:
     since = parse_sqlite_utc(inc.get("created_at"))
     when = f" с {to_local(since).strftime('%d.%m %H:%M')}" if since else ""
-    return (f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}\n"
+    return (f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc, label))}\n"
             f"⏳ Тревога об этом не ушла вовремя — проблема открыта{when}. Проверки продолжаются.")
+
+
+def helper_label(url: str, method: str | None = None, *, api: bool = False) -> str:
+    """How a helper's copy names a site: what the status page would show
+    (the host, «· API» for an API check — never the path, a token may live
+    there); a tcp/ping monitor or an internal address is not named at all —
+    a helper is an outsider, the owner's network map is not for him. api —
+    the check is known to be an API one (AvailabilityResult.api) when the
+    method is not at hand."""
+    label = public_label(url, method)
+    if label is None:
+        return "Один из сайтов" if is_http_url(url) else "Один из серверов"
+    return f"{label} · API" if api and not label.endswith(" · API") else label
 
 
 async def deliver_missed_alerts():
@@ -498,8 +514,10 @@ async def deliver_missed_alerts():
                                          api=is_api_check(inc["url"], inc.get("http_method")))
                   if availability else explain_keyboard(inc["id"]))
             text = _missed_alert_text(inc)
+            helper_text = (_missed_alert_text(inc, helper_label(inc["url"], inc.get("http_method")))
+                           if availability else None)
             sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
-                                     always_ring=availability, to_helpers=availability)
+                                     always_ring=availability, to_helpers=availability, helper_text=helper_text)
             if availability and sent is not None:
                 _after_availability_alert(inc["url"], inc["site_id"], inc["id"],
                                           getattr(sent, "message_id", None), text, kb)
@@ -517,11 +535,16 @@ async def _send_availability_alert(r, site: dict):
             since = incident_start(await get_incident(r.incident_id))
         except sqlite3.OperationalError as e:
             logger.warning("Alert of incident %s goes without its start: %s", r.incident_id, e)
-    msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site),
-                                    threshold=site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD,
-                                    interval_min=_interval_min(site), since=since)
+    dials = dict(threshold=site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD,
+                 interval_min=_interval_min(site), since=since)
+    second = integrations.second_opinion_enabled() and repeatable(site)
+    msg = format_availability_alert(r, second, **dials)
     kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
-    sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True, to_helpers=True)
+    # The helpers' copy names the site the public way: no path (a token may
+    # live there), no port, no internal address.
+    sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True,
+                             to_helpers=True, helper_text=format_availability_alert(
+                                 r, second, label=helper_label(r.url, site.get("http_method")), **dials))
     if sent is not None:
         _after_availability_alert(r.url, r.site_id, r.incident_id, getattr(sent, "message_id", None), msg, kb)
 
@@ -530,6 +553,9 @@ async def _send_recovery(r):
     # Rings by default; with «будить только когда сайт лёг» only the fall
     # does; after a flap — silently, it was said in the hourly 🟠.
     text = format_recovery_alert(r)
+    # The helpers' copy: the public name of the site, and nothing about the
+    # owner's pause — that silence was his.
+    helper_text = format_recovery_alert(r, label=helper_label(r.url, api=r.api))
     inc_id = (r.resolved_incident or {}).get("id")
     if inc_id and await notifier.announced_at(inc_id) and await maintenance.paused_until(r.site_id):
         # «🔧 Я чиню» promised «напишу, когда поднимется»: the fix ends the silence.
@@ -538,7 +564,7 @@ async def _send_recovery(r):
         text += "\n\n🔧 Тишину снял — снова пишу обо всём."
     flapped = inc_id is not None and await _flapped_recently(inc_id, datetime.now(UTC))
     await notifier.send(text, Priority.NORMAL if flapped else Priority.CRITICAL, site_id=r.site_id,
-                        resolves=inc_id, to_helpers=True)
+                        resolves=inc_id, to_helpers=True, helper_text=helper_text)
 
 
 FLAP_WINDOW = timedelta(hours=1)
@@ -852,15 +878,14 @@ async def run_seo_checks():
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
     # 🔴 → 🟠: the ban is lifted, lesser findings remain. Not a recovery (the
     # incident is open) and not an alert (nothing new is wrong) — one quiet
-    # line to the owner. The helpers hear it the way they heard the 🔴: the
-    # SEO alert above goes out without a copy to them, so does this.
+    # line to the owner. Like the SEO alert above, not for the helpers.
     for r in results:
         if r.downgraded:
             with _isolated(f"Search ban lifted for {site_label(r.url)}"):
                 await notifier.send(
                     f"✅ {esc(site_label(r.url))}: запрет для поисковиков снят — сайт снова открыт для поиска. "
                     "Мелкие помехи остались, они в «🔎 Поиск и ИИ».",
-                    Priority.NORMAL, site_id=r.site_id, to_helpers=False)
+                    Priority.NORMAL, site_id=r.site_id)
 
 
 @_once("card_pictures", mark=True)
@@ -1359,6 +1384,19 @@ def _quiet_button(incident_id: int) -> list[InlineKeyboardButton]:
     return [InlineKeyboardButton(text="👀 Знаю, не напоминать", callback_data=f"inc_quiet:{incident_id}:a")]
 
 
+def _escalation_head(inc: dict, age_min: float, every: str, label: str | None = None) -> str:
+    """The first lines of a reminder: how long and why. label — a name for
+    the site instead of site_label (the helpers' copy)."""
+    if (inc.get("message") or "").startswith("Bad content: "):
+        # The site opens; its text is wrong — not «лежит», not «поднимется».
+        where = "в ответе" if is_api_check(inc["url"], inc.get("http_method")) else "на странице"
+        return (f"🔴 {esc(incident_line(inc, label))}\nТак уже {fmt_duration(age_min)}. "
+                f"Проверяю {every} и напишу, когда {where} снова будет как надо.")
+    cause = humanize.describe_error((inc.get("message") or "").removeprefix("Site down: "))
+    return (f"🔴 {esc(label or site_label(inc['url']))} лежит уже {fmt_duration(age_min)}: {esc(cause)}\n"
+            f"Проверяю {every} и напишу, как только поднимется.")
+
+
 async def run_escalation_watch():
     """Re-alert about an unresolved DOWN site with a growing pause (30 → 60
     → 120 → 240 min, in quiet hours not more often than every 2 h) —
@@ -1405,25 +1443,21 @@ async def run_escalation_watch():
             # time to remind is still measured from the alert (created_at).
             age_min = (now - (incident_start(inc) or created)).total_seconds() / 60
             api = is_api_check(inc["url"], inc.get("http_method"))
-            if (inc.get("message") or "").startswith("Bad content: "):
-                # The site opens; its text is wrong — not «лежит», not «поднимется».
-                where = "в ответе" if api else "на странице"
-                head = (f"🔴 {esc(incident_line(inc))}\nТак уже {fmt_duration(age_min)}. "
-                        f"Проверяю {every} и напишу, когда {where} снова будет как надо.")
-                back = f"«✅ {where} снова как надо»"
-            else:
-                cause = humanize.describe_error((inc.get("message") or "").removeprefix("Site down: "))
-                head = (f"🔴 {esc(site_label(inc['url']))} лежит уже {fmt_duration(age_min)}: {esc(cause)}\n"
-                        f"Проверяю {every} и напишу, как только поднимется.")
-                back = "«✅ поднялся»"
+            content = (inc.get("message") or "").startswith("Bad content: ")
+            where = "в ответе" if api else "на странице"
+            back = f"«✅ {where} снова как надо»" if content else "«✅ поднялся»"
             kb = alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                         hosting=await get_state(f"hosting:{inc['site_id']}"), api=api)
             kb = InlineKeyboardMarkup(inline_keyboard=[*kb.inline_keyboard, _quiet_button(inc["id"])])
+            # The helpers get the first reminder only (it is still «сайт лёг»):
+            # the public name of the site and no talk of buttons they do not have.
             sent = await notifier.send(
-                f"{head}\n\nЧинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
+                f"{_escalation_head(inc, age_min, every)}\n\n"
+                f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
                 f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.",
                 Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
-                to_helpers=sent_n == 0)
+                to_helpers=sent_n == 0,
+                helper_text=_escalation_head(inc, age_min, every, helper_label(inc["url"], inc.get("http_method"))))
             if sent:
                 await set_state(f"escalated:{inc['id']}", now.isoformat())
                 await set_state(f"escalated_n:{inc['id']}", str(sent_n + 1))

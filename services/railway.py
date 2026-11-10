@@ -102,7 +102,7 @@ async def remind_if_due(now: datetime | None = None) -> bool:
     if days is None or not REMIND_AT_DAY <= days < TRIAL_DAYS:
         return False
     sent = await notifier.send(reminder_text(TRIAL_DAYS - days), Priority.NORMAL,
-                               reply_markup=keyboard("railway:paid"), to_helpers=False)
+                               reply_markup=keyboard("railway:paid"))
     if sent:
         await set_state(REMINDED, "1")
     return bool(sent)

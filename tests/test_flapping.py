@@ -147,7 +147,8 @@ async def test_escalation_backs_off_and_stops_on_quiet_ack(bot, db, cfg, monkeyp
         if any(str(m["chat_id"]) == "777" for m in bot.sent[n:]):
             sent_at.append(minute)
     assert sent_at == [30, 90, 210]                                  # was every 30 minutes: 12 in 6 hours
-    assert len([m for m in bot.sent if str(m["chat_id"]) == "555"]) == 1   # helpers get the first one only
+    (copy,) = [m for m in bot.sent if str(m["chat_id"]) == "555"]     # helpers get the first one only
+    assert "down.test лежит уже 30 мин" in copy["text"] and "🔧" not in copy["text"]   # no buttons to press
     assert "лежит уже 30 мин" in bot.sent[0]["text"].split("\n")[0]
     assert "ошибкой 502" in bot.sent[0]["text"] and "Проверяю каждые 5 мин" in bot.sent[0]["text"]
     labels = [b.text for row in bot.sent[0]["reply_markup"].inline_keyboard for b in row]

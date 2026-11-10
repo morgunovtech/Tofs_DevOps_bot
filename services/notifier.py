@@ -17,8 +17,13 @@ the recovery of an announced fall (resolves=<id>) comes through the silence.
 send() returns True when the message was delivered or queued — callers that
 set one-shot "already alerted" flags must only do so on True.
 
-What rings (CRITICAL) also goes to the helpers (services.helpers), as text
-without buttons — the buttons steer the bot, and only the owner can.
+Helpers (services.helpers) get only what a caller marks to_helpers=True —
+«сайт лёг» and «снова работает» — as text without buttons (the buttons steer
+the bot, and only the owner can), with helper_text in place of the owner's
+text when the caller gives one (a public name of the site instead of a path
+that may carry a token). The owner's mute, quiet hours and «будить только
+когда сайт лёг» do not hold their copy back: the copy rings when the owner's
+would have rung, and comes silently otherwise.
 
 A message Telegram did not take (no network, 5xx, flood limit) is not lost:
 it goes to the outbox and is retried every minute, about one a second, with a
@@ -178,12 +183,17 @@ async def _call(method, **kwargs):
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
                reply_markup=None, site_id: int | None = None, always_ring: bool = False,
-               to_helpers: bool = True, announces: int | None = None,
+               to_helpers: bool = False, helper_text: str | None = None, announces: int | None = None,
                resolves: int | None = None) -> Message | bool:
     """The sent Message when delivered now, True when queued, False when
     dropped or failed — so `if sent:` keeps working for one-shot flags.
     With «будить только когда сайт лёг» on, CRITICAL messages that are not
     marked always_ring are treated as NORMAL.
+
+    to_helpers=True: a CRITICAL message (by its original priority) is also
+    copied to the helpers — helper_text instead of text when given — once
+    the owner's copy is on its way; a message dropped (no admin, a pause
+    without an incident) or held by a pause is not copied either.
 
     announces=<incident id>: the message opens an incident — on any success
     (delivered, queued, kept for a retry) the incident is marked announced;
@@ -191,6 +201,7 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
     resolves=<incident id>: the message says the problem is gone — it passes
     a pause or a window only when the fall itself was announced (a ✅ about a
     fall nobody heard of would ring at night for nothing)."""
+    original = priority
     if priority is Priority.CRITICAL and settings.ring_only_down() and not always_ring:
         priority = Priority.NORMAL
     # The last line of defence on length: callers that need every line
@@ -203,7 +214,8 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
             and not (resolves is not None and await announced_at(resolves)):
         if announces is not None:
             try:
-                await _hold(announces, site_id, text, reply_markup, priority, always_ring, to_helpers)
+                await _hold(announces, site_id, text, reply_markup, priority, always_ring, to_helpers,
+                            helper_text)
                 logger.info("Site %s paused — holding until the silence ends: %s", site_id, text[:60])
             except sqlite3.OperationalError as e:
                 health.db_write_failed(e)
@@ -220,9 +232,12 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
             # Into the outbox FIRST: the helpers below may take a while.
             await _keep(_maybe_note() + text if sent is MAYBE else text, reply_markup, priority)
             sent = True
-        if priority is Priority.CRITICAL and to_helpers:
-            await _tell_helpers(text)
         result = sent
+    if to_helpers and original is Priority.CRITICAL:
+        # The owner's settings are the owner's: the copy goes through mute
+        # and quiet hours, and rings when the owner's would have rung —
+        # «будить только когда сайт лёг» makes the recovery silent for both.
+        await _tell_helpers(helper_text or text, ring=priority is Priority.CRITICAL)
     if result and announces is not None:
         await _mark_announced(announces)
     return result
@@ -252,10 +267,11 @@ async def _mark_announced(incident_id: int):
 
 
 async def _hold(incident_id: int, site_id: int, text: str, reply_markup, priority: Priority,
-                always_ring: bool, to_helpers: bool):
+                always_ring: bool, to_helpers: bool, helper_text: str | None):
     await set_state(f"{HELD}{incident_id}", json.dumps({
         "site_id": site_id, "text": text, "markup": _markup_json(reply_markup), "priority": priority.value,
-        "always_ring": always_ring, "to_helpers": to_helpers, "at": datetime.now(UTC).isoformat()}))
+        "always_ring": always_ring, "to_helpers": to_helpers, "helper_text": helper_text,
+        "at": datetime.now(UTC).isoformat()}))
 
 
 async def _forget_held(key: str):
@@ -290,9 +306,11 @@ async def release_held():
         at = parse_iso_utc(item.get("at"))
         note = (f"🔕 Это случилось в {to_local(at).strftime('%H:%M')}, пока про сайт было тихо "
                 f"(«🔧 Я чиню» или плановые работы), и до сих пор не прошло:\n\n") if at else ""
+        helper_text = item.get("helper_text")
         sent = await send(clip(note + item["text"]), Priority(item["priority"]),
                           reply_markup=_markup(item.get("markup")), site_id=item["site_id"],
                           always_ring=item.get("always_ring", False), to_helpers=item.get("to_helpers", False),
+                          helper_text=clip(note + helper_text) if isinstance(helper_text, str) else None,
                           announces=incident_id)
         if sent:
             _released.add(incident_id)
@@ -390,19 +408,26 @@ async def send_to(chat_id: str, text: str) -> bool:
         return False
 
 
-async def _tell_helper(chat_id: str, text: str):
+# At the end: at the start it would replace «🔴 …» in the phone's notification.
+HELPER_FOOTER = "\n\n👥 Это копия для помощника: управляет ботом владелец, кнопки — у него."
+
+
+async def _tell_helper(chat_id: str, text: str, ring: bool):
     try:
-        await _bot.send_message(chat_id=chat_id, text=text, disable_notification=False,
+        await _bot.send_message(chat_id=chat_id, text=text, disable_notification=not ring,
                                 request_timeout=HELPER_TIMEOUT)
     except TelegramBadRequest:
-        await _bot.send_message(chat_id=chat_id, text=text, parse_mode=None, disable_notification=False,
+        await _bot.send_message(chat_id=chat_id, text=text, parse_mode=None, disable_notification=not ring,
                                 request_timeout=HELPER_TIMEOUT)
 
 
-async def _tell_helpers(text: str):
+async def _tell_helpers(text: str, ring: bool = True):
     """Best effort, all at once, 15 s each: the owner's copy is the one that is retried."""
     targets = await helpers.helpers()
-    results = await asyncio.gather(*(_tell_helper(h["chat_id"], text) for h in targets),
+    if not targets:
+        return
+    text = clip(text, SAFE_LIMIT - len(HELPER_FOOTER)) + HELPER_FOOTER
+    results = await asyncio.gather(*(_tell_helper(h["chat_id"], text, ring) for h in targets),
                                    return_exceptions=True)
     for h, result in zip(targets, results, strict=True):
         if isinstance(result, Exception):

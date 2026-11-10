@@ -401,7 +401,7 @@ def _ring_kb() -> InlineKeyboardMarkup:
 
 async def _ring_later():
     await asyncio.sleep(RING_DELAY_S)
-    await notifier.send(RING_TEST, Priority.CRITICAL, reply_markup=_ring_kb(), always_ring=True, to_helpers=False)
+    await notifier.send(RING_TEST, Priority.CRITICAL, reply_markup=_ring_kb(), always_ring=True)
 
 
 def schedule_ring_test() -> asyncio.Task:

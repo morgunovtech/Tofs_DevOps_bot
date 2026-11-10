@@ -39,6 +39,7 @@ from services import (  # noqa: E402
     automation,
     gsc,
     health,
+    helpers,
     integrations,
     maintenance,
     notifier,
@@ -200,6 +201,7 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
     monkeypatch.setattr(netcheck, "_lock", asyncio.Lock())
     monkeypatch.setattr(automation, "_lock", asyncio.Lock())
+    monkeypatch.setattr(helpers, "_lock", asyncio.Lock())
     netcheck.reset()
     scheduler._cannot_check_noted.clear()
     screenshots._inflight.clear()
