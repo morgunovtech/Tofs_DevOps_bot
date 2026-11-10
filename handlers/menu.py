@@ -31,7 +31,9 @@ from utils.urls import is_api_check, is_web_page, site_label
 
 router = Router(name="menu")
 
-FRESH_REGION_MINUTES = 3 * 60
+# The region's timing is measured every 6 hours (reports.scheduler): a
+# number younger than seven is the current one.
+FRESH_REGION_MINUTES = 7 * 60
 
 
 async def mute_until_local() -> str | None:

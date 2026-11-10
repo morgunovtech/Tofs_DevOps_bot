@@ -113,6 +113,7 @@ from services.actions import (
 from services.notifier import Priority
 from utils import validate
 from utils.clock import local_tz, to_local
+from utils.net import is_private_target
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
 from web.webhook import send_feedback_summary
@@ -767,11 +768,12 @@ async def run_seo_checks():
 async def run_card_pictures():
     """Once a day, after the search audit: a fresh picture of every page
     for its card (services.screenshots). One at a time — the free
-    screenshot service allows about fifty a day."""
+    screenshot service has a small daily quota, so only pages whose card
+    can show the picture, and never an internal address (is_due)."""
     for site in await get_all_sites():
         with _isolated(f"Card picture of {site_label(site['url'])}"):
             if is_web_page(site["url"], site.get("http_method")) \
-                    and await screenshots.is_due(site["id"]):
+                    and await screenshots.is_due(site["id"], site["url"]):
                 await screenshots.refresh(site["id"], site["url"])
 
 
@@ -788,11 +790,12 @@ REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
 
 
 async def run_region_checks():
-    """Hourly: how fast each site opens from the audience's region — a
-    check-host node picked by the owner's timezone. Same opt-in as the
-    second opinion (same external service). Sites that are down right now
-    are skipped: a timing of a broken site is noise."""
-    if not integrations.second_opinion_enabled():
+    """Every 6 hours: how fast each site opens from the audience's region —
+    a check-host node picked by the owner's timezone. Its own opt-in
+    (REGION_SPEED / «⏱ Скорость из региона»), off by default: the address
+    of every site goes to the external service. Sites that are down right
+    now are skipped: a timing of a broken site is noise."""
+    if not integrations.region_speed_enabled():
         return
     country = region.country_for_timezone(settings.timezone())
     for site in await get_all_sites():
@@ -866,8 +869,10 @@ def _security_keyboard(r):
 @_once("visitor_checks", mark=True)
 @_alerts_on("visitors")
 async def run_visitor_checks():
-    """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
-    urls = await get_active_page_urls()
+    """Daily: real visitors' speed from Google's Chrome data, when a key is
+    set. An internal address is not asked about — Google would only learn
+    it — and its old finding closes as inapplicable."""
+    urls = [u for u in await get_active_page_urls() if not is_private_target(u)]
     await close_inapplicable(("visitors",), urls)
     await _notify_transitions(await check_all_visitors(urls), format_visitors_alert, format_visitors_recovery,
                               keyboard=_visitors_keyboard)
@@ -1769,7 +1774,7 @@ def _cron_specs() -> dict[str, dict]:
         "mail_checks": dict(minute=25),
         "security_checks": dict(hour="*/6", minute=35),
         "visitor_checks": _before_morning(50),
-        "region_checks": dict(minute=17),
+        "region_checks": dict(hour="*/6", minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
         "db_backup": dict(hour=3, minute=45),

@@ -7,7 +7,8 @@ deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id, cf_zone_name
 (learnt from Cloudflare on the first purge), second_opinion ("on"/"off"),
 github_token, github_owner, crux_key (Google API key for the Chrome UX
 Report), auto_redeploy / auto_restart / auto_cleanup ("on"/"off": the
-switches of «🤖 Что бот делает сам», they win over .env).
+switches of «🤖 Что бот делает сам», they win over .env), region_speed
+("on"/"off": the «⏱ Скорость из региона» switch of «🌐 Вторая точка»).
 """
 
 import json
@@ -21,7 +22,7 @@ from db.database import get_state, set_state
 KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
         "cf_api_token", "cf_zone_id", "cf_zone_name", "second_opinion", "self_heartbeat_url",
         "status_page_slug", "github_token", "github_owner", "crux_key",
-        "auto_redeploy", "auto_restart", "auto_cleanup")
+        "auto_redeploy", "auto_restart", "auto_cleanup", "region_speed")
 _values: dict[str, str] = {}
 
 
@@ -208,6 +209,15 @@ def second_opinion_enabled() -> bool:
     return config.second_opinion
 
 
+def region_speed_enabled() -> bool:
+    """«⏱ Скорость из региона» — the same external service (check-host.net),
+    its own switch: every site's address goes there every 6 hours."""
+    v = _values.get("region_speed")
+    if v in ("on", "off"):
+        return v == "on"
+    return config.region_speed
+
+
 # ── Rules for a value that arrives without its wizard (the JSON import) ──────
 
 def _like(pattern: str, flags: int = 0) -> Callable[[object], bool]:
@@ -244,4 +254,5 @@ RULES: dict[str, Callable[[object], bool]] = {
     "auto_redeploy": lambda v: v in ("on", "off"),
     "auto_restart": lambda v: v in ("on", "off"),
     "auto_cleanup": lambda v: v in ("on", "off"),
+    "region_speed": lambda v: v in ("on", "off"),
 }

@@ -17,6 +17,7 @@ The same predicates decide what is «internal» everywhere in the project:
 what is never sent to check-host, what ALLOW_PRIVATE_TARGETS=0 refuses at
 input, where a session may connect."""
 
+import asyncio
 import errno
 import ipaddress
 import socket
@@ -78,10 +79,32 @@ def is_lan_host(host: str) -> bool:
 
 
 def is_private_target(url: str) -> bool:
-    """The address names something inside a LAN (is_lan_host of its host);
-    an address without a host is not a public one either."""
+    """THE rule for every request that hands a monitored address to a third
+    party (check-host.net, the screenshot service, Google CrUX, RDAP): the
+    address names something inside a LAN (is_lan_host of its host); an
+    address without a host is not a public one either. By the address as
+    written — no DNS here (see resolves_private)."""
     host = host_of(url)
     return not host or is_lan_host(host)
+
+
+async def resolves_private(url: str, timeout: float = 5.0) -> bool:
+    """True when the name resolves HERE to a non-public address
+    (nas.home.example.com → 192.168.1.10). A name that does not resolve here
+    is not called private: the outside service will judge it."""
+    host = host_of(url)
+    if not host:
+        return True
+    try:
+        infos = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout)
+    except (OSError, TimeoutError):
+        return False
+    for info in infos:
+        ip = _parse_ip(str(info[4][0]).split("%")[0])
+        if ip is not None and not is_public_ip(ip):
+            return True
+    return False
 
 
 def _same_domain(a: str, b: str) -> bool:

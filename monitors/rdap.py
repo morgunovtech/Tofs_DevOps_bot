@@ -129,7 +129,13 @@ async def _rdap_get(session: aiohttp.ClientSession, url: str) -> dict | None:
 
 async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo:
     tld = ascii_tld(domain)
-    servers = (await _bootstrap_servers(session)).get(tld, [])
+    table = await _bootstrap_servers(session)
+    servers = table.get(tld, [])
+    if table and not servers:
+        # IANA lists every zone that has RDAP, and rdap.org redirects by the
+        # same list: nothing to ask — rdap.org would only learn the name
+        # (nas.lan). rdap.org stays for when the bootstrap itself is down.
+        raise RdapUnsupported(f"зона .{tld} без RDAP")
     urls = [f"{base}domain/{domain}" for base in servers] + [RDAP_ORG.format(domain=domain)]
     last_error: Exception | None = None
     for url in urls:

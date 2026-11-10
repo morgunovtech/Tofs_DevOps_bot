@@ -42,6 +42,7 @@ from services import (  # noqa: E402
     maintenance,
     notifier,
     runtime,
+    screenshots,
     secrets,
     settings,
     sitestatus,
@@ -197,6 +198,7 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(automation, "_lock", asyncio.Lock())
     netcheck.reset()
     scheduler._cannot_check_noted.clear()
+    screenshots._inflight.clear()
 
 
 @pytest.fixture

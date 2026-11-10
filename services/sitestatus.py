@@ -27,6 +27,12 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def now_iso() -> str:
+    """The same format as the «at» of every section — for a field that keeps
+    its own moment (when the card's picture was taken)."""
+    return _now()
+
+
 async def get(site_id: int) -> dict:
     raw = await get_state(f"status:{site_id}")
     try:

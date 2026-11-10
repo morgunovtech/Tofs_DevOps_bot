@@ -2,12 +2,16 @@
 Page screenshots via an external rendering service — lets the admin eyeball
 a page straight from Telegram without bundling a headless browser.
 
-The provider is a URL template (SCREENSHOT_TEMPLATE). Two response styles
-are supported:
+The provider is a URL template (SCREENSHOT_TEMPLATE; «off» — no
+screenshots at all). Two response styles are supported:
   * a JSON API à la microlink.io (default) — {"data": {"screenshot": {"url": …}}},
     the image is fetched from that URL;
   * a direct image (thum.io etc.). These often return a tiny "rendering…"
     placeholder on the first hit, so suspiciously small images are retried.
+
+The page address goes to that third party, so an internal address
+(utils.net.is_private_target) never does: the service could not open it
+anyway, and the owner's LAN is not its business.
 """
 
 import asyncio
@@ -21,9 +25,9 @@ from urllib.parse import quote
 
 import aiohttp
 
-from config import config
+from config import TEMPLATE_OFF, config
 from services import public_urls, secrets, sitestatus
-from utils.net import owner_connector
+from utils.net import is_private_target, owner_connector
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +65,31 @@ async def _read_image(resp: aiohttp.ClientResponse) -> bytes | None:
     return data or None
 
 
-QUOTA_REASON = "лимит бесплатных снимков на сегодня исчерпан (около 50 в день)"
+QUOTA_REASON = "лимит бесплатных снимков на сегодня исчерпан"
+OFF_REASON = "снимки выключены (SCREENSHOT_TEMPLATE=off или в нём нет {url})"
+PRIVATE_REASON = "это внутренний адрес: сервис снимков его не откроет, и наружу я его не отправляю"
 
 
 class QuotaExceeded(Exception):
     pass
+
+
+class ProviderRefused(Exception):
+    """A definite «no» from the service (HTTP 4xx, status: fail) — the same
+    request would get the same answer, so it is not repeated."""
+
+
+def _template() -> str | None:
+    """SCREENSHOT_TEMPLATE, or None when screenshots are off: empty, «off»,
+    or a template without {url}."""
+    t = config.screenshot_template.strip()
+    if not t or t.lower() in TEMPLATE_OFF:
+        return None
+    return t if "{url}" in t else None
+
+
+def enabled() -> bool:
+    return _template() is not None
 
 
 async def _fetch_once(session: aiohttp.ClientSession, api: str) -> bytes | None:
@@ -73,12 +97,17 @@ async def _fetch_once(session: aiohttp.ClientSession, api: str) -> bytes | None:
         ctype = resp.content_type or ""
         if resp.status == 429:
             raise QuotaExceeded
+        if 400 <= resp.status < 500:
+            raise ProviderRefused(f"HTTP {resp.status}")
         if ctype.startswith("image/"):
             return await _read_image(resp)
         if resp.status == 200 and "json" in ctype:
             payload = await resp.json()
-            if payload.get("status") == "fail" and "rate" in str(payload.get("message", "")).lower():
-                raise QuotaExceeded
+            if payload.get("status") == "fail":
+                message = str(payload.get("message", ""))
+                if "rate" in message.lower():
+                    raise QuotaExceeded
+                raise ProviderRefused(message[:200] or "status: fail")
             shot = (payload.get("data") or {}).get("screenshot") or {}
             img_url = shot.get("url")
             if img_url:
@@ -91,7 +120,13 @@ async def _fetch_once(session: aiohttp.ClientSession, api: str) -> bytes | None:
 
 async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
     """(image, reason) — reason explains a None image in plain words."""
-    api = config.screenshot_template.format(url=quote(url, safe=":/"))
+    template = _template()
+    if template is None:
+        return None, OFF_REASON
+    if is_private_target(url):
+        return None, PRIVATE_REASON
+    # replace, not str.format: other braces of a provider's template stay as they are
+    api = template.replace("{url}", quote(url, safe=":/"))
     image: bytes | None = None
     # The service's host (SCREENSHOT_TEMPLATE) is the owner's choice — a
     # renderer on localhost keeps working; the image URL in its answer is
@@ -102,6 +137,8 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
                 image = await _fetch_once(session, api)
             except QuotaExceeded:
                 return None, QUOTA_REASON
+            except ProviderRefused as e:
+                return None, f"сервис снимков не смог открыть страницу ({e})"
             except Exception as e:
                 # First hit often times out while the provider renders the
                 # page; the result is cached server-side, so retry.
@@ -122,9 +159,15 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
 # a screenshot is taken once a day (with the search audit) and kept on the
 # bot's disk; the card links to it on the bot's own public address, and
 # Telegram draws that link as a picture above the text. Off a public
-# address (no domain) there is simply no picture.
+# address (no domain) there is simply no picture — and then no screenshot
+# is taken either: the free quota is not spent on pictures nobody sees.
 
 REFRESH_AFTER = timedelta(hours=20)
+# A failed attempt is not repeated at the next look at the card: six hours
+# (a parameter — chosen high for the small free quota).
+FAILED_RETRY_AFTER = timedelta(hours=6)
+# Sites whose picture is being taken right now: one attempt per site at a time.
+_inflight: set[int] = set()
 
 
 def _shots_dir() -> str:
@@ -160,23 +203,42 @@ def image_type(data: bytes) -> str:
 
 
 async def refresh(site_id: int, url: str) -> bool:
-    """Take a fresh picture of the page and keep it for the card."""
-    image, reason = await fetch_screenshot(url)
-    if not image:
-        logger.info("No card picture for %s: %s", url, reason)
+    """Take a fresh picture of the page and keep it for the card. One
+    attempt per site at a time; a failure is remembered (is_due)."""
+    if site_id in _inflight:
         return False
-    os.makedirs(_shots_dir(), exist_ok=True)
-    with open(shot_path(site_id), "wb") as f:
-        f.write(image)
-    await sitestatus.update(site_id, "shot", ok=True)
-    logger.info("Card picture for %s: %d KB", url, len(image) // 1024)
-    return True
+    _inflight.add(site_id)
+    try:
+        before = (await sitestatus.get(site_id)).get("shot") or {}
+        pic_at = before.get("pic_at") or (before.get("at") if before.get("ok") else None)
+        image, reason = await fetch_screenshot(url)
+        if not image:
+            logger.info("No card picture for %s: %s", url, reason)
+            await sitestatus.update(site_id, "shot", ok=False, reason=reason, pic_at=pic_at)
+            return False
+        os.makedirs(_shots_dir(), exist_ok=True)
+        with open(shot_path(site_id), "wb") as f:
+            f.write(image)
+        await sitestatus.update(site_id, "shot", ok=True, pic_at=sitestatus.now_iso())
+        logger.info("Card picture for %s: %d KB", url, len(image) // 1024)
+        return True
+    finally:
+        _inflight.discard(site_id)
 
 
-async def is_due(site_id: int) -> bool:
+async def is_due(site_id: int, url: str) -> bool:
+    """Time for a new picture: only when the card can show it (the bot has
+    a public address), the address may go to the service (not an internal
+    one) and screenshots are on."""
+    if not enabled() or not public_urls.is_public() or is_private_target(url):
+        return False
     shot = (await sitestatus.get(site_id)).get("shot") or {}
     age = sitestatus.age_minutes(shot)
-    return age is None or age > REFRESH_AFTER.total_seconds() / 60 or not os.path.exists(shot_path(site_id))
+    if age is None:
+        return True
+    if shot.get("ok") is False:
+        return age > FAILED_RETRY_AFTER.total_seconds() / 60
+    return age > REFRESH_AFTER.total_seconds() / 60 or not os.path.exists(shot_path(site_id))
 
 
 async def card_picture_url(site_id: int) -> str | None:
@@ -185,5 +247,6 @@ async def card_picture_url(site_id: int) -> str | None:
     if not public_urls.is_public() or not os.path.exists(shot_path(site_id)):
         return None
     shot = (await sitestatus.get(site_id)).get("shot") or {}
-    version = str(shot.get("at") or datetime.now(UTC).date())[:16].replace(":", "").replace("-", "")
+    taken = shot.get("pic_at") or shot.get("at")          # older records have no pic_at
+    version = str(taken or datetime.now(UTC).date())[:16].replace(":", "").replace("-", "")
     return f"{public_urls.base_url().rstrip('/')}/shot/{_sig(site_id)}/{site_id}?v={version}"

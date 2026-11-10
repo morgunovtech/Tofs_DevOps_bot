@@ -83,6 +83,7 @@ class Item:
     title: str                 # shown in the "works" line or as the bullet
     detail: str = ""           # what is wrong / what it gives (HTML-escaped)
     button: tuple[str, str] | None = None   # (label, callback_data)
+    manage: tuple[str, str] | None = None   # shown while it works: switch off, settings
 
 
 # ── Probes ───────────────────────────────────────────────────────────────────
@@ -182,12 +183,15 @@ async def build_items() -> list[Item]:
                           ("🌐 Включить статус-страницу", "setup:sp_on")))
 
     if integrations.second_opinion_enabled():
-        items.append(Item("second_opinion", "ok", "вторая точка проверки"))
+        items.append(Item("second_opinion", "ok", "вторая точка проверки (check-host.net)",
+                          manage=("🌐 Вторая точка: выключить", "setup:so")))
     else:
+        # A screen with what goes where, not a one-tap switch: the service
+        # learns the sites' addresses, and that is the owner's choice.
         items.append(Item("second_opinion", "off", "🌐 Вторая точка проверки",
-                          "перед тревогой «сайт лежит» перепроверка с внешних серверов check-host.net, "
-                          "и раз в час — скорость сайта из региона твоей аудитории",
-                          ("🌐 Включить вторую точку", "setup:so:on")))
+                          "перед тревогой «сайт лежит» перепроверка с серверов check-host.net — "
+                          "им уходят адреса сайтов",
+                          ("🌐 Вторая точка", "setup:so")))
 
     if settings.heartbeat_jobs():
         items.append(Item("heartbeats", "ok", "задачи и боты"))
@@ -311,6 +315,10 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
                  + (f" · сборка {esc(config.app_commit[:7])}" if config.app_commit else "") + "</i>")
 
     rows = _button_rows(warn)
+    # What works has no buttons of its own — except a switch to turn it off.
+    manage = [InlineKeyboardButton(text=i.manage[0], callback_data=i.manage[1]) for i in ok if i.manage]
+    if manage:
+        rows.append(manage)
     if warn:
         rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
     if integrations.deploy_hooks() or docker_api.docker_available():
@@ -477,12 +485,60 @@ async def cb_status_page_on(call: CallbackQuery):
                        f"Выключить можно в ⚙️ Настройках.", back_button("← К подключениям", "setup:check"))
 
 
-@router.callback_query(F.data.startswith("setup:so:"))
+def _switch_source(key: str, env_name: str, env_value: bool) -> str:
+    """Where the current on/off comes from — the owner must see that a tap
+    here overrides .env."""
+    env = f"{env_name}={'1' if env_value else '0'}"
+    if integrations.stored().get(key) in ("on", "off"):
+        return f"задано здесь, в чате (в .env {env})"
+    return f"из .env ({env})"
+
+
+def second_opinion_screen() -> tuple[str, InlineKeyboardMarkup]:
+    """What goes to check-host.net, the switches and where each comes from:
+    turning the service on is a choice made on this screen, not one tap."""
+    so_on = integrations.second_opinion_enabled()
+    rs_on = integrations.region_speed_enabled()
+    text = ("🌐 Вторая точка проверки — бесплатный сервис check-host.net\n\n"
+            "• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его "
+            "серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, "
+            "и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n"
+            "• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для "
+            "строки «из России, 0.8 с» в карточке.\n\n"
+            "Внутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\n"
+            f"Перепроверка: {'включена' if so_on else 'выключена'} — "
+            f"{esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion))}.\n"
+            f"Скорость из региона: {'включена' if rs_on else 'выключена'} — "
+            f"{esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))}.")
+    rows = [[InlineKeyboardButton(text="🌐 Перепроверку выключить" if so_on else "🌐 Перепроверку включить",
+                                  callback_data="setup:so:off" if so_on else "setup:so:on")],
+            [InlineKeyboardButton(text="⏱ Скорость из региона выключить" if rs_on
+                                  else "⏱ Скорость из региона включить",
+                                  callback_data="setup:rs:off" if rs_on else "setup:rs:on")],
+            [InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")]]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "setup:so")
+async def cb_second_opinion_screen(call: CallbackQuery):
+    await ack(call)
+    await render(call, *second_opinion_screen())
+
+
+@router.callback_query(F.data.startswith(("setup:so:", "setup:rs:")))
 async def cb_second_opinion(call: CallbackQuery):
+    key, env_value = (("second_opinion", config.second_opinion) if call.data.startswith("setup:so:")
+                      else ("region_speed", config.region_speed))
     on = call.data.endswith(":on")
-    await integrations.set_value("second_opinion", "on" if on else "off")
-    await ack(call, "Включено" if on else "Выключено")
-    await show_checklist(call)
+    # Switching the service ON is consent: a tap that waited in the queue
+    # while the bot was down does not give it (handlers.common.ack).
+    fresh = await ack(call, "Включено" if on else "Выключено")
+    if on and not fresh:
+        await call.message.answer(STALE_TAP)
+        return
+    # The same as .env says → forget the chat value, so .env is the master again.
+    await integrations.set_value(key, None if on == env_value else ("on" if on else "off"))
+    await render(call, *second_opinion_screen())
 
 
 @router.callback_query(F.data == "setup:hb_regen")

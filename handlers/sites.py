@@ -538,7 +538,7 @@ async def render_card(call: CallbackQuery, site: dict):
     picture = None
     if is_web_page(url, site.get("http_method")):
         picture = await screenshots.card_picture_url(sid)
-        if await screenshots.is_due(sid):   # the first time, or a stale one: ready by the next look
+        if await screenshots.is_due(sid, url):   # the first time, or a stale one: ready by the next look
             _later(screenshots.refresh(sid, url))
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows), picture=picture)
 

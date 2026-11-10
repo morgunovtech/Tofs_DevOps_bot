@@ -16,7 +16,6 @@ site the verdict is never True — the audience sees the same.
 """
 
 import asyncio
-import ipaddress
 import json
 import logging
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from utils.net import is_private_target, resolves_private
 from utils.urls import PAGE_METHODS, is_http_url
 
 logger = logging.getLogger(__name__)
@@ -69,23 +69,13 @@ def _carries_secret(url: str) -> bool:
         return True
 
 
-def _is_private_host(host: str | None) -> bool:
-    """Targets that must never be sent to an external checking service:
-    RFC1918/loopback/link-local IPs, single-label LAN names, .local hosts."""
-    if not host:
-        return True
-    try:
-        return not ipaddress.ip_address(host).is_global
-    except ValueError:
-        pass
-    return "." not in host or host.endswith((".local", ".internal", ".lan"))
-
-
 def endpoint_for(url: str) -> tuple[str, str] | None:
-    """(check-host endpoint, host param); None = not applicable."""
-    parsed = urlparse(url)
-    if _is_private_host(parsed.hostname) or (is_http_url(url) and _carries_secret(url)):
+    """(check-host endpoint, host param); None = not applicable: an internal
+    address (utils.net.is_private_target — the one rule for every third
+    party) or an address that may carry a secret never leaves the bot."""
+    if is_private_target(url) or (is_http_url(url) and _carries_secret(url)):
         return None
+    parsed = urlparse(url)
     if parsed.scheme == "tcp":
         if not parsed.hostname or not parsed.port:
             return None
@@ -154,10 +144,23 @@ def region_node(country: str | None) -> str | None:
     return f"{country}1.node.check-host.net" if country.isalpha() and len(country) == 2 else None
 
 
+async def _target(url: str) -> tuple[str, str] | None:
+    """What goes to check-host for this address, None when nothing may: the
+    one gate of every entry (second_opinion, second_opinion_up). A
+    public-looking name that resolves to a LAN address here (nas.home.example.com
+    → 192.168.1.10) stays home too: the nodes would judge their own network
+    (a false «up») and learn the name. One DNS query, and only once the
+    failure threshold is reached."""
+    target = endpoint_for(url)
+    if not target or await resolves_private(url):
+        return None
+    return target
+
+
 async def second_opinion(url: str, region: str | None = None) -> Verdict:
     """Ask the external nodes; `region` is the check-host country code of
     the audience's node to ask as well (None — the random nodes only)."""
-    target = endpoint_for(url)
+    target = await _target(url)
     if not target:
         return Verdict()
     try:

@@ -4,7 +4,6 @@ generated secrets, UI overrides) lives in the services layer, not here."""
 import logging
 import os
 import re
-import string
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -130,15 +129,18 @@ def _url(name: str, schemes: tuple[str, ...]) -> str:
     return raw
 
 
+# Values of a URL template that mean «this feature is off».
+TEMPLATE_OFF = ("off", "0", "no", "none", "false")
+
+
 def _template(name: str, default: str) -> str:
-    """A URL template whose only field is {url}; anything else breaks later."""
+    """A URL template with a {url} field (other braces are a provider's own
+    and stay as they are), or an «off» word that switches the feature off."""
     raw = os.getenv(name, "").strip() or default
-    try:
-        fields = {f for _, f, _, _ in string.Formatter().parse(raw) if f is not None}
-    except ValueError:
-        fields = set()
-    if fields != {"url"}:
-        logger.warning("Invalid %s — it needs {url} and no other {…} field; using the default", name)
+    if raw.lower() in TEMPLATE_OFF:
+        return "off"
+    if "{url}" not in raw:
+        logger.warning("Invalid %s — it needs {url} (or «off»); using the default", name)
         return default
     return raw
 
@@ -243,6 +245,9 @@ class Config:
 
     # ── Second-opinion check (external vantage point) ────────────────────────
     second_opinion: bool = _bool("SECOND_OPINION", "1")
+    # Every 6 hours the address of each site goes to check-host.net for the
+    # «из России, 0.8 с» line of the card. Its own opt-in, off by default.
+    region_speed: bool = _bool("REGION_SPEED", "0")
 
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
     deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10, 0, 100)
