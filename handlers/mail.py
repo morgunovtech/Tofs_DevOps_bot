@@ -140,7 +140,7 @@ async def mail_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         if findings:
             lines += ["", "Что сделать:", "",
                       "\n\n".join(finding_block(i, f) for i, f in enumerate(findings, 1)), "",
-                      "Изменения в DNS доходят за 5–30 минут — потом нажми «Перепроверить»."]
+                      "Изменения в DNS доходят за 5–30 минут — потом нажми «🔄 Перепроверить почту»."]
         elif mail.get("accepts") and mail.get("dmarc") in ("quarantine", "reject"):
             lines += ["", "Всё в порядке: письма доходят, а подделать твой адрес сложно."]
         if mail.get("status_page"):

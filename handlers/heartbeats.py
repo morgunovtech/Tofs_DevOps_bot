@@ -13,7 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_state
-from handlers.common import HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
+from handlers.common import CANCEL, HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.text import esc
@@ -214,7 +214,7 @@ async def msg_hb_name(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[:2]],
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[2:]],
-        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+        [InlineKeyboardButton(text=CANCEL, callback_data="fsm_cancel")]])
     await message.answer(f"Как часто «{esc(name)}» будет выходить на связь?", reply_markup=kb)
 
 

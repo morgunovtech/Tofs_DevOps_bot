@@ -49,7 +49,9 @@ from db.database import (
 )
 from handlers import seo as seo_screen
 from handlers.common import (
+    CANCEL,
     MAX_SITES,
+    RECHECK,
     STALE_TAP,
     ack,
     back_button,
@@ -63,9 +65,8 @@ from handlers.common import (
 from handlers.mail import mail_lines
 from handlers.menu import _RANK, PROBLEM_ICONS, best_ms, checked_at, headline, icon_of, site_state
 from handlers.security import security_lines
-from handlers.setup import last_steps
 from handlers.speed import speed_lines
-from handlers.start import rules_of_the_game
+from handlers.start import RULES_SHOWN, offer_last_steps, rules_of_the_game
 from monitors import dns_checker
 from monitors.availability import HTTP_METHODS, check_availability
 from monitors.domain_checker import check_domain
@@ -565,7 +566,7 @@ async def render_card(call: CallbackQuery, site: dict):
     seo = st.get("seo") or {}
     other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
     if is_web_page(url, site.get("http_method")) and seo.get("problems"):
-        rows.append([InlineKeyboardButton(text="🛠 Как исправить поиск", callback_data=f"seo_site:{sid}")])
+        rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}")])
     elif other:
         rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{other[0]['id']}")])
     if (st.get("mail") or {}).get("findings") or any(inc["check_type"] in MAIL_CHECKS for inc in problems):
@@ -576,7 +577,7 @@ async def render_card(call: CallbackQuery, site: dict):
         rows.append([InlineKeyboardButton(text="👥 Почему медленно", callback_data=f"spd:{sid}")])
     if is_web_page(url, site.get("http_method")) and await seo_screen.cloudflare_check_pending(sid, st):
         rows.append([InlineKeyboardButton(text="🤖 Проверить в Cloudflare", callback_data=f"seo_fix:{sid}:ai_cloudflare")])
-    rows.append([InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"check_site_live:{sid}"),
+    rows.append([InlineKeyboardButton(text=RECHECK, callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
     rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])
     if len(sites) > 1:
@@ -672,7 +673,7 @@ LIVE_CHECK_SEC = 180
 
 @router.callback_query(F.data.startswith("check_site_live:"))
 async def cb_check_site_live(call: CallbackQuery):
-    """«🔄 Перепроверить»: everything the card shows, live — availability,
+    """«🔄 Проверить снова»: everything the card shows, live — availability,
     certificate and domain (when this site is the one they are checked
     for), links and search — then the same card. One run per site at a
     time, and the whole run within LIVE_CHECK_SEC: a host that hangs on
@@ -766,7 +767,7 @@ def _add_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛠 API, порт или ping", callback_data="site_add_adv")],
         [_HB_BUTTON],
-        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+        [InlineKeyboardButton(text=CANCEL, callback_data="fsm_cancel")]])
 
 
 @router.callback_query(F.data == "site_add_adv")
@@ -844,8 +845,9 @@ async def msg_site_add(message: Message, state: FSMContext):
                  if config.links_check_interval_hours else "")
         lines.append(f"\nСрок домена проверю {domain_at}, поиск и ИИ — {next_run_words('seo_checks') or 'утром'} "
                      f"(итоги — в утренней сводке){links}." if page else f"\nСрок домена проверю {domain_at}.")
-    if first_site:
+    if first_site and not await get_state(RULES_SHOWN):   # /start said it already
         lines.append("\n" + rules_of_the_game())
+        await set_state(RULES_SHOWN, "1")
     reset_site_schedule(site_id)
     rows = [[InlineKeyboardButton(text="🌍 Открыть карточку", callback_data=f"check_site:{site_id}")]]
     if r.api:
@@ -866,8 +868,7 @@ async def msg_site_add(message: Message, state: FSMContext):
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                                  [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
                                   InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]]))
-    if first_site and (steps := await last_steps()):
-        await message.answer(steps[0], reply_markup=steps[1])
+    await offer_last_steps(message)
 
 
 @router.callback_query(F.data.startswith("kwno:"))

@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 CF_API = "https://api.cloudflare.com/client/v4"   # a constant so tests can point it at a local server
 _ZONE_ID = re.compile(r"[0-9a-f]{32}")
+# The same words as handlers.common.RECHECK (a test keeps them equal): the
+# handlers package cannot be imported from a service without a cycle.
+RECHECK = "🔄 Проверить снова"
 
 
 def deploy_hook_for(url: str) -> str | None:
@@ -53,7 +56,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     check has no page to photograph."""
     http = is_http_url(url)
     rows = [[InlineKeyboardButton(text=f"🔧 Я чиню, {maintenance.fix_length()} тишины", callback_data=f"act:fix:{site_id}"),
-             InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
+             InlineKeyboardButton(text=RECHECK, callback_data=f"act:recheck:{site_id}")]]
     second = []
     if http and not api:
         second.append(InlineKeyboardButton(text="📸 Как выглядит сайт", callback_data=f"act:shot:{site_id}"))
@@ -91,7 +94,7 @@ def group_keyboard(group_id: int) -> InlineKeyboardMarkup:
 
 def deep_alert_keyboard(url: str, site_id: int, incident_id: int | None) -> InlineKeyboardMarkup | None:
     """«5xx на страницах»: the home page opens, so «🔧 Я чиню» (silences the
-    whole site), «🔍 Проверить сейчас» (checks the home page only) and «📸»
+    whole site), «🔄 Проверить снова» (checks the home page only) and «📸»
     (photographs the home page) would answer a different question."""
     redeploy = ([InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}")]
                 if deploy_hook_for(url) else [])

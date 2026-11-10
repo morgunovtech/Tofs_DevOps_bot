@@ -56,7 +56,7 @@ async def test_checklist_groups_and_buttons(bot, db, cfg, monkeypatch):
     assert "\n✅ Работает: " in text and "\n➕ Можно подключить: " in text and "aiogram" not in text
     labels = buttons(call.message.reply_markup)
     assert "➕ Добавить сайт" in labels and "🌐 Включить статус-страницу" not in labels
-    assert "🔁 Проверить снова" in labels and "← Настройки" in labels   # the test alert: «🔔 Когда писать»
+    assert "🔄 Проверить снова" in labels and "← Настройки" in labels   # the test alert: «🔔 Когда писать»
     assert any(label.startswith("➕ Подключить ещё (") for label in labels)
     assert "Python" in text and "<i>" in text
     call = FakeCall("setup:more")

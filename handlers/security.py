@@ -5,7 +5,7 @@ problem the ready text for the site's hosting."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import ack, back_button, render, show, site_by_cb
+from handlers.common import RECHECK, ack, back_button, render, show, site_by_cb
 from monitors.security_checker import HEADERS, check_security
 from reports.formatter import finding_block
 from services import sitestatus
@@ -82,10 +82,10 @@ async def security_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         findings = sec.get("findings") or []
         if findings:
             lines += ["", "Что сделать:", "", "\n\n".join(finding_block(i, f) for i, f in enumerate(findings, 1)),
-                      "", "После выкладки нажми «Перепроверить»."]
+                      "", "После выкладки нажми «🔄 Проверить снова»."]
         if age is not None:
             lines += ["", f"<i>Проверял {'только что' if age < 1 else f'{fmt_duration(age)} назад'}.</i>"]
-    rows = [[InlineKeyboardButton(text="🔄 Перепроверить", callback_data=f"sec_check:{site['id']}")],
+    rows = [[InlineKeyboardButton(text=RECHECK, callback_data=f"sec_check:{site['id']}")],
             [InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{site['id']}"),
              InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]]
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)

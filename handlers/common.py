@@ -7,6 +7,7 @@ import logging
 
 from aiogram import BaseMiddleware, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
+from aiogram.filters import StateFilter
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -62,9 +63,14 @@ BOTTOM = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=HOME), KeyboardButton(text=ABOUT), KeyboardButton(text=ICONS)]],
     resize_keyboard=True, is_persistent=True)
 MAX_SITES = 20
+# One word for one thing on every screen: the way home, a check again, a
+# way out of a step (UX-051).
+RECHECK, CANCEL = "🔄 Проверить снова", "✖️ Отмена"
+STALE_BUTTON = "Кнопка устарела — нажми «🏠 Главная» под полем ввода"
+NOT_UNDERSTOOD = "Не понял. Всё — кнопками под полем ввода: 🏠 Главная, 📖 Что я умею, ❓ Значки."
 
 
-def back_button(text: str = "← Главное меню", callback: str = "menu_main") -> InlineKeyboardMarkup:
+def back_button(text: str = HOME, callback: str = "menu_main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=callback)]])
 
 
@@ -72,7 +78,7 @@ def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
     """«✖️ Отмена» under an input step; back — the callback of the screen
     the step was opened from, which «Отмена» draws again (handlers.menu)."""
     data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✖️ Отмена", callback_data=data)]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=CANCEL, callback_data=data)]])
 
 
 class DropInputOnNavigation(BaseMiddleware):
@@ -248,15 +254,20 @@ async def on_handler_error(event: ErrorEvent):
             # overwrite that text with an error screen; reply separately.
             await call.message.answer("❌ Действие не удалось. Попробуй ещё раз чуть позже.")
         elif call and call.message:
+            # «во время проверки» only where a check was running: a screen
+            # that failed to draw was not checking anything.
+            checking = data.startswith("check_") or data.endswith("_live") or data == "setup:check" \
+                or data.split(":")[0].endswith("_live")
             await call.message.edit_text(
-                "❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже.",
+                "❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже." if checking
+                else "❌ Не получилось открыть экран. Попробуй ещё раз чуть позже.",
                 reply_markup=back_button())
         elif update and update.message:
             await update.message.answer("❌ Что-то пошло не так. Попробуй ещё раз чуть позже.")
     except Exception:
         if call:  # message too old to edit (48h+) — at least acknowledge the tap
             try:
-                await call.answer("Сообщение устарело — открой /menu", show_alert=True)
+                await call.answer(STALE_BUTTON, show_alert=True)
             except Exception:
                 pass
     return True
@@ -271,7 +282,16 @@ stale_router = Router(name="stale")
 async def stale_callback(call: CallbackQuery):
     """A button no handler knows any more (an old alert, a removed feature):
     say so instead of leaving the spinner hanging."""
-    await ack(call, "Кнопка устарела — открой /menu", show_alert=True)
+    await ack(call, STALE_BUTTON, show_alert=True)
+
+
+@stale_router.message(StateFilter(None), F.chat.type == "private")
+async def unknown_message(message: Message):
+    """Text from the admin outside any input step (a key-like one is taken
+    by handlers.setup before this): say where the buttons are, not nothing.
+    In the admin group a word under an alert («смотрю») gets no answer —
+    the reply keyboard would be shown to the whole group."""
+    await message.answer(NOT_UNDERSTOOD, reply_markup=BOTTOM)
 
 
 # ── Non-admins ───────────────────────────────────────────────────────────────

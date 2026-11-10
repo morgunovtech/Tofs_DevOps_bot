@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import config
-from handlers.common import STALE_TAP, ack, render
+from handlers.common import STALE_BUTTON, STALE_TAP, ack, render
 from services import automation, docker_api, integrations
 from utils.clock import to_local
 from utils.text import esc, parse_iso_utc
@@ -98,7 +98,7 @@ async def cb_auto_resume(call: CallbackQuery):
 async def cb_auto_toggle(call: CallbackQuery):
     _, mode, kind = call.data.split(":", 2)
     if kind not in automation.KINDS:
-        await ack(call, "Кнопка устарела — открой /menu", show_alert=True)
+        await ack(call, STALE_BUTTON, show_alert=True)
         return
     fresh = await ack(call, "Готово")
     if mode == "on" and not fresh:          # switching ON waits for a fresh tap

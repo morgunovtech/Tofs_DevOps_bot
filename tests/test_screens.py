@@ -350,6 +350,7 @@ async def test_seo_screen_from_snapshot_with_fix_steps(bot, db):
     assert "4. 🟠 <b>Нет картинки для превью" in text                # og:image is an action now, not a «мелочь»
     assert "Мелочи" not in text and "проверил 3 страницы" in text
     assert "знают только Google и Яндекс" in text                     # no GSC/Webmaster → say so, don't pretend
+    assert "остальное (🟠) не шлю" in text                              # there are 🟠 findings: said how they come
     labels = buttons(call.message.reply_markup)
     assert labels[0].startswith("1. 💡") and labels[2] == "3. 💡 Добавить заголовок страницы"
     assert labels[3] == "4. 💡 Добавить картинку для превью"
@@ -388,7 +389,8 @@ def test_seo_headline_asserts_only_what_was_measured():
     assert "✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет." in clean
     assert "без JavaScript видно 500 символов" in clean and "🤖" not in clean   # a fact → caption, no icon
     assert "знают только Google и Яндекс" in clean and "📇" not in clean
-    assert "остальное (🟠) не шлю" in clean
+    assert "остальное (🟠) не шлю" not in clean                         # nothing 🟠 here: nothing to promise
+    assert "подключи Search Console" not in clean                      # the button below says it
 
     fresh = {"verdict": "PASS", "coverage": "Submitted and indexed", "last_crawl": "2026-09-20T10:00:00Z", "at": NOW}
     text = seo.seo_text(url, _snap(google=fresh), google_on=True)
@@ -671,7 +673,7 @@ async def test_old_check_everything_button_lands_on_main(bot, db):
 async def test_site_card_says_everything_without_extra_buttons(bot, db, cfg, tmp_path, monkeypatch):
     """The card is the whole story: broken links with their reasons, each
     search finding by name, speed over the week, the page itself above the
-    text — and one «как исправить» instead of «🔎 Поиск и ИИ» / «🔗 Ссылки»
+    text — and one «как исправить» instead of «🔎 Поиск и ИИ» (now the one «как исправить» for search) / «🔗 Ссылки»
     / «📸 Как выглядит» buttons."""
     cfg(db_path=str(tmp_path / "bot.db"), public_base_url="https://bot.example")
     sid = await db.activate_or_create_site("https://ex.test")
@@ -694,8 +696,8 @@ async def test_site_card_says_everything_without_extra_buttons(bot, db, cfg, tmp
     assert "🟠 Ссылки: 1 из 24 не открывается" in text and "• https://github.com/x/gone — " in text
     assert "🟠 Поиск и ИИ: 1 помеха" in text and "    1. 🟠 " in text
     labels = buttons(call.message.reply_markup)
-    assert labels[0] == "🛠 Как исправить поиск" and "🔄 Перепроверить" in labels
-    assert not {"🔎 Поиск и ИИ", "🔗 Ссылки", "📸 Как выглядит сайт"} & set(labels)
+    assert labels[0] == "🔎 Поиск и ИИ" and "🔄 Проверить снова" in labels
+    assert not {"🔗 Ссылки", "📸 Как выглядит сайт"} & set(labels)              # the old extra buttons are gone
     picture = call.message.previews[-1]
     assert picture.startswith("https://bot.example/shot/") and f"/{sid}?v=" in picture
     # Said outright: an unset field takes the bot-wide «no previews» and the

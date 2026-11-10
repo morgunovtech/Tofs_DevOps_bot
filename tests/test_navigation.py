@@ -10,12 +10,12 @@ from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
 from aiogram.types import Chat, InaccessibleMessage
 from conftest import FakeCall, buttons
-from test_dispatcher import DP, MockedSession, _callback, _message
+from test_dispatcher import DP, GROUP, MockedSession, _callback, _message, _raw
 
-from handlers import alerts, mute, settings, site_settings, sites
+from handlers import alerts, common, mute, settings, site_settings, sites, start
 from handlers.common import with_running_bar
 from monitors.base import AvailabilityResult
-from services import maintenance, sitestatus
+from services import actions, maintenance, runtime, sitestatus
 from services import settings as settings_service
 
 
@@ -95,7 +95,7 @@ async def test_leaving_a_step_forgets_it(bot, db):
     session.calls.clear()
     await DP.feed_raw_update(tg, _message(777, "привет", 803))
     texts = [m.text for m in session.calls if isinstance(m, SendMessage)]
-    assert not any("токен GitHub" in t for t in texts)
+    assert texts and not any("токен GitHub" in t for t in texts)
     await tg.session.close()
 
 
@@ -190,3 +190,39 @@ async def test_progress_on_an_old_message_does_not_cancel_the_check():
         return "done"
 
     assert await with_running_bar(old, "x", work(), tick=0.01) == "done"
+
+
+async def test_admin_text_outside_a_step_gets_an_answer(bot, db, monkeypatch):
+    tg, session = await _bot()
+    await DP.feed_raw_update(tg, _message(777, "https://example.com", 821))
+    sent = [m for m in session.calls if isinstance(m, SendMessage)]
+    assert sent and "Не понял" in sent[-1].text and sent[-1].reply_markup == common.BOTTOM
+    monkeypatch.setattr(runtime, "_chat_id", str(GROUP["id"]))         # in the admin group: silence
+    session.calls.clear()
+    await DP.feed_raw_update(tg, _raw(777, "смотрю", 822, chat=GROUP))
+    assert not [m for m in session.calls if isinstance(m, SendMessage)]
+    await tg.session.close()
+
+
+async def test_help_names_the_commands_and_start_is_short_for_the_owner(bot, db):
+    assert "/menu" in start.HELP and "/help" in start.HELP and "🔧" in start.HELP
+    await db.activate_or_create_site("https://seeded.test")
+    tg, session = await _bot()
+    await DP.feed_raw_update(tg, _message(777, "/start", 851))
+    first = [m.text for m in session.calls if isinstance(m, SendMessage)]
+    assert any(t.startswith("Ещё два шага") for t in first)                 # sites from SITES: the steps too
+    assert any(t == start.BOTTOM_NOTE for t in first)                      # the bottom buttons, once
+    session.calls.clear()
+    await DP.feed_raw_update(tg, _message(777, "/start", 852))
+    again = [m.text for m in session.calls if isinstance(m, SendMessage)]
+    assert not any("Привет" in t or "Как я работаю" in t or "Ещё два шага" in t for t in again)
+    assert not any(t == start.BOTTOM_NOTE for t in again)
+    assert any("seeded.test" in t for t in again)                          # the main screen
+    await tg.session.close()
+
+
+def test_one_label_for_one_thing():
+    assert actions.RECHECK == common.RECHECK == "🔄 Проверить снова"
+    assert buttons(common.back_button()) == [common.HOME] == ["🏠 Главная"]
+    assert buttons(common.cancel_kb()) == [common.CANCEL]
+    assert "/menu" not in common.STALE_BUTTON and "🏠 Главная" in common.STALE_BUTTON

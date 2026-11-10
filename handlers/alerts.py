@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_state, set_state
-from handlers.common import STALE_TAP, ack, cb_args, render, site_by_cb
+from handlers.common import CANCEL, STALE_TAP, ack, cb_args, render, site_by_cb
 from monitors.availability import check_availability
 from reports.formatter import incident_line
 from services import automation, humanize, maintenance
@@ -52,7 +52,7 @@ async def _ask(call: CallbackQuery, action: str, site: dict):
     stamp = int(datetime.now(UTC).timestamp())
     await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=button, callback_data=f"act:ok:{action}:{site['id']}:{stamp}"),
-        InlineKeyboardButton(text="✖️ Отмена", callback_data=f"act:no:{site['id']}")]]))
+        InlineKeyboardButton(text=CANCEL, callback_data=f"act:no:{site['id']}")]]))
 
 
 # Registered BEFORE cb_alert_action: its F.data.startswith("act:") would take «act:ok:…» first.
@@ -133,7 +133,7 @@ async def cb_alert_group(call: CallbackQuery):
     buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a")
                for n, inc in enumerate(group, 1)]
     await call.message.answer("\n".join(lines) + "\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», "
-                              "«🔍 Проверить сейчас», «✓ Закрыть».",
+                              "«🔄 Проверить снова», «✓ Закрыть».",
                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 4]
                                                                                  for i in range(0, len(buttons), 4)]))
 

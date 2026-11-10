@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_incident, get_site, resolve_incident_by_id, set_state
-from handlers.common import STALE_TAP, ack, back_button, render
+from handlers.common import HOME, RECHECK, STALE_TAP, ack, back_button, render
 from monitors.availability import check_all, check_availability
 from reports.formatter import incident_line
 from reports.scheduler import ACK_UNTIL_UP, forget_slow_streak
@@ -44,7 +44,7 @@ async def render_incidents(call: CallbackQuery, note: str = ""):
                  "🔴 — нужно действие сейчас, 🟠 — не сегодня.")
     rows = [numbered[i:i + 4] for i in range(0, len(numbered), 4)]
     rows.append([InlineKeyboardButton(text="🗑 Закрыть все", callback_data="incidents_clear")])
-    rows.append([InlineKeyboardButton(text="← Главное меню", callback_data="menu_main")])
+    rows.append([InlineKeyboardButton(text=HOME, callback_data="menu_main")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -74,7 +74,7 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
     elif kind == "availability" and not inc.get("resolved"):     # «🔧» would pause a working site
         rows.append([InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{sid}"),
-                     InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{sid}")])
+                     InlineKeyboardButton(text=RECHECK, callback_data=f"act:recheck:{sid}")])
     elif kind in ("mail", "mail_auth"):
         rows.append([InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{sid}")])
     elif kind in ("exposed", "security"):

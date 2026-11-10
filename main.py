@@ -156,8 +156,9 @@ async def on_startup(bot: Bot):
     username = await whoami(bot)
     runtime.set_bot_username(username)
     logger.info("Bot started: @%s — TofsDevOps on duty 🐕", username)
-    # No ☰ menu: its doors are the buttons under the input field. Typed
-    # /menu, /help, /mute and /unmute still work (the help names them).
+    # No ☰ menu: its doors are the buttons under the input field. The
+    # commands are not registered with Telegram either — typed /menu, /help,
+    # /mute and /unmute still work, and the help («❓ Значки») names them.
     await _step("delete_my_commands", bot.delete_my_commands())
     await _step("set_chat_menu_button", bot.set_chat_menu_button(menu_button=MenuButtonDefault()))
     await _step("bottom buttons", _show_bottom_buttons(bot))

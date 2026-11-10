@@ -4,7 +4,7 @@ every way in, and removal that leaves nothing behind but history."""
 
 from conftest import FakeCall, FakeMessage, FakeState
 
-from handlers import menu, sites
+from handlers import menu, sites, start
 from handlers.common import MAX_SITES
 from handlers.sites import parse_site_input
 from monitors import availability
@@ -93,6 +93,7 @@ async def test_an_http_site_has_no_certificate_anywhere(bot, db, monkeypatch):
     monkeypatch.setattr(sites.seo_screen, "audit_now", nothing)
     monkeypatch.setattr(screenshots, "is_due", not_due)
     await db.activate_or_create_site("https://first.example.com")   # not the first site: no welcome texts
+    await db.set_state(start.LAST_STEPS_SHOWN, "1")                  # … and the last steps were offered already
 
     msg = FakeMessage("http://plain.example.com:8080")
     await sites.msg_site_add(msg, FakeState())
@@ -136,7 +137,7 @@ async def test_the_twenty_site_limit_holds_on_every_way_in(bot, db, monkeypatch)
 
     msg = FakeMessage("tcp://host00.example.com:25")                 # an address already watched is not a 21st
     await sites.msg_site_add(msg, FakeState())
-    assert "под присмотром" in msg.texts[-1]
+    assert any("под присмотром" in t for t in msg.texts)
     assert len(await db.get_all_sites()) == MAX_SITES
 
 

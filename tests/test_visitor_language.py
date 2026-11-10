@@ -14,7 +14,7 @@ from conftest import FakeMessage, FakeState
 from db.database import resolve_incident, save_incident
 from handlers import settings as settings_screens
 from handlers import start
-from services import settings
+from services import runtime, settings
 from web import status_page
 from web.webhook import create_app
 
@@ -75,7 +75,9 @@ def test_widget_texts_live_only_in_its_dictionary():
     assert "aria-label=" not in code                          # the button's name is its visible text
 
 
-async def test_first_start_names_the_clock_and_offers_to_change_it(bot, db):
+async def test_first_start_names_the_clock_and_offers_to_change_it(bot, db, monkeypatch):
+    monkeypatch.setattr(runtime, "_chat_id", None)                 # the seat is free: this /start takes it
+    monkeypatch.setattr(runtime, "_user_id", None)
     msg = FakeMessage("/start")
     msg.from_user = SimpleNamespace(id=777, is_bot=False, full_name="T")
     msg.chat, msg.sender_chat = SimpleNamespace(id=777, type="private"), None

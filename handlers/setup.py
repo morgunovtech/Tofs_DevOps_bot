@@ -25,6 +25,7 @@ from config import config
 from db.database import get_all_sites, get_state, set_state
 from handlers.common import (
     HEARTBEAT_SECRET_NOTE,
+    RECHECK,
     STALE_TAP,
     ack,
     back_button,
@@ -333,7 +334,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
     if manage:
         rows.append(manage)
     if warn:
-        rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
+        rows.append([InlineKeyboardButton(text=RECHECK, callback_data="setup:check")])
     if integrations.deploy_hooks() or docker_api.docker_available():
         rows.append([InlineKeyboardButton(text="🤖 Что бот делает сам", callback_data="auto:menu")])
     if off:
@@ -601,7 +602,7 @@ async def cb_guide_url(call: CallbackQuery):
                 "1. Открой сервис → <b>Settings → Networking → Generate Domain</b>, порт <b>8080</b>.\n"
                 "2. Railway передеплоит бота, и адрес подхватится сам — переменная PUBLIC_BASE_URL "
                 "не нужна.\n"
-                "3. Нажми «🔁 Проверить снова».")
+                "3. Нажми «🔄 Проверить снова».")
     else:
         text = ("🌍 Публичный адрес\n\n"
                 "1. Поставь перед ботом reverse proxy с TLS (Caddy, nginx или Cloudflare Tunnel) "
@@ -609,7 +610,7 @@ async def cb_guide_url(call: CallbackQuery):
                 "heartbeat пойдёт открытым текстом, а виджет на https-сайте браузер заблокирует.\n"
                 "2. Пропиши в .env: <code>PUBLIC_BASE_URL=https://bot.example.com</code> "
                 "и <code>TRUST_PROXY=1</code>.\n"
-                "3. Перезапусти бота и нажми «🔁 Проверить снова».\n\n"
+                "3. Перезапусти бота и нажми «🔄 Проверить снова».\n\n"
                 "Пошагово — README.ru.md, раздел «Публичный адрес на своём сервере».")
     await render(call, text, _guide_kb())
 
@@ -627,7 +628,7 @@ async def cb_guide_docker(call: CallbackQuery):
                         "2. В .env перечисли контейнеры: "
                         "<code>AUTORESTART_CONTAINERS=app,db</code> — кроме контейнера самого бота: "
                         "его я не перезапускаю\n"
-                        "3. <code>docker compose up -d</code> и «🔁 Проверить снова».\n\n"
+                        "3. <code>docker compose up -d</code> и «🔄 Проверить снова».\n\n"
                         "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
                         "Включай только на сервере, который полностью твой. Безопаснее — отфильтрованный "
                         "доступ через socket-proxy: docs/SETUP.md, «Свой сервер: доступ к Docker»."), _guide_kb())
@@ -945,7 +946,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
     else:
         await message.answer(f"Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан "
                              f"шаг 3: добавь <code>{esc(creds.get('client_email', ''))}</code> "
-                             f"в пользователи ресурса в Search Console и нажми «🔁 Проверить снова».",
+                             f"в пользователи ресурса в Search Console и нажми «🔄 Проверить снова».",
                              reply_markup=_gsc_kb())
 
 
