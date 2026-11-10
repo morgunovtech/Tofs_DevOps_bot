@@ -23,8 +23,9 @@ RUN mkdir -p /app/data && chown -R bot:bot /app && chmod +x /app/entrypoint.sh
 ARG APP_COMMIT=""
 ENV APP_COMMIT=$APP_COMMIT
 
+# web/healthcheck.py: the port parsed as the bot parses it, no http_proxy.
 HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import os,sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('WEBHOOK_PORT','8080'), timeout=4).status == 200 else 1)"
+  CMD ["python", "-m", "web.healthcheck"]
 
 # entrypoint fixes ownership of the data volume (platforms mount it as root)
 # and drops privileges to `bot` before starting Python.

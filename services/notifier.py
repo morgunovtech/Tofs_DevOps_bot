@@ -425,15 +425,19 @@ async def _deliver(text: str, reply_markup, priority: Priority) -> Message | boo
     silent = priority is not Priority.CRITICAL
     try:
         try:
-            return await _call(_bot.send_message, text=text, reply_markup=reply_markup,
+            sent = await _call(_bot.send_message, text=text, reply_markup=reply_markup,
                                disable_notification=silent)
         except TelegramBadRequest as e:
             # Our own markup Telegram cannot parse: plain text still says what happened.
             logger.error("Telegram rejected a message (%s) — sending it as plain text", e)
-            return await _call(_bot.send_message, text=text, reply_markup=reply_markup, parse_mode=None,
+            sent = await _call(_bot.send_message, text=text, reply_markup=reply_markup, parse_mode=None,
                                disable_notification=silent)
+        health.delivery_ok()
+        return sent
     except (TelegramBadRequest, TelegramForbiddenError) as e:
         logger.error("Telegram will never take this message: %s", e)
+        if isinstance(e, TelegramForbiddenError) or "chat not found" in str(e).lower():
+            health.delivery_failed()       # blocked, or thrown out of the admin chat: /health goes red
         return False
     except TelegramNetworkError as e:
         cause = e.__cause__

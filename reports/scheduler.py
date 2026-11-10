@@ -12,6 +12,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from aiogram.types import FSInputFile, InlineKeyboardButton, Message
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MAX_INSTANCES
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -174,6 +175,11 @@ def _slow_ms(site: dict) -> int:
 # ── Availability ─────────────────────────────────────────────────────────────
 
 async def run_availability_checks():
+    await _availability_tick()
+    health.tick_done()          # only a tick that finished counts: /health and both watchdogs read it
+
+
+async def _availability_tick():
     now = datetime.now(UTC)
     sites = await get_all_sites()
     by_url = {s["url"]: s for s in sites}
@@ -1015,6 +1021,12 @@ async def run_self_heartbeat():
     url = integrations.self_heartbeat_url()
     if not url:
         return
+    problems = health.problems()
+    if problems:
+        # While the bot cannot do its job the watchdog must see it as down:
+        # no mark this time — it raises the alarm on its own schedule.
+        logger.error("Not marking in with the watchdog: %s", ", ".join(problems))
+        return
     rec = await heartbeats.record_watchdog(await heartbeats.ping_watchdog(url))
     name = esc(heartbeats.watchdog_name(url))
     failing = heartbeats.failing_minutes(rec)
@@ -1033,12 +1045,11 @@ async def run_self_heartbeat():
 
 
 async def run_retention():
-    try:
-        n = await rollup_old_checks(config.retention_days)
-        if n:
-            logger.info("Retention: rolled up %d old check rows", n)
-    except Exception as e:
-        logger.error("Retention job failed: %s", e)
+    # No try/except: a failure reaches the job listener (one message to the
+    # owner) and the log keeps its traceback.
+    n = await rollup_old_checks(config.retention_days)
+    if n:
+        logger.info("Retention: rolled up %d old check rows", n)
 
 
 def _backups_dir() -> str:
@@ -1073,7 +1084,7 @@ async def run_db_backup() -> bool:
         logger.info("DB backup written: %s", path)
         return True
     except Exception as e:
-        logger.error("DB backup failed: %s", e)
+        logger.exception("DB backup failed")
         await notifier.send("🟠 Не удалось сохранить резервную копию базы бота. Проверь место на диске."
                             + _tech_line(str(e)))
         return False
@@ -1288,12 +1299,13 @@ async def send_weekly_report():
     stops the digest."""
     try:
         await updates.run_dependency_watch()
-    except Exception as e:
-        logger.error("Dependency watch failed: %s", e)
+    except Exception:
+        logger.exception("Dependency watch failed")
     try:
         await github.run_watch()
-    except Exception as e:
-        logger.error("GitHub hygiene check failed: %s", e)
+    except Exception:
+        logger.exception("GitHub hygiene check failed")
+    failed = None
     try:
         text, chart_blocks = await build_weekly_report()
         # Split, not clipped: the sections at the end (dependencies, GitHub)
@@ -1307,11 +1319,56 @@ async def send_weekly_report():
         if tip:
             await notifier.send(tip[0], Priority.DIGEST, reply_markup=tip[1])
     except Exception as e:
-        logger.error("Weekly report failed: %s", e)
+        logger.exception("Weekly report failed")
+        failed = e
     try:
         await send_db_backup_to_telegram()
     except Exception:
         logger.exception("Weekly copy of the database failed")
+    if failed:
+        raise failed            # the off-host copy went out; now the job listener tells the owner
+
+
+# ── The scheduler's own account of every run ────────────────────────────────
+
+# Jobs that run every minute: one failure is a blip, three in a row is broken.
+_EVERY_MINUTE = frozenset({"availability_checks", "alive", "outbox_flush", "missed_alerts", "held_release"})
+_JOB_TITLES = {"availability_checks": "проверка сайтов", "morning_report": "утренняя сводка",
+               "weekly_report": "недельный отчёт", "retention": "ночная очистка базы",
+               "db_backup": "ночная копия базы", "outbox_flush": "досылка сообщений"}
+_job_fails: dict[str, int] = {}
+_job_told: set[str] = set()
+_listener_tasks: set[asyncio.Task] = set()
+
+
+def _on_job_event(event):
+    """APScheduler's own account of every run. A job that keeps failing, or
+    keeps being skipped because its last run still hangs, is told to the
+    owner once per streak — the container log alone is read by nobody."""
+    job_id = event.job_id
+    if ":" in job_id:                  # one-off follow-ups (followup:…): their failure is in the log
+        return
+    if event.code == EVENT_JOB_EXECUTED:
+        _job_fails.pop(job_id, None)
+        _job_told.discard(job_id)
+        return
+    n = _job_fails[job_id] = _job_fails.get(job_id, 0) + 1
+    if job_id in _job_told or n < (3 if job_id in _EVERY_MINUTE else 1):
+        return
+    _job_told.add(job_id)
+    exc = getattr(event, "exception", None)
+    why = type(exc).__name__ if exc else "прошлый запуск ещё не закончился"
+    task = asyncio.get_running_loop().create_task(_tell_job_broken(_JOB_TITLES.get(job_id, job_id), why))
+    _listener_tasks.add(task)
+    task.add_done_callback(_listener_tasks.discard)
+
+
+async def _tell_job_broken(title: str, why: str):
+    try:
+        await notifier.send(f"⚠️ У меня не работает «{esc(title)}»: {esc(why)}. Остальное идёт как обычно; "
+                            f"подробности — в логе бота.")
+    except Exception:
+        logger.exception("Could not tell the owner about the broken job %s", title)
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────
@@ -1371,6 +1428,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     # APScheduler's default grace is 1 s: an event loop busy parsing a page at
     # 09:00:00 would silently skip that day's morning report.
     scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})
+    scheduler.add_listener(_on_job_event, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED | EVENT_JOB_MAX_INSTANCES)
     _scheduler = scheduler
 
     def job(fn, trigger, job_id, **kwargs):

@@ -397,7 +397,8 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
                      "тревогу пропускают из-за выключенного звука у чата.")
         rows.append([InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="ring:test")])
     if not integrations.self_heartbeat_url():
-        steps.append("🛡 Сторож — если сломаюсь я сам, тебе напишет healthchecks.io. Бесплатно, 2 минуты.")
+        steps.append("🛡 Сторож — если я остановлюсь, зависну или потеряю связь с Telegram, тебе напишет "
+                     "healthchecks.io. Бесплатно, 2 минуты.")
         rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа", callback_data="onb:watchdog")])
     if await railway.asks():
         steps.append(railway.STEP)

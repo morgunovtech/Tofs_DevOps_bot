@@ -125,27 +125,32 @@ async def build_weekly_report() -> tuple[str, list[str]]:
 
     chart = render_ascii_chart(series)
 
-    try:
-        search_lines = await search_metrics_lines(
-            [s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))])
-        if search_lines:
-            lines += ["", *search_lines]
-    except Exception as e:
-        logger.error("Search metrics for weekly report failed: %s", e)
+    async def search() -> list[str]:
+        found = await search_metrics_lines([s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))])
+        return ["", *found] if found else []
 
-    lines += await incidents_block()
-    lines += await renewals_block(sites)
+    async def deps() -> list[str]:
+        found = updates.summary_lines(await updates.last_check())
+        return ["", *found] if found else []
 
-    deps = updates.summary_lines(await updates.last_check())
-    if deps:
-        lines += ["", *deps]
-    try:
-        hygiene = github.summary_lines(await github.last_report())
-        if hygiene:
-            lines += ["", *hygiene]
-    except Exception as e:
-        logger.error("GitHub section for weekly report failed: %s", e)
+    async def hygiene() -> list[str]:
+        found = github.summary_lines(await github.last_report())
+        return ["", *found] if found else []
+
+    for name, make in (("Поиск", search), ("Инциденты", incidents_block),
+                       ("Продления", lambda: renewals_block(sites)), ("Зависимости", deps), ("GitHub", hygiene)):
+        lines += await _section(name, make)
     return "\n".join(lines), chart
+
+
+async def _section(name: str, make) -> list[str]:
+    """A side section that fails costs only itself: logged with its traceback,
+    named in the report, and the rest of the report still goes out."""
+    try:
+        return await make()
+    except Exception:
+        logger.exception("Weekly report: section %s failed", name)
+        return ["", f"⚠️ {name}: не смог собрать — подробности в логе бота"]
 
 
 def _day(sqlite_dt: str | None) -> str:
