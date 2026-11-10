@@ -211,7 +211,9 @@ async def test_rdap_is_not_asked_about_internal_names(bot, db, monkeypatch):
                 await rdap.rdap_lookup("intranet.corpzone", session)
             assert seen == []                   # a zone IANA does not list: no request at all
             # The bootstrap itself could not be fetched: rdap.org is still the fallback.
+            # IANA is pointed at a closed port — on CI the real download would succeed.
             monkeypatch.setattr(rdap, "_bootstrap", {})
+            monkeypatch.setattr(rdap, "IANA_BOOTSTRAP", "http://127.0.0.1:1/dns.json")
             with pytest.raises(rdap.DomainLookupError):
                 await rdap.rdap_lookup("shop.example", session)
     assert seen == ["/domain/shop.example"]
