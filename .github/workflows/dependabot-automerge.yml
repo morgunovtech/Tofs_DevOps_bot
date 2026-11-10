@@ -8,8 +8,8 @@
 # deployed it. Nothing has to be configured in the repository settings now.
 #
 # What stays open for a human: the base image (a new Python — CI builds the
-# image but does not run the tests inside it, so 3.14 → 3.15 once shipped
-# untested and did not start on Railway), the Actions, major bumps and a PR
+# image and starts it, but does not run the tests inside it, so 3.14 → 3.15
+# once shipped untested and did not start on Railway), the Actions, major bumps and a PR
 # whose update type Dependabot could not tell. Minor bumps are merged
 # because minor releases of direct dependencies are frequent and each one
 # passes CI after the 7-day cooldown in .github/dependabot.yml.
@@ -35,8 +35,10 @@ jobs:
       group: automerge-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
+      # Pinned to a commit (the tag in the comment): this job may write to the
+      # repository, and a tag can be moved. Dependabot bumps SHA and comment.
       - id: meta
-        uses: dependabot/fetch-metadata@v3
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Merge once the tests are green

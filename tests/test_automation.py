@@ -72,8 +72,11 @@ async def test_alert_followups_edit_the_same_message(bot, db, monkeypatch):
         assert edits and "всё ещё не открывается" in edits[-1][1] and "ошибкой 503" in edits[-1][1]
     async with TestServer(app) as server:
         pass
+
+    async def ok(_):
+        return web.Response(text="ok")
     app2 = web.Application()
-    app2.router.add_get("/", lambda _: web.Response(text="ok"))
+    app2.router.add_get("/", ok)
     async with TestServer(app2) as server:
         url2 = str(server.make_url("")).rstrip("/")
         sid2 = await db.get_or_create_site(url2)
@@ -136,7 +139,10 @@ async def test_seo_grace_skips_alerts_for_fresh_sites(bot, db, monkeypatch):
     assert ([fresh_url], False) in calls and ([old_url], True) in calls
 
 
-async def test_weekly_recommendation_rotates(bot, db):
+async def test_weekly_recommendation_rotates(bot, db, monkeypatch):
+    async def no_phrase(url):
+        return None                                   # no page to read: ex.test is not a real site
+    monkeypatch.setattr(recommend, "suggest_keyword", no_phrase)
     await db.activate_or_create_site("https://ex.test")
     first = await recommend.weekly_recommendation()
     assert first and first[0].startswith("💡 ") and "Одна идея" not in first[0] and first[1].inline_keyboard

@@ -18,7 +18,7 @@ from conftest import FakeMessage, FakeState
 from db import database
 from handlers import common, setup, sites
 from monitors.availability import check_availability
-from monitors.base import AvailabilityResult
+from monitors.base import AvailabilityResult, SslResult
 from monitors.second_opinion import endpoint_for, repeatable
 from services import actions, crux, heartbeats, integrations, screenshots, secrets, settings
 from utils.redact import RedactingFormatter, redact
@@ -172,7 +172,16 @@ async def test_a_mistyped_secret_is_deleted_too(bot, db):
 async def test_an_address_with_a_password_is_deleted_from_the_chat(bot, db, monkeypatch):
     async def quiet_check(url, manage=True):
         return AvailabilityResult(url=url, site_id=1, status="ok", response_time_ms=10)
+
+    async def no_cert(url, manage=True):
+        return SslResult(url=url, site_id=1)          # api.example.test is not a real host
+
+    async def nothing(*args, **kwargs):
+        return None
     monkeypatch.setattr(sites, "check_availability", quiet_check)
+    monkeypatch.setattr(sites, "check_ssl", no_cert)
+    for name in ("check_domain", "alt_host_note", "suggest_keyword"):
+        monkeypatch.setattr(sites, name, nothing)
     message = FakeMessage("https://user:pass@api.example.test/api/health")
     await sites.msg_site_add(message, FakeState())
     assert message.deleted

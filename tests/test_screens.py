@@ -711,11 +711,13 @@ async def test_recheck_renews_links_and_search_too(bot, db, monkeypatch):
         calls.append("links")
     async def audit(site):
         calls.append("seo")
-    async def nothing(url, manage=True):
+    async def nothing(*args, **kwargs):
         return None
     monkeypatch.setattr(sites, "check_availability", avail)
     monkeypatch.setattr(sites, "check_ssl", nothing)
     monkeypatch.setattr(sites, "check_domain", nothing)
+    monkeypatch.setattr(sites, "check_mail", nothing)        # DNS of ex.test — not in tests
+    monkeypatch.setattr(sites, "check_security", nothing)
     monkeypatch.setattr(sites, "check_links", links)
     monkeypatch.setattr(sites.seo_screen, "audit_now", audit)
     await sites.cb_check_site_live(FakeCall(f"check_site_live:{sid}"))

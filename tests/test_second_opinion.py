@@ -66,6 +66,10 @@ async def checkhost(monkeypatch):
     servers = []
     monkeypatch.setattr(second_opinion, "POLL_PAUSES", (0, 0, 0))
 
+    async def public(url):
+        return False                      # shop.example.com is a public name: no DNS in tests
+    monkeypatch.setattr(second_opinion, "resolves_private", public)
+
     async def start(results, status=200, delay=0.0, body=None, region_results=None):
         polls = {"r1": 0, "r2": 0}
         per_request = {"r1": results, "r2": region_results or [{}]}
@@ -180,8 +184,12 @@ async def test_a_certificate_error_alerts_without_asking_outside(db, monkeypatch
 
     monkeypatch.setattr(availability, "second_opinion", outside)
     monkeypatch.setattr(availability.integrations, "second_opinion_enabled", lambda: True)
+
+    async def hello(_request):
+        return web.Response(text="hello")
+
     app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="hello"))
+    app.router.add_get("/", hello)
     server = TestServer(app)
     await server.start_server(ssl=_self_signed(tmp_path))
     try:

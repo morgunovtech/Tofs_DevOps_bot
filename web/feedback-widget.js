@@ -18,6 +18,10 @@
  *   button                 true | false | 'desktop' (плавающая кнопка только на широких экранах);
  *   position, offsetY      'bottom-right' | 'bottom-left' и отступ кнопки снизу, px;
  *   title, notice          заголовок формы и строка о том, что уходит вместе с сообщением;
+ *   lang                   'ru' | 'en' — язык формы; без него — по <html lang> страницы
+ *                          (пустой — русский, любой другой — английский);
+ *   texts                  { button, title, label, placeholder, notice, cancel, send, … } —
+ *                          свои слова вместо любых из словаря I18N ниже;
  *   fullUrl                true — отправлять адрес страницы целиком, с ?query и #fragment.
  * Любая ссылка с атрибутом data-devops-feedback открывает форму.
  * Программно: window.DevOpsFeedback.open('текст по умолчанию').
@@ -31,11 +35,11 @@
   'use strict';
 
   const prev = window.DevOpsFeedback;
-  if (prev && prev.__ready) return;                 // второй экземпляр — ничего не делать
+  if (prev && prev.__ready) return;                 // a second copy: nothing to do
 
   const ds = (document.currentScript && document.currentScript.dataset) || {};
   const fromTag = {};
-  ['webhookUrl', 'secret', 'siteUrl', 'title', 'notice', 'position'].forEach(function (k) {
+  ['webhookUrl', 'secret', 'siteUrl', 'title', 'notice', 'position', 'lang'].forEach(function (k) {
     if (ds[k]) fromTag[k] = ds[k];
   });
   if (ds.button !== undefined) fromTag.button = ds.button === 'desktop' ? 'desktop' : ds.button !== 'false';
@@ -47,9 +51,38 @@
   const SECRET      = cfg.secret     || '';
   const SITE_URL    = cfg.siteUrl    || window.location.origin;
   const BUTTON      = cfg.button === undefined ? true : cfg.button;
-  const TITLE       = cfg.title || 'Сообщить о проблеме';
-  const NOTICE      = cfg.notice || 'Вместе с сообщением владельцу сайта уйдут адрес этой страницы и ваш IP-адрес.';
   const TIMEOUT_MS  = 15000;
+
+  // Visitors may not read the owner's language: texts follow <html lang>
+  // of the page (ru when it is empty, en for any other language); any of
+  // them can be replaced via cfg.texts. Every visible word lives here —
+  // nothing in the markup — so a replaced word goes in as text, not HTML.
+  const I18N = {
+    ru: {
+      button: '⚠️ Проблема?', title: 'Сообщить о проблеме', label: 'Что случилось?',
+      placeholder: 'Что не работает, где именно, на каком устройстве…',
+      notice: 'Вместе с сообщением владельцу сайта уйдут адрес этой страницы и ваш IP-адрес.',
+      cancel: 'Отмена', send: 'Отправить', empty: 'Пожалуйста, опишите проблему.',
+      sending: 'Отправляю…', sent: '✅ Спасибо! Сообщение отправлено.',
+      failed: 'Не получилось отправить. Попробуйте позже.',
+      tooMany: 'Слишком много сообщений — попробуйте через минуту.',
+      typo: 'Опечатка: «{text}»',
+    },
+    en: {
+      button: '⚠️ Problem?', title: 'Report a problem', label: 'What happened?',
+      placeholder: 'What does not work, where exactly, on which device…',
+      notice: 'The address of this page and your IP address go to the site owner with the message.',
+      cancel: 'Cancel', send: 'Send', empty: 'Please describe the problem.',
+      sending: 'Sending…', sent: '✅ Thank you! Your message has been sent.',
+      failed: 'Could not send. Please try again later.',
+      tooMany: 'Too many messages — please try again in a minute.',
+      typo: 'Typo: “{text}”',
+    },
+  };
+  const pageLang = String(cfg.lang || document.documentElement.lang || 'ru').slice(0, 2).toLowerCase();
+  const T = Object.assign({}, I18N[pageLang] || I18N.en, cfg.texts || {});
+  if (cfg.title) T.title = cfg.title;       // the older options keep working
+  if (cfg.notice) T.notice = cfg.notice;
 
   if (!WEBHOOK_URL) {
     console.warn('[DevOpsFeedback] webhookUrl not configured — widget disabled.');
@@ -91,31 +124,31 @@
     #submit:disabled { opacity: .55; cursor: default; }
     button:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
   `;
-  // Static markup only: everything that comes from settings goes in as text below.
+  // Static markup only, without a word in it: every text (the dictionary's
+  // or the owner's) goes in as text below, never as HTML.
   const markup = `
-    <button id="btn" type="button" hidden>⚠️ Проблема?</button>
+    <button id="btn" type="button" hidden></button>
     <div id="overlay" hidden>
       <div id="modal" role="dialog" aria-modal="true" aria-labelledby="title">
         <h3 id="title"></h3>
-        <label for="text">Что случилось?</label>
-        <textarea id="text" maxlength="2000"
-          placeholder="Что не работает, где именно, на каком устройстве…"></textarea>
+        <label id="label" for="text"></label>
+        <textarea id="text" maxlength="2000"></textarea>
         <p id="notice"></p>
         <div id="status" aria-live="polite"></div>
         <div id="actions">
-          <button id="cancel" type="button">Отмена</button>
-          <button id="submit" type="button">Отправить</button>
+          <button id="cancel" type="button"></button>
+          <button id="submit" type="button"></button>
         </div>
       </div>
     </div>`;
 
   function init() {
-    if (window.DevOpsFeedback && window.DevOpsFeedback.__ready) return;   // два тега в <head>
+    if (window.DevOpsFeedback && window.DevOpsFeedback.__ready) return;   // two tags in <head>
     const host = document.createElement('div');
     host.id = 'devops-fb';
     const root = host.attachShadow({ mode: 'open' });
     if ('adoptedStyleSheets' in root && typeof CSSStyleSheet.prototype.replaceSync === 'function') {
-      const sheet = new CSSStyleSheet();          // строгий style-src не блокирует
+      const sheet = new CSSStyleSheet();          // a strict style-src does not block it
       sheet.replaceSync(css);
       root.adoptedStyleSheets = [sheet];
     } else {
@@ -131,8 +164,13 @@
     const $ = function (id) { return root.getElementById(id); };
     const btn = $('btn'), overlay = $('overlay'), textarea = $('text');
     const cancel = $('cancel'), submit = $('submit'), status = $('status');
-    $('title').textContent = '📩 ' + TITLE;
-    $('notice').textContent = NOTICE;
+    btn.textContent = T.button;                 // no aria-label: the visible text is the name
+    $('title').textContent = '📩 ' + T.title;
+    $('label').textContent = T.label;
+    textarea.setAttribute('placeholder', T.placeholder);
+    $('notice').textContent = T.notice;
+    cancel.textContent = T.cancel;
+    submit.textContent = T.send;
     if (BUTTON) {
       btn.hidden = false;
       if (BUTTON === 'desktop') btn.classList.add('desktop');
@@ -151,7 +189,8 @@
       const text = typeof prefill === 'string' ? prefill : '';
       const sel = selectedText();
       if (text) textarea.value = text;
-      else if (sel) textarea.value = 'Опечатка: «' + sel + '»\n';
+      // a function, so that «$&» in the selected text is not a replacement pattern
+      else if (sel) textarea.value = T.typo.replace('{text}', function () { return sel; }) + '\n';
       overlay.hidden = false;
       textarea.focus();
       textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
@@ -168,9 +207,9 @@
     }
     async function send() {
       const msg = textarea.value.trim();
-      if (!msg) { setStatus('Пожалуйста, опишите проблему.', 'error'); return; }
+      if (!msg) { setStatus(T.empty, 'error'); return; }
       submit.disabled = true;
-      setStatus('Отправляю…', '');
+      setStatus(T.sending, '');
       const body = { site_url: SITE_URL, page_url: pageUrl(), message: msg };
       if (cfg.fullUrl === true) body.full_url = true;
       const ctrl = new AbortController();
@@ -182,17 +221,16 @@
           body: JSON.stringify(body),
         });
         if (res.ok) {
-          setStatus('✅ Спасибо! Сообщение отправлено.', 'ok');
+          setStatus(T.sent, 'ok');
           setTimeout(function () { closeModal(false); }, 1800);
           return;
         }
-        if (res.status === 403) console.warn('[DevOpsFeedback] 403: секрет виджета устарел — возьмите новый сниппет в боте.');
+        if (res.status === 403) console.warn('[DevOpsFeedback] 403: the widget secret is stale — take a new snippet from the bot.');
         else console.warn('[DevOpsFeedback] HTTP ' + res.status);
-        setStatus(res.status === 429 ? 'Слишком много сообщений — попробуйте через минуту.'
-                                     : 'Не получилось отправить. Попробуйте позже.', 'error');
+        setStatus(res.status === 429 ? T.tooMany : T.failed, 'error');
       } catch (err) {
-        console.warn('[DevOpsFeedback]', err && err.name === 'AbortError' ? 'нет ответа за 15 с' : err);
-        setStatus('Не получилось отправить. Попробуйте позже.', 'error');
+        console.warn('[DevOpsFeedback]', err && err.name === 'AbortError' ? 'no answer in 15 s' : err);
+        setStatus(T.failed, 'error');
       } finally {
         clearTimeout(timer);
       }
@@ -203,7 +241,7 @@
     cancel.addEventListener('click', function () { closeModal(false); });
     submit.addEventListener('click', send);
     overlay.addEventListener('click', function (e) { if (e.target === overlay) closeModal(true); });
-    overlay.addEventListener('keydown', function (e) {          // фокус не уходит из окна
+    overlay.addEventListener('keydown', function (e) {          // focus stays inside the dialog
       if (e.key !== 'Tab') return;
       const f = [textarea, cancel, submit].filter(function (el) { return !el.disabled; });
       const i = f.indexOf(root.activeElement);

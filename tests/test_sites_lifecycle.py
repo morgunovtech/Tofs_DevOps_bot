@@ -85,7 +85,8 @@ async def test_an_http_site_has_no_certificate_anywhere(bot, db, monkeypatch):
 
     async def not_due(site_id, url):
         return False
-    for name in ("check_domain", "check_mail", "check_links", "alt_host_note", "suggest_keyword"):
+    for name in ("check_domain", "check_mail", "check_links", "check_security", "alt_host_note",
+                 "suggest_keyword"):
         monkeypatch.setattr(sites, name, nothing)
     monkeypatch.setattr(sites, "check_availability", avail)
     monkeypatch.setattr(sites, "check_ssl", cert)

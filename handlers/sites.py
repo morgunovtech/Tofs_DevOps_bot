@@ -845,6 +845,7 @@ async def cb_site_del_do(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])
+        await screenshots.forget(site["id"])        # its picture must not be served any more
         reset_site_schedule(site["id"])
         await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась, "
                      f"настройки сброшены.", back_button())

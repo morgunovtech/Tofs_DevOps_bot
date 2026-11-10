@@ -356,21 +356,28 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
     return web.Response(text="ok")
 
 
-async def handle_shot(request: web.Request) -> web.Response:
-    """The site card's picture (services.screenshots), on a signed address."""
+def _file_head(path: str) -> bytes:
+    with open(path, "rb") as f:
+        return f.read(12)
+
+
+async def handle_shot(request: web.Request) -> web.StreamResponse:
+    """The site card's picture (services.screenshots), on a signed address.
+    Up to 10 MB: sent from disk by aiohttp (sendfile), not read into memory
+    and not read in the event loop; the first bytes name the image type."""
     try:
         site_id = int(request.match_info.get("sid", ""))
     except ValueError:
         return web.Response(status=404)
     if not screenshots.sig_ok(site_id, request.match_info.get("sig", "")):
         return web.Response(status=404)
+    path = screenshots.shot_path(site_id)
     try:
-        with open(screenshots.shot_path(site_id), "rb") as f:
-            data = f.read()
+        head = await asyncio.to_thread(_file_head, path)
     except OSError:
         return web.Response(status=404)
-    return web.Response(body=data, content_type=screenshots.image_type(data),
-                        headers={"Cache-Control": "public, max-age=3600"})
+    return web.FileResponse(path, headers={"Content-Type": screenshots.image_type(head),
+                                           "Cache-Control": "public, max-age=3600"})
 
 
 async def handle_health(request: web.Request) -> web.Response:

@@ -35,7 +35,7 @@ from db.database import (
     get_uptime_windows,
 )
 from services import maintenance
-from utils.clock import to_local
+from utils.clock import to_local, zone_label
 from utils.net import is_private_target
 from utils.text import fmt_duration, incident_start, parse_iso_utc, parse_sqlite_utc
 from utils.urls import host_of, is_api_check, is_http_url
@@ -46,24 +46,78 @@ _cache: tuple[float, dict] | None = None
 _lock = asyncio.Lock()
 _TEMPLATE = Template((Path(__file__).parent / "templates" / "status.html").read_text("utf-8"))
 
-# Public names for incident types — deliberately generic. A WHITE list: a
-# type that is not here (exposed, security, mail_auth, anything new) is
-# never published — a list of a site's weak spots is a gift to an attacker.
-_TYPE_RU = {
-    "availability": "Недоступность", "performance": "Медленные ответы",
-    "ssl": "Проблема с SSL-сертификатом", "domain": "Проблема с доменом",
-    "links": "Битые ссылки", "deep": "Ошибки на части страниц",
-    "seo": "Проблема с индексацией", "mail": "Почта не принимала письма", "visitors": "Медленно у посетителей",
+# Everything a visitor reads, per STATUS_PAGE_LANG (read on every call, not
+# at import: the owner's .env decides, a test may switch it). Incident
+# «types» are public names — deliberately generic — and a WHITE list: a type
+# that is not here (exposed, security, mail_auth, anything new) is never
+# published — a list of a site's weak spots is a gift to an attacker. The
+# badge keeps the shields.io words in both languages: it sits in READMEs.
+_TEXTS = {
+    "ru": {
+        "title": "Статус сервисов", "html_lang": "ru",
+        "types": {
+            "availability": "Недоступность", "performance": "Медленные ответы",
+            "ssl": "Проблема с SSL-сертификатом", "domain": "Проблема с доменом",
+            "links": "Битые ссылки", "deep": "Ошибки на части страниц",
+            "seo": "Проблема с индексацией", "mail": "Почта не принимала письма",
+            "visitors": "Медленно у посетителей",
+        },
+        "state": {
+            "down": "недоступен", "checking": "перепроверяю", "degraded": "работает с проблемами",
+            "stale": "нет свежих данных", "nodata": "нет свежих данных", "maint": "тех. работы",
+            "pending": "ждёт первой проверки", "up": "работает",
+        },
+        "down_since": "с {t}",
+        "banner": {
+            "down": "Часть систем недоступна", "degraded": "Есть проблемы — подробности ниже",
+            "stale": "Нет свежих данных: проверки сейчас не идут", "maintenance": "Идут технические работы",
+            "empty": "Пока нечего показывать", "pending": "Идёт первая проверка", "up": "Все системы работают",
+        },
+        "periods": ("24ч", "7д", "30д", "90д"), "open": "сейчас",
+        "incidents": "Инциденты за 14 дней",
+        "columns": ("Длительность", "Начало", "Сервис", "Что случилось"),
+        "checked_ago": "последняя проверка {ago} назад", "checked_now": "последняя проверка только что",
+        "checked_none": "проверок ещё не было",
+        "built": "страница собрана {now} и обновляется сама раз в минуту",
+        "units": ("мин", "ч", "дн"), "badge": "uptime 7d", "no_data": "n/a",
+    },
+    "en": {
+        "title": "Service status", "html_lang": "en",
+        "types": {
+            "availability": "Outage", "performance": "Slow responses",
+            "ssl": "SSL certificate problem", "domain": "Domain problem",
+            "links": "Broken links", "deep": "Errors on some pages",
+            "seo": "Search indexing problem", "mail": "Mail was not accepted",
+            "visitors": "Slow for visitors",
+        },
+        "state": {
+            "down": "down", "checking": "re-checking", "degraded": "degraded",
+            "stale": "no fresh data", "nodata": "no fresh data", "maint": "maintenance",
+            "pending": "awaiting first check", "up": "operational",
+        },
+        "down_since": "since {t}",
+        "banner": {
+            "down": "Some systems are down", "degraded": "Some issues — details below",
+            "stale": "No fresh data: checks are not running right now", "maintenance": "Maintenance in progress",
+            "empty": "Nothing to show yet", "pending": "First check in progress", "up": "All systems operational",
+        },
+        "periods": ("24h", "7d", "30d", "90d"), "open": "ongoing",
+        "incidents": "Incidents in the last 14 days",
+        "columns": ("Duration", "Started", "Service", "What happened"),
+        "checked_ago": "last check {ago} ago", "checked_now": "last check just now",
+        "checked_none": "no checks yet",
+        "built": "page built {now}, refreshes itself every minute",
+        "units": ("min", "h", "d"), "badge": "uptime 7d", "no_data": "n/a",
+    },
 }
-_STATE = {
-    "down": ("dot-down", "недоступен"), "checking": ("dot-warn", "перепроверяю"),
-    "degraded": ("dot-warn", "работает с проблемами"), "stale": ("dot-pending", "нет свежих данных"),
+_PUBLIC_TYPES = frozenset(_TEXTS["ru"]["types"])         # the same keys in every language
+# Every state the verdict can produce, the worst first, with its dot colour.
+_DOT = {
+    "down": "dot-down", "checking": "dot-warn", "degraded": "dot-warn", "stale": "dot-pending",
     # the monitoring server itself could not check (its own network): not «недоступен»
-    "nodata": ("dot-pending", "нет свежих данных"),
-    "maint": ("dot-maint", "тех. работы"), "pending": ("dot-pending", "ждёт первой проверки"),
-    "up": ("dot-up", "работает"),
+    "nodata": "dot-pending", "maint": "dot-maint", "pending": "dot-pending", "up": "dot-up",
 }
-_ORDER = {state: i for i, state in enumerate(_STATE)}     # the worst first
+_ORDER = {state: i for i, state in enumerate(_DOT)}     # the worst first
 ALIVE_STALE_MIN = 3        # the scheduler marks alive_at every minute (reports/scheduler.py, run_alive)
 
 
@@ -83,6 +137,10 @@ async def public_labels() -> list[str]:
     return [label for s in await get_all_sites() if (label := public_label(s["url"], s.get("http_method")))]
 
 
+def _t() -> dict:
+    return _TEXTS.get(config.status_page_lang, _TEXTS["ru"])
+
+
 def _fmt(dt: datetime | None, fmt: str = "%d.%m %H:%M") -> str:
     return to_local(dt).strftime(fmt) if dt else "—"
 
@@ -99,10 +157,11 @@ async def _scheduler_alive() -> bool:
 
 
 async def build_payload() -> dict:
+    t = _t()
     now = datetime.now(UTC)
     open_inc: dict[int, dict[str, dict]] = {}
     for inc in await get_active_incidents():
-        if inc["check_type"] in _TYPE_RU:
+        if inc["check_type"] in _PUBLIC_TYPES:
             open_inc.setdefault(inc["site_id"], {})[inc["check_type"]] = inc
     alive = await _scheduler_alive()
     sites, labels = [], {}
@@ -144,7 +203,7 @@ async def build_payload() -> dict:
             "ms": (last or {}).get("response_time_ms") if state not in ("down", "checking", "nodata") else None,
             "up24": (await get_uptime_stats(s["id"], hours=24))["uptime_pct"] if has_data else None,
             **{f"up{days}d": stats["uptime_pct"] for days, stats in windows.items()},
-            "problems": sorted(_TYPE_RU[t] for t in incidents if t != "availability"),
+            "problems": sorted(t["types"][k] for k in incidents if k != "availability"),
             "checked_at": _fmt(checked, "%H:%M"),
             "checked_at_iso": _iso(checked),
             "checked_ago_min": round(age_min) if age_min is not None else None,
@@ -156,20 +215,20 @@ async def build_payload() -> dict:
     for inc in reversed(await get_incidents_since(14)):
         if len(incidents) >= 10:
             break
-        if inc["site_id"] not in labels or inc["check_type"] not in _TYPE_RU:
+        if inc["site_id"] not in labels or inc["check_type"] not in _PUBLIC_TYPES:
             continue   # removed or unpublished monitors, weak spots — not on the page
         created = incident_start(inc)
         resolved = parse_sqlite_utc(inc.get("resolved_at")) if inc.get("resolved") else None
         minutes = round((resolved - created).total_seconds() / 60) if created and resolved else None
         incidents.append({
             "label": labels[inc["site_id"]],
-            "type": _TYPE_RU[inc["check_type"]],
+            "type": t["types"][inc["check_type"]],
             "type_code": inc["check_type"],
             "open": not inc.get("resolved"),
             "started": _fmt(created),
             "started_iso": _iso(created),
             "resolved_iso": _iso(resolved),
-            "duration": fmt_duration(max(1, minutes)) if minutes is not None else "",
+            "duration": fmt_duration(max(1, minutes), t["units"]) if minutes is not None else "",
             "duration_min": max(1, minutes) if minutes is not None else None,
         })
     ages = [s["checked_ago_min"] for s in sites if s["checked_ago_min"] is not None]
@@ -182,7 +241,7 @@ async def build_payload() -> dict:
             "all_pending": bool(sites) and all(s["state"] == "pending" for s in sites),
             "any_maint": maintenance.maintenance_now(None),
             "last_check_ago_min": min(ages) if ages else None,
-            "now": _fmt(now),
+            "now": f"{_fmt(now)} {zone_label()}",        # visitors may live in another zone
             "generated_at": now.isoformat(timespec="seconds")}
 
 
@@ -222,34 +281,36 @@ def _status(p: dict) -> str:
 
 
 def _banner(p: dict) -> tuple[str, str]:
+    words = _t()["banner"]
     status = _status(p)
     if status == "down":
-        return "banner-down", "Часть систем недоступна"
+        return "banner-down", words["down"]
     if status == "degraded":
-        return "banner-warn", "Есть проблемы — подробности ниже"
+        return "banner-warn", words["degraded"]
     if status == "stale":
-        return "banner-stale", "Нет свежих данных: проверки сейчас не идут"
+        return "banner-stale", words["stale"]
     if status == "maintenance":
-        return "banner-maint", "Идут технические работы"
+        return "banner-maint", words["maintenance"]
     if not p["sites"]:
-        return "banner-maint", "Пока нечего показывать"
+        return "banner-maint", words["empty"]
     if p["all_pending"]:
-        return "banner-maint", "Идёт первая проверка"
-    return "banner-up", "Все системы работают"
+        return "banner-maint", words["pending"]
+    return "banner-up", words["up"]
 
 
 def render(p: dict) -> str:
+    t = _t()
     banner_cls, banner = _banner(p)
     rows = []
     for s in p["sites"]:
-        dot_cls, state_txt = _STATE[s["state"]]
+        dot_cls, state_txt = _DOT[s["state"]], t["state"][s["state"]]
         if s["state"] == "down" and s.get("down_since"):
-            state_txt += f" с {s['down_since']}"
+            state_txt += " " + t["down_since"].format(t=s["down_since"])
         elif s["ms"] is not None:
             state_txt += f" · {s['ms']} ms"
         spans = "".join(
             f'<span class="{uptime_class(s[k])}">{lbl}: {"—" if s[k] is None else str(s[k]) + "%"}</span>'
-            for k, lbl in (("up24", "24ч"), ("up7d", "7д"), ("up30d", "30д"), ("up90d", "90д")))
+            for k, lbl in zip(("up24", "up7d", "up30d", "up90d"), t["periods"], strict=True))
         problems = (f'<div class="problems">{html.escape(", ".join(s["problems"]))}</div>'
                     if s["problems"] else "")
         rows.append(
@@ -260,21 +321,27 @@ def render(p: dict) -> str:
 
     inc_rows = []
     for i in p["incidents"]:
-        status = ("<span class='inc-open'>сейчас</span>" if i["open"] else html.escape(i["duration"]))
+        status = (f"<span class='inc-open'>{t['open']}</span>" if i["open"] else html.escape(i["duration"]))
         inc_rows.append(f"<tr><td>{status}</td><td>{html.escape(i['started'])}</td>"
                         f"<td>{html.escape(i['label'])}</td><td>{html.escape(i['type'])}</td></tr>")
     incidents_html = ""
     if inc_rows:
-        incidents_html = ("<h2>Инциденты за 14 дней</h2><table class=\"incidents\"><thead><tr>"
-                          "<th scope=\"col\">Длительность</th><th scope=\"col\">Начало</th>"
-                          "<th scope=\"col\">Сервис</th><th scope=\"col\">Что случилось</th></tr></thead>"
+        duration, started, service, what = t["columns"]
+        incidents_html = (f"<h2>{t['incidents']}</h2><table class=\"incidents\"><thead><tr>"
+                          f"<th scope=\"col\">{duration}</th><th scope=\"col\">{started} ({zone_label()})</th>"
+                          f"<th scope=\"col\">{service}</th><th scope=\"col\">{what}</th></tr></thead>"
                           "<tbody>" + "".join(inc_rows) + "</tbody></table>")
     ago = p["last_check_ago_min"]
-    checked = (f"последняя проверка {fmt_duration(max(1, ago))} назад" if ago else
-               "последняя проверка только что" if ago == 0 else "проверок ещё не было")
-    return _TEMPLATE.substitute(banner_cls=banner_cls, banner=banner,
+    checked = (t["checked_ago"].format(ago=fmt_duration(max(1, ago), t["units"])) if ago else
+               t["checked_now"] if ago == 0 else t["checked_none"])
+    # The owner's name for the page goes in as text, above the banner — not a second <h1>.
+    heading = (f'<p class="page-title">{html.escape(config.status_page_title)}</p>'
+               if config.status_page_title else "")
+    return _TEMPLATE.substitute(lang=t["html_lang"], title=html.escape(config.status_page_title or t["title"]),
+                                heading=heading, banner_cls=banner_cls, banner=banner,
                                 sites_html="".join(rows), incidents_html=incidents_html,
-                                checked=html.escape(checked), now=html.escape(p["now"]))
+                                checked=html.escape(checked),
+                                built=html.escape(t["built"].format(now=p["now"])))
 
 
 async def status_html() -> str:
@@ -318,9 +385,10 @@ async def badge_pct(site_id: int) -> tuple[bool, float | None]:
 
 
 def badge_svg(pct: float | None) -> str:
-    label = "uptime 7d"
+    t = _t()
+    label = t["badge"]
     cls = uptime_class(pct)
-    value = "n/a" if pct is None else f"{pct}%"
+    value = t["no_data"] if pct is None else f"{pct}%"
     color, value_fill = _BADGE_COLORS[cls], _BADGE_TEXT[cls]
     lw = int(len(label) * 6.1) + 12   # ~6.1px per char at font-size 11
     vw = int(len(value) * 6.1) + 12

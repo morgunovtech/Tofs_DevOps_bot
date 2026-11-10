@@ -13,7 +13,7 @@ git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
 cd Tofs_DevOps_bot
 cp .env.example .env
 # Заполни ОДНО значение: TELEGRAM_BOT_TOKEN (от @BotFather)
-docker compose up -d --build
+APP_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
 Отправь боту `/start` — первый пользователь становится админом, и бот сам
@@ -79,7 +79,10 @@ Content-Type: application/json
 ```
 main.py                 точка входа: БД → сервисы → веб-сервер → планировщик → polling
 ├── monitors/           доступность, ssl, домены (rdap), dns, ссылки, 5xx,
-│                       seo/geo, хост — типизированные результаты, общая лестница алертов
+│                       seo/geo, хост — типизированные результаты, общая лестница алертов;
+│                       разбор HTML (BeautifulSoup) — в дочернем процессе
+│                       monitors.parse_child (parse_worker: старт по требованию,
+│                       выход после 60 с простоя), карта сайта — в потоке
 ├── services/           notifier (единственная дверь для сообщений: приоритеты,
 │                       mute, тихие часы, паузы), settings, maintenance, secrets,
 │                       runtime (админ), updates (контроль зависимостей),
@@ -100,16 +103,44 @@ main.py                 точка входа: БД → сервисы → ве�
 
 Стек: Python 3.12+, [aiogram 3](https://github.com/aiogram/aiogram), aiohttp, APScheduler, SQLite (WAL), `zoneinfo` из stdlib. Внешних систем мониторинга нет — бот и *есть* мониторинг. Графических библиотек тоже нет: графики — моноширинный текст.
 
+Всё живёт в одном event loop, поэтому ничего тяжёлого в нём не исполняется. Разбор HTML (SEO-аудит, обход ссылок, подсказка фразы) идёт в дочернем процессе `python -m monitors.parse_child`: `monitors/parse_worker.py` запускает его при первом разборе, передаёт задания по одному кадрами JSON через pipe, убивает при зависании (30 с) и отпускает после 60 с простоя — память уходит вместе с ним. Это не `multiprocessing`: тот заново импортировал бы `main.py`, то есть весь бот, в каждом рабочем процессе; дочерний процесс импортирует только `monitors`. Поток не помог бы — `html.parser` держит GIL. Карта сайта разбирается в потоке (`asyncio.to_thread`: регэксп линейный, `html.unescape` GIL отпускает), картинка карточки отдаётся `web.FileResponse` (sendfile), виджет читается с диска один раз при старте.
+
 Про модель безопасности виджета: «секрет» виджета уезжает каждому посетителю сайта, поэтому endpoint считается публичным — защита строится на rate limiting и жёстких лимитах размера, а не на токене. Именно поэтому у heartbeat-эндпоинта *другой* секрет. Осознанный и задокументированный компромисс для инструмента личного масштаба.
 
 ## Разработка
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements.txt   # ровно то, что в образе
 ruff check .          # линтер + порядок импортов
 pytest -q             # ~150 тестов, без сети и без Telegram
 pip-audit -r requirements.txt --strict
 ```
 
-CI (ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict`, сборка образа на ноге 3.13) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.
+### Зависимости
+
+Прямые версии живут в `requirements.in` (9 пинов `==`). `requirements.txt` —
+сгенерированный lock: все 30 пакетов, включая транзитивные, с хешами, собранный
+под Python 3.12 (младшая версия матрицы CI). Образ и CI ставят ровно его
+(`pip install --require-hashes --no-deps`); тест `test_the_lock_is_compiled_from_requirements_in`
+следит, чтобы lock не отстал от `requirements.in`. Поменял пин в `requirements.in` —
+пересобери lock:
+
+```bash
+python3.12 -m venv /tmp/piptools && /tmp/piptools/bin/pip install pip-tools
+/tmp/piptools/bin/pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
+```
+
+Еженедельный PR Dependabot делает это сам; если он обновил только `requirements.in`,
+CI покраснеет и PR подождёт человека — перегенерируй lock в его ветке той же командой.
+
+Аварийный путь: на aiohttp или pydantic вышла уязвимость, а свежую версию не
+пускает верхняя граница aiogram. Поставь нужную версию поверх границы —
+`uv pip compile requirements.in --generate-hashes --universal --python-version 3.12 --override overrides.txt -o requirements.txt`
+(с `--no-deps` pip поставит её, не проверяя границу), прогони полный pytest на
+3.12–3.14 и собери образ. Пока ждёшь aiogram, держи в CI
+`pip-audit … --ignore-vuln <ID>` с датой пересмотра в комментарии. Цена —
+комбинация, которую aiogram не тестировал.
+
+CI (ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict` для lock и для дев-инструментов; на ноге 3.13 — сборка образа и его запуск: `id -u` = 10001 и `import main` внутри контейнера, в PR ещё и сборка под arm64) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io, причём `:latest` получает только прогон самого нового коммита `main` — повторный запуск старого прогона его не откатит. Actions закреплены по SHA коммита, базовый образ — по digest; Dependabot двигает и то и другое. Отдельный шаг «versions aiogram keeps out» предупреждает (не роняя сборку), когда свежий aiohttp или pydantic отрезан верхней границей aiogram. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.

@@ -2,16 +2,19 @@
 drives it: raw updates in, Bot API calls out (captured by a mocked session).
 Covers routing, AdminFilter on the admin router and the deny router."""
 
+import ast
+import pathlib
 import time
 from datetime import UTC, datetime
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, GetFile, SendMessage
 from aiogram.types import Chat, Message
 
 import handlers
-from services import runtime
+from db.database import save_incident
+from services import helpers, runtime
 
 
 class MockedSession(BaseSession):
@@ -168,7 +171,18 @@ async def test_a_group_without_an_owner_id_says_what_to_set(bot, db, cfg):
 
 
 def test_admin_router_covers_every_update_type():
-    # A new update type needs admin.<type>.filter(AdminFilter()) in handlers/__init__.py.
+    """AdminFilter guards `message` and `callback_query` of the admin
+    router only: a handler for any other kind of update there (an
+    edited_message, say) would be open to everyone, and Telegram would
+    start sending that kind. A new update type needs
+    admin.<type>.filter(AdminFilter()) in handlers/__init__.py."""
+    def walk(router):
+        yield router
+        for sub in router.sub_routers:
+            yield from walk(sub)
+    used = {name for r in walk(handlers.admin) for name, obs in r.observers.items()
+            if obs.handlers and name not in ("error", "update")}
+    assert used <= {"message", "callback_query"}
     assert DP.resolve_used_update_types() == ["callback_query", "message"]
 
 
@@ -187,4 +201,103 @@ async def test_the_upgrade_service_message_moves_the_admin_group(bot, db, monkey
         "message_id": 2, "date": 1700000000, "migrate_from_chat_id": -999,
         "chat": {"id": -1009999, "type": "supergroup", "title": "Other"}}})
     assert runtime.admin_chat_id() == "-1001234567890"
+    await tg.session.close()
+
+
+# ── Nobody but the admin can do anything ─────────────────────────────────────
+
+def _callback_samples() -> list[str]:
+    """Every callback_data the code puts on a button or a handler listens
+    for, read from the source; the variable parts of an f-string become «1»
+    (the id of the first site). A new button is covered without anyone
+    adding it here."""
+    def text_of(node) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(v.value if isinstance(v, ast.Constant) else "1" for v in node.values)
+        return None
+
+    found: set[str | None] = set()
+    for folder in ("handlers", "services", "reports"):
+        for path in sorted(pathlib.Path(folder).glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text("utf-8"))):
+                if isinstance(node, ast.keyword) and node.arg == "callback_data":
+                    found.add(text_of(node.value))
+                elif (isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute)
+                      and node.left.attr == "data" and len(node.comparators) == 1):
+                    found.add(text_of(node.comparators[0]))                       # F.data == "x"
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "startswith" and isinstance(node.func.value, ast.Attribute)
+                      and node.func.value.attr == "data" and node.args):
+                    prefix = text_of(node.args[0])                                # F.data.startswith("x")
+                    found.add(prefix + "1" if prefix else None)
+    found.discard(None)
+    return sorted(s for s in found if s)
+
+
+async def _all_rows(db) -> dict[str, list]:
+    conn = await db.get_db()
+    tables = [r[0] for r in await (await conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")).fetchall()]
+    return {t: sorted((tuple(r) for r in await (await conn.execute(f'SELECT * FROM "{t}"')).fetchall()), key=repr)
+            for t in tables}
+
+
+def _tap(uid: int, data: str, update_id: int, chat_id: int, chat_type: str) -> dict:
+    return {"update_id": update_id,
+            "callback_query": {"id": str(update_id), "chat_instance": "ci", "data": data,
+                               "from": {"id": uid, "is_bot": False, "first_name": "T"},
+                               "message": {"message_id": 5, "date": 1700000000, "text": "menu",
+                                           "chat": {"id": chat_id, "type": chat_type}}}}
+
+
+async def test_no_button_does_anything_for_anyone_but_the_admin(bot, db, monkeypatch):
+    """Every button of the bot pressed by a stranger in a private chat, by a
+    stranger in another group, by a member of the admin group and by a
+    helper: an answer to the tap and nothing else — no screen, no message,
+    no change in the database."""
+    sid = await db.activate_or_create_site("https://ex.test")
+    assert sid == 1                                     # «1» in the samples is this site
+    await save_incident(sid, "availability", "Site down", "critical")
+    assert await helpers.accept(await helpers.create_invite(), 555, "Аня") == "ok"
+    samples = _callback_samples()
+    assert len(samples) > 100, samples                  # the scan still finds the buttons
+    before = await _all_rows(db)
+    session = MockedSession()
+    tg = Bot(token="123456:TEST", session=session)
+    roles = [  # (admin chat, admin user, who presses, in which chat, chat type)
+        ("777", "777", 999, 999, "private"),
+        ("777", "777", 999, -100500, "supergroup"),
+        ("-100777", "777", 999, -100777, "supergroup"),
+        ("777", "777", 555, 555, "private"),
+    ]
+    n = 1000
+    for admin_chat, admin_user, who, chat_id, chat_type in roles:
+        monkeypatch.setattr(runtime, "_chat_id", admin_chat)
+        monkeypatch.setattr(runtime, "_user_id", admin_user)
+        for data in samples:
+            n += 1
+            session.calls.clear()
+            await DP.feed_raw_update(tg, _tap(who, data, n, chat_id, chat_type))
+            extra = [type(m).__name__ for m in session.calls if not isinstance(m, AnswerCallbackQuery)]
+            assert extra == [], (who, chat_id, data, extra)
+    assert await _all_rows(db) == before
+    assert bot.sent == [] and bot.edited == []
+    await tg.session.close()
+
+
+async def test_a_file_from_a_stranger_is_not_even_downloaded(bot, db, monkeypatch):
+    monkeypatch.setattr(runtime, "_chat_id", "777")
+    monkeypatch.setattr(runtime, "_user_id", "777")
+    await db.activate_or_create_site("https://ex.test")
+    before = await _all_rows(db)
+    session = MockedSession()
+    tg = Bot(token="123456:TEST", session=session)
+    await DP.feed_raw_update(tg, {"update_id": 1, "message": {
+        "message_id": 1, "date": 1700000000, "chat": {"id": 999, "type": "private"},
+        "from": {"id": 999, "is_bot": False, "first_name": "T"},
+        "document": {"file_id": "f", "file_unique_id": "u", "file_name": "bot.db", "file_size": 10}}})
+    assert not [m for m in session.calls if isinstance(m, GetFile)]
+    assert await _all_rows(db) == before
     await tg.session.close()

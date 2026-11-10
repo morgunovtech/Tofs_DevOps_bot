@@ -175,6 +175,17 @@ def _tg_id(name: str) -> str:
     return raw
 
 
+def _choice(name: str, allowed: tuple[str, ...], default: str) -> str:
+    """One of a few fixed words; anything else is reported and replaced."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in allowed:
+        return raw
+    logger.warning("Invalid %s=%r — using %s (allowed: %s)", name, raw, default, ", ".join(allowed))
+    return default
+
+
 def _timezone(name: str, default: str = "Europe/Moscow") -> str:
     raw = os.getenv(name, "").strip() or default
     try:
@@ -314,13 +325,18 @@ class Config:
     # ── Public status page ───────────────────────────────────────────────────
     status_page: bool = _bool("STATUS_PAGE")
     status_page_slug: str = _slug("STATUS_PAGE_SLUG")
+    # Language of what visitors see (status page, its JSON texts, badges): ru | en.
+    status_page_lang: str = _choice("STATUS_PAGE_LANG", ("ru", "en"), "ru")
+    # Name shown above the banner and in the browser tab; empty — a generic one.
+    status_page_title: str = os.getenv("STATUS_PAGE_TITLE", "").strip()
 
     # ── Self-maintenance ─────────────────────────────────────────────────────
     retention_days: int = _int("RETENTION_DAYS", 30, 1, 3650)
     db_backup_keep: int = _int("DB_BACKUP_KEEP", 7, 1, 365)
     self_heartbeat_url: str = _url("SELF_HEARTBEAT_URL", ("https://", "http://"))
-    # Weekly OSV vulnerability check of the bot's own packages, plus the hourly
-    # GitHub deploy watch (services.updates) — one switch for both.
+    # Weekly OSV vulnerability check of every installed package, plus the hourly
+    # GitHub deploy watch (services.updates; it reads GITHUB_REPOSITORY itself) —
+    # one switch for both.
     dependency_watch: bool = _bool("DEPENDENCY_WATCH", "1")
 
     def seed_site_urls(self) -> list[str]:

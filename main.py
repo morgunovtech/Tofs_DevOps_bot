@@ -60,6 +60,7 @@ from handlers import router  # noqa: E402
 from handlers.common import BOTTOM, MAX_SITES  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
 from handlers.start import BOTTOM_SHOWN  # noqa: E402
+from monitors import parse_worker  # noqa: E402
 from reports.scheduler import (  # noqa: E402
     cancel_alert_worker,
     catch_up_after_restart,
@@ -301,6 +302,9 @@ async def stop(scheduler, web_runner, bot) -> None:
                     logger.warning("Stopping with %d task(s) still running — they are cancelled", len(pending))
             if scheduler is not None and scheduler.running:
                 scheduler.shutdown(wait=False)
+            # The parse child would exit by itself on EOF; not waiting for
+            # that keeps the stop from leaving a stray process behind.
+            await parse_worker.close()
     finally:
         try:
             await bot.session.close()

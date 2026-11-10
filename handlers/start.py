@@ -6,14 +6,15 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import set_state
-from handlers.common import BOTTOM, DENIED, back_button, refusal
+from handlers.common import BOTTOM, DENIED, HELPER_NOTE, back_button, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from services import helpers, notifier, railway, runtime, settings
+from utils.clock import now_local
 from utils.text import esc
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,9 @@ HELP = (
     "🏠 Главная (кнопка под полем ввода) — всё на одном экране, по блокам: сайты, соцсети, боты и "
     "системы. Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
     "⚙️ Настройки — во сколько присылать сводку, ночная тишина, пробная тревога.\n\n"
-    "Нужно, чтобы я помолчал: /mute 8h — пишу только о том, что сайт лёг. Снова обо всём — /unmute."
+    "Нужно, чтобы я помолчал: /mute 8h — приходят только звонящие: сайт лёг, а при «🔔 Будить: всё "
+    "критичное» ещё снова работает, смена настроек домена, сайт закрыт от поисковиков; остальное — когда "
+    "тишина кончится. Снова обо всём — /unmute. Будить только когда сайт лёг — ⚙️ Настройки → 🔔 Когда писать."
 )
 
 
@@ -55,13 +58,30 @@ def rules_of_the_game() -> str:
             "• Пишу только если что-то сломалось, и сразу говорю, что делать.\n"
             f"• Каждое утро в {settings.morning_hour()}:00 одно короткое «всё в порядке».\n"
             f"• {quiet_line}\n"
-            "• Если сайт лёг, напишу в любое время и повторю через полчаса, пока не поднимется.")
+            f"• {_down_line()}\n"
+            # Moscow by default: an owner in Berlin or London would get «9:00» at night otherwise.
+            f"• Время — по поясу {esc(settings.timezone())}: у меня сейчас {now_local():%H:%M}. "
+            "Если у тебя другое — ⚙️ Настройки → 🕐 Часовой пояс.")
+
+
+# Under «Как я работаю» after /start: the timezone screen (handlers.settings).
+TZ_BUTTON = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🕐 Сменить часовой пояс", callback_data="menu_tz")]])
+
+
+def _down_line() -> str:
+    """What the escalation really does (reports.scheduler.run_escalation_watch):
+    reminders at a growing pause, none at all with 0 repeats."""
+    repeat = config.escalation_repeat_min
+    return ("Если сайт лёг, напишу в любое время"
+            + (f" и напомню через {repeat} мин, потом всё реже (не чаще раза в 4 ч), пока не поднимется."
+               if repeat else "."))
 
 
 _HELPER_ANSWERS = {
     "ok": "✅ Готово: теперь, если сайт ляжет, я позвоню и тебе — и напишу, когда он снова заработает. "
           "Больше ничего присылать не буду, управляет ботом владелец. Перестать — /stop.",
-    "already": "Ты уже помощник — тревоги 🔴 приходят и тебе. Перестать — /stop.",
+    "already": "Ты уже помощник — «сайт лёг» и «снова работает» приходят и тебе. Перестать — /stop.",
     "full": "У владельца уже три помощника — больше нельзя. Попроси его убрать кого-нибудь.",
     "invalid": "Ссылка не сработала: она одноразовая и живёт сутки. Попроси у владельца новую.",
 }
@@ -82,7 +102,8 @@ async def cmd_start_helper(message: Message, command: CommandObject, state: FSMC
     result = await helpers.accept(command.args[len(helpers.PAYLOAD_PREFIX):], message.chat.id, name)
     await message.answer(_HELPER_ANSWERS[result])
     if result == "ok":
-        await notifier.send(f"👥 {esc(name)} теперь получает тревоги 🔴. Убрать — ⚙️ Настройки → 👥 Помощники.")
+        await notifier.send(f"👥 {esc(name)} теперь получает «сайт лёг» и «снова работает». "
+                            "Убрать — ⚙️ Настройки → 👥 Помощники.")
 
 
 @router.message(F.migrate_from_chat_id)
@@ -106,7 +127,7 @@ async def cmd_stop(message: Message):
         await message.answer(DENIED)
         return
     await message.answer("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца.")
-    await notifier.send(f"👥 {esc(gone['name'])} больше не получает тревоги 🔴.")
+    await notifier.send(f"👥 {esc(gone['name'])} больше не получает «сайт лёг» и «снова работает».")
 
 
 def _claim_refusal(message: Message) -> str | None:
@@ -138,7 +159,7 @@ async def cmd_start(message: Message, state: FSMContext):
             if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
                 await message.answer(runtime.NO_VOLUME)
     if not in_admin_chat(message):
-        await message.answer(refusal(message))
+        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
     await message.answer(
         "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
@@ -147,13 +168,13 @@ async def cmd_start(message: Message, state: FSMContext):
         "аптайм близко к сердцу.",
         reply_markup=BOTTOM)
     await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
-    await message.answer(rules_of_the_game())
+    await message.answer(rules_of_the_game(), reply_markup=TZ_BUTTON)
     await send_main_menu(message)
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     if not in_admin_chat(message):
-        await message.answer(refusal(message))
+        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
     await message.answer(HELP, reply_markup=back_button())

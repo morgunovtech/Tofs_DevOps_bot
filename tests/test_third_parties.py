@@ -170,9 +170,13 @@ async def test_the_alert_path_keeps_a_lan_resolving_name_at_home(db, monkeypatch
     monkeypatch.setattr(second_opinion, "resolves_private", resolves_inside)
     monkeypatch.setattr(availability.integrations, "second_opinion_enabled", lambda: True)
     monkeypatch.setattr(availability.settings, "timezone", lambda: "Europe/Moscow")
+
+    async def getaddrinfo(host, port, **kw):
+        return [(2, 1, 6, "", ("127.0.0.1", port))]   # the NAS «is» a closed port here: down
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", getaddrinfo)
     async with await _recorder(seen, body=b'{"request_id": "r1"}', ctype="application/json") as server:
         monkeypatch.setattr(second_opinion, "API", str(server.make_url("")).rstrip("/"))
-        url = "http://nas.home.example.com:1/"        # the name does not resolve in the test box: down
+        url = "http://nas.home.example.com:1/"
         sid = await db.activate_or_create_site(url)
         await db.update_site_settings(sid, fail_threshold=1)
         r = await availability.check_availability(url)

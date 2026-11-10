@@ -30,8 +30,11 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
-    # aiogram 3.31 caps Python below 3.15, so the 3.15 image does not build
-    # (01.11.2026). Drop this once aiogram supports 3.15.
+    # 3.14, not 3.15: aiogram 3.31 allows Python below 3.15 only, and the
+    # pydantic-core of pydantic 2.13 has no 3.15 wheels (the 3.15 bump of
+    # 01.11.2026 did not build) — drop this once an aiogram release allows
+    # both Python 3.15 and pydantic >= 2.14. The monthly PR moves the digest
+    # in the Dockerfile's FROM; a human merges it (PLAN-23 policy).
     ignore:
       - dependency-name: python
         versions: [">=3.15"]

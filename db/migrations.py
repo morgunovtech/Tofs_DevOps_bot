@@ -248,9 +248,21 @@ async def m10_uptime_by_time(db):
     await _add_columns(db, "incidents", {"started_at": "TEXT"})
 
 
+async def m11_covering_checks_index(db):
+    # Uptime queries (status page, badges, reports) read status and
+    # response_time_ms of every row in their window: with both in the index
+    # SQLite never visits the table. Same name and prefix — every query that
+    # used the old index uses this one. The index suits the previous version
+    # of the code as well, so a rollback may lower user_version by one and
+    # keep the data (README, «Откат версии»).
+    await db.execute("DROP INDEX IF EXISTS idx_checks_site_type")
+    await db.execute("CREATE INDEX idx_checks_site_type "
+                     "ON checks(site_id, check_type, checked_at, status, response_time_ms)")
+
+
 MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
               m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at, m9_checks_scheduled,
-              m10_uptime_by_time]
+              m10_uptime_by_time, m11_covering_checks_index]
 
 
 async def migrate(db, upto: int | None = None) -> int:

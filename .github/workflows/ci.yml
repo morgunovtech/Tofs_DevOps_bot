@@ -8,31 +8,78 @@ on:
   # is made with GITHUB_TOKEN and starts no run by itself.
   workflow_dispatch:
 
+# Least privilege: the test job only reads. The image job asks for more itself.
+permissions:
+  contents: read
+
+# Every action is pinned to a commit SHA (the tag in the comment): a tag can
+# be moved, a commit cannot. Dependabot (github-actions) bumps SHA and comment
+# together; the images the Docker actions pull are pinned by digest the same way.
 jobs:
   test:
     name: lint · test · audit
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         python: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # The dev tools first, then exactly what the image gets (hashes checked,
+      # nothing else resolved): the tests run on the image's versions, and
+      # pip check says if a dev tool disagrees with them.
+      - run: |
+          pip install -r requirements-dev.txt
+          pip install --require-hashes --no-deps -r requirements.txt
+          pip check
       - run: ruff check .
       - run: pytest -q
-      # Known vulnerabilities in the pinned dependencies fail the build —
-      # that is the point: a Dependabot bump is the fix.
+      # Known vulnerabilities fail the build. Usually a Dependabot bump is the
+      # fix; when aiogram's upper bounds keep the fixed version out, the step
+      # below says so (and docs/DEVELOPMENT.md, «Зависимости», has the
+      # emergency path).
       - run: pip-audit -r requirements.txt --strict --progress-spinner off
+      - run: pip-audit -r requirements-dev.txt --strict --progress-spinner off   # the CI tools too
+      - if: matrix.python == '3.13'
+        name: versions aiogram keeps out
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          from importlib import metadata
+          from packaging.requirements import Requirement
+          reqs = {Requirement(r).name: Requirement(r) for r in metadata.requires("aiogram") if "extra ==" not in r}
+          for name in ("aiohttp", "pydantic"):
+              latest = json.load(urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30))["info"]["version"]
+              if latest not in reqs[name].specifier:
+                  print(f"::warning::{name} {latest} is out, but aiogram {metadata.version('aiogram')} allows only {reqs[name].specifier}")
+          PY
       # The image itself, on a leg that branch protection requires: tests pass
       # on the runner's Python, but a Dependabot bump of the base image (or a
       # package without wheels for it) only breaks here — and must not be
-      # auto-merged into a deploy that fails.
+      # auto-merged into a deploy that fails. The built image is also run:
+      # the entrypoint drops to uid 10001, and `import main` finds every
+      # module and template (.dockerignore is an allow-list).
       - if: matrix.python == '3.13'
-        run: docker build --quiet --tag devops-bot-ci .
+        name: image builds and starts
+        run: |
+          docker build --quiet --tag devops-bot-ci .
+          test "$(docker run --rm devops-bot-ci id -u)" = 10001
+          docker run --rm devops-bot-ci python -c "import main"
+      - if: matrix.python == '3.13' && github.event_name == 'pull_request'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - if: matrix.python == '3.13' && github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - if: matrix.python == '3.13' && github.event_name == 'pull_request'
+        name: arm64 builds too (before the merge, not after)
+        run: docker buildx build --platform linux/arm64 .
 
   # The image on ghcr.io — for running the bot on any machine with Docker
   # without cloning or building: every green main publishes :latest and
@@ -49,31 +96,40 @@ jobs:
       github.repository == 'morgunovtech/Tofs_DevOps_bot' && github.ref == 'refs/heads/main'
       && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
     concurrency:
       group: ghcr-image
-      cancel-in-progress: true   # a newer main supersedes the build in flight
+      cancel-in-progress: false   # never cancel a publish; :latest goes only to the newest main below
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Registry names must be lowercase; the repository name is not.
       - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      # :latest only when this commit is still the tip of main: a queued or
+      # re-run older run publishes its :sha-… tag but never moves :latest back.
+      - id: head
+        run: echo "newest=$([ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit@sha256:c5f8862f52499773af85bc07695b2379ef08e8002352b0df2c4864c91d78dabe
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ steps.head.outputs.newest }}
             type=sha
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64

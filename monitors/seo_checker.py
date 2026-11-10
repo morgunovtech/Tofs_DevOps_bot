@@ -38,6 +38,7 @@ from bs4 import BeautifulSoup
 
 from config import config
 from db.database import get_open_incident, get_or_create_site, resolve_incident, save_check, save_incident
+from monitors import parse_worker
 from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, read_capped
 from monitors.security_checker import plain_http_opens
 from monitors.sitemap import pick_sample, scan_sitemap
@@ -308,6 +309,18 @@ async def _fetch(session: aiohttp.ClientSession, url: str,
         return None, "", {}, url
 
 
+async def _status(session: aiohttp.ClientSession, url: str, ua: str = USER_AGENT) -> int | None:
+    """Only the status code: the body is not read (the AI and soft-404
+    probes need nothing else). None on a network error."""
+    try:
+        async with session.get(url, timeout=TIMEOUT, allow_redirects=True,
+                               headers={"User-Agent": ua}) as resp:
+            return resp.status
+    except Exception as e:
+        logger.debug("seo: probe %s failed: %s", url, e)
+        return None
+
+
 async def check_seo(url: str, manage: bool = True) -> SeoResult:
     site_id = await get_or_create_site(url)
     base = url.rstrip("/")
@@ -319,7 +332,9 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         # Unreachable, down (5xx) or blocking this server (401/403/451) →
         # every check below would produce false findings and a bogus SEO
         # incident. Availability is another monitor's job — skip as transient.
-        probe_status, _, _, _ = await _fetch(session, base + "/")
+        # The answer is kept: it is the homepage sample below, read once.
+        home = await _fetch(session, base + "/")
+        probe_status = home[0]
         if probe_status is None or probe_status >= 500 or probe_status in BLOCKED_CODES:
             r.status, r.transient = "error", True
             await save_check(site_id, "seo", "error", details=f"homepage {probe_status or 'unreachable'}, audit skipped")
@@ -362,7 +377,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         seen: set[tuple[str, str]] = set()     # final addresses already analysed
         for page in sample:
             is_home = page == sample[0]
-            status, html, headers, final = await _fetch(session, page)
+            status, html, headers, final = home if is_home else await _fetch(session, page)
             ctype = {k.lower(): v for k, v in headers.items()}.get("content-type", "")
             if status != 200 or not html or (ctype and "html" not in ctype):
                 continue   # an XML or a PDF in the sitemap is not a page to audit
@@ -370,10 +385,14 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             # once; the sitemap's /en/ is the same page and is not read again.
             if not is_home and _key(final) in seen:
                 continue
+            # Parsed in the child process, never in the event loop: a 2 MB
+            # page is a second of CPU, and the bot keeps answering meanwhile.
+            # A page the parser cannot read is a page not read: the homepage
+            # then leaves the audit incomplete (home_read stays False).
             try:
-                p, text_len = analyze_page(html, final, headers, is_home=is_home)
-            except Exception:
-                logger.warning("seo: page %s could not be analysed", page, exc_info=True)
+                p, text_len = await parse_worker.seo_page(html, final, headers, is_home=is_home)
+            except parse_worker.ParseError as e:
+                logger.warning("seo: could not parse %s: %s", page, e)
                 continue
             seen.add(_key(final))
             r.pages_checked += 1
@@ -391,7 +410,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         # from here — the screen says so for Cloudflare, where it is the default.
         blocked_bots = []
         for bot, ua in AI_BOTS.items():
-            status, _, _, _ = await _fetch(session, base + "/", ua=ua)
+            status = await _status(session, base + "/", ua=ua)
             if status in AI_REFUSED_CODES:
                 blocked_bots.append(f"{bot} (HTTP {status})")
             await asyncio.sleep(0.3)
@@ -399,7 +418,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             problems.append(_p("ai_blocked", "warning", "обычный запрос сайт пропустил, а запрос с подписью "
                                + ", ".join(blocked_bots) + " — нет"))
 
-        status, _, _, _ = await _fetch(session, f"{base}/__devopsbot-404-probe")
+        status = await _status(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
             # A homepage that is nearly empty without JavaScript is an
             # application in the browser: its catch-all rule must stay, so

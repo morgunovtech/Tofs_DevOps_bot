@@ -15,6 +15,7 @@ anyway, and the owner's LAN is not its business.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import logging
@@ -217,14 +218,54 @@ async def refresh(site_id: int, url: str) -> bool:
             logger.info("No card picture for %s: %s", url, reason)
             await sitestatus.update(site_id, "shot", ok=False, reason=reason, pic_at=pic_at)
             return False
-        os.makedirs(_shots_dir(), exist_ok=True)
-        with open(shot_path(site_id), "wb") as f:
-            f.write(image)
+        try:
+            await asyncio.to_thread(_write_atomic, shot_path(site_id), image)
+        except OSError as e:
+            logger.warning("Card picture for %s not saved: %s", url, e)
+            return False
         await sitestatus.update(site_id, "shot", ok=True, pic_at=sitestatus.now_iso())
         logger.info("Card picture for %s: %d KB", url, len(image) // 1024)
         return True
     finally:
         _inflight.discard(site_id)
+
+
+def _write_atomic(path: str, data: bytes) -> None:
+    """Written next to the target and put in its place only when complete:
+    a full disk leaves yesterday's picture whole."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+async def forget(site_id: int) -> None:
+    """The site left monitoring: its picture goes too — /shot answers 404.
+    The snapshot's «shot» record goes only when there still is one (after a
+    removal the whole snapshot is already gone)."""
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(shot_path(site_id))
+    if "shot" in await sitestatus.get(site_id):
+        await sitestatus.set_field(site_id, "shot", None)
+
+
+def prune(active_ids: set[int]) -> None:
+    """Pictures of sites no longer watched — removed before forget() existed."""
+    try:
+        names = os.listdir(_shots_dir())
+    except FileNotFoundError:
+        return
+    for name in names:
+        stem = name.split(".", 1)[0]
+        if stem.isdigit() and int(stem) not in active_ids:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(_shots_dir(), name))
 
 
 async def is_due(site_id: int, url: str) -> bool:

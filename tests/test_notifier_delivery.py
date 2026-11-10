@@ -129,7 +129,7 @@ async def test_owner_first_then_helpers_together(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "send_message", telegram)
     started = time.monotonic()
-    assert await notifier.send("🔴 d.test", Priority.CRITICAL) is True
+    assert await notifier.send("🔴 d.test", Priority.CRITICAL, to_helpers=True) is True
     assert time.monotonic() - started < 0.9                                 # in parallel, not one by one
     assert seen_outbox == [1, 1]                                            # the owner's copy was kept first
     assert sorted(m["chat_id"] for m in bot.sent) == ["201", "202"]

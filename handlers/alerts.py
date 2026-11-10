@@ -3,14 +3,16 @@ Results go out as replies — the alert text itself stays intact and the
 buttons remain usable. «🚀»/«🧹» change production: the first tap asks,
 «Да» (act:ok:…) within automation.CONFIRM_TTL does — once, journaled."""
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import get_active_incidents, set_state
+from db.database import get_active_incidents, get_state, set_state
 from handlers.common import STALE_TAP, ack, cb_args, render, site_by_cb
 from monitors.availability import check_availability
+from reports.formatter import incident_line
 from services import automation, humanize, maintenance
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
@@ -84,6 +86,54 @@ async def cb_alert_confirmed(call: CallbackQuery):
     await call.message.answer(text)
 
 
+async def _quiet_hour(site_id: int):
+    """«🔧 Я чиню»: FIX_MINUTES without messages about the site and without
+    escalation reminders; the checks go on, the ✅ ends the silence."""
+    await maintenance.pause_site(site_id, maintenance.FIX_MINUTES)
+    until = datetime.now(UTC) + timedelta(minutes=maintenance.FIX_MINUTES)
+    for inc in await get_active_incidents():
+        if inc["site_id"] == site_id:
+            await set_state(f"ack:{inc['id']}", until.isoformat())
+
+
+@router.callback_query(F.data.startswith("grp:"))
+async def cb_alert_group(call: CallbackQuery):
+    """Buttons of a message about several sites at once (reports.scheduler,
+    GROUP_FROM): grp:list:<id> — the sites one by one, below the alert;
+    grp:fix:<id> — «🔧 Я чиню» for all of them."""
+    args = cb_args(call, 2)
+    raw = await get_state(f"alert_group:{args[1]}") if args and args[1].isdigit() else None
+    try:
+        ids = [int(i) for i in json.loads(raw)] if raw else []
+    except (ValueError, TypeError):
+        ids = []
+    by_id = {inc["id"]: inc for inc in await get_active_incidents()}
+    group = [by_id[i] for i in ids if i in by_id]
+    if not group:
+        await ack(call, "Все сайты из этой тревоги уже открываются" if raw else "Тревога устарела — открой «Что не так»",
+                  show_alert=True)
+        return
+    if args[0] == "fix":
+        if not await ack(call, f"Понял, молчу {maintenance.fix_length()}"):
+            await call.message.answer(STALE_TAP)
+            return
+        for site_id in dict.fromkeys(inc["site_id"] for inc in group):
+            await _quiet_hour(site_id)
+        length = maintenance.fix_length()
+        await call.message.answer(f"🔧 Понял, ты чинишь: {esc(', '.join(site_label(inc['url']) for inc in group))}. "
+                                  f"{length.capitalize()} не пишу про них, проверки продолжаются. "
+                                  f"Поднимутся раньше — сразу напишу и сниму тишину.")
+        return
+    await ack(call)
+    lines = [f"{n}. 🔴 {esc(incident_line(inc))}" for n, inc in enumerate(group, 1)]
+    buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a")
+               for n, inc in enumerate(group, 1)]
+    await call.message.answer("\n".join(lines) + "\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», "
+                              "«🔍 Проверить сейчас», «✓ Закрыть».",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 4]
+                                                                                 for i in range(0, len(buttons), 4)]))
+
+
 @router.callback_query(F.data.startswith("act:"))
 async def cb_alert_action(call: CallbackQuery):
     args = cb_args(call, 2)
@@ -110,11 +160,7 @@ async def cb_alert_action(call: CallbackQuery):
             text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
         await call.message.answer(text)
     elif action == "fix":
-        await maintenance.pause_site(site["id"], maintenance.FIX_MINUTES)
-        until = datetime.now(UTC) + timedelta(minutes=maintenance.FIX_MINUTES)
-        for inc in await get_active_incidents():
-            if inc["site_id"] == site["id"]:
-                await set_state(f"ack:{inc['id']}", until.isoformat())
+        await _quiet_hour(site["id"])
         length = maintenance.fix_length()
         await ack(call, f"Понял, молчу {length}")
         await call.message.answer(f"🔧 Понял, ты чинишь {label}. {length.capitalize()} не пишу про него, проверки "

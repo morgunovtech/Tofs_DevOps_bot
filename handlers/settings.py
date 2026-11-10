@@ -5,6 +5,7 @@ export/import. What is watched — sites, tasks and bots — is on the main
 screen, not here."""
 
 import secrets as _secrets
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
@@ -16,6 +17,7 @@ from config import config
 from db.database import count_feedback
 from handlers.common import STALE_TAP, ack, back_button, cancel_kb, render
 from handlers.menu import mute_until_local
+from monitors import region
 from reports.scheduler import reschedule_all
 from services import (
     github,
@@ -28,7 +30,7 @@ from services import (
     settings,
     yandex_webmaster,
 )
-from utils.clock import now_local
+from utils.clock import now_local, to_local
 from utils.text import esc, plural
 from web import status_page
 
@@ -111,13 +113,13 @@ async def helpers_screen() -> tuple[str, InlineKeyboardMarkup]:
     items = await helpers.helpers()
     lines = ["👥 Помощники", ""]
     if items:
-        lines.append("Тревоги 🔴 — сайт лёг и снова работает — приходят тебе и:")
+        lines.append("«Сайт лёг» и «снова работает» приходят тебе и:")
         lines += [f"• {esc(h['name'])}" for h in items]
     else:
-        lines.append("Тревоги 🔴 — сайт лёг и снова работает — сейчас приходят только тебе. Если ты в "
+        lines.append("«Сайт лёг» и «снова работает» сейчас приходят только тебе. Если ты в "
                      "отпуске или сел телефон, о лежащем сайте никто не узнает.")
-    lines += ["", "Помощник получает только то, что звонит, без кнопок, и не может управлять ботом. "
-                  "Уйти сам может командой /stop."]
+    lines += ["", "Помощник получает только эти два сообщения (и первое напоминание, пока сайт лежит), "
+                  "текстом без кнопок, и не может управлять ботом. Уйти сам может командой /stop."]
     rows = [[InlineKeyboardButton(text=f"🗑 Убрать {h['name']}", callback_data=f"helper_rm:{h['chat_id']}")]
             for h in items]
     if len(items) < helpers.MAX_HELPERS:
@@ -132,26 +134,60 @@ async def cb_helpers(call: CallbackQuery):
     await render(call, *await helpers_screen())
 
 
-@router.callback_query(F.data == "helper_invite")
-async def cb_helper_invite(call: CallbackQuery):
-    await ack(call)
-    payload = helpers.PAYLOAD_PREFIX + await helpers.create_invite()
+async def _show_invite(call: CallbackQuery, token: str, until: datetime):
+    payload = helpers.PAYLOAD_PREFIX + token
     me = runtime.bot_username()
     link = f"https://t.me/{me}?start={payload}" if me else f"/start {payload}"
     await render(call, f"🔗 Перешли эту ссылку тому, кто подстрахует тебя:\n\n{esc(link)}\n\n"
-                       f"Он откроет её и нажмёт «Start» — и будет получать тревоги 🔴. Ссылка сработает "
-                       f"один раз и живёт сутки.", back_button("← Помощники", "menu_helpers"))
+                       f"Он откроет её и нажмёт «Start» — и будет получать «сайт лёг» и «снова работает». "
+                       f"Ссылка сработает один раз и живёт сутки — до {to_local(until).strftime('%d.%m %H:%M')}.",
+                 InlineKeyboardMarkup(inline_keyboard=[
+                     [InlineKeyboardButton(text="🔄 Новая ссылка (прежняя перестанет работать)",
+                                           callback_data="helper_invite_new")],
+                     [InlineKeyboardButton(text="← Помощники", callback_data="menu_helpers")]]))
+
+
+@router.callback_query(F.data == "helper_invite")
+async def cb_helper_invite(call: CallbackQuery):
+    """A second look at the screen shows the link given before, while it works."""
+    await ack(call)
+    await _show_invite(call, *await helpers.live_or_new_invite())
+
+
+@router.callback_query(F.data == "helper_invite_new")
+async def cb_helper_invite_new(call: CallbackQuery):
+    if not await ack(call, "Прежняя ссылка больше не сработает"):   # a stale tap kills no link
+        await call.message.answer(STALE_TAP)
+        return
+    await _show_invite(call, *await helpers.new_invite())
 
 
 @router.callback_query(F.data.startswith("helper_rm:"))
 async def cb_helper_remove(call: CallbackQuery):
+    """Two steps: removing a person is not one stray tap."""
+    await ack(call)
+    chat_id = call.data.split(":", 1)[1]
+    who = next((h for h in await helpers.helpers() if h["chat_id"] == chat_id), None)
+    if not who:
+        await render(call, *await helpers_screen())
+        return
+    await render(call, f"Убрать {esc(who['name'])}? «Сайт лёг» и «снова работает» перестанут ему приходить, "
+                       f"а ему придёт сообщение, что ты его убрал.",
+                 InlineKeyboardMarkup(inline_keyboard=[
+                     [InlineKeyboardButton(text="🗑 Да, убрать", callback_data=f"helper_rm_ok:{chat_id}")],
+                     [InlineKeyboardButton(text="Отмена", callback_data="menu_helpers")]]))
+
+
+@router.callback_query(F.data.startswith("helper_rm_ok:"))
+async def cb_helper_remove_ok(call: CallbackQuery):
     if not await ack(call):                     # a tap from the queue after a restart removes nobody
         await call.message.answer(STALE_TAP)
         return
     gone = await helpers.remove(call.data.split(":", 1)[1])
     if gone:
         await notifier.send_to(gone["chat_id"], "Владелец убрал тебя из помощников — тревоги больше не приходят.")
-    await render(call, *await helpers_screen())
+    text, kb = await helpers_screen()
+    await render(call, f"{'Убрал: ' + esc(gone['name']) if gone else 'Его уже нет'}.\n\n{text}", kb)
 
 
 # ── Digests and quiet hours ──────────────────────────────────────────────────
@@ -253,9 +289,14 @@ async def cb_settings_pick(call: CallbackQuery):
 # ── Timezone ─────────────────────────────────────────────────────────────────
 
 def _tz_text() -> str:
+    where = ""
+    if integrations.region_speed_enabled():      # the same switch as run_region_checks
+        country = region.country_for_timezone(settings.timezone())
+        where = (f" По нему же выбираю, откуда раз в 6 ч мерить скорость «у посетителей»: "
+                 f"{region.node_name(country)}.")
     return (f"🕐 Часовой пояс: <b>{esc(settings.timezone())}</b>, сейчас у тебя {now_local().strftime('%H:%M')}.\n"
-            "От него зависят время сводок, тихие часы и все времена в сообщениях.\n\nВыбери город или пришли "
-            "свой ключ вида <code>Europe/Prague</code>:")
+            f"От него зависят время сводок, тихие часы и все времена в сообщениях.{where}\n\n"
+            "Выбери город или пришли свой ключ вида <code>Europe/Prague</code>:")
 
 
 def _tz_kb() -> InlineKeyboardMarkup:

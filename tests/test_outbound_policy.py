@@ -126,7 +126,10 @@ async def test_links_of_a_public_site_never_reach_the_lan(db, internal, public_s
         return web.Response(content_type="text/html", text=(
             f'<a href="http://127.0.0.1:{port}/admin?do=1">x</a><a href="/ok">ok</a>'))
 
-    async with await _site({"/": page, "/ok": lambda r: web.Response(text="ok")}) as site:
+    async def ok(_request):
+        return web.Response(text="ok")
+
+    async with await _site({"/": page, "/ok": ok}) as site:
         r = await check_links(str(site.make_url("/")))
     assert hits == [] and r.total_links == 2 and not r.broken and not r.pending
 
