@@ -575,21 +575,28 @@ async def run_heartbeat_watch():
 async def run_host_checks():
     result = await check_disk()
     already = await get_state("disk_alerted")
+    cleaned = result["cleaned"]
+    if cleaned and cleaned["bytes"]:
+        # Every prune is said, with what it removed — never a silent deletion.
+        await notifier.send(
+            f"💾 Диск был заполнен на {result['pct']}% — удалил в docker висячие слои образов "
+            f"({cleaned['layers']}) и кэш сборки старше суток ({cleaned['caches']}): "
+            f"−{cleaned['bytes'] / 1e9:.1f} GB, сейчас {result['pct_after']}%. Остановленные контейнеры "
+            f"и образы с тегами не трогаю; следующая очистка — не раньше чем через 12 ч.")
+        if result["pct_after"] < config.disk_alert_pct:
+            await set_state("disk_alerted", None)
+            return
     if result["over_threshold"]:
-        if result["cleaned_bytes"]:
-            msg = (f"💾 Диск был заполнен на {result['pct']}% — почистил docker "
-                   f"(−{result['cleaned_bytes'] / 1e9:.1f} GB), сейчас {result['pct_after']}%")
-            if result["pct_after"] < config.disk_alert_pct:
-                await set_state("disk_alerted", None)
-                await notifier.send(msg)
-                return
         if not already:
             expl = humanize.EXPLANATIONS["disk"]
-            level = "critical" if result["pct"] >= 95 else "warning"
+            level = "critical" if result["pct_after"] >= 95 else "warning"
+            useless = ("\n\nПочистить docker было нечего: место занимают не образы — смотри тома и логи "
+                       "(docker system df)." if cleaned is not None and not cleaned["bytes"] else "")
+            # Percent and gigabytes are both measured after the prune, so they agree.
             sent = await notifier.send(
-                f"{humanize.level_icon(level)} Диск на сервере бота заполнен на {result['pct']}% "
-                f"({result['used_gb']} из {result['total_gb']} GB).\n{expl.meaning}\n\n"
-                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}",
+                f"{humanize.level_icon(level)} Диск на сервере бота заполнен на {result['pct_after']}% "
+                f"({result['used_gb_after']} из {result['total_gb']} GB).\n{expl.meaning}\n\n"
+                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}" + useless,
                 notifier.priority_for(level))
             if sent:
                 await set_state("disk_alerted", "1")

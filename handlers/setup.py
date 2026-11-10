@@ -228,7 +228,7 @@ async def build_items() -> list[Item]:
             items.append(Item("docker", "ok", "docker socket"))
         else:
             items.append(Item("docker", "off", "🐳 Docker на хосте",
-                              "автоперезапуск контейнеров и очистка диска на сервере бота",
+                              "автоперезапуск контейнеров; очистка диска — по желанию, AUTO_CLEANUP=1",
                               ("🐳 Как подключить", "setup:docker")))
 
     w = await heartbeats.watchdog()
@@ -471,14 +471,17 @@ async def cb_guide_url(call: CallbackQuery):
 async def cb_guide_docker(call: CallbackQuery):
     await ack(call)
     await render(call, ("🐳 Docker на хосте бота\n\n"
-                        "Даёт автоперезапуск упавших контейнеров и очистку диска (docker prune).\n\n"
+                        "Даёт автоперезапуск упавших контейнеров из списка. Очистка диска — отдельно "
+                        "и по желанию: с <code>AUTO_CLEANUP=1</code> при переполнении удаляю только "
+                        "висячие образы и кэш сборки старше суток, не чаще раза в 12 ч, и пишу, что "
+                        "удалил. Остановленные контейнеры и образы с тегами не трогаю.\n\n"
                         "1. В docker-compose.yml раскомментируй строку\n"
                         "<code>- /var/run/docker.sock:/var/run/docker.sock</code>\n"
                         "2. В .env перечисли контейнеры: "
                         "<code>AUTORESTART_CONTAINERS=app,db</code>\n"
                         "3. <code>docker compose up -d</code> и «🔁 Проверить снова».\n\n"
-                        "Сокет даёт root-доступ к хосту — включай только на сервере, который "
-                        "полностью твой."), _guide_kb())
+                        "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
+                        "Включай только на сервере, который полностью твой."), _guide_kb())
 
 
 def _watchdog_kb() -> InlineKeyboardMarkup:

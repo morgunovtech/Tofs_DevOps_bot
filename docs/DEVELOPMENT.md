@@ -30,7 +30,8 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |
 | Скорость у посетителей Chrome (данные Google) | `CRUX_API_KEY` |
 | Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
-| Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
+| Перезапуск контейнеров | `AUTORESTART_CONTAINERS` + монтирование docker.sock (сокет = root на хосте) |
+| Очистка диска (висячие образы и кэш сборки старше суток, не чаще раза в 12 ч) | `AUTO_CLEANUP=1` + docker.sock, по умолчанию выключена |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
 | Telegram через прокси (сервер в России) | `TELEGRAM_PROXY` |
 

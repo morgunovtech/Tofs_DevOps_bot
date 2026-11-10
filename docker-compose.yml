@@ -6,8 +6,9 @@ services:
     env_file: .env
     volumes:
       - bot_data:/app/data
-      # Uncomment to enable container auto-restart and disk auto-cleanup on
-      # this host (AUTORESTART_CONTAINERS / AUTO_CLEANUP in .env).
+      # Uncomment to let the bot restart the containers in AUTORESTART_CONTAINERS
+      # and, only with AUTO_CLEANUP=1 in .env, remove dangling images and old
+      # build cache when the disk is full.
       # NOTE: the docker socket is root-equivalent access to the host —
       # enable only on a single-purpose server you fully control.
       # - /var/run/docker.sock:/var/run/docker.sock

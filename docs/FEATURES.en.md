@@ -34,7 +34,7 @@ The long version of the [README](../README.md): every monitor, every screen, qui
 - **Auto-redeploy**: fires the deploy hook itself when a site goes down (on by default once a hook exists, once per incident) and reports what it did in the alert.
 - **Follow-ups without you**: 2 and 5 minutes after a "site down" alert the bot re-checks and edits the same message — "still down" or "already up". A "I'm on it, one hour of silence" button lives in every alert.
 - **Knows your hosting**: guesses Cloudflare / Vercel / Netlify / GitHub Pages / Railway / Render / Fly / Heroku from response headers and puts an "Open the panel" link into the alert; domain alerts link to the registrar's panel (Cloudflare, reg.ru, Namecheap, GoDaddy…).
-- **Container auto-restart** and **disk auto-cleanup** (docker prune) on the bot's host — off by default, enabled by mounting the docker socket.
+- **Container auto-restart** (`AUTORESTART_CONTAINERS`) and **opt-in disk auto-cleanup** (`AUTO_CLEANUP=1`: dangling images and build cache older than a day, at most every 12 h, with a report of what was removed) — both need the docker socket mounted, which is root-equivalent access to the host.
 
 ### 📱 Managed entirely from the chat
 - **Three buttons under the input field, no ☰ menu**: «🏠 Главная», «📖 Что я умею» (every function as «what it does → what you get», plus what each optional connection gives and who needs it) and «❓ Значки». A tap aborts any pending input.
@@ -170,7 +170,8 @@ the optional integrations below (documented in [.env.example](.env.example)):
 | Yandex index status | `YANDEX_WEBMASTER_TOKEN` |
 | Real Chrome visitors' speed (Google data) | `CRUX_API_KEY` |
 | GitHub hygiene in the weekly report | `GITHUB_TOKEN`, `GITHUB_OWNER` (optional) |
-| Container restart / disk cleanup | `AUTORESTART_CONTAINERS` + docker.sock mount |
+| Container restart | `AUTORESTART_CONTAINERS` + docker.sock mount (the socket is root on the host) |
+| Disk cleanup (dangling images and build cache older than a day, at most every 12 h) | `AUTO_CLEANUP=1` + docker.sock, off by default |
 | External watchdog | `SELF_HEARTBEAT_URL` |
 | Telegram through a proxy (a server in Russia) | `TELEGRAM_PROXY` |
 

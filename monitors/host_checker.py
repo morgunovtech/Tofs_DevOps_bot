@@ -5,7 +5,7 @@ silently disable themselves when /var/run/docker.sock isn't mounted."""
 import asyncio
 import logging
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from config import config
 from db.database import get_state, set_state
@@ -21,19 +21,40 @@ def disk_usage_pct(path: str = "/") -> tuple[int, float, float]:
     return round(usage.used / usage.total * 100), usage.used / 1e9, usage.total / 1e9
 
 
+PRUNE_EVERY = timedelta(hours=12)
+
+
 async def check_disk(auto_cleanup: bool | None = None) -> dict:
-    """Disk usage; over the threshold, try to reclaim space via docker prune."""
+    """Disk usage; over the threshold and with AUTO_CLEANUP=1, a docker
+    prune (services.docker_api.prune) — at most once in PRUNE_EVERY, and
+    not again in the same full-disk episode once a prune freed nothing."""
     if auto_cleanup is None:
         auto_cleanup = config.auto_cleanup
     pct, used_gb, total_gb = disk_usage_pct()
     result = {"pct": pct, "used_gb": round(used_gb, 1), "total_gb": round(total_gb, 1),
               "over_threshold": pct >= config.disk_alert_pct,
-              "cleaned_bytes": None, "pct_after": pct}
-    if result["over_threshold"] and auto_cleanup:
-        reclaimed = await docker_api.prune()
-        if reclaimed is not None:
-            result["cleaned_bytes"] = reclaimed
-            result["pct_after"] = disk_usage_pct()[0]
+              "cleaned": None, "cleaned_bytes": None,
+              "pct_after": pct, "used_gb_after": round(used_gb, 1)}
+    if not result["over_threshold"]:
+        if auto_cleanup and await get_state("disk_prune_useless"):
+            await set_state("disk_prune_useless", None)   # a new full-disk episode may prune again
+        return result
+    if not auto_cleanup or await get_state("disk_prune_useless"):
+        return result
+    now = datetime.now(UTC)
+    last = parse_iso_utc(await get_state("disk_pruned_at"))
+    if last and now - last < PRUNE_EVERY:
+        return result
+    await set_state("disk_pruned_at", now.isoformat())
+    cleaned = await docker_api.prune()
+    if cleaned is not None:
+        result["cleaned"], result["cleaned_bytes"] = cleaned, cleaned["bytes"]
+        # Measure everything again, so the alert's percent and gigabytes agree.
+        pct_after, used_after, total_after = disk_usage_pct()
+        result["pct_after"], result["used_gb_after"] = pct_after, round(used_after, 1)
+        result["total_gb"] = round(total_after, 1)
+        if not cleaned["bytes"]:
+            await set_state("disk_prune_useless", "1")
     return result
 
 

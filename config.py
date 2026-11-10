@@ -157,7 +157,9 @@ class Config:
     autorestart_containers: tuple[str, ...] = field(
         default_factory=lambda: tuple(_csv("AUTORESTART_CONTAINERS")))
     disk_alert_pct: int = _int("DISK_ALERT_PCT", 85)
-    auto_cleanup: bool = _bool("AUTO_CLEANUP", "1")
+    # Off by default: removes dangling docker images and old build cache on the
+    # whole host when the disk is full (services.docker_api.prune).
+    auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
 
     # ── SSL renewal watch ────────────────────────────────────────────────────
     ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10)
