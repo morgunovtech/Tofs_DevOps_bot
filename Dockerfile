@@ -36,7 +36,7 @@ RUN python -c "import main" && python -m compileall -q /app \
     && mkdir -p /app/data && chown bot:bot /app/data \
     && chmod 0755 /app/entrypoint.sh
 
-# Git commit shown in 🩺 Диагностика and "🔄 Бот обновился" (Railway sets
+# Git commit shown in «🔌 Подключения» and "🔄 Бот обновился" (Railway sets
 # RAILWAY_GIT_COMMIT_SHA on its own; docker builds can pass --build-arg).
 ARG APP_COMMIT=""
 ENV APP_COMMIT=$APP_COMMIT

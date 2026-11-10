@@ -59,8 +59,9 @@ async def _resolve(name: str, env_value: str) -> str:
                        "remove the old value from the environment", _env_name(name))
     value, generated = await _stored_or_new(key)
     if generated:
-        logger.warning("%s secret was empty or a placeholder — generated one and "
-                       "stored it in the DB (see ⚙️ Настройки → 🔌 Подключения).", name)
+        logger.warning("%s secret was empty or a placeholder — generated one and stored it in the DB "
+                       "(the widget snippet in ⚙️ Настройки → 🌍 Для посетителей → 📩 Сообщения carries the "
+                       "webhook one; each job's card carries its heartbeat address).", name)
     return value
 
 
