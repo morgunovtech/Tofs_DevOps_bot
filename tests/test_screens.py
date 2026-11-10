@@ -139,8 +139,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await incidents.cb_incidents(call)
     assert "&lt;b&gt;" in call.message.texts[-1] and "не открывается" in call.message.texts[-1]
     assert call.message.texts[-1].startswith("🔴 Что сейчас не так (1)")
-    assert any("Я чиню" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
-    assert any("Что делать" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
+    assert buttons(call.message.reply_markup)[0] == "ℹ️ 1"      # «🔧 Я чиню» and «✓ Закрыть» are on its «ℹ️» screen
     call = FakeCall(f"inc_explain:{inc_id}")                       # the button used to have no handler at all
     await incidents.cb_incident_explain(call)
     text = call.message.texts[-1]

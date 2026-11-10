@@ -431,14 +431,23 @@ _SEVERITY_RANK = {"critical": 2, "warning": 1}
 
 
 async def save_incident(site_id: int, check_type: str, message: str,
-                        severity: str = "warning") -> tuple[int, bool]:
-    """Insert or reuse an open incident. Returns (incident_id, is_new).
+                        severity: str = "warning") -> tuple[int | None, bool]:
+    """Insert or reuse an open incident. Returns (incident_id, is_new);
+    (None, False) when the site is no longer watched.
 
     A reused incident takes the newest message and level, so lists and
     digests never show yesterday's words; one that got WORSE (🟠 «нет
     sitemap» → 🔴 noindex) counts as new, so its alert is sent."""
     db = await get_db()
     async with _write_lock:
+        # A check that started before the site was removed must not open an
+        # incident for it: nothing would ever close it, and escalation would
+        # ring about a site nobody watches. deactivate_site takes the same
+        # lock (_tx), so the removal is either before this or after it.
+        cursor = await db.execute("SELECT active FROM sites WHERE id = ?", (site_id,))
+        row = await cursor.fetchone()
+        if not row or not row[0]:
+            return None, False
         cursor = await db.execute(
             """SELECT id, message, severity FROM incidents
                WHERE site_id = ? AND check_type = ? AND resolved = 0""",
@@ -510,24 +519,19 @@ async def reopen_incident(site_id: int, check_type: str, within_min: int) -> int
 
 
 async def resolve_incident_by_id(incident_id: int) -> bool:
-    db = await get_db()
-    async with _write_lock:
-        cursor = await db.execute(
-            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
-               WHERE id = ? AND resolved = 0""", (incident_id,))
-        await db.commit()
-        return cursor.rowcount > 0
-
-
-async def resolve_all_incidents() -> int:
-    """Mark every open incident as resolved and reset the alert ladders."""
+    """Closed by hand («✓ Закрыть»). The SSL/domain alert ladder of that
+    site and check starts over too: if the problem is still there, the next
+    check says so again, as the incidents screen promises."""
     async with _tx() as db:
         cursor = await db.execute(
-            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
-               WHERE resolved = 0""")
-        n = cursor.rowcount
-        await db.execute("DELETE FROM alert_state")
-    return n
+            "SELECT site_id, check_type FROM incidents WHERE id = ? AND resolved = 0", (incident_id,))
+        row = await cursor.fetchone()
+        if not row:
+            return False
+        await db.execute(
+            "UPDATE incidents SET resolved = 1, resolved_at = datetime('now') WHERE id = ?", (incident_id,))
+        await db.execute("DELETE FROM alert_state WHERE site_id = ? AND check_type = ?", (row[0], row[1]))
+    return True
 
 
 async def mark_incident_alerted(incident_id: int):
@@ -579,10 +583,12 @@ async def get_incident(incident_id: int) -> dict | None:
 
 
 async def get_active_incidents() -> list[dict]:
+    """Open incidents of watched sites, newest first. A row left behind by a
+    removed site (older versions kept them) is neither listed nor escalated."""
     db = await get_db()
     cursor = await db.execute(
         """SELECT i.*, s.url, s.http_method FROM incidents i JOIN sites s ON i.site_id = s.id
-           WHERE i.resolved = 0 ORDER BY i.created_at DESC""")
+           WHERE i.resolved = 0 AND s.active = 1 ORDER BY i.created_at DESC""")
     return [dict(r) for r in await cursor.fetchall()]
 
 

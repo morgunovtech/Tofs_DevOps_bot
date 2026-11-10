@@ -154,6 +154,16 @@ def reset_site_schedule(site_id: int):
     _next_avail_check.pop(site_id, None)
 
 
+def forget_slow_streak(site_id: int):
+    """A «медленно» finding closed by hand: count slow answers anew, so a site
+    that is still slow is reported again after SLOW_RESPONSE_STREAK checks
+    (the streak is compared with ==, it would never come back otherwise)."""
+    _slow_streak.pop(site_id, None)
+    fast = globals().get("_fast_streak")     # the fast-answer counter, where the module keeps one
+    if isinstance(fast, dict):
+        fast.pop(site_id, None)
+
+
 @contextlib.contextmanager
 def _isolated(what: str):
     """One site's failure — a malformed stored address, a database error
