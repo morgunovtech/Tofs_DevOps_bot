@@ -238,8 +238,19 @@ async def m9_checks_scheduled(db):
     await _add_columns(db, "checks", {"scheduled": "INTEGER NOT NULL DEFAULT 1"})
 
 
+async def m10_uptime_by_time(db):
+    # Uptime is measured in time, not in checks: how long each rolled-up day
+    # was down and how long it was watched, in seconds. NULL — a day rolled
+    # up by an older version (its sum_ms also counts the failed checks).
+    await _add_columns(db, "checks_daily", {"down_sec": "REAL", "seen_sec": "REAL"})
+    # When the problem began — the first failed check of its series, not the
+    # moment the incident was opened after N failures in a row.
+    await _add_columns(db, "incidents", {"started_at": "TEXT"})
+
+
 MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
-              m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at, m9_checks_scheduled]
+              m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at, m9_checks_scheduled,
+              m10_uptime_by_time]
 
 
 async def migrate(db, upto: int | None = None) -> int:

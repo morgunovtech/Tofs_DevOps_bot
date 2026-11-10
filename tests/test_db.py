@@ -43,9 +43,11 @@ async def test_uptime_union_of_raw_and_rollups(db):
     conn = await db.get_db()
     # Two rolled-up days from before the raw window.
     await conn.execute(
-        "INSERT INTO checks_daily VALUES (?, 'availability', date('now', '-10 days'), 10, 9, 1000)", (sid,))
+        "INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms) "
+        "VALUES (?, 'availability', date('now', '-10 days'), 10, 9, 1000)", (sid,))
     await conn.execute(
-        "INSERT INTO checks_daily VALUES (?, 'availability', date('now', '-100 days'), 10, 0, 0)", (sid,))
+        "INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms) "
+        "VALUES (?, 'availability', date('now', '-100 days'), 10, 0, 0)", (sid,))
     await conn.commit()
 
     day = await db.get_uptime_stats(sid, hours=24)

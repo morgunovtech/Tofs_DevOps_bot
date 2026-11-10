@@ -407,14 +407,15 @@ def steps_block(expl: Explanation) -> str:
 
 # ── Uptime in minutes, not percent ───────────────────────────────────────────
 
-def downtime(total: int, ok: int, interval_min: float) -> str:
-    """'без сбоев' · 'недоступен ≈12 мин' — from check counts and cadence."""
-    if not total:
+def downtime(stats: dict) -> str:
+    """'без сбоев' · 'недоступен ≈12 мин' — from the measured time
+    (db.database uptime dicts: total_checks, down_min)."""
+    if not stats.get("total_checks"):
         return "нет данных"
-    failed = max(0, total - ok)
-    if not failed:
+    down = stats.get("down_min") or 0
+    if not down:
         return "без сбоев"
-    return f"недоступен ≈{fmt_duration(max(1, failed * interval_min))}"
+    return f"недоступен ≈{fmt_duration(max(1, down))}"
 
 
 def incident_headline(check_type: str, message: str | None, label: str, page: bool = True) -> str:

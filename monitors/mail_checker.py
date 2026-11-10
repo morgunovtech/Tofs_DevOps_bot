@@ -27,6 +27,7 @@ heard of yet, inside an open «mail_auth», is said (ladder.apply_findings).
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from db.database import (
     get_active_host_urls,
@@ -431,14 +432,19 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
     codes = {f["code"] for f in findings}
     told = told_before(previous)
     fails = previous.get("fails") or 0   # no verdict: the count stands
+    # fail_since: when it stopped accepting — the first failed check of the
+    # series; mail has no rows in `checks`, so the snapshot keeps it and the
+    # incident (opened after FAILS_TO_ALERT) says «не принимала около N».
+    fail_since = previous.get("fail_since")
     if deliv.ok is False:
         fails += 1
+        fail_since = fail_since or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     elif deliv.ok or not mx:
-        fails = 0
+        fails, fail_since = 0, None
     dmarc = dmarc_records(dmarc_txt)
     await sitestatus.update(
         site_id, "mail", domain=domain, mx=mx, provider=provider.name if provider else None,
-        accepts=deliv.ok, reason=deliv.reason, backup_only=deliv.backup_only, fails=fails,
+        accepts=deliv.ok, reason=deliv.reason, backup_only=deliv.backup_only, fails=fails, fail_since=fail_since,
         sends_only=not mx and sends_mail(spf), locked=not mx and bool(spf) and not sends_mail(spf),
         spf=len(spf), dkim=dkim,
         dmarc=dmarc_policy(dmarc[0]) if len(dmarc) == 1 else None, findings=findings,
@@ -458,7 +464,7 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
     if not mx or (deliv.ok is None and not integrations.second_opinion_enabled()):
         await resolve_incident(site_id, "mail")
     else:
-        await apply_incident(down, "mail", settled=bool(deliv.ok), open_new=manage)
+        await apply_incident(down, "mail", settled=bool(deliv.ok), open_new=manage, started_at=fail_since)
     if not mx and not sends_mail(spf):
         await resolve_incident(site_id, "mail_auth")
     else:

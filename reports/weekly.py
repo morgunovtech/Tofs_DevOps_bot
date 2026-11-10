@@ -7,7 +7,6 @@ This is where everything 🟠 is promised to show up."""
 import logging
 from datetime import UTC, date, datetime, timedelta
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_all_sites,
@@ -110,15 +109,14 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         if not total:
             lines.append(f"⏳ {esc(label)} — нет данных")
             continue
-        ok = sum(r["ok"] for r in rows)
-        interval = s.get("check_interval_min") or config.check_interval_minutes
+        week = await get_uptime_over_days(s["id"], 7)
         month = await get_uptime_over_days(s["id"], 30)
-        avg_ms = round(sum((r["avg_ms"] or 0) * r["total"] for r in rows) / total)
+        avg_ms = week["avg_response_ms"]
         # Last week's downtime is history, not an open problem: ✅ when there
         # was none, 📉 otherwise — never a level icon.
-        icon = "✅" if ok == total else "📉"
-        week_txt = humanize.downtime(total, ok, interval)
-        month_txt = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        icon = "📉" if week["down_min"] else "✅"
+        week_txt = humanize.downtime(week)
+        month_txt = humanize.downtime(month)
         verb = "Открывается" if is_web_page(s["url"], s.get("http_method")) else "Отвечает"
         lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
                      f"{verb} {humanize.speed(avg_ms)}.")

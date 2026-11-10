@@ -37,7 +37,7 @@ async def render_incidents(call: CallbackQuery, note: str = ""):
     numbered = []
     for n, inc in enumerate(incidents, 1):
         lines.append(f"{n}. {humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}\n"
-                     f"   <i>с {fmt_local(inc['created_at'])}</i>")
+                     f"   <i>с {fmt_local(inc.get('started_at') or inc['created_at'])}</i>")
         # «:l» — a button of this list, never mistaken for one on an alert.
         numbered.append(InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:l"))
     lines.append("\nНомер — что это значит и что делать; там же «🔧 Я чиню» и «✓ Закрыть». "
@@ -53,7 +53,7 @@ def explain_text(inc: dict) -> str:
     usually is, the steps — from services.humanize, by check type and level."""
     expl = humanize.explain(inc["check_type"], inc.get("message"))
     when = (f"закрыта {fmt_local(inc.get('resolved_at'))}" if inc.get("resolved")
-            else f"с {fmt_local(inc['created_at'])}")
+            else f"с {fmt_local(inc.get('started_at') or inc['created_at'])}")
     lines = [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}", f"<i>{when}</i>", "",
              esc(expl.meaning), "", f"Что это обычно значит: {esc(expl.cause)}.", "",
              esc(humanize.steps_block(expl))]

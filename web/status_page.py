@@ -32,11 +32,12 @@ from db.database import (
     get_state,
     get_uptime_over_days,
     get_uptime_stats,
+    get_uptime_windows,
 )
 from services import maintenance
 from utils.clock import to_local
 from utils.net import is_private_target
-from utils.text import fmt_duration, parse_iso_utc, parse_sqlite_utc
+from utils.text import fmt_duration, incident_start, parse_iso_utc, parse_sqlite_utc
 from utils.urls import host_of, is_api_check, is_http_url
 
 FORMAT_VERSION = 1
@@ -115,7 +116,7 @@ async def build_payload() -> dict:
         age_min = (now - checked).total_seconds() / 60 if checked else None
         interval = s.get("check_interval_min") or config.check_interval_minutes
         incidents = open_inc.get(s["id"], {})
-        down_since = parse_sqlite_utc(incidents["availability"]["created_at"]) if "availability" in incidents else None
+        down_since = incident_start(incidents["availability"]) if "availability" in incidents else None
         if maintenance.maintenance_now(s["id"]):
             state = "maint"
         elif last is None:
@@ -133,15 +134,16 @@ async def build_payload() -> dict:
         else:
             state = "up"
         has_data = last is not None
+        # 7/30/90 days from one pass over the longest window; «—» for a new site.
+        windows = (await get_uptime_windows(s["id"], (7, 30, 90)) if has_data
+                   else {days: {"uptime_pct": None} for days in (7, 30, 90)})
         sites.append({
             "label": label,
             "api": is_api_check(s["url"], s.get("http_method")),
             "state": state,
             "ms": (last or {}).get("response_time_ms") if state not in ("down", "checking", "nodata") else None,
             "up24": (await get_uptime_stats(s["id"], hours=24))["uptime_pct"] if has_data else None,
-            "up7d": (await get_uptime_over_days(s["id"], 7))["uptime_pct"] if has_data else None,
-            "up30d": (await get_uptime_over_days(s["id"], 30))["uptime_pct"] if has_data else None,
-            "up90d": (await get_uptime_over_days(s["id"], 90))["uptime_pct"] if has_data else None,
+            **{f"up{days}d": stats["uptime_pct"] for days, stats in windows.items()},
             "problems": sorted(_TYPE_RU[t] for t in incidents if t != "availability"),
             "checked_at": _fmt(checked, "%H:%M"),
             "checked_at_iso": _iso(checked),
@@ -156,7 +158,7 @@ async def build_payload() -> dict:
             break
         if inc["site_id"] not in labels or inc["check_type"] not in _TYPE_RU:
             continue   # removed or unpublished monitors, weak spots — not on the page
-        created = parse_sqlite_utc(inc.get("created_at"))
+        created = incident_start(inc)
         resolved = parse_sqlite_utc(inc.get("resolved_at")) if inc.get("resolved") else None
         minutes = round((resolved - created).total_seconds() / 60) if created and resolved else None
         incidents.append({

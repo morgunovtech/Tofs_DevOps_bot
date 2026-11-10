@@ -22,6 +22,7 @@ from config import config
 from db import migrations as _migrations
 from db.migrations import SchemaTooNew, migrate, schema_version
 from utils.urls import host_key, is_api_check, is_http_url, is_web_page
+from utils.validate import CHECK_INTERVAL_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -362,67 +363,166 @@ async def relabel_recent_failures(site_id: int, limit: int):
         await db.commit()
 
 
-async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
-    """Uptime over the last N hours from raw checks (retention keeps far
-    more than the 24h/7d windows this serves)."""
-    db = await get_db()
-    cursor = await db.execute(
-        """SELECT COUNT(*), SUM(status = 'ok'), AVG(response_time_ms)
-           FROM checks
-           WHERE site_id = ? AND check_type = 'availability' AND status != 'unknown'
-             AND checked_at >= datetime('now', ?)""",
-        (site_id, f"-{hours} hours"))
-    total, ok, avg = await cursor.fetchone()
-    return _uptime_dict(total or 0, ok or 0, avg)
+# ── Uptime: time, not rows ───────────────────────────────────────────────────
+#
+# Every availability check speaks for the time until the next one, but for no
+# longer than the cadence it was taken at — the site's interval now, or the
+# gap to the check before it (the interval may have changed since) — plus a
+# minute of tick slack. So the extra checks (re-checks 2 and 5 min after an
+# alert, «🔍 Проверить сейчас», the report snapshots) split that time instead
+# of adding a whole interval each, a changed interval does not re-weigh the
+# past, and hours when nobody checked (the bot was down) count neither as up
+# nor as down. The newest check speaks until now, and for at least a minute
+# (one tick), so a failure seen seconds ago is not «без сбоев». A row that
+# says nothing about the site («unknown»: the bot's own network was down)
+# ends the span of the check before it and counts neither way itself. The
+# gap to the check before counts as a cadence only while it could be one
+# (the longest interval a site may have, CHECK_INTERVAL_MIN): after a
+# longer silence the check has no series — it speaks for the interval now.
+# LEAD/LAG need SQLite ≥ 3.25 (2018).
+
+def span_cap_sec(interval_min: int | None) -> float:
+    """How long one check may speak for at the site's interval, in seconds."""
+    return (max(1, interval_min or config.check_interval_minutes) + 1) * 60.0
 
 
-def _uptime_dict(total: int, ok: int, avg_ms) -> dict:
-    return {
-        "total_checks": total,
-        "ok_checks": ok,
-        "uptime_pct": round(ok / total * 100, 2) if total else 0,
-        "avg_response_ms": round(avg_ms) if avg_ms else 0,
-    }
+_MAX_CAP_SEC = span_cap_sec(CHECK_INTERVAL_MIN[1])
 
+# Per check: the time until the next one (until now, at least a minute, for
+# the newest) and since the previous one.
+_GAPS = """SELECT c.site_id, c.check_type, c.status, c.response_time_ms, c.checked_at,{extra}
+       (julianday(COALESCE(LEAD(c.checked_at) OVER w, MAX(datetime('now'), datetime(c.checked_at, '+60 seconds'))))
+        - julianday(c.checked_at)) * 86400.0 AS until_next,
+       (julianday(c.checked_at) - julianday(LAG(c.checked_at) OVER w)) * 86400.0 AS since_prev
+    FROM checks c{join}
+    WHERE {where}
+    WINDOW w AS ({partition}ORDER BY c.checked_at, c.id)"""
 
-# Raw checks for the recent window UNION the nightly rollups for anything
-# older — the only way a 30/90-day number stays honest past RETENTION_DAYS.
-_DAILY_UNION = """
-    SELECT day, SUM(total) AS total, SUM(ok) AS ok, SUM(sum_ms) AS sum_ms FROM (
-        SELECT date(checked_at) AS day, COUNT(*) AS total,
-               SUM(status = 'ok') AS ok,
-               COALESCE(SUM(response_time_ms), 0) AS sum_ms
-        FROM checks
-        WHERE site_id = ? AND check_type = 'availability' AND status != 'unknown'
-          AND checked_at >= datetime('now', ?)
-        GROUP BY date(checked_at)
-        UNION ALL
-        SELECT day, total, ok, sum_ms FROM checks_daily
-        WHERE site_id = ? AND check_type = 'availability'
-          AND day >= date('now', ?)
-    ) GROUP BY day ORDER BY day
+_SPAN = ("MIN(until_next, MAX({cap}, CASE WHEN since_prev <= " + repr(_MAX_CAP_SEC)
+         + " THEN since_prev + 60 ELSE 0 END))")
+
+# The window starts a maximal cadence earlier than asked, so that a check at
+# its start knows the gap before it just as in a wider window: «7 days» on
+# the card and «7d» on the status page (one pass over 90) agree.
+_SPANS = ("WITH gaps AS (" + _GAPS.format(
+    extra="", join="", partition="",
+    where=f"c.site_id = ? AND c.check_type = 'availability' AND c.checked_at >= datetime(?, '-{_MAX_CAP_SEC:.0f} seconds')")
+    + """),
+spans AS (SELECT status, response_time_ms, checked_at, """ + _SPAN.format(cap="?") + """ AS span
+          FROM gaps WHERE checked_at >= ?)
+""")
+
+# Per day: raw checks (spans) UNION the nightly rollups. A rollup row with
+# NULL down_sec/seen_sec was made by an older version: its downtime is
+# estimated the old way (a failed check = one interval) and its sum_ms counts
+# failed checks too, so its average is taken over all checks.
+_DAILY = _SPANS + """
+SELECT day, SUM(total) AS total, SUM(ok) AS ok, SUM(ms_sum) AS ms_sum, SUM(ms_n) AS ms_n,
+       SUM(down_sec) AS down_sec, SUM(seen_sec) AS seen_sec FROM (
+    SELECT date(checked_at) AS day, COUNT(*) AS total, SUM(status = 'ok') AS ok,
+           COALESCE(SUM(CASE WHEN status = 'ok' THEN response_time_ms END), 0) AS ms_sum,
+           COUNT(CASE WHEN status = 'ok' AND response_time_ms IS NOT NULL THEN 1 END) AS ms_n,
+           SUM(CASE WHEN status = 'error' THEN span ELSE 0 END) AS down_sec,
+           SUM(span) AS seen_sec
+    FROM spans WHERE status IN ('ok', 'error') GROUP BY date(checked_at)
+    UNION ALL
+    SELECT day, total, ok, sum_ms, CASE WHEN seen_sec IS NULL THEN total ELSE ok END,
+           COALESCE(down_sec, (total - ok) * ?), COALESCE(seen_sec, total * ?)
+    FROM checks_daily
+    WHERE site_id = ? AND check_type = 'availability' AND day >= date(?)
+) GROUP BY day ORDER BY day
 """
 
 
-async def get_daily_availability(site_id: int, days: int = 7) -> list[dict]:
-    """Per-day availability for the last N days: [{day, total, ok, avg_ms}]."""
+def _uptime_dict(total: int, ok: int, ms_sum: float, ms_n: int, down_sec: float, seen_sec: float) -> dict:
+    if seen_sec:
+        pct = round((1 - down_sec / seen_sec) * 100, 2)
+    else:   # checked only just now: no time measured yet
+        pct = round(ok / total * 100, 2) if total else 0
+    return {
+        "total_checks": total,
+        "ok_checks": ok,
+        "uptime_pct": pct,
+        "down_min": down_sec / 60,
+        # Answer time of the checks that got an answer: a timeout is not a speed.
+        "avg_response_ms": round(ms_sum / ms_n) if ms_n else 0,
+    }
+
+
+async def _interval_min(site_id: int) -> int | None:
+    site = await get_site(site_id)
+    return site.get("check_interval_min") if site else None
+
+
+async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
+    """Uptime over the last N hours from raw checks (retention keeps far
+    more than the 24h window this serves)."""
     db = await get_db()
-    window = f"-{days} days"
-    cursor = await db.execute(_DAILY_UNION, (site_id, window, site_id, window))
+    since = (datetime.now(UTC) - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+    cursor = await db.execute(
+        _SPANS + """SELECT COUNT(*), SUM(status = 'ok'),
+                       COALESCE(SUM(CASE WHEN status = 'ok' THEN response_time_ms END), 0),
+                       COUNT(CASE WHEN status = 'ok' AND response_time_ms IS NOT NULL THEN 1 END),
+                       SUM(CASE WHEN status = 'error' THEN span ELSE 0 END), SUM(span)
+                    FROM spans WHERE status IN ('ok', 'error')""",
+        (site_id, since, span_cap_sec(await _interval_min(site_id)), since))
+    total, ok, ms_sum, ms_n, down, seen = await cursor.fetchone()
+    return _uptime_dict(total or 0, ok or 0, ms_sum or 0, ms_n or 0, down or 0, seen or 0)
+
+
+def _window_start(days: int) -> str:
+    """«N days» = today and the N-1 days before it, whole UTC days: one bound
+    for raw checks and for the rollups, which are kept per UTC day."""
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+    return start.strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def _daily_rows(site_id: int, days: int) -> list:
+    db = await get_db()
+    interval = await _interval_min(site_id)
+    legacy_sec = max(1, interval or config.check_interval_minutes) * 60.0
+    since = _window_start(days)
+    cursor = await db.execute(_DAILY, (site_id, since, span_cap_sec(interval), since,
+                                       legacy_sec, legacy_sec, site_id, since))
+    return list(await cursor.fetchall())
+
+
+async def get_daily_availability(site_id: int, days: int = 7) -> list[dict]:
+    """Per day for the last N days (today included):
+    [{day, total, ok, avg_ms, down_min, seen_min}]."""
     return [
         {"day": r["day"], "total": r["total"], "ok": r["ok"],
-         "avg_ms": round(r["sum_ms"] / r["total"]) if r["total"] else None}
-        for r in await cursor.fetchall()
+         "avg_ms": round(r["ms_sum"] / r["ms_n"]) if r["ms_n"] else None,
+         "down_min": (r["down_sec"] or 0) / 60, "seen_min": (r["seen_sec"] or 0) / 60}
+        for r in await _daily_rows(site_id, days)
     ]
+
+
+def _sum_rows(rows) -> dict:
+    return _uptime_dict(*(sum(r[k] or 0 for r in rows)
+                          for k in ("total", "ok", "ms_sum", "ms_n", "down_sec", "seen_sec")))
 
 
 async def get_uptime_over_days(site_id: int, days: int) -> dict:
     """Uptime over the last N days across raw checks and daily rollups."""
-    rows = await get_daily_availability(site_id, days)
-    total = sum(r["total"] for r in rows)
-    ok = sum(r["ok"] for r in rows)
-    avg = (sum((r["avg_ms"] or 0) * r["total"] for r in rows) / total) if total else None
-    return _uptime_dict(total, ok, avg)
+    return _sum_rows(await _daily_rows(site_id, days))
+
+
+async def get_uptime_windows(site_id: int, windows: tuple[int, ...]) -> dict[int, dict]:
+    """get_uptime_over_days for several windows from one pass over the
+    longest one — the status page asks for 7, 30 and 90 days per site."""
+    rows = await _daily_rows(site_id, max(windows))
+    return {days: _sum_rows([r for r in rows if r["day"] >= _window_start(days)[:10]]) for days in windows}
+
+
+async def last_failed_check_at(site_id: int) -> datetime | None:
+    """When the site was last seen down."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT MAX(checked_at) FROM checks
+           WHERE site_id = ? AND check_type = 'availability' AND status = 'error'""", (site_id,))
+    value = (await cursor.fetchone())[0]
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC) if value else None
 
 
 # ── Incidents ────────────────────────────────────────────────────────────────
@@ -431,9 +531,11 @@ _SEVERITY_RANK = {"critical": 2, "warning": 1}
 
 
 async def save_incident(site_id: int, check_type: str, message: str,
-                        severity: str = "warning") -> tuple[int | None, bool]:
+                        severity: str = "warning", started_at: str | None = None) -> tuple[int | None, bool]:
     """Insert or reuse an open incident. Returns (incident_id, is_new);
-    (None, False) when the site is no longer watched.
+    (None, False) when the site is no longer watched. started_at (SQLite
+    UTC text) — when the problem began, for kinds that keep it themselves
+    (mail); an availability incident takes its first failed check.
 
     A reused incident takes the newest message and level, so lists and
     digests never show yesterday's words; one that got WORSE (🟠 «нет
@@ -461,9 +563,17 @@ async def save_incident(site_id: int, check_type: str, message: str,
                 await db.commit()
             worse = _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(old_severity, 0)
             return inc_id, worse
+        # started_at: when the problem began — given, or the first failed
+        # check of the current series (the incident opens only after N of
+        # them); NULL for kinds without check rows (then created_at stands).
         cursor = await db.execute(
-            """INSERT INTO incidents (site_id, check_type, message, severity)
-               VALUES (?, ?, ?, ?)""", (site_id, check_type, message, severity))
+            """INSERT INTO incidents (site_id, check_type, message, severity, started_at)
+               VALUES (?, ?, ?, ?, COALESCE(?, (
+                   SELECT MIN(checked_at) FROM checks
+                   WHERE site_id = ? AND check_type = ? AND status NOT IN ('ok', 'unknown')
+                     AND checked_at > COALESCE((SELECT MAX(checked_at) FROM checks
+                                                WHERE site_id = ? AND check_type = ? AND status = 'ok'), ''))))""",
+            (site_id, check_type, message, severity, started_at, site_id, check_type, site_id, check_type))
         await db.commit()
         return cursor.lastrowid, True
 
@@ -849,11 +959,35 @@ async def rollup_old_checks(retention_days: int) -> int:
 
 
 async def _rollup(db: aiosqlite.Connection, cutoff: str):
+    # Availability keeps its measured time (see «Uptime: time, not rows»):
+    # the spans run across the cutoff — the last row before it speaks until
+    # the first one after it. Since this version sum_ms holds the answered
+    # checks only (its divisor is ok); a row with NULL seen_sec is older.
+    await db.execute(
+        """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms, down_sec, seen_sec)
+           SELECT site_id, check_type, date(checked_at), COUNT(*), SUM(status = 'ok'),
+                  COALESCE(SUM(CASE WHEN status = 'ok' THEN response_time_ms END), 0),
+                  SUM(CASE WHEN status = 'error' THEN span ELSE 0 END), SUM(span)
+           FROM (SELECT site_id, check_type, status, response_time_ms, checked_at, """
+        + _SPAN.format(cap="(MAX(1, COALESCE(check_interval_min, ?)) + 1) * 60.0") + """ AS span
+                 FROM (""" + _GAPS.format(
+                     extra=" s.check_interval_min,", join=" LEFT JOIN sites s ON s.id = c.site_id",
+                     partition="PARTITION BY c.site_id ",
+                     where="c.check_type = 'availability' AND c.checked_at < datetime(?, '+1 day')") + """))
+           WHERE checked_at < ? AND status IN ('ok', 'error')
+           GROUP BY site_id, check_type, date(checked_at)
+           ON CONFLICT(site_id, check_type, day) DO UPDATE SET
+             total = total + excluded.total,
+             ok = ok + excluded.ok,
+             sum_ms = sum_ms + excluded.sum_ms,
+             down_sec = COALESCE(down_sec, 0) + excluded.down_sec,
+             seen_sec = COALESCE(seen_sec, 0) + excluded.seen_sec""",
+        (config.check_interval_minutes, cutoff, cutoff))
     await db.execute(
         """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
            SELECT site_id, check_type, date(checked_at), COUNT(*),
                   SUM(status = 'ok'), COALESCE(SUM(response_time_ms), 0)
-           FROM checks WHERE checked_at < ? AND status != 'unknown'
+           FROM checks WHERE checked_at < ? AND check_type != 'availability' AND status != 'unknown'
            GROUP BY site_id, check_type, date(checked_at)
            ON CONFLICT(site_id, check_type, day) DO UPDATE SET
              total = total + excluded.total,

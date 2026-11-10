@@ -30,7 +30,7 @@ from services.humanize import (
     worst_severity,
 )
 from utils.clock import now_local, to_local
-from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
+from utils.text import esc, fmt_duration, incident_start, parse_sqlite_utc, plural
 from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
@@ -43,21 +43,24 @@ def _tech(*parts) -> str:
 # ── Availability ─────────────────────────────────────────────────────────────
 
 def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True, *,
-                              threshold: int = 2, interval_min: int = 5) -> str:
+                              threshold: int = 2, interval_min: int = 5,
+                              since: datetime | None = None) -> str:
     """threshold and interval_min — the site's own dials: the text says how
     many checks it took and how often the site is checked, not «дважды» and
-    «каждую минуту» for everyone."""
+    «каждую минуту» for everyone. since — when the problem began (the first
+    failed check), so the alert says «не открывается с 14:03»."""
     if r.ok:
         return ""
     label = esc(site_label(r.url))
     expl = explain("availability", r.error)
+    when = f" с {to_local(since).strftime('%H:%M')}" if since else ""
     if r.keyword_failed:
-        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то"
+        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то{when}"
         what = esc(describe_error(r.error))
         situation = f"{expl.meaning} Сейчас {what}."
     else:
         noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
-        header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
+        header = f"🔴 {label} {noun}{when}: {esc(describe_error(r.error))}"
         situation = expl.meaning
         if r.failed_of:
             how = f"Сбой в {r.failed_of[0]} из {r.failed_of[1]} последних проверок"
@@ -92,16 +95,23 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
 
 
 def incident_duration_line(incident: dict | None) -> str | None:
-    """'12 мин (14:03–14:15)' in the user's timezone."""
+    """'12 мин (14:03–14:15)' in the user's timezone: from the first failed
+    check to the moment it was seen up. When nobody checked in between (the
+    bot was down), the end is only known from below — said so."""
     if not incident:
         return None
-    started = parse_sqlite_utc(incident.get("created_at"))
+    started = incident_start(incident)
     if not started:
         return None
-    ended = datetime.now(UTC)
+    ended = parse_sqlite_utc(incident.get("resolved_at")) or datetime.now(UTC)
     minutes = max(1, round((ended - started).total_seconds() / 60))
     fmt = "%H:%M" if minutes < 24 * 60 else "%d.%m %H:%M"
-    return f"{fmt_duration(minutes)} ({to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)})"
+    span = f"{to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)}"
+    unseen = parse_sqlite_utc(incident.get("unseen_until"))
+    if unseen:
+        return (f"не меньше {fmt_duration(minutes)} ({span}); когда именно поднялся — не знаю: "
+                f"с {to_local(ended).strftime(fmt)} до {to_local(unseen).strftime(fmt)} я его не проверял")
+    return f"{fmt_duration(minutes)} ({span})"
 
 
 def format_recovery_alert(r: AvailabilityResult) -> str:
@@ -292,10 +302,11 @@ def format_mail_recovery(r: MailResult) -> str:
     domain = esc(r.domain)
     if r.kind == "mail_auth":
         return f"✅ Почта на {domain}: настройки в порядке, письмам ничего не мешает."
-    started = parse_sqlite_utc((r.resolved_incident or {}).get("created_at"))
+    started = incident_start(r.resolved_incident)
     how_long = ""
     if started:
-        minutes = max(1, round((datetime.now(UTC) - started).total_seconds() / 60))
+        ended = parse_sqlite_utc((r.resolved_incident or {}).get("resolved_at")) or datetime.now(UTC)
+        minutes = max(1, round((ended - started).total_seconds() / 60))
         how_long = f" (не принимала около {fmt_duration(minutes)})"
     return (f"✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
             f"обычно доходят сами: серверы отправителей повторяют попытки.")

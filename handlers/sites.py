@@ -91,7 +91,7 @@ from utils import validate
 from utils.clock import to_local, utcnow
 from utils.net import is_lan_host, normalize_ipv4
 from utils.parse import parse_accepted_codes
-from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural
+from utils.text import esc, fmt_date, fmt_duration, incident_start, parse_sqlite_utc, plural
 from utils.urls import (
     host_key,
     host_of,
@@ -363,13 +363,11 @@ async def _avail_line(site: dict, st: dict, page: bool) -> str:
 
 async def _history_lines(site: dict) -> list[str]:
     """Downtime over the week and the month, and when it last went down."""
-    interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     parts = []
     if week["total_checks"]:
         month = await get_uptime_over_days(site["id"], 30)
-        w = humanize.downtime(week["total_checks"], week["ok_checks"], interval)
-        m = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        w, m = humanize.downtime(week), humanize.downtime(month)
         parts.append("без сбоев ни за неделю, ни за месяц" if w == m == "без сбоев" else
                      f"простой: за неделю {w.removeprefix('недоступен ')}, за месяц {m.removeprefix('недоступен ')}")
     outage = await _last_outage(site)
@@ -382,7 +380,7 @@ async def _history_lines(site: dict) -> list[str]:
 async def _last_outage(site: dict) -> str:
     """«последний сбой 05.11 14:03 — 5 мин, хостинг отвечает ошибкой 502»."""
     inc = await get_last_incident(site["id"], "availability")
-    started = parse_sqlite_utc(inc["created_at"]) if inc else None
+    started = incident_start(inc) if inc else None
     if not inc or not inc["resolved"] or not started or utcnow() - started > timedelta(days=90):
         return ""   # nothing recent; an open one is a problem at the top
     ended = parse_sqlite_utc(inc.get("resolved_at")) or started

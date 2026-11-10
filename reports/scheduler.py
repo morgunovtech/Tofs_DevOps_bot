@@ -30,6 +30,7 @@ from db.database import (
     get_active_site_urls,
     get_all_sites,
     get_heartbeats,
+    get_incident,
     get_last_check,
     get_recent_check_statuses,
     get_site,
@@ -117,7 +118,17 @@ from services.notifier import Priority
 from utils import validate
 from utils.clock import local_tz, to_local
 from utils.net import is_private_target
-from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
+from utils.text import (
+    SAFE_LIMIT,
+    chunks,
+    clip,
+    esc,
+    fmt_duration,
+    incident_start,
+    parse_iso_utc,
+    parse_sqlite_utc,
+    plural,
+)
 from utils.urls import is_api_check, is_web_page, short_host, site_label
 from web.webhook import send_feedback_summary
 
@@ -496,9 +507,18 @@ async def deliver_missed_alerts():
 
 
 async def _send_availability_alert(r, site: dict):
+    # Since when: the first failed check of the series (the incident's
+    # started_at). No row while the database refuses writes — no «с ЧЧ:ММ»;
+    # the alert itself must never wait for that detail.
+    since = None
+    if r.incident_id:
+        try:
+            since = incident_start(await get_incident(r.incident_id))
+        except sqlite3.OperationalError as e:
+            logger.warning("Alert of incident %s goes without its start: %s", r.incident_id, e)
     msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site),
                                     threshold=site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD,
-                                    interval_min=_interval_min(site))
+                                    interval_min=_interval_min(site), since=since)
     kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
     sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True, to_helpers=True)
     if sent is not None:
@@ -1296,7 +1316,9 @@ async def run_escalation_watch():
                 continue        # it answered: the next good answer closes the incident
             site = await get_site(inc["site_id"]) or {}
             every = humanize.every_minutes(_interval_min(site))
-            age_min = (now - created).total_seconds() / 60
+            # «лежит уже …» counts from the first failed check; whether it is
+            # time to remind is still measured from the alert (created_at).
+            age_min = (now - (incident_start(inc) or created)).total_seconds() / 60
             api = is_api_check(inc["url"], inc.get("http_method"))
             if (inc.get("message") or "").startswith("Bad content: "):
                 # The site opens; its text is wrong — not «лежит», not «поднимется».
@@ -1639,12 +1661,10 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
         stats = await get_uptime_over_days(s["id"], 7)
         if not stats["total_checks"]:
             continue
-        if stats["ok_checks"] >= stats["total_checks"]:
+        if not stats["down_min"]:
             clean += 1
             continue
-        interval = s.get("check_interval_min") or config.check_interval_minutes
-        down.append(f"• {esc(site_label(s['url']))} — "
-                    f"{humanize.downtime(stats['total_checks'], stats['ok_checks'], interval)}")
+        down.append(f"• {esc(site_label(s['url']))} — {humanize.downtime(stats)}")
     if down:
         extras.append("📈 За неделю:\n" + "\n".join(down) + ("\n• остальные — без сбоев" if clean else ""))
     elif clean:

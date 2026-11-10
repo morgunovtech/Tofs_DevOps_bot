@@ -60,10 +60,11 @@ def test_levels_have_one_dictionary():
 
 
 def test_downtime_and_speed():
-    assert downtime(0, 0, 5) == "нет данных"
-    assert downtime(100, 100, 5) == "без сбоев"
-    assert downtime(100, 97, 5) == "недоступен ≈15 мин"
-    assert downtime(2000, 1900, 1) == "недоступен ≈1 ч 40 мин"
+    assert downtime({"total_checks": 0, "down_min": 0}) == "нет данных"
+    assert downtime({"total_checks": 100, "down_min": 0}) == "без сбоев"
+    assert downtime({"total_checks": 100, "down_min": 15}) == "недоступен ≈15 мин"
+    assert downtime({"total_checks": 2000, "down_min": 100}) == "недоступен ≈1 ч 40 мин"
+    assert downtime({"total_checks": 3, "down_min": 0.2}) == "недоступен ≈1 мин"     # seen down: never «без сбоев»
     # The number, never «быстро»: a threshold nobody set.
     assert speed(120) == "за 0.12 с" and speed(900, "из России") == "за 0.90 с из России"
     assert speed(4200) == "за 4.2 с" and speed(None) == "нет данных" and fmt_seconds(15000) == "15 с"

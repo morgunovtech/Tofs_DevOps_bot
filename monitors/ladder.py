@@ -60,14 +60,18 @@ async def apply_ladder(result: CheckResult, check_type: str,
         await set_last_alert_threshold(result.site_id, check_type, None)
 
 
-async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, open_new: bool = True):
+async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, open_new: bool = True,
+                         started_at: str | None = None):
     """Open, keep or close r's incident. settled=False — the check had no
     verdict (its service is down): an open incident stays as it is. A check
     from a screen (open_new=False) may close what got fixed — the owner is
-    looking at it — but never opens: the alert belongs to the scheduled check."""
+    looking at it — but never opens: the alert belongs to the scheduled check.
+    started_at — when the problem began (SQLite UTC text), for a kind that
+    keeps it itself; None — db.database.save_incident works it out."""
     if not r.ok and r.error:
         if open_new:
-            r.incident_id, r.incident_new = await save_incident(r.site_id, check_type, r.error, r.severity)
+            r.incident_id, r.incident_new = await save_incident(r.site_id, check_type, r.error, r.severity,
+                                                                started_at=started_at)
     elif settled:
         closed = await resolve_incident(r.site_id, check_type)
         r.recovered, r.resolved_incident = closed is not None, closed
@@ -89,10 +93,10 @@ def told_after(told: set[str], codes: set[str], manage: bool) -> list[str]:
 
 
 async def apply_findings(r: CheckResult, check_type: str, codes: set[str], told: set[str],
-                         settled: bool = True, open_new: bool = True):
+                         settled: bool = True, open_new: bool = True, started_at: str | None = None):
     """apply_incident for an incident that holds several findings: a finding
     the scheduled check has not alerted yet sends the incident's alert again
     (it lists all of them, the new one among them)."""
-    await apply_incident(r, check_type, settled=settled, open_new=open_new)
+    await apply_incident(r, check_type, settled=settled, open_new=open_new, started_at=started_at)
     if open_new and r.incident_id and codes - told:
         r.incident_new = True

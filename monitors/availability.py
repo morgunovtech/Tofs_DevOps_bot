@@ -24,12 +24,14 @@ from db.database import (
     get_recent_checks,
     get_site_by_url,
     get_state,
+    last_failed_check_at,
     relabel_recent_failures,
     reopen_incident,
     resolve_incident,
     save_check,
     save_incident,
     set_state,
+    span_cap_sec,
 )
 from monitors import netcheck, region
 from monitors.base import AvailabilityResult, decode_body, gather_checks, phrase_found, read_capped
@@ -456,8 +458,8 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
             _down_without_db.discard(r.site_id)
             r.recovered = True
         try:
-            # The downtime ended with the first good answer, not the one that confirmed it.
-            resolved = await resolve_incident(r.site_id, "availability", resolved_at=_first_ok_at(recent))
+            resolved = await _close_downtime(r.site_id, _first_ok_at(recent),
+                                             site.get("check_interval_min"))
         except sqlite3.OperationalError as e:
             health.db_write_failed(e)                 # closed by a check once writes work
             resolved = None
@@ -517,6 +519,23 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         r.incident_new = r.site_id not in _down_without_db and not open_before
         _down_without_db.add(r.site_id)
     return r
+
+
+async def _close_downtime(site_id: int, first_ok: datetime | None, interval_min: int | None) -> dict | None:
+    """Close the availability incident at the moment the downtime ended.
+    That is the first good answer of the recovery series, not the one that
+    confirmed it. But when nobody checked for longer than the site's
+    interval before that answer (the bot was down, its ticks stalled), when
+    it came back is unknown: the incident ends where the site was last seen
+    down — the lower bound — and the row carries unseen_until (the first
+    good answer), so the recovery message says what it does not know."""
+    seen_up = first_ok or datetime.now(UTC)
+    last_bad = await last_failed_check_at(site_id)
+    blind = last_bad is not None and (seen_up - last_bad).total_seconds() > span_cap_sec(interval_min)
+    resolved = await resolve_incident(site_id, "availability", resolved_at=last_bad if blind else first_ok)
+    if resolved and blind:
+        resolved["unseen_until"] = seen_up.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    return resolved
 
 
 async def _incident_open(site_id: int) -> bool:
