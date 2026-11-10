@@ -3,19 +3,30 @@ time — and an alert that is over stops looking like a live one."""
 
 import socket
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+from aiogram import Bot
+from aiogram.methods import EditMessageText, SendMessage
+from conftest import buttons
+from test_dispatcher import DP, MockedSession, _callback
+
+from db.database import get_active_incidents
+from handlers import about, mute, speed
 from monitors.availability import check_availability
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
     DomainInfo,
     DomainResult,
+    SeoResult,
     SslInfo,
     SslResult,
 )
+from reports import scheduler
 from reports.formatter import format_compact_status_report, format_dns_change, format_domain_alert
 from reports.weekly import renewals_block
-from services import sitestatus
+from services import integrations, notifier, settings, sitestatus
+from services.actions import heartbeat_keyboard
 from services.humanize import classify, describe_error
 from utils import clock
 
@@ -82,3 +93,86 @@ async def test_renewal_date_is_the_owners_date(bot, db):
     finally:
         clock.set_timezone(None)
     assert f"far.test ({(at + timedelta(hours=10)).strftime('%d.%m')})" in lines[0]
+
+
+async def test_screen_buttons_on_alerts_answer_below(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    r = SimpleNamespace(site_id=sid, incident_id=7, kind="mail_auth", status_page=None, provider=None,
+                        url="https://ex.test")
+    datas = [b.callback_data for kb in (scheduler._mail_keyboard(r), scheduler._security_keyboard(r),
+                                        scheduler._visitors_keyboard(r))
+             for row in kb.inline_keyboard for b in row if b.callback_data]
+    assert sorted(d.split(":")[0] for d in datas if not d.startswith("inc_explain")) == ["mail", "sec", "spd"]
+    assert all(d.endswith(":a") for d in datas)
+    session = MockedSession()
+    tg = Bot(token="123456:TEST", session=session)
+    for n, prefix in enumerate(("sec", "spd", "mail"), 1):
+        session.calls.clear()
+        await DP.feed_raw_update(tg, _callback(777, f"{prefix}:{sid}:a", 900 + n))
+        assert any(isinstance(m, SendMessage) for m in session.calls), prefix
+        assert not any(isinstance(m, EditMessageText) for m in session.calls), prefix
+    await tg.session.close()
+
+
+async def test_ringing_promises_follow_the_setting(bot, db, monkeypatch):
+    monkeypatch.setattr(settings, "ring_only_down", lambda: False)
+    assert "Звоню только по 🔴" not in about.features_text()
+    text = await mute._mute("8h")
+    assert "Остальное пришлю потом одним сообщением" not in text and "снова открылся" in text
+    monkeypatch.setattr(settings, "ring_only_down", lambda: True)
+    assert "только когда сайт лёг" in about.features_text()
+    assert "снова открылся" not in await mute._mute("8h")
+    await notifier.set_mute(None)
+
+
+async def test_speed_screen_names_the_real_next_run(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    await integrations.set_value("crux_key", "k" * 39)
+    tomorrow = clock.now_local().replace(hour=8, minute=10, second=0, microsecond=0) + timedelta(days=1)
+    job = SimpleNamespace(next_run_time=tomorrow)
+    monkeypatch.setattr(scheduler, "_scheduler", SimpleNamespace(get_job=lambda job_id: job))
+    assert scheduler.next_run_words("visitor_checks") == "завтра в 08:10"
+    text, _ = await speed.speed_page(await db.get_site(sid))
+    assert "сегодня в 08:10" not in text and "завтра в 08:10" in text
+    monkeypatch.setattr(scheduler, "_scheduler", None)
+    assert scheduler.next_run_words("visitor_checks") is None      # no scheduler: no promise with a time
+    assert "в ближайшее утро" in (await speed.speed_page(await db.get_site(sid)))[0]
+    await integrations.set_value("crux_key", None)
+
+
+def test_silent_task_buttons_say_what_they_do():
+    assert buttons(heartbeat_keyboard(["backup"])) == ["🔗 Подключить backup", "🗑 Удалить"]
+    assert buttons(heartbeat_keyboard(["backup"], seen={"backup"})) == ["🔍 Что с backup", "🗑 Удалить"]
+
+
+async def test_ns_change_alert_links_the_registrar(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.com")
+    await sitestatus.update(sid, "domain", registrar="NameCheap, Inc.", days_left=200)
+
+    async def fake_dns(urls):
+        return [DnsChange(host="ex.com", rtype="NS", old="a", new="b", critical=True)]
+
+    monkeypatch.setattr(scheduler, "check_all_dns", fake_dns)
+    await scheduler.run_dns_checks()
+    kb = bot.sent[-1]["reply_markup"]
+    assert kb is not None and any("namecheap" in (b.url or "") for row in kb.inline_keyboard for b in row)
+
+
+async def test_the_quiet_first_audit_is_said_in_the_next_morning_digest(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://new-shop.test")
+    await db.save_check(sid, "availability", "ok", response_time_ms=100)
+
+    async def fake_seo(urls, manage=True):
+        if not urls:
+            return []
+        await db.save_check(sid, "seo", "critical", details="noindex")
+        return [SeoResult(url="https://new-shop.test", site_id=sid, status="critical", problems=[],
+                          pages_checked=1, no_js_chars=0)]
+
+    monkeypatch.setattr(scheduler, "check_all_seo", fake_seo)
+    await scheduler.run_seo_checks()                      # added minutes ago: audited quietly
+    assert bot.sent == []
+    extras = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    assert "🔎 Первый аудит new-shop.test для поиска и ИИ: 🔴 сайт закрыт от поиска" in extras
+    again = "\n".join(await scheduler._morning_extras([], [], await get_active_incidents()))
+    assert "Первый аудит" not in again                    # said once

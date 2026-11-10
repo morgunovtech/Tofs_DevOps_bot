@@ -147,7 +147,7 @@ async def test_import_checks_every_value_and_names_what_it_skipped(bot, db):
     assert odd["slow_ms"] == 1500                        # the good field of the same entry still applies
     skipped = " | ".join(c["skipped"])
     for word in ("bad host 0!", "check_interval_min", "http_headers", "morning_hour", "quiet_hours", "timezone",
-                 "тех. окно", "deploy_hooks", "cf_zone_id"):
+                 "плановые работы", "deploy_hooks", "cf_zone_id"):
         assert word in skipped, word
     assert settings.weekly_hour() == 12 and integrations.yandex_token() == "y" * 40
     assert integrations.deploy_hooks() == {} and integrations.cf_zone_id() == ""

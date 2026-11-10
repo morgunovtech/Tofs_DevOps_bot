@@ -5,7 +5,7 @@ problem the ready text for the site's hosting."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import ack, back_button, render, site_by_cb
+from handlers.common import ack, back_button, render, show, site_by_cb
 from monitors.security_checker import HEADERS, check_security
 from reports.formatter import finding_block
 from services import sitestatus
@@ -98,12 +98,12 @@ async def _checked_site(arg: str | None) -> dict | None:
 
 @router.callback_query(F.data.startswith("sec:"))
 async def cb_security(call: CallbackQuery):
-    site = await _checked_site(call.data.split(":", 1)[1])
+    site = await _checked_site(call.data.split(":")[1])     # «sec:<id>:a» from an alert
     if not site:
         await ack(call, "Безопасность этого адреса я не проверяю", show_alert=True)
         return
     await ack(call)
-    await render(call, *await security_page(site))
+    await show(call, *await security_page(site))
 
 
 @router.callback_query(F.data.startswith("sec_check:"))

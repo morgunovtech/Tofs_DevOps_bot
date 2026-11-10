@@ -97,6 +97,27 @@ async def render(target: Message | CallbackQuery, text: str,
         await _waiting_out_flood(lambda: target.answer(text, reply_markup=kb, **extra))
 
 
+def on_alert(call: CallbackQuery) -> bool:
+    """The button lives on an alert or a digest: «:a» in its data or — on
+    alerts from before the marker — a neighbouring «ℹ️ Что делать»
+    (inc_explain:…:a) or an act: button. Such a screen must not replace
+    the alert text."""
+    if (call.data or "").endswith(":a"):
+        return True
+    markup = getattr(call.message, "reply_markup", None)
+    datas = [b.callback_data or "" for row in (markup.inline_keyboard if markup else []) for b in row]
+    return any(d.startswith("act:") or (d.startswith("inc_explain:") and d.endswith(":a")) for d in datas)
+
+
+async def show(call: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+    """A screen from a button: below the message when the button sits on an
+    alert (the alert and its buttons stay), in place everywhere else."""
+    if on_alert(call) and call.message is not None:
+        await _waiting_out_flood(lambda: call.message.answer(clip(text), reply_markup=kb))
+    else:
+        await render(call, text, kb)
+
+
 # A screen waits out Telegram's flood control (429) when the wait is short;
 # a longer one goes to on_handler_error, which says so instead of «устарело».
 SCREEN_FLOOD_WAIT_SEC = 5

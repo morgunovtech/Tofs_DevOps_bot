@@ -119,14 +119,17 @@ def seo_fix_keyboard(site_id: int, codes: list[str], *, numbered: bool = False, 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def heartbeat_keyboard(jobs: list[str]) -> InlineKeyboardMarkup | None:
-    """Per silent task, the two ways out in one tap: «🔗 Подключить» (its
-    card, answered below) and «🗑 Удалить» when there is no such task."""
+def heartbeat_keyboard(jobs: list[str], seen: frozenset[str] | set[str] = frozenset()) -> InlineKeyboardMarkup | None:
+    """Per silent task, the two ways out in one tap: its card (answered
+    below) — «🔍 Что с …» for a task that has been in touch (seen), «🔗
+    Подключить» for one that never was — and «🗑 Удалить» when there is no
+    such task."""
     rows = []
     for job in jobs[:3]:
         if len(f"hb_how:{job}".encode()) > 64:   # an .env name may be anything
             continue
-        rows.append([InlineKeyboardButton(text=f"🔗 Подключить {job}", callback_data=f"hb_how:{job}"),
+        rows.append([InlineKeyboardButton(text=f"🔍 Что с {job}" if job in seen else f"🔗 Подключить {job}",
+                                          callback_data=f"hb_how:{job}"),
                      InlineKeyboardButton(text="🗑 Удалить", callback_data=f"hb_rm:{job}")])
     return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 

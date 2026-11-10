@@ -120,7 +120,7 @@ async def on_group_upgraded(message: Message):
 @router.message(Command("stop"))
 async def cmd_stop(message: Message):
     if runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer("Ты владелец. Чтобы я помолчал — /mute 8h, тревога «сайт лёг» всё равно придёт.")
+        await message.answer(f"Ты владелец. Чтобы я помолчал — /mute 8h. {notifier.what_rings_through_mute()}")
         return
     gone = await helpers.remove(message.chat.id)
     if not gone:

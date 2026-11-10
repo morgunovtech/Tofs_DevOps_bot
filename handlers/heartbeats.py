@@ -130,8 +130,8 @@ async def cb_hb_bot(call: CallbackQuery):
     await render(call, f"🤖 Подключить «{esc(name)}»\n\n{_not_public_note()}"
                        f"Дай этому боту адрес — нажми на него, он скопируется:\n{_url_line(name)}\n\n"
                        f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
-                       f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
-                       f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
+                       f"поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> "
+                       f"или «Ping URL».\n\n"
                        f"{HEARTBEAT_SECRET_NOTE}\n\n"
                        f"Как только связь появится, строка на главном экране станет ✅.", _connect_kb(name))
 

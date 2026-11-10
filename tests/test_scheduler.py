@@ -259,13 +259,13 @@ async def test_morning_digest_says_each_thing_once(bot, db, monkeypatch):
     monkeypatch.setattr(scheduler, "_status_snapshot", snapshot)
     await scheduler.send_morning_report()
     buttons = [btn.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for btn in row]
-    assert buttons == ["hb_how:backup", "hb_rm:backup"]
+    assert buttons == ["hb_how:backup", "hb_rm:backup", "onb:watchdog"]   # no watchdog: its button stays
     await db.heartbeat_ping("backup")
     # «1 дн назад» alone read like trouble: the expected rhythm says it is on time.
     assert (await scheduler._watch_lines(morning=True))[0] == (
         "✅ backup — на связи, только что (выходит на связь раз в сутки)", True)
     await scheduler.send_morning_report()
-    assert bot.sent[-1]["reply_markup"] is None
+    assert [b.callback_data for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row] == ["onb:watchdog"]
     await settings.remove_heartbeat_job("backup")
 
 

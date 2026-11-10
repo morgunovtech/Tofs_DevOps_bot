@@ -33,7 +33,7 @@ from handlers.common import (
     render,
 )
 from handlers.settings import publish_screen
-from reports.scheduler import audit_time
+from reports.scheduler import rerun_visitors_soon
 from services import (
     automation,
     crux,
@@ -834,8 +834,10 @@ async def msg_crux_key(message: Message, state: FSMContext):
                              "проекте, где создан ключ, и что ключ скопирован целиком.", reply_markup=_crux_kb())
         return
     await integrations.set_value("crux_key", key)
-    await message.answer(f"✅ Данные Google о скорости подключены. Спрошу про твои сайты сегодня в {audit_time('visitor_checks')} — числа "
-                         "появятся на карточках.", reply_markup=back_button("← К подключениям", "setup:check"))
+    rerun_visitors_soon()
+    await message.answer("✅ Данные Google о скорости подключены. Спрошу про твои сайты в ближайшие минуты, "
+                         "дальше — каждое утро; числа появятся на карточках.",
+                         reply_markup=back_button("← К подключениям", "setup:check"))
 
 
 @router.callback_query(F.data == "setup:crux_off")

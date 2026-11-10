@@ -65,7 +65,7 @@ async def cb_mw_add(call: CallbackQuery):
     rows += [[InlineKeyboardButton(text=site_label(s["url"]), callback_data=f"mw_scope:{s['id']}")]
              for s in await get_all_sites()]
     rows.append([InlineKeyboardButton(text="✖️ Отмена", callback_data="menu_maint")])
-    await render(call, "🔧 Для чего это тех. окно?", InlineKeyboardMarkup(inline_keyboard=rows))
+    await render(call, "🔧 Для чего эти плановые работы?", InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("mw_scope:"))
@@ -106,11 +106,11 @@ async def cb_mw_days(call: CallbackQuery):
 async def _create(target, scope: str, days_key: str, start_min: int, end_min: int):
     site_id = int(scope) or None
     if site_id and not await site_by_cb(scope):     # an active site only, like every other button
-        await render(target, "Сайт не найден.", back_button("← Тех. окна", "menu_maint"))
+        await render(target, "Сайт не найден.", back_button("← Плановые работы", "menu_maint"))
         return
     if await maintenance.add_window(site_id, _DAYS[days_key], start_min, end_min) is None:
         await render(target, f"Не добавил: время окна неверное или уже есть {maintenance.MAX_MAINT_WINDOWS} окон "
-                             "— удали ненужные.", back_button("← Тех. окна", "menu_maint"))
+                             "— удали ненужные.", back_button("← Плановые работы", "menu_maint"))
         return
     await _show(target, "✅ Окно добавлено.\n\n")
 
@@ -154,7 +154,8 @@ async def msg_mw_time(message: Message, state: FSMContext):
     scope, days = data.get("mw_scope"), data.get("mw_days")
     await state.clear()
     if scope is None or days not in _DAYS:
-        await message.answer("Начни заново: Настройки → 🔧 Тех. окна.", reply_markup=back_button())
+        await message.answer("Начни заново: ⚙️ Настройки → 🔔 Когда писать → 🗓 Плановые работы.",
+                             reply_markup=back_button("← Плановые работы", "menu_maint"))
         return
     await _create(message, scope, days, *window)
 

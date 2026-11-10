@@ -72,7 +72,7 @@ from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.security_checker import SECURITY_CHECKS, check_security
 from monitors.ssl_checker import check_ssl
-from reports.scheduler import pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
+from reports.scheduler import next_run_words, pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
 from services import (
     gsc,
     humanize,
@@ -767,8 +767,12 @@ async def msg_site_add(message: Message, state: FSMContext):
                 lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
             else:
                 lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
-        lines.append("\nСрок домена, ссылки, поиск и ИИ проверю в ближайшие часы сам." if page
-                     else "\nСрок домена проверю в ближайшие часы сам.")
+        # The real next runs (reports.scheduler), not a promise the schedule may break.
+        domain_at = next_run_words("domain_checks") or "утром"
+        links = (f", ссылки — в ближайшие {config.links_check_interval_hours} ч"
+                 if config.links_check_interval_hours else "")
+        lines.append(f"\nСрок домена проверю {domain_at}, поиск и ИИ — {next_run_words('seo_checks') or 'утром'} "
+                     f"(итоги — в утренней сводке){links}." if page else f"\nСрок домена проверю {domain_at}.")
     if first_site:
         lines.append("\n" + rules_of_the_game())
     reset_site_schedule(site_id)
@@ -1017,7 +1021,7 @@ async def _apply_windows(windows, by_url: dict[str, int], counters: dict):
                                                      validate.int_in(w.get("start_min"), 0, 1439),
                                                      validate.int_in(w.get("end_min"), 0, 1439))
         if added is None:
-            counters["skipped"].append(f"тех. окно: неверное время или дни, чужой сайт или уже "
+            counters["skipped"].append(f"плановые работы: неверное время или дни, чужой сайт или уже "
                                        f"{maintenance.MAX_MAINT_WINDOWS} окон")
         else:
             counters["windows"] += 1

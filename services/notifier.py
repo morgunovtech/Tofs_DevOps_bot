@@ -181,6 +181,15 @@ async def _call(method, **kwargs):
     return await method(chat_id=runtime.admin_chat_id(), **kwargs)
 
 
+def what_rings_through_mute() -> str:
+    """What passes a /mute — exactly what send() and _defer() let through."""
+    if settings.ring_only_down():
+        return "Если сайт ляжет — всё равно позвоню. Остальное пришлю сводкой, когда тишина закончится."
+    return ("Все 🔴 — сайт лёг или снова открылся, истекает сертификат, открыт .env — придут сразу, со звуком. "
+            "Остальное пришлю сводкой, когда тишина закончится. Будить только когда сайт лёг: "
+            "⚙️ Настройки → 🔔 Когда писать.")
+
+
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
                reply_markup=None, site_id: int | None = None, always_ring: bool = False,
                to_helpers: bool = False, helper_text: str | None = None, announces: int | None = None,

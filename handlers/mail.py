@@ -7,7 +7,7 @@ import asyncio
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from handlers.common import ack, back_button, render, site_by_cb
+from handlers.common import ack, back_button, render, show, site_by_cb
 from monitors.mail_checker import DOMAIN_BUDGET_SEC, FAILS_TO_ALERT, carrier_of, check_mail
 from reports.formatter import finding_block
 from reports.scheduler import MAIL_RECHECK_MIN, schedule_mail_recheck
@@ -158,12 +158,12 @@ async def _carrier_site(arg: str | None) -> dict | None:
 
 @router.callback_query(F.data.startswith("mail:"))
 async def cb_mail(call: CallbackQuery):
-    site = await _carrier_site(call.data.split(":", 1)[1])
+    site = await _carrier_site(call.data.split(":")[1])     # «mail:<id>:a» from an alert
     if not site:
         await ack(call, "Почту этого домена я больше не проверяю", show_alert=True)
         return
     await ack(call)
-    await render(call, *await mail_page(site))
+    await show(call, *await mail_page(site))
 
 
 @router.callback_query(F.data.startswith("mail_check:"))

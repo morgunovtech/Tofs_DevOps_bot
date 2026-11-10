@@ -120,7 +120,7 @@ from services.actions import (
 )
 from services.notifier import Priority
 from utils import validate
-from utils.clock import local_tz, to_local
+from utils.clock import local_tz, now_local, to_local
 from utils.net import is_private_target
 from utils.text import (
     SAFE_LIMIT,
@@ -133,7 +133,15 @@ from utils.text import (
     parse_sqlite_utc,
     plural,
 )
-from utils.urls import is_api_check, is_http_url, is_web_page, short_host, site_label
+from utils.urls import (
+    host_of,
+    is_api_check,
+    is_http_url,
+    is_web_page,
+    registrable_domain,
+    short_host,
+    site_label,
+)
 from web.status_page import public_label
 from web.webhook import send_feedback_summary
 
@@ -1163,7 +1171,9 @@ async def run_seo_checks():
     await close_inapplicable(("seo",), urls)
     fresh = await _recently_added()
     if fresh:
-        await check_all_seo([u for u in urls if u in fresh], manage=False)
+        # Audited quietly: the next morning digest says it (seo_first_audit:<id>), once.
+        for r in await check_all_seo([u for u in urls if u in fresh], manage=False):
+            await set_state(f"seo_first_audit:{r.site_id}", "1")
     results = await check_all_seo([u for u in urls if u not in fresh])
     await _notify_transitions(
         results, format_seo_alert,
@@ -1210,6 +1220,28 @@ def rerun_seo_after_update(minutes: int = 3):
                            id="seo_after_update", replace_existing=True, misfire_grace_time=600)
 
 
+def rerun_visitors_soon(minutes: int = 1):
+    """The CrUX key just answered a live request: ask about the sites now,
+    not tomorrow morning."""
+    if _scheduler is not None:
+        _scheduler.add_job(run_visitor_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes), timezone=UTC),
+                           id="visitor_checks_now", replace_existing=True, misfire_grace_time=600)
+
+
+def next_run_words(job_id: str) -> str | None:
+    """«завтра в 08:10» · «12.11 в 08:10» (or «сегодня в …») — when the job
+    really runs next, in the owner's time; None without a scheduler, so the
+    text falls back to a promise it can keep."""
+    job = _scheduler.get_job(job_id) if _scheduler is not None else None
+    when = getattr(job, "next_run_time", None)
+    if when is None:
+        return None
+    local, today = to_local(when), now_local().date()
+    day = ("сегодня" if local.date() == today else "завтра" if local.date() == today + timedelta(days=1)
+           else local.strftime("%d.%m"))
+    return f"{day} в {local:%H:%M}"
+
+
 REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
 
 
@@ -1235,13 +1267,27 @@ async def run_region_checks():
             await asyncio.sleep(REGION_PAUSE)
 
 
+async def _registrar_of(host: str) -> str | None:
+    """The registrar from the domain snapshot of a site on this host — that
+    is where DNS is fixed."""
+    for s in await get_all_sites():
+        h = host_of(s["url"])
+        if h and host in (h, registrable_domain(h)):
+            registrar = ((await sitestatus.get(s["id"])).get("domain") or {}).get("registrar")
+            if registrar:
+                return registrar
+    return None
+
+
 async def run_dns_checks():
     """The new baseline is committed only after the alert is delivered or
-    queued — otherwise a failed send would swallow the change forever."""
+    queued — otherwise a failed send would swallow the change forever.
+    The registrar's panel (when known) is a tap away: DNS is fixed there."""
     for change in await check_all_dns(await get_active_host_urls()):
         with _isolated(f"DNS alert for {change['host']} {change['rtype']}"):
             sent = await notifier.send(format_dns_change(change),
-                                       Priority.CRITICAL if change["critical"] else Priority.NORMAL)
+                                       Priority.CRITICAL if change["critical"] else Priority.NORMAL,
+                                       reply_markup=domain_keyboard(await _registrar_of(change["host"])))
             # A name that stopped answering keeps its baseline: «не отвечает»
             # is not an answer, and the last known one is what the owner compares with.
             if sent and not change.get("failing"):
@@ -1278,7 +1324,7 @@ def schedule_mail_recheck():
 def _mail_keyboard(r):
     status = ([InlineKeyboardButton(text=f"↗️ Статус {r.provider}", url=r.status_page)]
               if r.kind == "mail" and r.status_page else [])
-    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}")]
+    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}:a")]
     return explain_keyboard(r.incident_id, status, mail)
 
 
@@ -1297,7 +1343,7 @@ async def run_security_checks():
 
 def _security_keyboard(r):
     return explain_keyboard(r.incident_id, [InlineKeyboardButton(text="🛡 Безопасность",
-                                                                 callback_data=f"sec:{r.site_id}")])
+                                                                 callback_data=f"sec:{r.site_id}:a")])
 
 
 @_once("visitor_checks", mark=True)
@@ -1315,7 +1361,7 @@ async def run_visitor_checks():
 def _visitors_keyboard(r):
     return explain_keyboard(r.incident_id,
                             [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(r.url))],
-                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
+                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}:a")])
 
 
 @_once("index_checks", mark=True)
@@ -1492,7 +1538,7 @@ async def run_heartbeat_watch():
                             f"работает ли «{esc(job)}».\n\n"
                             f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
                             f"Нет — «Удалить».")
-                sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
+                sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job], seen={job} if last else set()))
                 if sent:
                     await set_state(f"hb_alerted:{job}", now.isoformat())
             elif not overdue and alerted:
@@ -2007,12 +2053,18 @@ async def run_self_heartbeat():
             f"🟠 Сторож {name} не на связи уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
             f"Пока так, если я упаду, тебе никто не напишет.\n\n"
             f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
-            f"вставь новую: ⚙️ Настройки → 🔌 Подключения → 🛡 Внешний сторож.")
+            f"вставь новую: кнопка ниже.", reply_markup=_WATCHDOG_KB)
         if sent:
             await set_state("watchdog_alerted", "1")
     elif not failing and alerted:
         await set_state("watchdog_alerted", None)
         await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
+
+
+# «onb:watchdog» answers below the message (handlers.setup): the alert and
+# the digest stay as they were.
+_WATCHDOG_KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🛡 Внешний сторож", callback_data="onb:watchdog")]])
 
 
 @_once("retention", mark=True)
@@ -2154,10 +2206,8 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
     # Search findings are open incidents and already listed above. This line
     # says only what that list cannot: all clear, or which audits failed.
     # API checks are not audited — a stale audit from before must not speak.
-    now = datetime.now(UTC)
     pages = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
-    first_audit = [s for s in pages if (added := parse_sqlite_utc(s.get("added_at")))
-                   and timedelta(hours=SEO_GRACE_HOURS) <= now - added < timedelta(hours=SEO_GRACE_HOURS + 24)]
+    first_audit = [s for s in pages if await get_state(f"seo_first_audit:{s['id']}")]
     listed = {i["site_id"] for i in incidents if i["check_type"] == "seo"} | {s["id"] for s in first_audit}
     seo_chips, audited, all_clear = [], False, True
     for s in pages:
@@ -2183,6 +2233,7 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
                        "🔴 сайт закрыт от поиска" if last["status"] == "critical" else "⚠️ не смог проверить")
             extras.append(f"🔎 Первый аудит {esc(site_label(s['url']))} для поиска и ИИ: {verdict} — "
                           f"подробности в «🔎 Поиск и ИИ»")
+            await set_state(f"seo_first_audit:{s['id']}", None)      # said once
 
     try:
         disk = await check_disk(auto_cleanup=False)
@@ -2244,8 +2295,13 @@ async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
     text = clip(await _status_snapshot("morning_late" if late else "morning", extras=True))
-    silent_jobs = [j.name for j in await heartbeats.job_states() if j.needs_you]
-    await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
+    silent = [j for j in await heartbeats.job_states() if j.needs_you]
+    kb = heartbeat_keyboard([j.name for j in silent], seen={j.name for j in silent if j.ago is not None})
+    if await heartbeats.watchdog() is None:
+        # The digest says there is no watchdog: the way to one is a tap away.
+        kb = InlineKeyboardMarkup(inline_keyboard=[*(kb.inline_keyboard if kb else []),
+                                                  *_WATCHDOG_KB.inline_keyboard])
+    await notifier.send(text, Priority.DIGEST, reply_markup=kb)
 
 
 @_once("evening_report", mark=True)

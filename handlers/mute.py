@@ -28,7 +28,7 @@ async def _mute(arg: str) -> str | None:
         return None
     deadline = await notifier.set_mute(duration)
     return (f"🔕 Молчу до {to_local(deadline).strftime('%d.%m %H:%M')}.\n"
-            f"Если сайт ляжет — всё равно позвоню. Остальное пришлю потом одним сообщением.\n"
+            f"{notifier.what_rings_through_mute()}\n"
             f"Снова писать обо всём: /unmute")
 
 
@@ -61,8 +61,7 @@ async def cb_mute_menu(call: CallbackQuery):
     deadline = await notifier.mute_until()
     status = (f"🔕 Сейчас приглушено до {to_local(deadline).strftime('%d.%m %H:%M')}\n\n"
               if deadline else "")
-    await render(call, f"{status}На сколько замолчать? Если сайт ляжет — всё равно позвоню.\n"
-                       "(критические — «сайт лежит» — всё равно придут)", _mute_menu())
+    await render(call, f"{status}На сколько замолчать?\n{notifier.what_rings_through_mute()}", _mute_menu())
 
 
 @router.callback_query(F.data.startswith("mute:"))
