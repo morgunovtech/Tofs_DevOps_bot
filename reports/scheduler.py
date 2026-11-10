@@ -1021,6 +1021,11 @@ async def run_container_watch():
             if e.get("api_down"):
                 await _container_note("docker_api_down", True, (
                     "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
+                    "диска сейчас не работают: сокет Docker принадлежит группе root: нужна "
+                    "<code>ALLOW_ROOT_GROUP_SOCKET=1</code> в .env или отфильтрованный доступ через "
+                    "socket-proxy (docs/SETUP.md).")
+                    if e["mounted"] and config.docker_socket_root_group else (
+                    "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
                     "диска сейчас не работают. Обычно помогает перезапуск контейнера бота: "
                     "<code>docker compose up -d</code> (сокет смонтируется заново).")
                     if e["mounted"] else (

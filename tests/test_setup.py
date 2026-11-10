@@ -83,7 +83,12 @@ async def test_public_url_warning_and_docker_on_self_host(bot, db, cfg, monkeypa
     monkeypatch.setattr(docker_api, "ping", answers)
     assert _by_key(await _items(monkeypatch))["docker"].status == "ok"
     monkeypatch.setattr(docker_api, "ping", silent)          # the socket is there, Docker is not
-    assert _by_key(await _items(monkeypatch))["docker"].status == "warn"
+    item = _by_key(await _items(monkeypatch))["docker"]
+    assert item.status == "warn" and "docker compose up -d" in item.detail
+    cfg(docker_socket_root_group=True)                        # entrypoint.sh refused group 0
+    item = _by_key(await _items(monkeypatch))["docker"]
+    assert item.status == "warn" and "ALLOW_ROOT_GROUP_SOCKET=1" in item.detail
+    assert "docker compose up -d" not in item.detail
     assert not public_urls.is_public()
     call = FakeCall("setup:url")
     await setup.cb_guide_url(call)

@@ -177,7 +177,62 @@
 
 **Google, Яндекс, Cloudflare** — подключаются прямо из бота: ⚙️ Настройки → **🔌 Подключения** → кнопка у нужного пункта. Бот покажет два-три шага, примет токен или JSON-ключ сообщением, проверит его живым запросом и сохранит в своей базе. Переменные в `.env` для этого больше не нужны, но по-прежнему работают как запасной вариант (все они описаны в [.env.example](../.env.example)).
 
-> **Чего на Railway не будет:** функций, которым нужен доступ к Docker на твоём собственном сервере — автоперезапуска *других* контейнеров и автоочистки диска (`AUTORESTART_CONTAINERS`, `AUTO_CLEANUP`). Они нужны только при самостоятельном хостинге на VPS; на Railway их просто нет, всё остальное работает полностью. Если `AUTORESTART_CONTAINERS` задан, а сокет Docker не смонтирован (или Docker перестал отвечать), бот об этом скажет (🟠), а не промолчит.
+> **Чего на Railway не будет:** функций, которым нужен доступ к Docker на твоём собственном сервере — автоперезапуска *других* контейнеров и автоочистки диска (`AUTORESTART_CONTAINERS`, `AUTO_CLEANUP`). Они нужны только при самостоятельном хостинге на VPS; на Railway их просто нет, всё остальное работает полностью. Если `AUTORESTART_CONTAINERS` задан, а сокет Docker не смонтирован (или Docker перестал отвечать), бот об этом скажет (🟠), а не промолчит. Как дать боту доступ к Docker на своём сервере и не отдать ему весь сервер — раздел [«Свой сервер: доступ к Docker»](#свой-сервер-доступ-к-docker-по-желанию) ниже.
+
+---
+
+## Свой сервер: доступ к Docker (по желанию)
+
+Две функции работают только с доступом к Docker: автоперезапуск контейнеров (`AUTORESTART_CONTAINERS`) и очистка диска (`AUTO_CLEANUP=1`). Полный `/var/run/docker.sock` — это права root на всём сервере: код, попавший в процесс бота, сможет запустить привилегированный контейнер и сделать с машиной что угодно. Поэтому три варианта, от самого безопасного:
+
+**А. Без доступа к Docker** (проще и безопаснее всего). У своих сервисов в compose поставь `restart: unless-stopped` — упавший контейнер Docker поднимет сам (зависший «unhealthy» — нет). Очистку диска отдай cron на хосте: `17 4 * * * docker image prune -f && docker builder prune -f --filter until=24h`. Бот при этом только сообщает о проблемах, ничего не чинит.
+
+**Б. Отфильтрованный доступ через socket-proxy.** Между ботом и Docker ставится крошечный прокси, который пропускает только то, что бот реально делает: список контейнеров и их состояние, перезапуск, очистку висячих образов и кэша сборки. Создать контейнер, выполнить в нём команду или скачать образ через него нельзя — такие пути получают 403 (так по README и исходнику wollomatic/socket-proxy 1.13.2; запуском прокси в этом проекте не проверялось). Параметры запроса прокси не проверяет: фильтр «только висячие образы» остаётся в коде бота.
+
+1. Рядом с `docker-compose.yml` создай файл `docker-compose.override.yml` (Compose подхватит его сам), строку сокета в `docker-compose.yml` оставь закомментированной:
+   ```yaml
+   # A filtered Docker API for the bot: list, inspect, restart, prune — nothing else.
+   services:
+     bot:
+       volumes:
+         - docker_proxy:/run/docker-proxy          # the filtered API, NOT the real docker.sock
+       environment:
+         - DOCKER_SOCKET=/run/docker-proxy/docker.sock
+       depends_on: [docker-proxy]
+     docker-proxy:
+       image: wollomatic/socket-proxy:1.13.2
+       restart: always
+       network_mode: none
+       read_only: true
+       cap_drop: [ALL]
+       security_opt: [no-new-privileges]
+       mem_limit: 64M
+       user: "65534:${DOCKER_GID:?add DOCKER_GID to .env: echo DOCKER_GID=$(stat -c %g /var/run/docker.sock) >> .env}"
+       environment:
+         SP_PROXYSOCKETENDPOINT: /run/docker-proxy/docker.sock
+         SP_PROXYSOCKETENDPOINTFILEMODE: "0666"
+         SP_ALLOW_GET: '(/v[0-9.]+)?/(_ping|containers/json|containers/[a-zA-Z0-9][a-zA-Z0-9_.-]*/json)'
+         SP_ALLOW_POST: '(/v[0-9.]+)?/(containers/[a-zA-Z0-9][a-zA-Z0-9_.-]*/restart|images/prune|build/prune)'
+       volumes:
+         - /var/run/docker.sock:/var/run/docker.sock:ro
+         - docker_proxy:/run/docker-proxy
+   volumes:
+     docker_proxy:
+       driver_opts: {type: tmpfs, device: tmpfs, o: "size=64k,uid=65534,gid=65534,mode=0755"}
+   ```
+2. Запиши в `.env` группу сокета Docker и подними сервисы:
+   ```bash
+   echo DOCKER_GID=$(stat -c %g /var/run/docker.sock) >> .env
+   docker compose up -d
+   ```
+   Команда со `stat -c` — для Linux с обычным Docker. На **Docker Desktop** и **rootless Docker** сокет принадлежит root — пиши `DOCKER_GID=0`; у rootless Docker сокет лежит в `${XDG_RUNTIME_DIR}/docker.sock` — подставь этот путь в строку тома (`- ${XDG_RUNTIME_DIR}/docker.sock:/var/run/docker.sock:ro`). На Docker Desktop вариант не проверялся.
+3. Проверка: в боте ⚙️ Настройки → 🔌 Подключения → «🐳 docker socket» зелёный; после одного прогона проверки контейнеров (до 10 минут) `docker compose logs docker-proxy | grep -c 403` → `0`. Если там не ноль, прокси режет запрос, который бот делает: сверь список путей в `SP_ALLOW_GET`/`SP_ALLOW_POST` с `grep -n 'http://localhost' services/docker_api.py`.
+
+В проде образ прокси лучше закрепить по digest (`wollomatic/socket-proxy@sha256:…`).
+
+**В. Полный сокет.** Раскомментируй строку `- /var/run/docker.sock:/var/run/docker.sock` в `docker-compose.yml` — только на сервере, где больше ничего нет и который полностью твой.
+
+**Сокет принадлежит группе root** (Docker Desktop, rootless Docker, часть дистрибутивов): при варианте В бот не получит группу root, функции Docker останутся выключенными, а в логе контейнера будет строка `entrypoint: … belongs to group root`; в боте «🔌 Подключения» и 🟠-заметка скажут то же. Выход — вариант Б (с поправками выше) или строка `ALLOW_ROOT_GROUP_SOCKET=1` в `.env`: это осознанный выбор отдать боту группу root в контейнере.
 
 ---
 

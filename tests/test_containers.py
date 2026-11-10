@@ -158,6 +158,21 @@ async def test_a_silent_docker_is_said_once_and_its_return_too(bot, db, docker, 
     assert len(bot.sent) == 2 and "снова отвечает" in bot.sent[1]["text"]
 
 
+async def test_a_root_group_socket_names_the_fix_not_a_restart(bot, db, docker, cfg):
+    """entrypoint.sh refused group 0 (DOCKER_SOCKET_ROOT_GROUP=1): the socket
+    is mounted and silent for the bot, but `docker compose up -d` is no fix."""
+    dead = _dead_socket()
+    try:
+        cfg(docker_socket=str(dead), docker_socket_root_group=True)
+        await _tick(docker)
+    finally:
+        shutil.rmtree(dead.parent, ignore_errors=True)
+    assert len(bot.sent) == 1
+    text = bot.sent[0]["text"]
+    assert "группе root" in text and "ALLOW_ROOT_GROUP_SOCKET=1" in text and "socket-proxy" in text
+    assert "docker compose up -d" not in text
+
+
 async def test_the_bots_own_container_is_never_restarted(bot, db, docker, monkeypatch, tmp_path):
     own = "ab" * 32
     mountinfo = tmp_path / "mountinfo"

@@ -237,6 +237,11 @@ async def build_items() -> list[Item]:
         # A live probe, not the file's existence: a socket nobody listens on is a mounted file too.
         if docker_api.docker_available() and await docker_api.ping():
             items.append(Item("docker", "ok", "docker socket"))
+        elif docker_api.docker_available() and config.docker_socket_root_group:
+            items.append(Item("docker", "warn", "docker socket",
+                              "сокет Docker принадлежит группе root: нужна ALLOW_ROOT_GROUP_SOCKET=1 в .env "
+                              "или отфильтрованный доступ через socket-proxy (docs/SETUP.md)",
+                              ("🐳 Как подключить", "setup:docker")))
         elif docker_api.docker_available():
             items.append(Item("docker", "warn", "docker socket",
                               "сокет смонтирован, но Docker не отвечает — автоперезапуск и очистка не работают; "
@@ -511,7 +516,8 @@ async def cb_guide_docker(call: CallbackQuery):
                         "его я не перезапускаю\n"
                         "3. <code>docker compose up -d</code> и «🔁 Проверить снова».\n\n"
                         "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
-                        "Включай только на сервере, который полностью твой."), _guide_kb())
+                        "Включай только на сервере, который полностью твой. Безопаснее — отфильтрованный "
+                        "доступ через socket-proxy: docs/SETUP.md, «Свой сервер: доступ к Docker»."), _guide_kb())
 
 
 def _watchdog_kb() -> InlineKeyboardMarkup:
