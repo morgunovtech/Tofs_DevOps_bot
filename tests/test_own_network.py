@@ -101,7 +101,9 @@ async def test_no_network_on_the_bot_opens_no_incidents_and_says_it_once(bot, db
         assert (await get_uptime_stats(sid))["total_checks"] == 0   # and no downtime
         assert (await sitestatus.get(sid))["avail"]["status"] == "unknown"
         assert await netcheck.outage_since() is not None
-        assert (await status_page.build_payload())["sites"][0]["state"] == "nodata"
+        # The sites live on 127.0.0.1 — an internal address is never published at all;
+        # the «nodata» verdict itself is covered in tests/test_status_page.py.
+        assert (await status_page.build_payload())["sites"] == []
 
         network["up"] = True                                 # the network is back
         await _tick()
@@ -229,7 +231,7 @@ async def test_down_from_here_but_up_outside_is_not_downtime(db, monkeypatch):
         assert r.status in ("unknown", "error")
         if r.status == "unknown":
             assert "снаружи открывается" in r.error
-        assert (await status_page.build_payload())["sites"][0]["state"] != "down"
+        assert (await status_page.build_payload())["sites"] == []        # internal: not on the page at all
         assert (await get_uptime_stats(sid))["total_checks"] == 0       # nothing known about the site ≠ its downtime
     assert await get_active_incidents() == []
     assert r.status == "unknown"

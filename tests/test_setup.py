@@ -99,8 +99,8 @@ async def test_one_tap_fixes(bot, db, cfg):
     cfg(heartbeat_secret_env="")
     call = FakeCall("setup:sp_on")
     await setup.cb_status_page_on(call)
-    assert settings.status_page_enabled() and "/status" in call.message.texts[-1]
-    await settings.set_status_page(False)
+    assert not settings.status_page_enabled() and "Её увидит любой" in call.message.texts[-1]
+    assert "← Назад" in buttons(call.message.reply_markup)
 
     call = FakeCall("setup:so:off")
     await setup.cb_second_opinion(call)

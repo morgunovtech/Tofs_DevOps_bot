@@ -32,6 +32,7 @@ from handlers.common import (
     forget_secret,
     render,
 )
+from handlers.settings import publish_screen
 from reports.scheduler import audit_time
 from services import (
     automation,
@@ -477,12 +478,10 @@ async def msg_key_without_wizard(message: Message):
 
 @router.callback_query(F.data == "setup:sp_on")
 async def cb_status_page_on(call: CallbackQuery):
-    if not await ack(call, "Статус-страница включена"):
-        await call.message.answer(STALE_TAP)
-        return
-    await settings.set_status_page(True)
-    await render(call, f"🌐 Статус-страница включена:\n{esc(public_urls.status_page_url())}\n\n"
-                       f"Выключить можно в ⚙️ Настройках.", back_button("← К подключениям", "setup:check"))
+    """Not one tap: the same question as in ⚙️ — what becomes public, and a
+    secret link; the screen after publishing leads back here."""
+    await ack(call)
+    await render(call, *await publish_screen(back="setup:check"))
 
 
 def _switch_source(key: str, env_name: str, env_value: bool) -> str:

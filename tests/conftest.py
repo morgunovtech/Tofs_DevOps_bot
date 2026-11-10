@@ -168,6 +168,7 @@ def _fresh_module_state(monkeypatch):
     """Module-level caches, rate limits, schedules and asyncio locks start
     clean in every test: results must not depend on the order of the tests."""
     monkeypatch.setattr(status_page, "_cache", None)
+    monkeypatch.setattr(status_page, "_lock", asyncio.Lock())
     status_page._badge_cache.clear()
     for window in (webhook._ip_hits, webhook._site_hits, webhook._bad_hits, webhook._notified,
                    webhook._held, webhook._warned):

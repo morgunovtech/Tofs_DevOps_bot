@@ -4,7 +4,6 @@ connections (the test alert lives there), status page, feedback,
 export/import. What is watched — sites, tasks and bots — is on the main
 screen, not here."""
 
-import contextlib
 import secrets as _secrets
 
 from aiogram import F, Router
@@ -30,7 +29,8 @@ from services import (
     yandex_webmaster,
 )
 from utils.clock import now_local
-from utils.text import esc
+from utils.text import esc, plural
+from web import status_page
 
 
 class TzForm(StatesGroup):
@@ -207,14 +207,9 @@ async def cb_reports(call: CallbackQuery):
 @router.callback_query(F.data.startswith("set_"))
 async def cb_settings_pick(call: CallbackQuery):
     kind, _, value = call.data.partition(":")
-    if kind == "set_sp" and value == "on":
-        # Publishing the status page waits for a fresh tap (STALE_TAP rule); switching off is always safe.
-        if not await ack(call, "Сохранено ✅"):
-            await call.message.answer(STALE_TAP)
-            return
-        await settings.set_status_page(True)
-        with contextlib.suppress(TelegramBadRequest):
-            await show_status_page(call)
+    if kind == "set_sp" and value == "on" and not settings.status_page_enabled():
+        await ack(call)
+        await render(call, *await publish_screen(back="menu_statuspage"))   # what becomes public — first
         return
     if kind == "set_m" and _offered(value, MORNING_HOURS) is not None:
         await settings.set_morning_hour(int(value))
@@ -303,7 +298,7 @@ async def msg_tz(message: Message, state: FSMContext):
 
 # ── Status page ──────────────────────────────────────────────────────────────
 
-async def show_status_page(target):
+async def show_status_page(target, back: tuple[str, str] = ("← Для посетителей", "menu_visitors")):
     on = settings.status_page_enabled()
     slug_src = integrations.source("status_page_slug")
     lines = ["🌐 Публичная статус-страница", ""]
@@ -321,13 +316,14 @@ async def show_status_page(target):
         lines.append("\n🔑 Секретная ссылка включена: без секретного хвоста страница отвечает «не найдено».")
     rows = [[InlineKeyboardButton(text="🌐 Выключить" if on else "🌐 Включить",
                                   callback_data=f"set_sp:{'off' if on else 'on'}")]]
-    if slug_src != "env":
-        rows.append([InlineKeyboardButton(
-            text="🔑 Секретная ссылка: выключить" if slug_src == "bot" else "🔑 Сделать ссылку секретной",
-            callback_data=f"sp_secret:{'off' if slug_src == 'bot' else 'on'}")])
+    if slug_src == "bot":
+        rows.append([InlineKeyboardButton(text="🔑 Секретная ссылка: выключить", callback_data="sp_secret:off"),
+                     InlineKeyboardButton(text="🔄 Новая ссылка", callback_data="sp_secret:new")])
+    elif slug_src is None:
+        rows.append([InlineKeyboardButton(text="🔑 Сделать ссылку секретной", callback_data="sp_secret:on")])
     if on and not public_urls.is_public():
         rows.append([InlineKeyboardButton(text="🌍 Как задать адрес", callback_data="setup:url")])
-    rows.append([InlineKeyboardButton(text="← Для посетителей", callback_data="menu_visitors")])
+    rows.append([InlineKeyboardButton(text=back[0], callback_data=back[1])])
     await render(target, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -355,11 +351,73 @@ async def cb_status_page(call: CallbackQuery):
     await show_status_page(call)
 
 
-@router.callback_query(F.data.startswith("sp_secret:"))
-async def cb_status_page_secret(call: CallbackQuery):
-    on = call.data.endswith(":on")
-    if not await ack(call, "Готово"):
+# Where the owner came from: «⚙️ → 🌐» or «🔌 Подключения → ➕ Подключить ещё».
+_SP_DOORS = {"": ("← Для посетителей", "menu_visitors"), "setup": ("← К подключениям", "setup:check")}
+
+
+async def publish_screen(back: str) -> tuple[str, InlineKeyboardMarkup]:
+    """One confirmation for both doors (⚙️ → 🌐 and 🔌 → ➕ Подключить ещё):
+    what becomes public, shown before it does. The door is carried in the
+    callbacks, so the screen after publishing leads back to it."""
+    door = ":setup" if back.startswith("setup:") else ""
+    labels = await status_page.public_labels()
+    shown = ", ".join(labels[:5]) + (f" и ещё {len(labels) - 5}" if len(labels) > 5 else "")
+    text = ("🌐 Включить статус-страницу?\n\n"
+            f"Её увидит любой, кто узнает адрес: {len(labels)} "
+            f"{plural(len(labels), 'сайт', 'сайта', 'сайтов')}{' — ' + esc(shown) if labels else ''} — "
+            "работают ли, аптайм и история проблем без подробностей. Порты, tcp/ping-проверки, внутренние "
+            "адреса и пути API на странице не показываются.\n\n"
+            "Открытая страница живёт по адресу …/status — его легко угадать. С секретной ссылкой без "
+            "секретного хвоста страница отвечает «не найдено».")
+    rows = [[InlineKeyboardButton(text="🔑 Включить с секретной ссылкой", callback_data=f"sp_pub:secret{door}")],
+            [InlineKeyboardButton(text="🌐 Включить открытой", callback_data=f"sp_pub:open{door}")],
+            [InlineKeyboardButton(text="← Назад", callback_data=back)]]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("sp_pub:"))
+async def cb_status_page_publish(call: CallbackQuery):
+    """ack first: a tap from the queue after a restart must not publish the
+    page. «Открытой» means open — a slug the bot issued earlier is dropped,
+    or /status would answer «не найдено» against the screen's words."""
+    if not await ack(call):
         await call.message.answer(STALE_TAP)
         return
-    await integrations.set_value("status_page_slug", _secrets.token_urlsafe(8) if on else None)
+    parts = call.data.split(":")
+    action, door = parts[1], (parts[2] if len(parts) > 2 else "")
+    if action not in ("secret", "open") or door not in _SP_DOORS:
+        return
+    src = integrations.source("status_page_slug")
+    if action == "secret" and not src:
+        await integrations.set_value("status_page_slug", _secrets.token_urlsafe(8))
+    elif action == "open" and src == "bot":
+        await integrations.set_value("status_page_slug", None)
+    await settings.set_status_page(True)
+    await show_status_page(call, back=_SP_DOORS[door])
+
+
+@router.callback_query(F.data.startswith("sp_secret:"))
+async def cb_status_page_secret(call: CallbackQuery):
+    """ack first (a stale tap does nothing), and idempotent: a second tap or
+    an old screen never re-issues the link already handed out. A new link
+    and an open page — each after a question. The result is the screen
+    itself, re-rendered."""
+    if not await ack(call):
+        await call.message.answer(STALE_TAP)
+        return
+    action, src = call.data.split(":", 1)[1], integrations.source("status_page_slug")
+    if action == "on" and src is None:
+        await integrations.set_value("status_page_slug", _secrets.token_urlsafe(8))
+    elif action in ("off", "new") and src == "bot":
+        question = ("Выключить секретную ссылку? Страница станет доступна всем по …/status." if action == "off"
+                    else "Выпустить новую секретную ссылку? Прежняя, которую ты уже раздал, перестанет работать.")
+        await render(call, question, InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Да", callback_data=f"sp_secret:{action}_ok")],
+            [InlineKeyboardButton(text="Отмена", callback_data="menu_statuspage")]]))
+        return
+    elif action == "off_ok" and src == "bot":
+        await integrations.set_value("status_page_slug", None)
+    elif action == "new_ok" and src == "bot":
+        await integrations.set_value("status_page_slug", _secrets.token_urlsafe(8))
+    # anything else is already so («Уже так»): the screen says what is
     await show_status_page(call)

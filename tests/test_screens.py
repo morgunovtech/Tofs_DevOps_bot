@@ -474,12 +474,15 @@ async def test_timezone_ring_and_status_page_screens(bot, db):
     assert "Выключена" in call.message.texts[-1]
     call = FakeCall("set_sp:on")
     await settings.cb_settings_pick(call)
+    assert "Её увидит любой" in call.message.texts[-1]                 # asked first
+    call = FakeCall("sp_pub:open")
+    await settings.cb_status_page_publish(call)
     assert "Включена: https://bot.example.test/status" in call.message.texts[-1]
     call = FakeCall("sp_secret:on")
     await settings.cb_status_page_secret(call)
     slug = integrations.status_page_slug()
     assert slug and slug in call.message.texts[-1] and "Секретная ссылка включена" in call.message.texts[-1]
-    await settings.cb_status_page_secret(FakeCall("sp_secret:off"))
+    await settings.cb_status_page_secret(FakeCall("sp_secret:off_ok"))
     assert not integrations.status_page_slug()
     await settings.cb_settings_pick(FakeCall("set_sp:off"))
 
