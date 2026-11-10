@@ -104,9 +104,19 @@ class FakeNet:
         }
         self.down: set[str] = set()
         self.asked: list[str] = []
-        monkeypatch.setattr(mail_checker, "_mx_sync", lambda d: self.zone.get(("MX", d), []))
-        monkeypatch.setattr(mail_checker, "_txt_sync", lambda n: self.zone.get(("TXT", n), []))
-        monkeypatch.setattr(mail_checker, "_resolve_sync", lambda h, t: self.zone.get((t, h), []))
+
+        async def mx(domain):
+            return self.zone.get(("MX", domain), [])
+
+        async def txt(name):
+            return self.zone.get(("TXT", name), [])
+
+        async def resolve(host, rtype):
+            return self.zone.get((rtype, host), [])
+
+        monkeypatch.setattr(mail_checker, "_mx", mx)
+        monkeypatch.setattr(mail_checker, "_txt", txt)
+        monkeypatch.setattr(mail_checker, "resolve", resolve)
         monkeypatch.setattr(mail_checker, "second_opinion_up", self.up)
         monkeypatch.setattr(integrations, "second_opinion_enabled", lambda: True)
 
@@ -234,7 +244,11 @@ async def test_mx_gone_rings(db, monkeypatch):
     """Letters stop arriving when every MX disappears — that is said loudly,
     a mere change of MX quietly."""
     answers = {"MX": ["mail.protonmail.ch"]}
-    monkeypatch.setattr(dns_checker, "_resolve_sync", lambda host, rtype: answers.get(rtype, []))
+
+    async def resolve(host, rtype):
+        return answers.get(rtype, [])
+
+    monkeypatch.setattr(dns_checker, "resolve", resolve)
     assert await dns_checker._check_record("ex.test", "MX") is None              # the baseline
     answers["MX"] = []
     change = await dns_checker._check_record("ex.test", "MX")

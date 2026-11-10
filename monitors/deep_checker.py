@@ -19,7 +19,7 @@ from db.database import (
 from monitors.base import DeepResult, gather_checks
 from monitors.sitemap import TIMEOUT, pick_sample, sitemap_urls
 from services import sitestatus
-from utils.net import owner_connector
+from utils.net import CrawlResolver, owner_connector
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,10 @@ def _path(page: str, site_url: str) -> str:
 async def check_deep(url: str) -> DeepResult:
     site_id = await get_or_create_site(url)
     r = DeepResult(url=url, site_id=site_id)
-    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT},
-                                     connector=owner_connector(url, limit=5)) as session:
+    # The sitemap's pages are the site's own, but the crawl resolver keeps
+    # even that lookup out of the pool the availability checks resolve in.
+    connector = owner_connector(url, limit=5, resolver=CrawlResolver())
+    async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}, connector=connector) as session:
         pages = await sitemap_urls(session, url)
         if pages is None:
             return r   # sitemap unreadable right now: no verdict either way

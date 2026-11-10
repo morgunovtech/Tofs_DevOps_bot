@@ -3,8 +3,8 @@ serial number is tracked between checks: a cert that is about to expire
 and has NOT changed means auto-renewal is failing)."""
 
 import asyncio
+import contextlib
 import logging
-import socket
 import ssl
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -18,14 +18,29 @@ from services import sitestatus
 logger = logging.getLogger(__name__)
 
 SSL_THRESHOLDS = [0, 1, 3, 7, 14]
+HANDSHAKE_TIMEOUT = 10   # s: a host that takes TCP but never finishes TLS
+CONNECT_BUDGET = 20      # s: the whole fetch, the name lookup included
 
 
-def _fetch_cert(hostname: str, port: int) -> SslInfo:
-    """Blocking cert fetch (run in a thread)."""
+async def _fetch_cert(hostname: str, port: int) -> SslInfo:
+    """The certificate via asyncio's own TLS — no thread is held while a
+    stalled host keeps the handshake hanging (that pool resolves the names
+    of every HTTP check)."""
     ctx = ssl.create_default_context()
-    with socket.create_connection((hostname, port), timeout=10) as sock:
-        with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
-            cert = ssock.getpeercert()
+    _, writer = await asyncio.wait_for(
+        asyncio.open_connection(hostname, port, ssl=ctx, server_hostname=hostname,
+                                ssl_handshake_timeout=HANDSHAKE_TIMEOUT),
+        timeout=CONNECT_BUDGET)
+    try:
+        cert = writer.get_extra_info("peercert")
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+    return _parse_cert(cert)
+
+
+def _parse_cert(cert: dict) -> SslInfo:
     fmt = "%b %d %H:%M:%S %Y %Z"
     not_after = datetime.strptime(cert["notAfter"], fmt).replace(tzinfo=UTC)
     not_before = datetime.strptime(cert["notBefore"], fmt).replace(tzinfo=UTC)
@@ -47,7 +62,7 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
     site_id = await get_or_create_site(url)
     r = SslResult(url=url, site_id=site_id)
     try:
-        info = await asyncio.to_thread(_fetch_cert, hostname, port)
+        info = await _fetch_cert(hostname, port)
         r.ssl_info = info
         # Renewal watch. Read-only checks must not update the serial — that
         # would consume the "renewed" transition before the scheduler sees it.

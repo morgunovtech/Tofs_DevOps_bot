@@ -21,9 +21,12 @@ import asyncio
 import errno
 import ipaddress
 import socket
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp.abc import AbstractResolver, ResolveResult
 
 from config import config
 from utils.urls import host_of, registrable_domain
@@ -184,3 +187,30 @@ def public_connector(**kwargs) -> GuardedConnector:
 def refused_private(exc: BaseException) -> bool:
     """The request failed because the address is internal (not a network error)."""
     return isinstance(getattr(exc, "os_error", None), PrivateAddressError) or isinstance(exc, PrivateAddressError)
+
+
+# The link crawl resolves names written by strangers; on a silent DNS each
+# lookup holds a thread for seconds. Its own small pool keeps the default
+# one — where every availability check resolves its site — free.
+_CRAWL_DNS = ThreadPoolExecutor(4, thread_name_prefix="crawl-dns")
+_DNS_FLAGS = getattr(socket, "AI_ADDRCONFIG", 0)
+
+
+class CrawlResolver(AbstractResolver):
+    """getaddrinfo for the crawl, in _CRAWL_DNS instead of the default pool."""
+
+    async def resolve(self, host: str, port: int = 0,
+                      family: socket.AddressFamily = socket.AF_INET) -> list[ResolveResult]:
+        loop = asyncio.get_running_loop()
+        infos = await loop.run_in_executor(_CRAWL_DNS, partial(
+            socket.getaddrinfo, host, port, family=family, type=socket.SOCK_STREAM, flags=_DNS_FLAGS))
+        hosts = [ResolveResult(hostname=host, host=address[0], port=address[1], family=fam, proto=proto,
+                               flags=socket.AI_NUMERICHOST | socket.AI_NUMERICSERV)
+                 for fam, _, proto, _, address in infos
+                 if fam == socket.AF_INET or (fam == socket.AF_INET6 and len(address) >= 4 and not address[3])]
+        if not hosts:
+            raise OSError(errno.EADDRNOTAVAIL, f"{host}: no usable address")
+        return hosts
+
+    async def close(self) -> None:
+        return None

@@ -125,6 +125,7 @@ class LinkCheck:
     status_code: int | None
     ok: bool
     error: str | None = None
+    definite: bool | None = None   # set when the failure itself says how sure it is
 
     @property
     def reason(self) -> str:
@@ -134,6 +135,7 @@ class LinkCheck:
 @dataclass
 class LinksResult(CheckResult):
     total_links: int = 0
+    checked: int = 0                                          # this crawl's share of total_links
     broken: list[LinkCheck] = field(default_factory=list)    # a problem: own or other site alike
     pending: list[LinkCheck] = field(default_factory=list)   # failed once (timeout/5xx), rechecking
 

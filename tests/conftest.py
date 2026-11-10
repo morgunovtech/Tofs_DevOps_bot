@@ -33,7 +33,7 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from monitors import availability, netcheck  # noqa: E402
+from monitors import availability, dns_checker, links_checker, netcheck  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
@@ -199,6 +199,8 @@ def _fresh_module_state(monkeypatch):
     netcheck.reset()
     scheduler._cannot_check_noted.clear()
     screenshots._inflight.clear()
+    monkeypatch.setattr(links_checker, "_loop_state", None)
+    monkeypatch.setattr(dns_checker, "_slots", None)
 
 
 @pytest.fixture
