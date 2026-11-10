@@ -63,11 +63,21 @@ from handlers.start import BOTTOM_SHOWN  # noqa: E402
 from reports.scheduler import (  # noqa: E402
     cancel_alert_worker,
     catch_up_after_restart,
+    clock_stepped,
     drain_alert_worker,
     rerun_seo_after_update,
     setup_scheduler,
 )
-from services import integrations, maintenance, notifier, runtime, secrets, settings, updates  # noqa: E402
+from services import (  # noqa: E402
+    health,
+    integrations,
+    maintenance,
+    notifier,
+    runtime,
+    secrets,
+    settings,
+    updates,
+)
 from utils.urls import proxy_label, proxy_problem, site_label  # noqa: E402
 from web.webhook import start_web_server  # noqa: E402
 
@@ -78,6 +88,10 @@ STOP_DRAIN_SEC = 8
 
 class ConfigError(RuntimeError):
     """A setting the bot cannot start with: one sentence in the log, exit code 2."""
+
+
+class SelfCheckFailed(RuntimeError):
+    """The in-process watchdog found a state only a restart cures: exit code 3."""
 
 
 def check_token(token: str) -> None:
@@ -215,6 +229,8 @@ async def main():
         # Reports are full of URLs — without this every message grows a
         # huge site-preview card.
         link_preview_is_disabled=True))
+    # Every Bot API call, getMe and getUpdates included, feeds the pulse.
+    bot.session.middleware(health.TelegramWatch())
     dp = Dispatcher()
     dp.include_router(router)
 
@@ -244,8 +260,19 @@ async def main():
         await on_startup(bot)
         logger.info("Starting polling...")
         # The session stays open after polling: running jobs still send alerts.
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(),
-                               close_bot_session=False)
+        polling = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(),
+                                                       close_bot_session=False))
+        # Outside APScheduler on purpose: a dead scheduler cannot stop it.
+        guard = asyncio.create_task(health.watchdog(on_clock_step=clock_stepped))
+        done, _ = await asyncio.wait({polling, guard}, return_when=asyncio.FIRST_COMPLETED)
+        if guard in done:
+            reason = guard.result()
+            await dp.stop_polling()
+            with contextlib.suppress(Exception):
+                await polling
+            raise SelfCheckFailed(reason)
+        guard.cancel()
+        await polling                      # a polling crash surfaces here
     finally:
         logger.info("Shutting down...")
         await stop(scheduler, web_runner, bot)
@@ -283,13 +310,17 @@ async def stop(scheduler, web_runner, bot) -> None:
 
 def run() -> int:
     """The exit code: 0 — stopped, 2 — a setting or the database must be put
-    right by a person (said in one sentence), 1 — anything else (with its
-    traceback)."""
+    right by a person (said in one sentence), 3 — the self-check says only a
+    restart cures it (the container's restart policy does), 1 — anything else
+    (with its traceback)."""
     try:
         asyncio.run(main())
     except (ConfigError, StartRefused) as e:
         logger.critical("%s", e)
         return 2
+    except SelfCheckFailed as e:
+        logger.error("Self-check: %s — exiting so the container restarts the bot", e)
+        return 3
     except (KeyboardInterrupt, asyncio.CancelledError):
         return 0
     except BaseException:

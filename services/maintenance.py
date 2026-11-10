@@ -6,11 +6,14 @@ the recovery of an announced fall comes through. Every alert-silencing
 code path asks one question: is_paused(site_id)."""
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 
 from db.database import get_state, set_state
 from utils.clock import now_local
 from utils.text import fmt_duration, parse_iso_utc
+
+logger = logging.getLogger(__name__)
 
 MAX_MAINT_WINDOWS = 10
 
@@ -28,13 +31,30 @@ def fix_length() -> str:
 _windows: list[dict] = []
 
 
+def _valid(w) -> bool:
+    """The one shape every window must have — from the UI, the import or a
+    restored database: a broken one would throw inside notifier.send on
+    every alert about a site."""
+    if not isinstance(w, dict):
+        return False
+    days = w.get("days") or []          # [] / no key = every day
+    return (isinstance(w.get("id"), int) and not isinstance(w.get("id"), bool)
+            and (w.get("site_id") is None or (isinstance(w["site_id"], int) and not isinstance(w["site_id"], bool)))
+            and isinstance(days, list) and all(isinstance(d, int) and 0 <= d <= 6 for d in days)
+            and all(isinstance(w.get(k), int) and 0 <= w[k] < 1440 for k in ("start_min", "end_min"))
+            and w["start_min"] != w["end_min"])
+
+
 async def load():
     global _windows
     try:
         raw = json.loads(await get_state("cfg:maint_windows") or "[]")
-        _windows = raw if isinstance(raw, list) else []
     except ValueError:
-        _windows = []
+        raw = []
+    raw = raw if isinstance(raw, list) else []
+    _windows = [w for w in raw if _valid(w)][:MAX_MAINT_WINDOWS]
+    if len(_windows) != len(raw):
+        logger.warning("Maintenance windows: ignored %d malformed or extra entries", len(raw) - len(_windows))
 
 
 async def _save():
@@ -48,17 +68,23 @@ def windows() -> list[dict]:
 
 
 async def add_window(site_id: int | None, days: list[int],
-                     start_min: int, end_min: int) -> int:
+                     start_min: int, end_min: int) -> int | None:
     """Returns the window's id (the existing one when an identical window is
-    already there — a double-tapped preset must not create duplicates)."""
+    already there — a double-tapped preset must not create duplicates), or
+    None for a window of the wrong shape or when the list is full. The UI,
+    the JSON import and a restored file all pass this one door."""
+    if not isinstance(days, list) or not all(isinstance(d, int) and not isinstance(d, bool) for d in days):
+        return None
     days = sorted(set(days))
     for w in _windows:
         if (w.get("site_id") == site_id and (w.get("days") or []) == days
                 and w.get("start_min") == start_min and w.get("end_min") == end_min):
             return w["id"]
     new_id = max((w.get("id", 0) for w in _windows), default=0) + 1
-    _windows.append({"id": new_id, "site_id": site_id, "days": days,
-                     "start_min": start_min, "end_min": end_min})
+    window = {"id": new_id, "site_id": site_id, "days": days, "start_min": start_min, "end_min": end_min}
+    if not _valid(window) or len(_windows) >= MAX_MAINT_WINDOWS:
+        return None
+    _windows.append(window)
     await _save()
     return new_id
 

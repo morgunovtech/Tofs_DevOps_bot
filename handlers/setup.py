@@ -23,6 +23,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import config
 from db.database import get_all_sites, get_state, set_state
 from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, forget_secret, render
+from reports.scheduler import audit_time
 from services import (
     crux,
     docker_api,
@@ -397,7 +398,8 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
                      "тревогу пропускают из-за выключенного звука у чата.")
         rows.append([InlineKeyboardButton(text="🔔 Пробная тревога", callback_data="ring:test")])
     if not integrations.self_heartbeat_url():
-        steps.append("🛡 Сторож — если сломаюсь я сам, тебе напишет healthchecks.io. Бесплатно, 2 минуты.")
+        steps.append("🛡 Сторож — если я остановлюсь, зависну или потеряю связь с Telegram, тебе напишет "
+                     "healthchecks.io. Бесплатно, 2 минуты.")
         rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа", callback_data="onb:watchdog")])
     if await railway.asks():
         steps.append(railway.STEP)
@@ -695,7 +697,7 @@ async def msg_crux_key(message: Message, state: FSMContext):
                              "проекте, где создан ключ, и что ключ скопирован целиком.", reply_markup=_crux_kb())
         return
     await integrations.set_value("crux_key", key)
-    await message.answer("✅ Данные Google о скорости подключены. Спрошу про твои сайты сегодня в 08:10 — числа "
+    await message.answer(f"✅ Данные Google о скорости подключены. Спрошу про твои сайты сегодня в {audit_time('visitor_checks')} — числа "
                          "появятся на карточках.", reply_markup=back_button("← К подключениям", "setup:check"))
 
 

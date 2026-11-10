@@ -20,7 +20,7 @@ from aiohttp import web
 from config import config
 from db.database import get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import heartbeats, integrations, notifier, screenshots, secrets, settings
+from services import health, heartbeats, integrations, notifier, screenshots, secrets, settings
 from services.notifier import Priority
 from utils.text import esc
 from web import status_page
@@ -173,6 +173,13 @@ async def handle_shot(request: web.Request) -> web.Response:
 
 
 async def handle_health(request: web.Request) -> web.Response:
+    """200 only while the bot does its job: the availability tick finishes,
+    Telegram answers, the database takes writes (services.health). The list
+    of what is wrong goes to the log, not to whoever asks: the page is public."""
+    problems = health.problems()
+    if problems:
+        logger.warning("/health: stale — %s", ", ".join(problems))
+        return web.json_response({"status": "stale"}, status=503)
     return web.json_response({"status": "ok"})
 
 

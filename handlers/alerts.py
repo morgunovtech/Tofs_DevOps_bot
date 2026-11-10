@@ -40,6 +40,8 @@ async def cb_alert_action(call: CallbackQuery):
         if r.ok:
             text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
                     else f"✅ {label} сейчас отвечает{speed}.")
+        elif r.transient:
+            text = f"⚠️ {label}: проверить сейчас не могу — {esc(humanize.describe_error(r.error))}."
         else:
             text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
         await call.message.answer(text)

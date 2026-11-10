@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 class CheckResult:
     url: str
     site_id: int
-    status: str = "ok"                 # ok | warning | critical | error
+    status: str = "ok"                 # ok | warning | critical | error; availability also «unknown»:
+                                       # the check says nothing about the site, the cause is on the bot's side
     error: str | None = None
     incident_new: bool = False
     incident_id: int | None = None
@@ -56,6 +57,8 @@ class AvailabilityResult(CheckResult):
     hosting: str | None = None
     # An API check (utils.urls.is_api_check): «отвечает», not «открывается».
     api: bool = False
+    # The bot's own server had no network: the tick says it once for every site.
+    own_outage: bool = False
 
 
 @dataclass

@@ -12,6 +12,7 @@ from monitors import host_checker
 from monitors.base import SslInfo, SslResult
 from reports import scheduler
 from services import gsc, heartbeats, integrations, settings, sitestatus, updates
+from utils.clock import now_local
 from utils.text import fmt_duration
 
 
@@ -327,14 +328,14 @@ async def test_a_long_absence_is_said_and_the_missed_morning_comes_late(bot, db,
     await scheduler.catch_up_after_restart()                         # a redeploy
     assert sched.get_job("downtime_note") is None
 
-    now = scheduler.now_local()
+    now = now_local()
     monkeypatch.setattr(settings, "morning_hour", lambda: now.hour)
     gone = datetime.now(UTC) - timedelta(minutes=now.minute + 90)    # before this hour's «morning»
     await set_state("alive_at", gone.isoformat())
     await scheduler.catch_up_after_restart()
     job = sched.get_job("downtime_note")
     assert job is not None
-    assert (sched.get_job("late_morning_report") is not None) == (now.hour < scheduler.LATE_MORNING_UNTIL)
+    assert (sched.get_job("catchup:morning_report") is not None) == (now.hour < scheduler.LATE_MORNING_UNTIL)
 
     async with await _site_server(200) as server:
         await db.activate_or_create_site(str(server.make_url("")).rstrip("/"))

@@ -12,6 +12,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from aiogram.types import FSInputFile, InlineKeyboardButton, Message
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MAX_INSTANCES
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -39,7 +40,7 @@ from db.database import (
     set_state,
     shareable_copy,
 )
-from monitors import region
+from monitors import netcheck, region
 from monitors.availability import check_all, check_availability
 from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
@@ -103,7 +104,8 @@ from services.actions import (
     trigger_redeploy,
 )
 from services.notifier import Priority
-from utils.clock import local_tz, now_local, to_local
+from utils import validate
+from utils.clock import local_tz, to_local
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
 
@@ -119,6 +121,9 @@ _slow_streak: dict[int, int] = {}
 # Sites already told about «down from here, up from outside» — said once per
 # episode, forgotten as soon as the site opens from the bot's network again.
 _ext_ok_noted: set[int] = set()
+_cannot_check_noted: set[int] = set()   # sites already told «не могу проверить» this episode
+OUTAGE_REMIND_AFTER = timedelta(hours=1)
+OUTAGE_REMIND_EVERY = timedelta(hours=24)
 # Per-site schedule (site_id → next due, UTC). The job ticks every minute
 # and checks only the sites whose time has come. In-memory on purpose:
 # after a restart everything is due immediately — a "check everything on
@@ -147,34 +152,42 @@ def _isolated(what: str):
         logger.exception("%s failed", what)
 
 
-MAX_INTERVAL_MIN = 24 * 60
 DEFAULT_SLOW_MS = 3000
 
 
 def _interval_min(site: dict) -> int:
-    """Minutes between checks of one site, always 1..1440: a 0, a negative
-    or an absurd value from an import must not break the tick for every
-    site (OverflowError in the date arithmetic)."""
-    try:
-        minutes = int(site.get("check_interval_min") or config.check_interval_minutes)
-    except (TypeError, ValueError, OverflowError):
-        minutes = 5
-    return min(max(minutes, 1), MAX_INTERVAL_MIN)
+    """Minutes between checks of one site, always 1..1440 (the chat's own
+    rule, utils.validate): a 0, a negative or an absurd value from an old
+    import or a restored DB must not break the tick for every site
+    (OverflowError in the date arithmetic)."""
+    minutes = validate.int_in(site.get("check_interval_min"), *validate.CHECK_INTERVAL_MIN)
+    if minutes is None:
+        minutes = validate.int_in(config.check_interval_minutes, *validate.CHECK_INTERVAL_MIN)
+    return minutes if minutes is not None else 5
 
 
 def _slow_ms(site: dict) -> int:
-    """«Slow» threshold of one site; 0 or negative would call every answer slow."""
-    try:
-        ms = int(site.get("slow_ms") or config.slow_response_ms)
-    except (TypeError, ValueError, OverflowError):
-        ms = 0
-    return ms if ms > 0 else DEFAULT_SLOW_MS
+    """«Slow» threshold of one site, within utils.validate.SLOW_MS; 0 or
+    negative would call every answer slow."""
+    ms = validate.int_in(site.get("slow_ms"), *validate.SLOW_MS)
+    if ms is None:
+        ms = validate.int_in(config.slow_response_ms, *validate.SLOW_MS)
+    return ms if ms is not None else DEFAULT_SLOW_MS
 
 
 # ── Availability ─────────────────────────────────────────────────────────────
 
 async def run_availability_checks():
+    await _availability_tick()
+    health.tick_done()          # only a tick that finished counts: /health and both watchdogs read it
+
+
+async def _availability_tick():
     now = datetime.now(UTC)
+    back_since = await _own_network_back()
+    if back_since:
+        _next_avail_check.clear()           # the network is back: look at every site in this very tick
+    await _remind_long_outage(now)
     sites = await get_all_sites()
     by_url = {s["url"]: s for s in sites}
     for sid in [sid for sid in _next_avail_check if sid not in {s["id"] for s in sites}]:
@@ -187,20 +200,103 @@ async def run_availability_checks():
         if due_cutoff >= _next_avail_check.get(s["id"], now):
             _next_avail_check[s["id"]] = now + timedelta(minutes=_interval_min(s))
             due.append(s["url"])
-    if not due:
-        return
+    results = await check_all(due) if due else []
     # The tick only checks; every message goes to the alert worker, so a
     # silent Telegram or a slow deploy hook never holds up the next check.
-    for r in await check_all(due):
+    for r in results:
         site = by_url.get(r.url, {})
         if r.incident_new:
             _enqueue(_send_availability_alert, r, site, incident_id=r.incident_id)
         elif r.external_ok is True:
             _enqueue(_note_local_network_problem, r.url, r.site_id)
+        elif r.transient and not r.own_outage:
+            _enqueue(_note_cannot_check, r.url, r.site_id, r.error)
         elif r.recovered:
             _enqueue(_send_recovery, r)
         if r.ok:
+            _cannot_check_noted.discard(r.site_id)
             _enqueue(_site_is_up, r, _slow_ms(site))
+    if back_since:
+        _enqueue(_report_own_outage, back_since, now, results)
+
+
+async def _own_network_back() -> datetime | None:
+    """When the bot's own network has just come back: since when it was gone."""
+    since = await netcheck.outage_since()
+    if since is None or not await netcheck.own_network_ok():
+        return None
+    await netcheck.end_outage()
+    await set_state("net_outage_reminded", None)
+    return since
+
+
+async def _remind_long_outage(now: datetime):
+    """A «no network» episode that lasts for hours is more likely canaries a
+    firewall blocks than a real outage: said once a day while it lasts."""
+    since = await netcheck.outage_since()
+    if since is None or now - since < OUTAGE_REMIND_AFTER:
+        return
+    reminded = parse_iso_utc(await get_state("net_outage_reminded"))
+    if reminded and now - reminded < OUTAGE_REMIND_EVERY:
+        return
+    await set_state("net_outage_reminded", now.isoformat())
+    _enqueue(notifier.send,
+             f"⚠️ Уже {fmt_duration((now - since).total_seconds() / 60)} сервер бота считает, что у него нет сети: "
+             f"не отвечают адреса из NET_CANARIES. Всё это время сайт без ответа я считаю сбоем своей сети и "
+             f"тревогу не поднимаю. Если сеть на самом деле есть — впиши в NET_CANARIES адреса, которые сервер "
+             f"пропускает, или оставь переменную пустой.", Priority.NORMAL)
+
+
+async def _report_own_outage(since: datetime, until: datetime, results: list):
+    """ONE message for the whole episode instead of an alert per site."""
+    minutes = (until - since).total_seconds() / 60
+    fmt = "%H:%M" if minutes < 20 * 60 else "%d.%m %H:%M"
+    lines = [f"⚠️ С {to_local(since).strftime(fmt)} до {to_local(until).strftime(fmt)} у сервера бота "
+             f"не было сети или не работал DNS: проверить сайты было нельзя, тревоги о них я не поднимал."]
+    down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
+    if down:
+        lines.append(f"Сейчас не открываются: {', '.join(down)}. Если не поднимутся — пришлю обычную тревогу.")
+    elif results:
+        lines.append("Сейчас всё открывается.")
+    await notifier.send("\n".join(lines), Priority.NORMAL)
+
+
+async def check_own_network_at_start():
+    """Once, soon after a start. Canaries that never answer (a firewall that
+    lets out only the monitored sites) would make every unanswered check look
+    like «no network on the bot's server» — and silence real alerts. When the
+    sites answer while the canaries do not, the self-check switches itself off."""
+    if not netcheck.enabled() or await netcheck.probe():
+        return
+    if netcheck.recently_answered():
+        netcheck.disable()
+        await _say_fail_open()
+        return
+    await notifier.send(
+        "⚠️ Не проходит проверка сети сервера бота: не отвечают адреса из NET_CANARIES "
+        "(по умолчанию 1.1.1.1, 8.8.8.8, 9.9.9.9 и имена DNS-сервисов). Пока так, сайт без ответа я "
+        "посчитаю сбоем своей сети и тревогу не подниму. Если сервер за файрволом — впиши в NET_CANARIES "
+        "адреса, которые он пропускает, или оставь переменную пустой, чтобы выключить проверку.",
+        Priority.NORMAL)
+
+
+async def _say_fail_open():
+    await notifier.send(
+        "⚠️ Адреса из NET_CANARIES не отвечают, а сайты отвечают — похоже, сервер за файрволом. Самопроверку "
+        "сети я выключил до перезапуска: сайт без ответа снова считается сбоем сайта. Чтобы она работала, "
+        "впиши в NET_CANARIES адреса, которые сервер пропускает.", Priority.NORMAL)
+
+
+async def _note_cannot_check(url: str, site_id: int, reason: str | None):
+    """The check itself cannot run (no ICMP socket, request settings
+    rejected): said once per episode — this is not «the site is down»."""
+    if site_id in _cannot_check_noted:
+        return
+    sent = await notifier.send(
+        f"⚠️ {esc(site_label(url))}: не могу проверить — {esc(reason or 'неизвестная причина')}. "
+        f"Тревоги по нему не будет, пока это не исправить.", Priority.NORMAL, site_id=site_id)
+    if sent:
+        _cannot_check_noted.add(site_id)
 
 
 # ── Alert delivery: at least once ────────────────────────────────────────────
@@ -256,6 +352,35 @@ def cancel_alert_worker():
     """Shutdown: the worker waits for work forever — it is not a task to wait for."""
     if _worker is not None and not _worker.done():
         _worker.cancel()
+
+
+_running: set[str] = set()
+
+
+def _once(name: str, *, mark: bool = False):
+    """One copy of a job at a time, whichever id started it — the cron run,
+    its «soon» twin, a re-check or a catch-up: APScheduler's max_instances
+    counts per id, and two ids of one check used to run it twice in
+    parallel. mark=True: a daily job — when it last finished goes to
+    bot_state, and the start catches up a run that a restart or a clock step
+    skipped (catch_up_missed). A set, not an asyncio.Lock: a lock binds to
+    one event loop, and the tests start a new loop per test."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def run(*args, **kwargs):
+            if name in _running:
+                logger.info("%s is already running — this start is skipped", name)
+                return None
+            _running.add(name)
+            try:
+                result = await fn(*args, **kwargs)
+            finally:
+                _running.discard(name)
+            if mark:
+                await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+            return result
+        return run
+    return wrap
 
 
 def _alerts_on(*check_types: str):
@@ -412,6 +537,8 @@ async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minu
                 job = _scheduler.get_job(f"followup:{message_id}:{other}")
                 if job:
                     job.remove()
+    elif r.transient:
+        line = f"\n\n🔁 Через {minutes} мин: проверить не смог — {esc(r.error)}."
     else:
         line = f"\n\n🔁 Через {minutes} мин: всё ещё не открывается ({esc(humanize.describe_error(r.error))})."
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
@@ -512,6 +639,7 @@ async def close_inapplicable(check_types: tuple[str, ...], urls: list[str]):
             await resolve_incident(inc["site_id"], inc["check_type"])
 
 
+@_once("ssl_checks", mark=True)
 @_alerts_on("ssl")
 async def run_ssl_checks():
     """Expiry ladder alerts only. A certificate that renewed by itself is
@@ -525,6 +653,7 @@ async def run_ssl_checks():
         priority=_by_level)
 
 
+@_once("domain_checks", mark=True)
 @_alerts_on("domain")
 async def run_domain_checks():
     urls = await get_active_host_urls()
@@ -580,6 +709,7 @@ async def _recently_added() -> set[str]:
     return out
 
 
+@_once("seo_checks", mark=True)
 @_alerts_on("seo")
 async def run_seo_checks():
     """Daily SEO/GEO audit. Only critical findings (noindex, search bots
@@ -602,6 +732,7 @@ async def run_seo_checks():
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
 
 
+@_once("card_pictures", mark=True)
 async def run_card_pictures():
     """Once a day, after the search audit: a fresh picture of every page
     for its card (services.screenshots). One at a time — the free
@@ -618,7 +749,7 @@ def rerun_seo_after_update(minutes: int = 3):
     false ones — must not wait for 07:30: audit again a few minutes after
     the start, with incidents, so stale ones close and say so."""
     if _scheduler is not None:
-        _scheduler.add_job(run_seo_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes)),
+        _scheduler.add_job(run_seo_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=minutes), timezone=UTC),
                            id="seo_after_update", replace_existing=True, misfire_grace_time=600)
 
 
@@ -660,6 +791,7 @@ async def run_dns_checks():
 MAIL_RECHECK_MIN = 10
 
 
+@_once("mail_checks")
 @_alerts_on(*MAIL_CHECKS)
 async def run_mail_checks():
     """Hourly: mail on the sites' domains (monitors.mail_checker). A domain
@@ -671,7 +803,7 @@ async def run_mail_checks():
     await _notify_transitions(results, format_mail_alert, format_mail_recovery, priority=_by_level,
                               keyboard=_mail_keyboard)
     if _scheduler is not None and any(r.kind == "mail" and r.ok and r.delivery.ok is False for r in results):
-        _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN)),
+        _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN), timezone=UTC),
                            id="mail_recheck", replace_existing=True, misfire_grace_time=300)
 
 
@@ -682,6 +814,7 @@ def _mail_keyboard(r):
     return explain_keyboard(r.incident_id, status, mail)
 
 
+@_once("security_checks")
 @_alerts_on(*SECURITY_CHECKS)
 async def run_security_checks():
     """Every six hours: service files open to anyone (🔴, rings), plain
@@ -699,6 +832,7 @@ def _security_keyboard(r):
                                                                  callback_data=f"sec:{r.site_id}")])
 
 
+@_once("visitor_checks", mark=True)
 @_alerts_on("visitors")
 async def run_visitor_checks():
     """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
@@ -714,6 +848,7 @@ def _visitors_keyboard(r):
                             [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
 
 
+@_once("index_checks", mark=True)
 async def run_index_checks():
     """Daily indexing watch via GSC / Yandex.Webmaster (when tokens are set):
     the answers go into the site snapshot for the «🔎 Поиск и ИИ» screen,
@@ -891,8 +1026,10 @@ async def run_escalation_watch():
     every 30 minutes about an expiring cert would train the user to ignore
     alerts. «🔧 Я чиню» snoozes it for maintenance.FIX_MINUTES."""
     repeat_min = config.escalation_repeat_min
-    if not repeat_min:
+    if repeat_min <= 0:     # 0 = off, as .env.example promises; a negative one is not «every 5 minutes»
         return
+    if await netcheck.outage_since():
+        return              # «лежит уже …» without a network is a guess; it would only pile up in the outbox
     now = datetime.now(UTC)
     for inc in await get_active_incidents():
         with _isolated(f"Escalation of incident #{inc['id']}"):
@@ -971,23 +1108,103 @@ async def report_db_health():
         health.mark_db_recovery_said()
 
 
+# Daily jobs worth running late rather than not at all: a restart (an image
+# update, a Dependabot merge — those land at 08:04–08:13 Moscow time) or a
+# clock step across their time used to skip them for the day.
+CATCH_UP = ("retention", "db_backup", "seo_checks", "index_checks", "card_pictures", "ssl_checks",
+            "domain_checks", "visitor_checks", "morning_report", "evening_report", "weekly_report")
+# After a restart these run anyway, from their «soon» twins in setup_scheduler.
+_SOON_AFTER_START = frozenset({"card_pictures", "visitor_checks"})
+CATCH_UP_WITHIN = timedelta(hours=12)
+_catch_up_tasks: set[asyncio.Task] = set()
+
+
+def _last_due(trigger, now: datetime, within: timedelta) -> datetime | None:
+    """The latest time the trigger fired (or should have) in (now - within, now]."""
+    t = trigger.get_next_fire_time(None, now - within)
+    last = None
+    while t is not None and t <= now:
+        last = t
+        t = trigger.get_next_fire_time(t, t + timedelta(seconds=1))
+    return last
+
+
+async def _run_catch_up(job_id: str, fn, due: datetime, **kwargs):
+    """The late run itself — unless the job ran since it was planned (its own
+    cron fired within misfire_grace_time, a «soon» twin): one run, not two."""
+    ran = parse_iso_utc(await get_state(f"last_run:{job_id}"))
+    if ran is not None and ran >= due:
+        logger.info("Catch-up of %s skipped: it ran at %s", job_id, ran)
+        return
+    await fn(**kwargs)
+
+
+async def catch_up_missed(now: datetime, last_alive: datetime | None = None, *,
+                          skip: frozenset[str] = frozenset(), min_late: timedelta = timedelta(0)):
+    """Run late the daily jobs whose time passed without a run — judged by
+    when each one last finished (last_run:<job>), not by how long the bot
+    was away. A job never marked yet (the first start of this version) is
+    judged by when the bot was last alive; the very first start catches up
+    nothing. min_late: a run due less than this ago is APScheduler's own to
+    make up (misfire_grace_time) — not planned twice."""
+    if _scheduler is None:
+        return
+    specs = _cron_specs()
+    for i, job_id in enumerate(CATCH_UP):
+        if job_id in skip:
+            continue
+        fn = getattr(_scheduler.get_job(job_id), "func", None)
+        due = _last_due(_cron(**specs[job_id]), now, CATCH_UP_WITHIN)
+        ran = parse_iso_utc(await get_state(f"last_run:{job_id}")) or last_alive
+        if fn is None or due is None or ran is None or ran >= due or now - due < min_late:
+            continue
+        if job_id == "morning_report" and to_local(now).hour >= LATE_MORNING_UNTIL:
+            continue                                   # a missed morning report still comes, but not at night
+        late = job_id == "morning_report" and now - due > timedelta(minutes=DOWNTIME_NOTE_MIN)
+        logger.info("Catching up %s: due at %s, last ran %s", job_id, due, ran)
+        _scheduler.add_job(_run_catch_up, DateTrigger(run_date=now + timedelta(seconds=60 + 30 * i), timezone=UTC),
+                           args=[job_id, fn, due], kwargs={"late": True} if late else {},
+                           id=f"catchup:{job_id}", replace_existing=True, misfire_grace_time=600)
+
+
+def clock_stepped(seconds: float):
+    """The wall clock stepped (NTP right after a boot, a resumed VM, a hand
+    edit). Interval jobs count their next run on the wall clock: after a step
+    back every one of them would wait out the whole step — move them back by
+    it. After a step forward the daily jobs whose time was jumped over run
+    late; what fell inside misfire_grace_time APScheduler makes up itself."""
+    if _scheduler is None:
+        return
+    now = datetime.now(UTC)
+    if seconds < 0:
+        for job in _scheduler.get_jobs():
+            if isinstance(job.trigger, IntervalTrigger) and job.next_run_time:
+                job.modify(next_run_time=max(now, job.next_run_time + timedelta(seconds=seconds)))
+        _next_avail_check.clear()       # per-site due times are on the wall clock too
+        return
+    task = asyncio.get_running_loop().create_task(
+        catch_up_missed(now, now - timedelta(seconds=seconds), min_late=timedelta(seconds=600)))
+    _catch_up_tasks.add(task)
+    task.add_done_callback(_catch_up_tasks.discard)
+
+
 async def catch_up_after_restart():
     """Once at startup. While the bot was gone its silence did not mean
-    «всё в порядке» — a pause longer than a redeploy is said out loud, and a
-    morning report that fell into it comes late rather than not at all."""
+    «всё в порядке» — a pause longer than a redeploy is said out loud, and
+    the daily jobs that fell into it run late rather than not at all."""
+    if _failed_jobs:
+        await notifier.send(f"⚠️ Не смог запустить по расписанию: {esc(', '.join(_failed_jobs))}. "
+                            "Остальное работает. Подробности — в логе бота.")
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
     await run_alive()
+    await catch_up_missed(now, last, skip=_SOON_AFTER_START)
     if not last or now - last < timedelta(minutes=DOWNTIME_NOTE_MIN) or _scheduler is None:
         return
-    # After the scheduler's first look at the sites, so the line is fresh.
-    _scheduler.add_job(_report_downtime, DateTrigger(run_date=now + timedelta(seconds=30)),
+    # After the scheduler's first look at the sites (the tick comes at +60 s),
+    # so the line repeats the monitor's verdict instead of guessing.
+    _scheduler.add_job(_report_downtime, DateTrigger(run_date=now + timedelta(seconds=90), timezone=UTC),
                        args=[last, now], id="downtime_note", replace_existing=True)
-    local_now = now_local()
-    morning = local_now.replace(hour=settings.morning_hour(), minute=0, second=0, microsecond=0)
-    if last < morning <= local_now and local_now.hour < LATE_MORNING_UNTIL:
-        _scheduler.add_job(send_morning_report, DateTrigger(run_date=now + timedelta(seconds=60)),
-                           kwargs={"late": True}, id="late_morning_report", replace_existing=True)
 
 
 async def _report_downtime(start: datetime, end: datetime):
@@ -996,12 +1213,21 @@ async def _report_downtime(start: datetime, end: datetime):
     lines = [f"⏸ Меня не было {fmt_duration(minutes)} ({to_local(start).strftime(fmt)}–"
              f"{to_local(end).strftime(fmt)}): всё это время я не следил за сайтами и не смог бы "
              f"ничего сообщить. Сейчас снова на посту."]
-    urls = await get_active_site_urls()
-    if urls:
-        results = await check_all(urls, manage=False)
-        down = [esc(site_label(r.url)) for r in results if not r.ok]
-        lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}." if down
-                     else f"✅ Сейчас всё работает: {len(results)} из {len(results)}.")
+    sites = await get_all_sites()
+    if sites:
+        # The monitor's own verdict (threshold, second opinion), not one more
+        # probe of a network that may not be up yet after a reboot.
+        down_ids = {i["site_id"] for i in await get_active_incidents() if i["check_type"] == "availability"}
+        down = [esc(site_label(s["url"])) for s in sites if s["id"] in down_ids]
+        unsure = [esc(site_label(s["url"])) for s in sites if s["id"] not in down_ids
+                  and ((await get_last_check(s["id"], "availability")) or {}).get("status") not in (None, "ok")]
+        if down:
+            lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}.")
+        if unsure:
+            lines.append(f"⚠️ С первой попытки не открылись: {', '.join(unsure)} — перепроверяю, "
+                         f"напишу, если не поднимутся.")
+        if not down and not unsure:
+            lines.append(f"✅ Сейчас всё работает: {len(sites)} из {len(sites)}.")
     await notifier.send("\n".join(lines), Priority.NORMAL)
 
 
@@ -1014,6 +1240,12 @@ async def run_self_heartbeat():
     does not take them would stay silent when the bot dies."""
     url = integrations.self_heartbeat_url()
     if not url:
+        return
+    problems = health.problems()
+    if problems:
+        # While the bot cannot do its job the watchdog must see it as down:
+        # no mark this time — it raises the alarm on its own schedule.
+        logger.error("Not marking in with the watchdog: %s", ", ".join(problems))
         return
     rec = await heartbeats.record_watchdog(await heartbeats.ping_watchdog(url))
     name = esc(heartbeats.watchdog_name(url))
@@ -1032,13 +1264,13 @@ async def run_self_heartbeat():
         await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
 
 
+@_once("retention", mark=True)
 async def run_retention():
-    try:
-        n = await rollup_old_checks(config.retention_days)
-        if n:
-            logger.info("Retention: rolled up %d old check rows", n)
-    except Exception as e:
-        logger.error("Retention job failed: %s", e)
+    # No try/except: a failure reaches the job listener (one message to the
+    # owner) and the log keeps its traceback.
+    n = await rollup_old_checks(config.retention_days)
+    if n:
+        logger.info("Retention: rolled up %d old check rows", n)
 
 
 def _backups_dir() -> str:
@@ -1061,6 +1293,7 @@ def backup_info() -> tuple[str, datetime] | None:
     return path, datetime.fromtimestamp(os.path.getmtime(path), UTC)
 
 
+@_once("db_backup", mark=True)
 async def run_db_backup() -> bool:
     """Nightly local DB backup with rotation. True when the copy was written."""
     try:
@@ -1073,7 +1306,7 @@ async def run_db_backup() -> bool:
         logger.info("DB backup written: %s", path)
         return True
     except Exception as e:
-        logger.error("DB backup failed: %s", e)
+        logger.exception("DB backup failed")
         await notifier.send("🟠 Не удалось сохранить резервную копию базы бота. Проверь место на диске."
                             + _tech_line(str(e)))
         return False
@@ -1252,6 +1485,7 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     return lines
 
 
+@_once("morning_report", mark=True)
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
@@ -1260,6 +1494,7 @@ async def send_morning_report(late: bool = False):
     await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
 
 
+@_once("evening_report", mark=True)
 async def send_evening_report():
     """Evening report — only if there's something to worry about."""
     if settings.evening_hour() is None or not await get_active_incidents():
@@ -1282,18 +1517,20 @@ def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
     return messages
 
 
+@_once("weekly_report", mark=True)
 async def send_weekly_report():
     """Sunday: dependency check, GitHub hygiene, weekly digest, ASCII
     response-time chart, off-host DB copy. A failed side check never
     stops the digest."""
     try:
         await updates.run_dependency_watch()
-    except Exception as e:
-        logger.error("Dependency watch failed: %s", e)
+    except Exception:
+        logger.exception("Dependency watch failed")
     try:
         await github.run_watch()
-    except Exception as e:
-        logger.error("GitHub hygiene check failed: %s", e)
+    except Exception:
+        logger.exception("GitHub hygiene check failed")
+    failed = None
     try:
         text, chart_blocks = await build_weekly_report()
         # Split, not clipped: the sections at the end (dependencies, GitHub)
@@ -1307,11 +1544,56 @@ async def send_weekly_report():
         if tip:
             await notifier.send(tip[0], Priority.DIGEST, reply_markup=tip[1])
     except Exception as e:
-        logger.error("Weekly report failed: %s", e)
+        logger.exception("Weekly report failed")
+        failed = e
     try:
         await send_db_backup_to_telegram()
     except Exception:
         logger.exception("Weekly copy of the database failed")
+    if failed:
+        raise failed            # the off-host copy went out; now the job listener tells the owner
+
+
+# ── The scheduler's own account of every run ────────────────────────────────
+
+# Jobs that run every minute: one failure is a blip, three in a row is broken.
+_EVERY_MINUTE = frozenset({"availability_checks", "alive", "outbox_flush", "missed_alerts", "held_release"})
+_JOB_TITLES = {"availability_checks": "проверка сайтов", "morning_report": "утренняя сводка",
+               "weekly_report": "недельный отчёт", "retention": "ночная очистка базы",
+               "db_backup": "ночная копия базы", "outbox_flush": "досылка сообщений"}
+_job_fails: dict[str, int] = {}
+_job_told: set[str] = set()
+_listener_tasks: set[asyncio.Task] = set()
+
+
+def _on_job_event(event):
+    """APScheduler's own account of every run. A job that keeps failing, or
+    keeps being skipped because its last run still hangs, is told to the
+    owner once per streak — the container log alone is read by nobody."""
+    job_id = event.job_id
+    if ":" in job_id:                  # one-off follow-ups (followup:…): their failure is in the log
+        return
+    if event.code == EVENT_JOB_EXECUTED:
+        _job_fails.pop(job_id, None)
+        _job_told.discard(job_id)
+        return
+    n = _job_fails[job_id] = _job_fails.get(job_id, 0) + 1
+    if job_id in _job_told or n < (3 if job_id in _EVERY_MINUTE else 1):
+        return
+    _job_told.add(job_id)
+    exc = getattr(event, "exception", None)
+    why = type(exc).__name__ if exc else "прошлый запуск ещё не закончился"
+    task = asyncio.get_running_loop().create_task(_tell_job_broken(_JOB_TITLES.get(job_id, job_id), why))
+    _listener_tasks.add(task)
+    task.add_done_callback(_listener_tasks.discard)
+
+
+async def _tell_job_broken(title: str, why: str):
+    try:
+        await notifier.send(f"⚠️ У меня не работает «{esc(title)}»: {esc(why)}. Остальное идёт как обычно; "
+                            f"подробности — в логе бота.")
+    except Exception:
+        logger.exception("Could not tell the owner about the broken job %s", title)
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────
@@ -1320,27 +1602,49 @@ def _cron(**kwargs) -> CronTrigger:
     return CronTrigger(timezone=local_tz(), **kwargs)
 
 
+def _hour(value, default: int) -> int:
+    """A broken hour (an old .env, a restored DB) falls back to the default
+    instead of stopping the whole scheduler at every start."""
+    h = validate.hour(value)
+    return default if h is None else h
+
+
+def _before_morning(minutes: int) -> dict:
+    """The daily audits run so many minutes before the morning report, so the
+    digest shows today's results whatever hour the owner picked (at 9:00 —
+    the old fixed 07:30–08:10)."""
+    t = (_hour(settings.morning_hour(), 9) * 60 - minutes) % (24 * 60)
+    return dict(hour=t // 60, minute=t % 60)
+
+
+def audit_time(job_id: str) -> str:
+    """«08:10» — when a daily audit runs today, for the texts that name it."""
+    spec = _cron_specs()[job_id]
+    return f"{spec['hour']:02d}:{spec['minute']:02d}"
+
+
 def _cron_specs() -> dict[str, dict]:
     """Every cron-based job with its local-time schedule, resolved now —
     so a changed report hour or timezone can re-create all triggers."""
     evening = settings.evening_hour()
     return {
-        "ssl_checks": dict(hour=8, minute=0),
-        "domain_checks": dict(hour=8, minute=5),
-        "seo_checks": dict(hour=7, minute=30),
-        "index_checks": dict(hour=7, minute=45),
-        "card_pictures": dict(hour=7, minute=50),
+        "ssl_checks": _before_morning(60),
+        "domain_checks": _before_morning(55),
+        "seo_checks": _before_morning(90),
+        "index_checks": _before_morning(75),
+        "card_pictures": _before_morning(70),
         "dns_checks": dict(minute=20),
         "mail_checks": dict(minute=25),
         "security_checks": dict(hour="*/6", minute=35),
-        "visitor_checks": dict(hour=8, minute=10),
+        "visitor_checks": _before_morning(50),
         "region_checks": dict(minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
         "db_backup": dict(hour=3, minute=45),
-        "morning_report": dict(hour=settings.morning_hour(), minute=0),
-        "evening_report": dict(hour=evening if evening is not None else config.evening_report_hour, minute=0),
-        "weekly_report": dict(day_of_week="sun", hour=settings.weekly_hour(), minute=0),
+        "morning_report": dict(hour=_hour(settings.morning_hour(), 9), minute=0),
+        "evening_report": dict(hour=_hour(evening if evening is not None else config.evening_report_hour, 21),
+                               minute=0),
+        "weekly_report": dict(day_of_week="sun", hour=_hour(settings.weekly_hour(), 11), minute=0),
     }
 
 
@@ -1356,13 +1660,27 @@ def resume_jobs():
         _scheduler.resume()
 
 
-def reschedule_all():
-    """Apply UI-changed hours or timezone to the running scheduler."""
+# Jobs setup_scheduler could not register: named to the owner once the bot
+# is up (catch_up_after_restart). Every other job runs.
+_failed_jobs: list[str] = []
+
+
+def reschedule_all() -> list[str]:
+    """Apply UI-changed hours or timezone to the running scheduler. A job
+    whose new trigger cannot be built keeps its old schedule and is
+    returned by id, so the caller can say that the hours did not apply."""
+    failed: list[str] = []
     if _scheduler is None:
-        return
+        return failed
     for job_id, spec in _cron_specs().items():
-        if _scheduler.get_job(job_id):
+        if not _scheduler.get_job(job_id):
+            continue
+        try:
             _scheduler.reschedule_job(job_id, trigger=_cron(**spec))
+        except Exception:
+            logger.exception("Could not reschedule %s — its old schedule stays", job_id)
+            failed.append(job_id)
+    return failed
 
 
 def setup_scheduler() -> AsyncIOScheduler:
@@ -1371,60 +1689,79 @@ def setup_scheduler() -> AsyncIOScheduler:
     # APScheduler's default grace is 1 s: an event loop busy parsing a page at
     # 09:00:00 would silently skip that day's morning report.
     scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})
+    scheduler.add_listener(_on_job_event, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED | EVENT_JOB_MAX_INSTANCES)
     _scheduler = scheduler
+    _failed_jobs.clear()
 
-    def job(fn, trigger, job_id, **kwargs):
-        scheduler.add_job(fn, trigger=trigger, id=job_id, replace_existing=True,
-                          max_instances=1, **kwargs)
+    def job(fn, make_trigger, job_id, **kwargs):
+        """One broken schedule costs only its own job: logged, named to the
+        owner after the start (catch_up_after_restart), the rest registered.
+        The trigger is built here, inside the try — a bad hour or an absurd
+        interval raises while the trigger is made, not in add_job."""
+        try:
+            scheduler.add_job(fn, trigger=make_trigger(), id=job_id, replace_existing=True,
+                              max_instances=1, **kwargs)
+        except Exception:
+            logger.exception("Could not schedule %s — the other jobs still run", job_id)
+            _failed_jobs.append(job_id)
 
     soon = datetime.now(UTC) + timedelta(minutes=2)
     specs = _cron_specs()
     # Ticks every minute; the job decides which sites are due.
-    job(run_availability_checks, IntervalTrigger(minutes=1), "availability_checks",
+    job(run_availability_checks, lambda: IntervalTrigger(minutes=1, timezone=UTC), "availability_checks",
         misfire_grace_time=60)
+    job(check_own_network_at_start, lambda: DateTrigger(run_date=soon, timezone=UTC), "net_canaries_soon")
     # SSL + domain once a day — the alert ladder prevents repeat noise.
-    job(run_ssl_checks, _cron(**specs["ssl_checks"]), "ssl_checks")
-    job(run_domain_checks, _cron(**specs["domain_checks"]), "domain_checks")
+    job(run_ssl_checks, lambda: _cron(**specs["ssl_checks"]), "ssl_checks")
+    job(run_domain_checks, lambda: _cron(**specs["domain_checks"]), "domain_checks")
     # SEO/GEO audit before the morning report, so the digest shows fresh results.
-    job(run_seo_checks, _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
-    job(run_index_checks, _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
-    job(run_card_pictures, _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
-    job(run_card_pictures, DateTrigger(run_date=soon), "card_pictures_soon")
-    # Links: first run shortly after boot, then every N hours.
-    job(run_links_checks, IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon),
-        "links_checks", misfire_grace_time=300)
+    job(run_seo_checks, lambda: _cron(**specs["seo_checks"]), "seo_checks", misfire_grace_time=600)
+    job(run_index_checks, lambda: _cron(**specs["index_checks"]), "index_checks", misfire_grace_time=600)
+    job(run_card_pictures, lambda: _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
+    job(run_card_pictures, lambda: DateTrigger(run_date=soon, timezone=UTC), "card_pictures_soon")
+    # Links: first run shortly after boot, then every N hours; 0 = never.
+    if config.links_check_interval_hours:
+        job(run_links_checks,
+            lambda: IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon, timezone=UTC),
+            "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
-    job(run_dns_checks, _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
+    job(run_dns_checks, lambda: _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
     # Mail hourly, and soon after a start — so the cards show it right away.
-    job(run_mail_checks, _cron(**specs["mail_checks"]), "mail_checks", misfire_grace_time=600)
-    job(run_mail_checks, DateTrigger(run_date=soon), "mail_checks_soon")
-    job(run_security_checks, _cron(**specs["security_checks"]), "security_checks", misfire_grace_time=600)
-    job(run_security_checks, DateTrigger(run_date=soon + timedelta(minutes=1)), "security_checks_soon")
-    job(run_visitor_checks, _cron(**specs["visitor_checks"]), "visitor_checks", misfire_grace_time=3600)
-    job(run_visitor_checks, DateTrigger(run_date=soon + timedelta(minutes=2)), "visitor_checks_soon")
-    job(run_region_checks, _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
-    job(run_deep_checks, _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
+    job(run_mail_checks, lambda: _cron(**specs["mail_checks"]), "mail_checks", misfire_grace_time=600)
+    job(run_mail_checks, lambda: DateTrigger(run_date=soon, timezone=UTC), "mail_checks_soon")
+    job(run_security_checks, lambda: _cron(**specs["security_checks"]), "security_checks", misfire_grace_time=600)
+    job(run_security_checks, lambda: DateTrigger(run_date=soon + timedelta(minutes=1), timezone=UTC),
+        "security_checks_soon")
+    job(run_visitor_checks, lambda: _cron(**specs["visitor_checks"]), "visitor_checks", misfire_grace_time=3600)
+    job(run_visitor_checks, lambda: DateTrigger(run_date=soon + timedelta(minutes=2), timezone=UTC),
+        "visitor_checks_soon")
+    job(run_region_checks, lambda: _cron(**specs["region_checks"]), "region_checks", misfire_grace_time=600)
+    job(run_deep_checks, lambda: _cron(**specs["deep_checks"]), "deep_checks", misfire_grace_time=300)
     # Watchers.
-    job(run_heartbeat_watch, IntervalTrigger(minutes=10), "heartbeat_watch")
-    job(run_host_checks, IntervalTrigger(minutes=30), "host_checks")
-    job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
-    job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
-    job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
-    job(runtime.warn_if_seat_free, IntervalTrigger(minutes=30), "seat_free_warning")
-    job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
-    job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
-    job(notifier.release_held, IntervalTrigger(minutes=1), "held_release", misfire_grace_time=60)
-    job(deliver_missed_alerts, IntervalTrigger(minutes=1), "missed_alerts", misfire_grace_time=60)
-    job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
-    job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
+    job(run_heartbeat_watch, lambda: IntervalTrigger(minutes=10, timezone=UTC), "heartbeat_watch")
+    job(run_host_checks, lambda: IntervalTrigger(minutes=30, timezone=UTC), "host_checks")
+    job(run_container_watch, lambda: IntervalTrigger(minutes=10, timezone=UTC), "container_watch")
+    job(run_escalation_watch, lambda: IntervalTrigger(minutes=5, timezone=UTC), "escalation_watch")
+    job(run_self_heartbeat, lambda: IntervalTrigger(minutes=5, timezone=UTC), "self_heartbeat")
+    job(runtime.warn_if_seat_free, lambda: IntervalTrigger(minutes=30, timezone=UTC), "seat_free_warning")
+    job(run_alive, lambda: IntervalTrigger(minutes=1, timezone=UTC), "alive", misfire_grace_time=60)
+    job(notifier.flush_outbox, lambda: IntervalTrigger(minutes=1, timezone=UTC), "outbox_flush",
+        misfire_grace_time=60)
+    job(notifier.release_held, lambda: IntervalTrigger(minutes=1, timezone=UTC), "held_release",
+        misfire_grace_time=60)
+    job(deliver_missed_alerts, lambda: IntervalTrigger(minutes=1, timezone=UTC), "missed_alerts",
+        misfire_grace_time=60)
+    job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
+    job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     if config.on_railway:
         # One reminder around day 25 of Railway's 30-day trial (services.railway).
-        job(railway.remind_if_due, IntervalTrigger(hours=6, start_date=soon), "railway_trial")
+        job(railway.remind_if_due, lambda: IntervalTrigger(hours=6, start_date=soon, timezone=UTC),
+            "railway_trial")
     # Nightly maintenance.
-    job(run_retention, _cron(**specs["retention"]), "retention")
-    job(run_db_backup, _cron(**specs["db_backup"]), "db_backup")
+    job(run_retention, lambda: _cron(**specs["retention"]), "retention")
+    job(run_db_backup, lambda: _cron(**specs["db_backup"]), "db_backup")
     # Reports.
-    job(send_morning_report, _cron(**specs["morning_report"]), "morning_report")
-    job(send_evening_report, _cron(**specs["evening_report"]), "evening_report")
-    job(send_weekly_report, _cron(**specs["weekly_report"]), "weekly_report", misfire_grace_time=3600)
+    job(send_morning_report, lambda: _cron(**specs["morning_report"]), "morning_report")
+    job(send_evening_report, lambda: _cron(**specs["evening_report"]), "evening_report")
+    job(send_weekly_report, lambda: _cron(**specs["weekly_report"]), "weekly_report", misfire_grace_time=3600)
     return scheduler

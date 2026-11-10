@@ -148,21 +148,30 @@ async def cb_helper_remove(call: CallbackQuery):
 
 # ── Digests and quiet hours ──────────────────────────────────────────────────
 
+# What the screen offers is what a button may set: a forged or stale
+# «set_m:99» must not reach the scheduler (one bad hour stops every start).
+MORNING_HOURS, EVENING_HOURS, WEEKLY_HOURS = (7, 8, 9, 10), (20, 21, 22), (10, 11, 12, 18)
+QUIET_CHOICES = ("23-8", "0-7")
+
+
+def _offered(value: str, hours: tuple[int, ...]) -> int | None:
+    return int(value) if value in {str(h) for h in hours} else None
+
+
 def _reports_kb() -> InlineKeyboardMarkup:
     ring_on = settings.ring_only_down()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔔 Будить: только «сайт лёг»" if ring_on else "🔔 Будить: всё критичное",
                               callback_data=f"set_ring:{'off' if ring_on else 'on'}")],
-        [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}") for h in (7, 8, 9, 10)],
-        [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}") for h in (20, 21, 22)]
+        [InlineKeyboardButton(text=f"🌅 {h}:00", callback_data=f"set_m:{h}") for h in MORNING_HOURS],
+        [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}") for h in EVENING_HOURS]
         + [InlineKeyboardButton(text="🌙 выкл", callback_data="set_e:off")],
-        [InlineKeyboardButton(text=f"📊 вс {h}:00", callback_data=f"set_w:{h}") for h in (10, 11, 12, 18)],
+        [InlineKeyboardButton(text=f"📊 вс {h}:00", callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
         [InlineKeyboardButton(text="🗄 Копия базы по воскресеньям: вкл" if settings.weekly_backup()
                               else "🗄 Копия базы по воскресеньям: выкл",
                               callback_data=f"set_wb:{'off' if settings.weekly_backup() else 'on'}")],
-        [InlineKeyboardButton(text="🔕 23–8", callback_data="set_q:23-8"),
-         InlineKeyboardButton(text="🔕 0–7", callback_data="set_q:0-7"),
-         InlineKeyboardButton(text="🔕 выкл", callback_data="set_q:off")],
+        [InlineKeyboardButton(text=f"🔕 {q.replace('-', '–')}", callback_data=f"set_q:{q}") for q in QUIET_CHOICES]
+        + [InlineKeyboardButton(text="🔕 выкл", callback_data="set_q:off")],
         # Everything about «when» in one place: a pause, planned work, and
         # the test that the phone actually rings.
         [InlineKeyboardButton(text="🔕 Помолчать…", callback_data="menu_mute"),
@@ -195,13 +204,13 @@ async def cb_reports(call: CallbackQuery):
 @router.callback_query(F.data.startswith("set_"))
 async def cb_settings_pick(call: CallbackQuery):
     kind, _, value = call.data.partition(":")
-    if kind == "set_m" and value.isdigit():
+    if kind == "set_m" and _offered(value, MORNING_HOURS) is not None:
         await settings.set_morning_hour(int(value))
-    elif kind == "set_e" and (value == "off" or value.isdigit()):
+    elif kind == "set_e" and (value == "off" or _offered(value, EVENING_HOURS) is not None):
         await settings.set_evening_hour(None if value == "off" else int(value))
-    elif kind == "set_w" and value.isdigit():
+    elif kind == "set_w" and _offered(value, WEEKLY_HOURS) is not None:
         await settings.set_weekly_hour(int(value))
-    elif kind == "set_q" and (value == "off" or "-" in value):
+    elif kind == "set_q" and (value == "off" or value in QUIET_CHOICES):
         await settings.set_quiet_hours(None if value == "off" else value)
     elif kind == "set_sp" and value in ("on", "off"):
         await settings.set_status_page(value == "on")
@@ -216,8 +225,8 @@ async def cb_settings_pick(call: CallbackQuery):
     else:
         await ack(call, "Не понял", show_alert=True)
         return
-    reschedule_all()  # apply new hours / timezone to the running scheduler now
-    await ack(call, "Сохранено ✅")
+    failed = reschedule_all()  # apply new hours / timezone to the running scheduler now
+    await ack(call, "Сохранено, но расписание не обновилось — подробности в логе" if failed else "Сохранено ✅")
     try:
         if kind == "set_sp":
             await show_status_page(call)

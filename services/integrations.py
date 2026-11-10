@@ -10,6 +10,8 @@ API key for the Chrome UX Report).
 
 import json
 import os
+import re
+from collections.abc import Callable
 
 from config import config
 from db.database import get_state, set_state
@@ -183,3 +185,38 @@ def second_opinion_enabled() -> bool:
     if v in ("on", "off"):
         return v == "on"
     return config.second_opinion
+
+
+# ── Rules for a value that arrives without its wizard (the JSON import) ──────
+
+def _like(pattern: str, flags: int = 0) -> Callable[[object], bool]:
+    rx = re.compile(pattern, flags)
+    return lambda v: isinstance(v, str) and rx.fullmatch(v) is not None
+
+
+def _hooks_ok(value: object) -> bool:
+    try:
+        hooks = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        return False
+    return isinstance(hooks, dict) and all(isinstance(h, str) and "." in h and isinstance(u, str)
+                                           and u.startswith("https://") for h, u in hooks.items())
+
+
+# What each value must look like: the same checks the «🔌 Подключения»
+# wizards make (handlers/setup.py), minus their live calls. The JSON import
+# stores a key only through its rule; a key without a rule is not imported.
+RULES: dict[str, Callable[[object], bool]] = {
+    "yandex_token": _like(r"[A-Za-z0-9_\-.]{20,200}"),
+    "crux_key": _like(r"[A-Za-z0-9_\-]{30,60}"),
+    "gsc_property": _like(r"(sc-domain:[a-z0-9.-]+|https?://[^\s]+)", re.I),
+    "gsc_key": lambda v: isinstance(v, str) and valid_gsc_key(v) is not None,
+    "deploy_hooks": _hooks_ok,
+    "cf_api_token": _like(r"[A-Za-z0-9_\-]{30,100}"),
+    "cf_zone_id": _like(r"[0-9a-f]{32}"),
+    "github_token": _like(r"[A-Za-z0-9_]{30,255}"),
+    "github_owner": _like(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})"),
+    "self_heartbeat_url": _like(r"https://[^\s]{10,300}"),
+    "status_page_slug": _like(r"[A-Za-z0-9_-]{8,64}"),
+    "second_opinion": lambda v: v in ("on", "off"),
+}

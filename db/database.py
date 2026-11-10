@@ -311,6 +311,20 @@ async def get_recent_check_statuses(site_id: int, check_type: str,
 
 
 
+async def relabel_recent_failures(site_id: int, limit: int):
+    """The last `limit` availability checks that failed → 'unknown': they
+    said nothing about the site (it opened from outside), so they must not
+    count as its downtime."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute(
+            """UPDATE checks SET status = 'unknown'
+               WHERE status = 'error' AND id IN (
+                   SELECT id FROM checks WHERE site_id = ? AND check_type = 'availability'
+                   ORDER BY checked_at DESC, id DESC LIMIT ?)""", (site_id, limit))
+        await db.commit()
+
+
 async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
     """Uptime over the last N hours from raw checks (retention keeps far
     more than the 24h/7d windows this serves)."""
@@ -318,7 +332,7 @@ async def get_uptime_stats(site_id: int, hours: int = 24) -> dict:
     cursor = await db.execute(
         """SELECT COUNT(*), SUM(status = 'ok'), AVG(response_time_ms)
            FROM checks
-           WHERE site_id = ? AND check_type = 'availability'
+           WHERE site_id = ? AND check_type = 'availability' AND status != 'unknown'
              AND checked_at >= datetime('now', ?)""",
         (site_id, f"-{hours} hours"))
     total, ok, avg = await cursor.fetchone()
@@ -342,7 +356,7 @@ _DAILY_UNION = """
                SUM(status = 'ok') AS ok,
                COALESCE(SUM(response_time_ms), 0) AS sum_ms
         FROM checks
-        WHERE site_id = ? AND check_type = 'availability'
+        WHERE site_id = ? AND check_type = 'availability' AND status != 'unknown'
           AND checked_at >= datetime('now', ?)
         GROUP BY date(checked_at)
         UNION ALL
@@ -747,7 +761,7 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
         """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
            SELECT site_id, check_type, date(checked_at), COUNT(*),
                   SUM(status = 'ok'), COALESCE(SUM(response_time_ms), 0)
-           FROM checks WHERE checked_at < ?
+           FROM checks WHERE checked_at < ? AND status != 'unknown'
            GROUP BY site_id, check_type, date(checked_at)
            ON CONFLICT(site_id, check_type, day) DO UPDATE SET
              total = total + excluded.total,

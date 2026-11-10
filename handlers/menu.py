@@ -71,6 +71,8 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
     if not avail:
         return "⏳", "ждёт первой проверки", None
     age = sitestatus.age_minutes(avail)
+    if avail.get("status") == "unknown":
+        return humanize.UNCHECKED, f"не могу проверить: {humanize.describe_error(avail.get('error'))}", age
     if avail.get("status") != "ok":
         return "🔴", humanize.describe_error(avail.get("error")), age
     if is_api_check(site["url"], site.get("http_method")):

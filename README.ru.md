@@ -49,6 +49,8 @@ services:
     env_file: .env
     volumes:
       - bot_data:/app/data
+    sysctls:
+      - net.ipv4.ping_group_range=10001 10001   # ping:// monitors
 volumes:
   bot_data:
 ```
@@ -81,6 +83,8 @@ volumes:
 3. В `.env`: `PUBLIC_BASE_URL=https://bot.example.com` и `TRUST_PROXY=1`, затем `docker compose up -d`.
 
 Без TLS виджет на https-сайтах не загрузится (браузер его заблокирует), а секрет heartbeat увидит любой на пути.
+
+**Часы сервера.** Бот живёт по системному времени. На домашнем сервере или NAS Docker может стартовать раньше, чем синхронизируется время. Бот сам заметит скачок часов и перестроит расписание, но надёжнее запускать Docker после синхронизации. На systemd с timesyncd: `sudo systemctl enable systemd-time-wait-sync` и `sudo systemctl edit docker` → в блок `[Unit]` строка `After=time-sync.target` (с chrony вместо time-wait-sync нужен `chrony-wait.service` — сверь с документацией своего дистрибутива).
 
 ### Проще: Railway в один клик — 5 минут
 
