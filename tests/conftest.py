@@ -42,12 +42,16 @@ class FakeBot:
         self.sent: list[dict] = []
         self.edited: list[dict] = []
         self.fail = False
+        self.fail_with: list[Exception] = []    # raised one per call, in order, before `fail`
 
-    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False, parse_mode=None):
+    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False,
+                           parse_mode="HTML", request_timeout=None):
+        if self.fail_with:
+            raise self.fail_with.pop(0)
         if self.fail:
             raise RuntimeError("telegram down")
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
-                          "silent": disable_notification})
+                          "silent": disable_notification, "parse_mode": parse_mode})
         return SimpleNamespace(message_id=len(self.sent), text=text)
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, reply_markup=None):

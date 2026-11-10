@@ -54,7 +54,45 @@ def bot_username() -> str:
     return _bot_username
 
 
+# "<old id>:<new id>": Telegram turned the admin group into a supergroup.
+MOVED_KEY = "admin_chat_moved"
+
+
 async def load():
+    await _load_seat()
+    await follow_moved_chat()
+
+
+async def follow_moved_chat():
+    """The admin group became a supergroup earlier: use the new id even while
+    the old one is still in TELEGRAM_ADMIN_CHAT_ID (one hop is all there is)."""
+    global _chat_id
+    old, _, new = (await get_state(MOVED_KEY) or "").partition(":")
+    if _chat_id and new and old == _chat_id:
+        logger.warning("The admin group %s is supergroup %s now — update TELEGRAM_ADMIN_CHAT_ID", old, new)
+        _chat_id = new
+
+
+async def move_admin_chat(new_id: int | str) -> bool:
+    """Follow the admin group into its supergroup. True when the seat moved."""
+    global _chat_id
+    old, new = _chat_id, str(new_id)
+    if not old or new == old:
+        return False
+    _chat_id = new
+    await set_state(MOVED_KEY, f"{old}:{new}")
+    if await get_state("admin_chat_id") == old:
+        await set_state("admin_chat_id", new)
+    logger.warning("The admin group %s became supergroup %s — following it", old, new)
+    return True
+
+
+def env_chat_outdated() -> bool:
+    """TELEGRAM_ADMIN_CHAT_ID still names the group we have moved away from."""
+    return bool(config.admin_chat_id) and config.admin_chat_id != _chat_id
+
+
+async def _load_seat():
     global _chat_id, _user_id
     if config.admin_chat_id or config.admin_user_id:
         # Env wins: a stranger's /start, a lost database or a restored copy

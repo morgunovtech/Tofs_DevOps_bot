@@ -85,6 +85,17 @@ async def cmd_start_helper(message: Message, command: CommandObject, state: FSMC
         await notifier.send(f"👥 {esc(name)} теперь получает тревоги 🔴. Убрать — ⚙️ Настройки → 👥 Помощники.")
 
 
+@router.message(F.migrate_from_chat_id)
+async def on_group_upgraded(message: Message):
+    """Telegram turned the admin group into a supergroup: follow it at once,
+    not at the next alert — commands from the new chat count from now on."""
+    if str(message.migrate_from_chat_id) == runtime.admin_chat_id():
+        await runtime.move_admin_chat(message.chat.id)
+        if runtime.env_chat_outdated():
+            await message.answer(f"Группа стала супергруппой — теперь пишу сюда. В .env замени "
+                                 f"TELEGRAM_ADMIN_CHAT_ID на <code>{message.chat.id}</code>.")
+
+
 @router.message(Command("stop"))
 async def cmd_stop(message: Message):
     if runtime.is_admin(message.from_user.id if message.from_user else None):

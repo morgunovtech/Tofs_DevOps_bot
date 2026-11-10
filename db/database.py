@@ -529,16 +529,19 @@ async def delete_notifications(ids: list[int]):
 OUTBOX_MAX = 50
 
 
-async def outbox_add(text: str, reply_markup: str | None, priority: str):
-    """Keep a message for a retry; only the newest OUTBOX_MAX survive a
-    long outage."""
+async def outbox_add(text: str, reply_markup: str | None, priority: str) -> int:
+    """Keep a message for a retry. Past OUTBOX_MAX rows the oldest NON-critical
+    ones go first, then the oldest critical. Returns how many were dropped."""
     db = await get_db()
     async with _write_lock:
         await db.execute("INSERT INTO outbox (text, reply_markup, priority) VALUES (?, ?, ?)",
                          (text, reply_markup, priority))
-        await db.execute("DELETE FROM outbox WHERE id NOT IN "
-                         "(SELECT id FROM outbox ORDER BY id DESC LIMIT ?)", (OUTBOX_MAX,))
+        cursor = await db.execute(
+            """DELETE FROM outbox WHERE id IN (
+                   SELECT id FROM outbox ORDER BY priority = 'critical', id
+                   LIMIT max(0, (SELECT COUNT(*) FROM outbox) - ?))""", (OUTBOX_MAX,))
         await db.commit()
+        return cursor.rowcount
 
 
 async def outbox_peek() -> list[dict]:

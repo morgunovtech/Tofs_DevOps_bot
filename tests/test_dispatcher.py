@@ -170,3 +170,21 @@ async def test_a_group_without_an_owner_id_says_what_to_set(bot, db, cfg):
 def test_admin_router_covers_every_update_type():
     # A new update type needs admin.<type>.filter(AdminFilter()) in handlers/__init__.py.
     assert DP.resolve_used_update_types() == ["callback_query", "message"]
+
+
+async def test_the_upgrade_service_message_moves_the_admin_group(bot, db, monkeypatch):
+    """Telegram's own note «this group is now a supergroup» moves the seat at
+    once — commands from the new chat count before the next alert."""
+    monkeypatch.setattr(runtime, "_chat_id", "-4001")
+    monkeypatch.setattr(runtime, "_user_id", "777")
+    session = MockedSession()
+    tg = Bot(token="123456:TEST", session=session)
+    await DP.feed_raw_update(tg, {"update_id": 1, "message": {
+        "message_id": 1, "date": 1700000000, "migrate_from_chat_id": -4001,
+        "chat": {"id": -1001234567890, "type": "supergroup", "title": "Work"}}})
+    assert runtime.admin_chat_id() == "-1001234567890"
+    await DP.feed_raw_update(tg, {"update_id": 2, "message": {      # someone else's group: ignored
+        "message_id": 2, "date": 1700000000, "migrate_from_chat_id": -999,
+        "chat": {"id": -1009999, "type": "supergroup", "title": "Other"}}})
+    assert runtime.admin_chat_id() == "-1001234567890"
+    await tg.session.close()
