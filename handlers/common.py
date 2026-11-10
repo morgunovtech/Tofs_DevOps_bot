@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -86,15 +86,30 @@ async def render(target: Message | CallbackQuery, text: str,
     editable = getattr(target, "message", None)   # CallbackQuery → its message
     if editable is not None and not hasattr(editable, "edit_text"):
         # InaccessibleMessage (too old to edit): answer below instead.
-        await editable.answer(text, reply_markup=kb, **extra)
+        await _waiting_out_flood(lambda: editable.answer(text, reply_markup=kb, **extra))
     elif editable is not None:
         try:
-            await editable.edit_text(text, reply_markup=kb, **extra)
+            await _waiting_out_flood(lambda: editable.edit_text(text, reply_markup=kb, **extra))
         except TelegramBadRequest as e:
             if "not modified" not in str(e):
                 raise
     else:
-        await target.answer(text, reply_markup=kb, **extra)
+        await _waiting_out_flood(lambda: target.answer(text, reply_markup=kb, **extra))
+
+
+# A screen waits out Telegram's flood control (429) when the wait is short;
+# a longer one goes to on_handler_error, which says so instead of «устарело».
+SCREEN_FLOOD_WAIT_SEC = 5
+
+
+async def _waiting_out_flood(send):
+    try:
+        return await send()
+    except TelegramRetryAfter as e:
+        if e.retry_after > SCREEN_FLOOD_WAIT_SEC:
+            raise
+        await asyncio.sleep(e.retry_after)
+        return await send()
 
 
 STALE_TAP = ("⌛ Это нажатие пришло, пока я был выключен или перезапускался, — ничего не сделал. "
@@ -165,6 +180,17 @@ async def on_handler_error(event: ErrorEvent):
     menu stuck on a '▱▱▱ …' message with no keyboard and no way back."""
     update = event.update
     call = update.callback_query if update else None
+    if isinstance(event.exception, TelegramRetryAfter):
+        # Flood control on this chat (e.g. a storm of alerts): nothing is
+        # broken, and any message to the chat would get the same 429.
+        logger.warning("Telegram flood control: a screen waits %s s", event.exception.retry_after)
+        if call:
+            try:
+                await call.answer(f"Telegram просит подождать {event.exception.retry_after} с — "
+                                  f"нажми ещё раз чуть позже", show_alert=True)
+            except Exception:
+                pass   # the tap was already answered: there is nothing else to say it with
+        return True
     if "message is not modified" in str(event.exception):
         if call:
             try:

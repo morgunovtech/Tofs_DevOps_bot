@@ -1048,6 +1048,10 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",
             (prefix + "%", prefix))
+    # The sites of a message about several at once (alert_group:<id>, the
+    # open group messages) are kept for their buttons: a week is plenty.
+    await db.execute(
+        "DELETE FROM bot_state WHERE key LIKE 'alert_group:%' AND updated_at < datetime('now', '-7 days')")
 
 
 FEEDBACK_KEEP_DAYS = 90      # visitors' text, IP and User-Agent

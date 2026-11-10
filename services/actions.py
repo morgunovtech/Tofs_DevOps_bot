@@ -78,6 +78,17 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def group_keyboard(group_id: int) -> InlineKeyboardMarkup:
+    """Buttons of a message about several sites at once (reports.scheduler,
+    GROUP_FROM). The per-site buttons are a tap away: the list answers
+    below, the alert stays intact. group_id — the first incident of the
+    group; its sites live in bot_state (alert_group:<id>)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Показать по сайтам", callback_data=f"grp:list:{group_id}")],
+        [InlineKeyboardButton(text=f"🔧 Я чиню все — {maintenance.fix_length()} тишины",
+                              callback_data=f"grp:fix:{group_id}")]])
+
+
 def deep_alert_keyboard(url: str, site_id: int, incident_id: int | None) -> InlineKeyboardMarkup | None:
     """«5xx на страницах»: the home page opens, so «🔧 Я чиню» (silences the
     whole site), «🔍 Проверить сейчас» (checks the home page only) and «📸»
