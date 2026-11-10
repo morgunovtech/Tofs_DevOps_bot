@@ -33,7 +33,7 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from monitors import availability, dns_checker, links_checker, netcheck, rdap  # noqa: E402
+from monitors import availability, dns_checker, links_checker, netcheck, parse_worker, rdap  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
@@ -249,3 +249,10 @@ def cfg():
     yield _set
     for k, v in saved.items():
         object.__setattr__(config, k, v)
+
+
+@pytest.fixture(autouse=True)
+async def _parse_child_stopped():
+    """A test that parsed HTML leaves no child process behind."""
+    yield
+    await parse_worker.close()

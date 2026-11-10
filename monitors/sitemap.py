@@ -1,5 +1,6 @@
 """sitemap.xml helpers shared by the deep 5xx probe and the SEO audit."""
 
+import asyncio
 import html
 import logging
 import re
@@ -96,7 +97,10 @@ async def scan_sitemap(session: aiohttp.ClientSession, base_url: str) -> Sitemap
         return SitemapScan()
     if not _ROOT_RE.search(text):
         return SitemapScan(pages=[], missing=True)
-    locs = _locs(text)
+    # A 5 MB map is ~0.2 s of regex and unescaping: in a thread, so the
+    # event loop goes on (the regex is linear, html.unescape and urlparse
+    # release the GIL often enough).
+    locs = await asyncio.to_thread(_locs, text)
     # An index is recognised by its root element, not by «.xml» in the
     # entries: Shopify's are «sitemap_products_1.xml?from=1&to=99».
     if _INDEX_RE.search(text):
@@ -109,16 +113,21 @@ async def scan_sitemap(session: aiohttp.ClientSession, base_url: str) -> Sitemap
             if sub is None:
                 failed += 1
             else:
-                nested.extend(_locs(sub))
+                nested.extend(await asyncio.to_thread(_locs, sub))
         if not nested and failed:
             return SitemapScan()
         locs = nested
     if not locs:
         return SitemapScan(pages=[], missing=True)
-    base_host = bare_host(host_of(base_url))
+    own, foreign = await asyncio.to_thread(_split_hosts, locs, bare_host(host_of(base_url)))
+    return SitemapScan(pages=own, foreign_hosts=foreign)
+
+
+def _split_hosts(locs: list[str], base_host: str) -> tuple[list[str], list[str]]:
+    """(the site's own pages, the other hosts when there is none of its own)."""
     own = [loc for loc in locs if bare_host(host_of(loc)) == base_host]
     foreign = [] if own else sorted({h for h in (host_of(loc) for loc in locs) if h})
-    return SitemapScan(pages=own, foreign_hosts=foreign)
+    return own, foreign
 
 
 async def sitemap_urls(session: aiohttp.ClientSession, base_url: str) -> list[str] | None:

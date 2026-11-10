@@ -4,6 +4,7 @@
 import aiohttp
 from bs4 import BeautifulSoup
 
+from monitors import parse_worker
 from monitors.base import decode_body, phrase_found, read_capped
 from utils.net import owner_connector
 from utils.urls import USER_AGENT, host_of, registrable_domain
@@ -26,6 +27,15 @@ async def suggest_keyword(url: str) -> str | None:
                 html = decode_body(await read_capped(resp, MAX_BYTES), resp.charset)
     except Exception:
         return None
+    try:
+        return await parse_worker.phrase(html)
+    except parse_worker.ParseError:
+        return None
+
+
+def pick_phrase(html: str) -> str | None:
+    """The phrase of suggest_keyword from the page's HTML — pure, so it runs
+    in the parse child (monitors.parse_worker), not in the event loop."""
     soup = BeautifulSoup(html, "html.parser")
     candidates = []
     h1 = soup.find("h1")

@@ -34,6 +34,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from db.database import get_or_create_site, get_state, resolve_incident, save_check, save_incident, set_state
+from monitors import parse_worker
 from monitors.base import LinkCheck, LinksResult, decode_body, gather_checks, read_capped
 from services import sitestatus
 from utils.net import CrawlResolver, owner_connector, refused_private
@@ -283,7 +284,16 @@ async def _crawl(url: str, site_id: int, manage: bool, slots: asyncio.Semaphore,
             await sitestatus.update(site_id, "links", status="error", broken=0, pending=0)
             return r
         html, final_url = fetched
-        links = extract_links(html, final_url)
+        # In the parse child, not the event loop: a 2 MB page is a second
+        # of CPU that would stop the tick and the buttons.
+        try:
+            links = await parse_worker.links(html, final_url)
+        except parse_worker.ParseError as e:
+            logger.warning("links: could not parse %s: %s", url, e)
+            r.status, r.error, r.transient = "error", "Could not parse page", True
+            await save_check(site_id, "links", "error", details=r.error)
+            await sitestatus.update(site_id, "links", status="error", broken=0, pending=0)
+            return r
         on_page = set(links)
         r.total_links = len(links)
         offset = _count(await get_state(f"links_offset:{site_id}"))
