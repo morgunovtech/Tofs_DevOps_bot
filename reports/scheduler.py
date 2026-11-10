@@ -73,6 +73,7 @@ from services import (
     humanize,
     index_status,
     integrations,
+    maintenance,
     notifier,
     railway,
     recommend,
@@ -85,6 +86,7 @@ from services import (
 )
 from services.actions import (
     alert_actions_keyboard,
+    deep_alert_keyboard,
     deploy_hook_for,
     domain_keyboard,
     explain_keyboard,
@@ -193,14 +195,21 @@ async def _on_availability_result(r, site: dict):
             msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
         kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
         sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
-                                   always_ring=True)
+                                   always_ring=True, announces=r.incident_id)
         if isinstance(sent, Message):
             _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
     elif r.external_ok is True:
         await _note_local_network_problem(r.url, r.site_id)
     elif r.recovered:
         # Rings by default; with «будить только когда сайт лёг» only the fall does.
-        await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
+        text = format_recovery_alert(r)
+        inc_id = (r.resolved_incident or {}).get("id")
+        if inc_id and await notifier.announced_at(inc_id) and await maintenance.paused_until(r.site_id):
+            # «🔧 Я чиню» promised «напишу, когда поднимется»: the fix ends the silence.
+            # A pause set before an unannounced fall stays — send() drops the ✅ then.
+            await maintenance.pause_site(r.site_id, None)
+            text += "\n\n🔧 Тишину снял — снова пишу обо всём."
+        await notifier.send(text, Priority.CRITICAL, site_id=r.site_id, resolves=inc_id)
     if r.ok:
         _ext_ok_noted.discard(r.site_id)
         await _track_slow(r, _slow_ms(site))
@@ -277,7 +286,7 @@ async def _track_slow(r, slow_ms: int):
                         f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
                         f"{expl.meaning}")
                 sent = await notifier.send(text, Priority.NORMAL, site_id=r.site_id,
-                                           reply_markup=explain_keyboard(inc_id))
+                                           reply_markup=explain_keyboard(inc_id), announces=inc_id)
                 if isinstance(sent, Message) and _scheduler is not None:
                     _scheduler.add_job(_followup_slow, "date",
                                        run_date=datetime.now(UTC) + timedelta(minutes=5),
@@ -285,9 +294,11 @@ async def _track_slow(r, slow_ms: int):
                                        id=f"followup-slow:{sent.message_id}", replace_existing=True)
         return
     _slow_streak[r.site_id] = 0
-    if await resolve_incident(r.site_id, "performance"):
+    resolved = await resolve_incident(r.site_id, "performance")
+    if resolved:
         await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается за {humanize.fmt_seconds(ms)}. "
-                            f"Ничего делать не нужно.", Priority.NORMAL, site_id=r.site_id)
+                            f"Ничего делать не нужно.", Priority.NORMAL, site_id=r.site_id,
+                            resolves=resolved["id"])
 
 
 # ── Generic "alert on transition" for the daily/hourly monitors ──────────────
@@ -302,9 +313,11 @@ async def _notify_transitions(results: list[CheckResult], alert, recovery,
                 msg = alert(r)
                 if msg:
                     kb = keyboard(r) if keyboard else explain_keyboard(r.incident_id)
-                    await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb)
+                    await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb,
+                                        announces=r.incident_id)
             elif r.recovered:
-                await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id)
+                await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id,
+                                    resolves=(r.resolved_incident or {}).get("id"))
 
 
 def _by_level(r: CheckResult) -> Priority:
@@ -373,7 +386,7 @@ async def run_deep_checks():
     await _notify_transitions(
         await check_all_deep(urls), format_deep_alert,
         lambda r: f"✅ На {esc(site_label(r.url))} все страницы снова отвечают без ошибок.",
-        keyboard=lambda r: alert_actions_keyboard(r.url, r.site_id, r.incident_id))
+        keyboard=lambda r: deep_alert_keyboard(r.url, r.site_id, r.incident_id))
 
 
 SEO_GRACE_HOURS = 24
@@ -681,7 +694,7 @@ async def run_escalation_watch():
     """Re-alert about an unresolved DOWN site every N minutes — bypasses
     mute: a dead site must not be forgettable. Availability only: paging
     every 30 minutes about an expiring cert would train the user to ignore
-    alerts. «🔧 Я чиню» snoozes it for two hours."""
+    alerts. «🔧 Я чиню» snoozes it for maintenance.FIX_MINUTES."""
     repeat_min = config.escalation_repeat_min
     if not repeat_min:
         return
@@ -699,11 +712,16 @@ async def run_escalation_watch():
             last = parse_iso_utc(await get_state(f"escalated:{inc['id']}"))
             if last and (now - last) < timedelta(minutes=repeat_min):
                 continue
+            if await get_state(f"{notifier.HELD}{inc['id']}"):
+                continue        # held by a pause or a window: release_held says it first, once
+            announced = await notifier.announced_at(inc["id"])
+            if announced and (now - announced) < timedelta(minutes=repeat_min):
+                continue        # the held alert was just said — no repeat on its heels
             age_min = (now - created).total_seconds() / 60
             sent = await notifier.send(
                 f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
                 f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
-                f"«🔧 Я чиню», и я замолчу на два часа.",
+                f"«🔧 Я чиню», и я замолчу на {maintenance.fix_length()}.",
                 Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
                 reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                                     hosting=await get_state(f"hosting:{inc['site_id']}"),
@@ -1106,6 +1124,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(runtime.warn_if_seat_free, IntervalTrigger(minutes=30), "seat_free_warning")
     job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
     job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
+    job(notifier.release_held, IntervalTrigger(minutes=1), "held_release", misfire_grace_time=60)
     job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
     if config.on_railway:

@@ -1,16 +1,27 @@
 """Silence without blindness: recurring maintenance windows and per-site
 pauses. Checks, incidents and statistics keep running; only outgoing alerts
-and escalation stay quiet. Every alert-silencing code path asks one
-question: is_paused(site_id)."""
+and escalation stay quiet — postponed, not thrown away: an alert that
+opens an incident is held until the silence ends (services.notifier), and
+the recovery of an announced fall comes through. Every alert-silencing
+code path asks one question: is_paused(site_id)."""
 
 import json
 from datetime import UTC, datetime, timedelta
 
 from db.database import get_state, set_state
 from utils.clock import now_local
-from utils.text import parse_iso_utc
+from utils.text import fmt_duration, parse_iso_utc
 
 MAX_MAINT_WINDOWS = 10
+
+# «🔧 Я чиню»: one length for the pause, the escalation snooze and every text
+# that names it. It ends earlier by itself when the site comes back.
+FIX_MINUTES = 60
+
+
+def fix_length() -> str:
+    """How the texts call FIX_MINUTES: «час» for the default, else «N мин / N ч»."""
+    return "час" if FIX_MINUTES == 60 else fmt_duration(FIX_MINUTES)
 
 # [{"id": 1, "site_id": None|int, "days": [0..6] ([] = daily),
 #   "start_min": 120, "end_min": 240}, …]  (minutes since local midnight)

@@ -297,8 +297,9 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
     if problems and (complete or r.has_critical):
         r.error = incident_message(problems)
         r.incident_id, r.incident_new = await save_incident(site_id, "seo", r.error, severity=r.severity)
-    elif complete and not problems and await resolve_incident(site_id, "seo"):
-        r.recovered = True
+    elif complete and not problems:
+        closed = await resolve_incident(site_id, "seo")
+        r.recovered, r.resolved_incident = closed is not None, closed
     return r
 
 

@@ -10,7 +10,10 @@ pauses; nothing else in the codebase reasons about them:
               IS the digest, so it goes through quiet hours)
 
 A site_id turns the message into a per-site alert: while that site is
-paused or inside a maintenance window it is dropped, whatever the priority.
+paused («🔧 Я чиню») or inside a maintenance window it is dropped, whatever
+the priority — unless it opens an incident (announces=<id>): then it is
+HELD and said once the silence is over, if the problem is still there; and
+the recovery of an announced fall (resolves=<id>) comes through the silence.
 send() returns True when the message was delivered or queued — callers that
 set one-shot "already alerted" flags must only do so on True.
 
@@ -25,7 +28,9 @@ the incident is already open, so the next check has nothing new to say.
 """
 
 import asyncio
+import json
 import logging
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -43,7 +48,9 @@ from aiogram.types import InlineKeyboardMarkup, Message
 
 from db.database import (
     delete_notifications,
+    get_active_incidents,
     get_state,
+    get_states_like,
     outbox_add,
     outbox_delete,
     outbox_peek,
@@ -164,11 +171,19 @@ async def _call(method, **kwargs):
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
                reply_markup=None, site_id: int | None = None, always_ring: bool = False,
-               to_helpers: bool = True) -> Message | bool:
+               to_helpers: bool = True, announces: int | None = None,
+               resolves: int | None = None) -> Message | bool:
     """The sent Message when delivered now, True when queued, False when
     dropped or failed — so `if sent:` keeps working for one-shot flags.
     With «будить только когда сайт лёг» on, CRITICAL messages that are not
-    marked always_ring are treated as NORMAL."""
+    marked always_ring are treated as NORMAL.
+
+    announces=<incident id>: the message opens an incident — on any success
+    (delivered, queued, kept for a retry) the incident is marked announced;
+    a pause or a maintenance window holds it instead of dropping it.
+    resolves=<incident id>: the message says the problem is gone — it passes
+    a pause or a window only when the fall itself was announced (a ✅ about a
+    fall nobody heard of would ring at night for nothing)."""
     if priority is Priority.CRITICAL and settings.ring_only_down() and not always_ring:
         priority = Priority.NORMAL
     # The last line of defence on length: callers that need every line
@@ -177,21 +192,99 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
     if not runtime.admin_chat_id() or _bot is None:
         logger.warning("No admin yet, dropping message: %s", text[:60])
         return False
-    if site_id is not None and await maintenance.is_paused(site_id):
-        logger.info("Site %s paused — dropping: %s", site_id, text[:60])
+    if site_id is not None and await maintenance.is_paused(site_id) \
+            and not (resolves is not None and await announced_at(resolves)):
+        if announces is not None:
+            await _hold(announces, site_id, text, reply_markup, priority, always_ring, to_helpers)
+            logger.info("Site %s paused — holding until the silence ends: %s", site_id, text[:60])
+        else:
+            logger.info("Site %s paused — dropping: %s", site_id, text[:60])
         return False
     if await _defer(priority):
         await queue_notification(text, _markup_json(reply_markup))
         logger.info("Queued (mute / quiet hours): %s", text[:60])
-        return True
-    sent = await _deliver(text, reply_markup, priority)
-    if _later(sent):
-        # Into the outbox FIRST: the helpers below may take a while.
-        await _keep(_maybe_note() + text if sent is MAYBE else text, reply_markup, priority)
-        sent = True
-    if priority is Priority.CRITICAL and to_helpers:
-        await _tell_helpers(text)
-    return sent
+        result: Message | bool = True
+    else:
+        sent = await _deliver(text, reply_markup, priority)
+        if _later(sent):
+            # Into the outbox FIRST: the helpers below may take a while.
+            await _keep(_maybe_note() + text if sent is MAYBE else text, reply_markup, priority)
+            sent = True
+        if priority is Priority.CRITICAL and to_helpers:
+            await _tell_helpers(text)
+        result = sent
+    if result and announces is not None:
+        await _mark_announced(announces)
+    return result
+
+
+# ── Pauses and windows postpone, they do not throw away ─────────────────────
+
+HELD = "held:"
+_released: set[int] = set()     # held alerts said this process; a refused delete must not repeat them
+
+
+async def announced_at(incident_id: int) -> datetime | None:
+    """When the owner was told about this incident (delivered, queued or
+    kept for a retry); None — never. The one place that reads the mark."""
+    return parse_iso_utc(await get_state(f"announced:{incident_id}"))
+
+
+async def _mark_announced(incident_id: int):
+    """Best effort: the message is out, a database that refuses the write
+    must not turn into «not announced» and a repeat (PLAN-09 watches the disk)."""
+    try:
+        await set_state(f"announced:{incident_id}", datetime.now(UTC).isoformat())
+    except sqlite3.OperationalError as e:
+        logger.warning("Could not mark incident %s as announced: %s", incident_id, e)
+
+
+async def _hold(incident_id: int, site_id: int, text: str, reply_markup, priority: Priority,
+                always_ring: bool, to_helpers: bool):
+    await set_state(f"{HELD}{incident_id}", json.dumps({
+        "site_id": site_id, "text": text, "markup": _markup_json(reply_markup), "priority": priority.value,
+        "always_ring": always_ring, "to_helpers": to_helpers, "at": datetime.now(UTC).isoformat()}))
+
+
+async def _forget_held(key: str):
+    try:
+        await set_state(key, None)
+    except sqlite3.OperationalError as e:
+        logger.warning("Could not drop %s: %s", key, e)
+
+
+async def release_held():
+    """Every minute: an alert held by a «🔧» pause or a maintenance window
+    is said once the silence is over — if its problem is still open. A
+    problem that came and went inside the silence is forgotten quietly."""
+    held = await get_states_like(HELD)
+    if not held:
+        return
+    open_ids = {inc["id"] for inc in await get_active_incidents()}
+    for key, raw in held.items():
+        incident_id = int(key.removeprefix(HELD))
+        if incident_id in _released:            # said already; only the delete failed
+            await _forget_held(key)
+            continue
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            item = None
+        if incident_id not in open_ids or not isinstance(item, dict):
+            await _forget_held(key)
+            continue
+        if await maintenance.is_paused(item["site_id"]):
+            continue
+        at = parse_iso_utc(item.get("at"))
+        note = (f"🔕 Это случилось в {to_local(at).strftime('%H:%M')}, пока про сайт было тихо "
+                f"(«🔧 Я чиню» или плановые работы), и до сих пор не прошло:\n\n") if at else ""
+        sent = await send(clip(note + item["text"]), Priority(item["priority"]),
+                          reply_markup=_markup(item.get("markup")), site_id=item["site_id"],
+                          always_ring=item.get("always_ring", False), to_helpers=item.get("to_helpers", False),
+                          announces=incident_id)
+        if sent:
+            _released.add(incident_id)
+            await _forget_held(key)
 
 
 def _maybe_note() -> str:

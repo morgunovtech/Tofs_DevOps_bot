@@ -436,7 +436,8 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
         notes.append("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут.")
         row = [InlineKeyboardButton(text="✅ Починил, пиши снова", callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60")]
+        row = [InlineKeyboardButton(text=f"🔧 Я чиню: {maintenance.fix_length()} тишины",
+                                    callback_data=f"pause:{sid}:{maintenance.FIX_MINUTES}")]
     if maintenance.maintenance_now(sid):
         notes.append("Сейчас плановые работы — про этот сайт не пишу.")
     return row, notes
@@ -745,7 +746,7 @@ async def cb_pause(call: CallbackQuery):
         await ack(call, "Пауза снята")
         await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
         return
-    minutes = int(arg) if arg.isdigit() else 60
+    minutes = int(arg) if arg.isdigit() else maintenance.FIX_MINUTES
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "

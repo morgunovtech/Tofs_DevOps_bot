@@ -11,7 +11,7 @@ import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
-from services import humanize, integrations, seo_fixes
+from services import humanize, integrations, maintenance, seo_fixes
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -36,7 +36,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     its screen answers below instead of replacing the alert text. An API
     check has no page to photograph."""
     http = is_http_url(url)
-    rows = [[InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{site_id}"),
+    rows = [[InlineKeyboardButton(text=f"🔧 Я чиню, {maintenance.fix_length()} тишины", callback_data=f"act:fix:{site_id}"),
              InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
     second = []
     if http and not api:
@@ -56,6 +56,15 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     if panel:
         rows.append([InlineKeyboardButton(text=f"🔗 Открыть панель {hosting_svc.label(hosting)}", url=panel)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def deep_alert_keyboard(url: str, site_id: int, incident_id: int | None) -> InlineKeyboardMarkup | None:
+    """«5xx на страницах»: the home page opens, so «🔧 Я чиню» (silences the
+    whole site), «🔍 Проверить сейчас» (checks the home page only) and «📸»
+    (photographs the home page) would answer a different question."""
+    redeploy = ([InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}")]
+                if deploy_hook_for(url) else [])
+    return explain_keyboard(incident_id, redeploy)
 
 
 def explain_keyboard(incident_id: int | None, *extra_rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup | None:

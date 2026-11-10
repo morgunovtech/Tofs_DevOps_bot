@@ -42,8 +42,9 @@ async def apply_ladder(result: CheckResult, check_type: str,
             result.threshold_crossed = current
             await set_last_alert_threshold(result.site_id, check_type, current)
         return
-    if await resolve_incident(result.site_id, check_type):
-        result.recovered = True
+    closed = await resolve_incident(result.site_id, check_type)
+    if closed:
+        result.recovered, result.resolved_incident = True, closed
     if last is not None:
         await set_last_alert_threshold(result.site_id, check_type, None)
 

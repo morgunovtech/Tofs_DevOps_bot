@@ -420,6 +420,13 @@ async def get_state(key: str) -> str | None:
     return row[0] if row else None
 
 
+async def get_states_like(prefix: str) -> dict[str, str]:
+    """{key: value} of every bot_state key that starts with prefix."""
+    db = await get_db()
+    cursor = await db.execute("SELECT key, value FROM bot_state WHERE key LIKE ?", (prefix + "%",))
+    return {k: v for k, v in await cursor.fetchall()}
+
+
 async def set_state(key: str, value: str | None):
     db = await get_db()
     async with _write_lock:
@@ -624,7 +631,7 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
              sum_ms = sum_ms + excluded.sum_ms""", (cutoff,))
     await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
     # Escalation/ack markers for long-resolved incidents are dead weight.
-    for prefix in ("escalated:", "ack:"):
+    for prefix in ("escalated:", "ack:", "announced:", "held:"):
         await db.execute(
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",

@@ -43,8 +43,8 @@ async def check_deep(url: str) -> DeepResult:
         if not pages:
             # A previously opened deep incident must not stay open forever
             # just because the sitemap is gone (the site said 404).
-            if await resolve_incident(site_id, "deep"):
-                r.recovered = True
+            closed = await resolve_incident(site_id, "deep")
+            r.recovered, r.resolved_incident = closed is not None, closed
             return r
         sample = pick_sample(pages, config.deep_check_sample)
         r.sampled = len(sample)
@@ -84,8 +84,8 @@ async def check_deep(url: str) -> DeepResult:
         n = len(r.errors)
         await save_check(site_id, "deep", "ok", details=(
             f"{r.sampled} pages sampled, " + (f"{n} 5xx (below threshold)" if n else "no 5xx")))
-        if await resolve_incident(site_id, "deep"):
-            r.recovered = True
+        closed = await resolve_incident(site_id, "deep")
+        r.recovered, r.resolved_incident = closed is not None, closed
     return r
 
 

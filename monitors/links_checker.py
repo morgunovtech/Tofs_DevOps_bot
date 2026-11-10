@@ -207,8 +207,9 @@ async def check_links(url: str, manage: bool = True) -> LinksResult:
     if r.broken:
         r.incident_id, r.incident_new = await save_incident(
             site_id, "links", f"{len(r.broken)} broken link(s) found on {url}", severity="warning")
-    elif await resolve_incident(site_id, "links"):
-        r.recovered = True
+    else:
+        closed = await resolve_incident(site_id, "links")
+        r.recovered, r.resolved_incident = closed is not None, closed
     return r
 
 

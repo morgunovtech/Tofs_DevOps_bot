@@ -152,6 +152,7 @@ def _fresh_module_state(monkeypatch):
     scheduler._next_avail_check.clear()
     scheduler._slow_streak.clear()
     scheduler._ext_ok_noted.clear()
+    notifier._released.clear()
     monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
