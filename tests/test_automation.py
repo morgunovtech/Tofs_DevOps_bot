@@ -136,7 +136,10 @@ async def test_seo_grace_skips_alerts_for_fresh_sites(bot, db, monkeypatch):
     assert ([fresh_url], False) in calls and ([old_url], True) in calls
 
 
-async def test_weekly_recommendation_rotates(bot, db):
+async def test_weekly_recommendation_rotates(bot, db, monkeypatch):
+    async def no_phrase(url):
+        return None                                   # no page to read: ex.test is not a real site
+    monkeypatch.setattr(recommend, "suggest_keyword", no_phrase)
     await db.activate_or_create_site("https://ex.test")
     first = await recommend.weekly_recommendation()
     assert first and first[0].startswith("💡 ") and "Одна идея" not in first[0] and first[1].inline_keyboard

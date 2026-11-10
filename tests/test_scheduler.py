@@ -11,7 +11,7 @@ from db.database import get_active_incidents, get_state, save_incident, set_stat
 from monitors import host_checker
 from monitors.base import AvailabilityResult, SslInfo, SslResult
 from reports import scheduler
-from services import gsc, heartbeats, integrations, settings, sitestatus, updates
+from services import gsc, heartbeats, integrations, recommend, settings, sitestatus, updates
 from utils.clock import now_local
 from utils.text import fmt_duration
 
@@ -108,8 +108,17 @@ async def test_heartbeat_watch_and_recovery_flag(bot, db, monkeypatch):
     await settings.remove_heartbeat_job("backup")
 
 
-async def test_reports_do_not_crash_on_empty_and_populated_db(bot, db, cfg, tmp_path):
+async def test_reports_do_not_crash_on_empty_and_populated_db(bot, db, cfg, tmp_path, monkeypatch):
     cfg(db_path=str(tmp_path / "bot.db"))   # backups go next to the DB — keep them out of the repo
+
+    async def no_checks(urls, manage=True):
+        return []                                     # a report must not need the network to render
+
+    async def no_phrase(url):
+        return None
+    for name in ("check_all", "check_all_ssl", "check_all_domains"):
+        monkeypatch.setattr(scheduler, name, no_checks)
+    monkeypatch.setattr(recommend, "suggest_keyword", no_phrase)
     await scheduler.send_morning_report()
     assert "Доброе утро" in bot.sent[-1]["text"]
     await scheduler.send_evening_report()                  # no incidents → nothing

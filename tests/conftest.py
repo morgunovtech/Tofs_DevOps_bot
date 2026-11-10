@@ -20,16 +20,27 @@ os.environ.update({
     "SITES": "",
     "HEARTBEAT_JOBS": "",
     "TRUST_PROXY": "0",
+    # The screenshot service is a closed port on loopback: nothing leaves the
+    # machine and the client gets a refusal at once. A test that needs the
+    # real client against a mock sets cfg(screenshot_template=<TestServer>).
+    "SCREENSHOT_TEMPLATE": "http://127.0.0.1:9/shot?url={url}",
     # A developer's shell often exports a GitHub token for gh/git.
     "GITHUB_TOKEN": "",
     "GITHUB_OWNER": "",
 })
 
 import asyncio  # noqa: E402
+import errno  # noqa: E402
+import html  # noqa: E402
+import ipaddress  # noqa: E402
+import re  # noqa: E402
+import socket  # noqa: E402
 from datetime import UTC, datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 import pytest  # noqa: E402
+from aiogram.exceptions import TelegramBadRequest  # noqa: E402
+from aiogram.methods import SendMessage  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
@@ -52,10 +63,155 @@ from services import (  # noqa: E402
 )
 from web import status_page, webhook  # noqa: E402
 
+# ── No network in tests ──────────────────────────────────────────────────────
+# Tests talk only to aiohttp TestServer on 127.0.0.1. Any other address or a
+# DNS lookup is refused (nothing leaves the machine) and remembered, and the
+# test that tried it fails — even when the code under test swallowed the error.
+_REAL_CONNECT = socket.socket.connect
+_REAL_CONNECT_EX = socket.socket.connect_ex
+_REAL_SENDTO = socket.socket.sendto
+_REAL_GETADDRINFO = socket.getaddrinfo
+_net_attempts: list[str] = []
+
+
+def _is_loopback(host) -> bool:
+    if host in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        return ipaddress.ip_address(str(host).split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _guard(address, kind: str) -> None:
+    if not (isinstance(address, tuple) and len(address) >= 2):
+        return                              # a unix socket path is local
+    host, port = address[0], address[1]
+    if not _is_loopback(host):
+        _net_attempts.append(f"{kind} {host}:{port}")
+        raise OSError(errno.ENETUNREACH, f"tests must not use the network: {host}:{port}")
+    if port in (80, 443):                   # never a TestServer: answer as a closed port would
+        raise ConnectionRefusedError(errno.ECONNREFUSED, f"tests: {host}:{port} is closed")
+
+
+def _connect(self, address):
+    _guard(address, "connect")
+    return _REAL_CONNECT(self, address)
+
+
+def _connect_ex(self, address):
+    _guard(address, "connect")
+    return _REAL_CONNECT_EX(self, address)
+
+
+def _sendto(self, data, *args):
+    _guard(args[-1], "sendto")
+    return _REAL_SENDTO(self, data, *args)
+
+
+def _getaddrinfo(host, *args, **kwargs):
+    if host is not None and not _is_loopback(host):
+        try:
+            ipaddress.ip_address(str(host).split("%")[0])
+        except ValueError:
+            _net_attempts.append(f"dns {host}")
+            raise socket.gaierror(socket.EAI_NONAME, f"tests must not use DNS: {host}") from None
+    return _REAL_GETADDRINFO(host, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    monkeypatch.setattr(socket.socket, "connect", _connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", _connect_ex)
+    monkeypatch.setattr(socket.socket, "sendto", _sendto)
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo)
+    _net_attempts.clear()
+    yield
+    if _net_attempts:
+        pytest.fail("the test tried to reach the network: " + ", ".join(sorted(set(_net_attempts)))
+                    + " — stub the call (monkeypatch) or use aiohttp TestServer", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _screenshot_service_is_closed(monkeypatch):
+    """The screenshot service of the tests (SCREENSHOT_TEMPLATE above) is a
+    closed port: the real client runs, is refused at once and does not wait
+    between its retries."""
+    monkeypatch.setattr(screenshots, "RETRY_DELAY_SEC", 0)
+
+
+# ── Telegram's rules for what the fakes below receive ────────────────────────
+# Telegram refuses a message whose HTML it cannot parse, a text over 4096
+# characters (a caption over 1024), callback_data outside 1..64 bytes and a
+# tap answer over 200 characters. The fakes refuse the same way and remember
+# it; a test fails on any refusal unless it is marked telegram_rejects (it
+# checks how the bot copes with a refusal on purpose).
+_DEFAULT = "HTML"              # parse_mode not given: the bot-wide default (main.py), HTML
+_TG_TAGS = frozenset({"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "span",
+                      "tg-spoiler", "a", "tg-emoji", "code", "pre", "blockquote"})
+_TG_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)(\s[^<>]*)?>")
+_tg_refusals: list[str] = []
+
+
+def _html_problem(text: str) -> str | None:
+    stack, i = [], 0
+    while (j := text.find("<", i)) >= 0:
+        m = _TG_TAG.match(text, j)
+        name = m.group(2).lower() if m else ""
+        if name not in _TG_TAGS:
+            return f"can't parse entities: unsupported start tag at {text[j:j + 24]!r}"
+        if m.group(1):
+            if not stack or stack.pop() != name:
+                return f"can't parse entities: unexpected end tag </{name}>"
+        else:
+            stack.append(name)
+        i = m.end()
+    return f"can't parse entities: unclosed <{stack[-1]}>" if stack else None
+
+
+def telegram_check(text: str | None = None, parse_mode=_DEFAULT, markup=None,
+                   limit: int = 4096) -> str | None:
+    """Raise TelegramBadRequest where Telegram would; return the parse mode
+    the text went with ("HTML" or None) for the record."""
+    mode = getattr(parse_mode, "value", parse_mode)          # ParseMode.HTML or "HTML"
+    html_mode = str(mode or "").upper() == "HTML"
+    problem = None
+    if text is not None:
+        problem = _html_problem(text) if html_mode else None
+        visible = html.unescape(_TG_TAG.sub("", text)) if html_mode else text
+        if problem is None and len(visible) > limit:
+            problem = f"message is too long ({len(visible)} > {limit})"
+    for row in getattr(markup, "inline_keyboard", None) or []:
+        for button in row:
+            data = button.callback_data
+            if data is not None and not 1 <= len(data.encode()) <= 64:
+                problem = problem or f"callback_data must be 1..64 bytes: {data!r}"
+    if problem:
+        _refuse(problem)
+    return "HTML" if html_mode else None
+
+
+def _refuse(problem: str):
+    _tg_refusals.append(problem)
+    raise TelegramBadRequest(method=SendMessage(chat_id=0, text="-"), message=f"Bad Request: {problem}")
+
+
+@pytest.fixture(autouse=True)
+def _telegram_rules(request):
+    _tg_refusals.clear()
+    yield
+    if _tg_refusals and not request.node.get_closest_marker("telegram_rejects"):
+        pytest.fail("Telegram would refuse: " + "; ".join(_tg_refusals), pytrace=False)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "telegram_rejects: the test makes Telegram refuse a message on purpose")
+
 
 class FakeBot:
     """Records what the bot would have sent; send_message returns a
-    message-like object with a message_id, as aiogram's Bot does."""
+    message-like object with a message_id, as aiogram's Bot does, and
+    refuses what Telegram would refuse (see telegram_check)."""
 
     def __init__(self):
         self.sent: list[dict] = []
@@ -64,20 +220,25 @@ class FakeBot:
         self.fail_with: list[Exception] = []    # raised one per call, in order, before `fail`
 
     async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False,
-                           parse_mode="HTML", request_timeout=None):
+                           parse_mode=_DEFAULT, request_timeout=None):
         if self.fail_with:
             raise self.fail_with.pop(0)
         if self.fail:
             raise RuntimeError("telegram down")
+        mode = telegram_check(text, parse_mode, reply_markup)
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
-                          "silent": disable_notification, "parse_mode": parse_mode})
+                          "silent": disable_notification, "parse_mode": mode})
         return SimpleNamespace(message_id=len(self.sent), text=text)
 
-    async def edit_message_text(self, text, chat_id=None, message_id=None, reply_markup=None):
-        self.edited.append({"message_id": message_id, "text": text, "reply_markup": reply_markup})
+    async def edit_message_text(self, text, chat_id=None, message_id=None, reply_markup=None,
+                                parse_mode=_DEFAULT):
+        mode = telegram_check(text, parse_mode, reply_markup)
+        self.edited.append({"message_id": message_id, "text": text, "reply_markup": reply_markup,
+                            "parse_mode": mode})
         return SimpleNamespace(message_id=message_id, text=text)
 
     async def send_document(self, chat_id, document, caption=None, disable_notification=False):
+        telegram_check(caption, limit=1024)
         self.sent.append({"chat_id": chat_id, "document": document, "caption": caption})
 
 
@@ -100,12 +261,14 @@ class FakeMessage:
         self.reply_markup = None
 
     async def edit_text(self, text, reply_markup=None, **kwargs):
+        telegram_check(text, kwargs.get("parse_mode", _DEFAULT), reply_markup)
         self._preview(kwargs.get("link_preview_options"))
         self.texts.append(text)
         self.markups.append(reply_markup)
         self.reply_markup = reply_markup
 
     async def answer(self, text, reply_markup=None, **kwargs):
+        telegram_check(text, kwargs.get("parse_mode", _DEFAULT), reply_markup)
         self._preview(kwargs.get("link_preview_options"))
         self.texts.append(text)
         self.markups.append(reply_markup)
@@ -117,6 +280,7 @@ class FakeMessage:
         self.previews.append(options.url if options is not None else None)
 
     async def edit_reply_markup(self, reply_markup=None):
+        telegram_check(markup=reply_markup)
         self.reply_markup = reply_markup
 
     async def delete(self):
@@ -124,6 +288,7 @@ class FakeMessage:
         return True
 
     async def answer_document(self, document, caption=None):
+        telegram_check(caption, limit=1024)
         self.documents.append(caption)
         return self
 
@@ -136,6 +301,8 @@ class FakeCall:
         self.answers: list = []
 
     async def answer(self, text=None, show_alert=False):
+        if text and len(text) > 200:
+            _refuse(f"a tap answer is {len(text)} > 200 characters")
         self.answers.append(text)
 
 

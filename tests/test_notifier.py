@@ -1,7 +1,6 @@
 from datetime import timedelta
 
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import SendMessage
+import pytest
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import OUTBOX_MAX, outbox_peek, peek_notifications, queue_notification
@@ -104,18 +103,12 @@ async def test_deferred_message_keeps_its_buttons(bot):
     assert await peek_notifications() == []
 
 
-async def test_a_batch_telegram_rejects_does_not_jam_the_queue(bot, monkeypatch):
-    await queue_notification("<b>broken")
-    original = bot.send_message
-
-    async def picky(*args, **kwargs):
-        if "parse_mode" not in kwargs:
-            raise TelegramBadRequest(SendMessage(chat_id=1, text="x"), "can't parse entities")
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(bot, "send_message", picky)
+@pytest.mark.telegram_rejects
+async def test_a_batch_telegram_rejects_does_not_jam_the_queue(bot):
+    await queue_notification("<b>broken")          # FakeBot refuses it as Telegram would
     await notifier.flush_queue()
     assert await peek_notifications() == [] and "<b>broken" in bot.sent[-1]["text"]
+    assert bot.sent[-1]["parse_mode"] is None        # the second try went as plain text
 
 
 async def test_a_message_telegram_did_not_take_comes_later(bot, monkeypatch):
@@ -138,17 +131,11 @@ async def test_a_message_telegram_did_not_take_comes_later(bot, monkeypatch):
     assert "b.test медленно" in (await peek_notifications())[-1]["text"]   # 🟠 waits for the morning
 
 
-async def test_text_telegram_cannot_parse_still_arrives(bot, monkeypatch):
-    original = bot.send_message
-
-    async def picky(*args, **kwargs):
-        if "parse_mode" not in kwargs:
-            raise TelegramBadRequest(SendMessage(chat_id=1, text="x"), "can't parse entities")
-        return await original(*args, **kwargs)
-
-    monkeypatch.setattr(bot, "send_message", picky)
+@pytest.mark.telegram_rejects
+async def test_text_telegram_cannot_parse_still_arrives(bot):
     assert await notifier.send("🔴 <b>broken", Priority.CRITICAL)
     assert bot.sent[-1]["text"] == "🔴 <b>broken" and await outbox_peek() == []
+    assert bot.sent[-1]["parse_mode"] is None
 
 
 async def test_outbox_keeps_only_the_newest(bot):
