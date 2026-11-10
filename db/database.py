@@ -8,6 +8,7 @@ can't interleave statements into each other's transactions.
 
 import asyncio
 import contextlib
+import glob
 import logging
 import os
 import shutil
@@ -19,7 +20,7 @@ import aiosqlite
 
 from config import config
 from db import migrations as _migrations
-from db.migrations import migrate
+from db.migrations import SchemaTooNew, migrate, schema_version
 from utils.urls import host_key, is_api_check, is_http_url, is_web_page
 
 logger = logging.getLogger(__name__)
@@ -82,11 +83,70 @@ async def close_db():
         _conn = None
 
 
+# Copies taken right before a schema change; the nightly rotation (bot-*.db)
+# does not touch them.
+PRE_MIGRATION_KEEP = 3
+# Why the last schema change went without a copy (None — it had one, or
+# there was none): said to the owner once the bot can talk.
+_migrated_without_copy: str | None = None
+
+
 async def init_db():
+    global _migrated_without_copy
     db = await get_db()
+    version = await schema_version(db)
+    if version > len(_migrations.MIGRATIONS):
+        raise SchemaTooNew(version, len(_migrations.MIGRATIONS))
+    if version < len(_migrations.MIGRATIONS) and await _has_data(db):
+        _migrated_without_copy = await _snapshot_before_migration(version)
     async with _write_lock:
         await migrate(db)
         await db.commit()
+
+
+def migrated_without_copy() -> str | None:
+    return _migrated_without_copy
+
+
+async def _has_data(db) -> bool:
+    cursor = await db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sites'")
+    return await cursor.fetchone() is not None
+
+
+async def _snapshot_before_migration(version: int) -> str | None:
+    """The way back: the database exactly as the previous version left it,
+    named by the schema it holds. A copy that fails (no room on the volume)
+    does not stop the start — a bot that does not run alerts nobody; the
+    schema change goes on and the owner hears that there is no copy.
+    Returns why there is no copy, or None."""
+    folder = os.path.join(os.path.dirname(_db_path) or ".", "backups")
+    path = os.path.join(folder, f"schema-v{version:03d}-{datetime.now(UTC):%Y%m%d-%H%M%S}.db")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        await backup_db(path)          # takes _write_lock itself — so before init_db takes it
+    except (OSError, sqlite3.Error) as e:
+        logger.warning("No copy before the schema change (%s) — migrating without a way back", e)
+        return str(e)
+    logger.info("DB copy before the schema change: %s", path)
+    copies = sorted(glob.glob(os.path.join(folder, "schema-v*.db")), key=os.path.getmtime)
+    for stale in copies[:-PRE_MIGRATION_KEEP]:
+        os.remove(stale)
+    return None
+
+
+@contextlib.asynccontextmanager
+async def _tx():
+    """One write transaction on the shared connection: committed as a whole or
+    rolled back as a whole — also when the coroutine is cancelled, so the next
+    writer never commits someone else's half."""
+    db = await get_db()
+    async with _write_lock:
+        try:
+            yield db
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
 
 
 # ── Sites ────────────────────────────────────────────────────────────────────
@@ -181,16 +241,14 @@ async def activate_or_create_site(url: str) -> int:
 
 async def deactivate_site(site_id: int) -> bool:
     """Soft-remove: checks/incidents history stays, monitoring stops."""
-    db = await get_db()
-    async with _write_lock:
+    async with _tx() as db:
         cursor = await db.execute(
             "UPDATE sites SET active = 0 WHERE id = ? AND active = 1", (site_id,))
         # Close its open incidents so they don't haunt the incidents list.
         await db.execute(
             """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
                WHERE site_id = ? AND resolved = 0""", (site_id,))
-        await db.commit()
-        return cursor.rowcount > 0
+    return cursor.rowcount > 0
 
 
 # Whitelist for update_site_settings — the only columns the UI may touch.
@@ -381,15 +439,13 @@ async def resolve_incident_by_id(incident_id: int) -> bool:
 
 async def resolve_all_incidents() -> int:
     """Mark every open incident as resolved and reset the alert ladders."""
-    db = await get_db()
-    async with _write_lock:
+    async with _tx() as db:
         cursor = await db.execute(
             """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
                WHERE resolved = 0""")
         n = cursor.rowcount
         await db.execute("DELETE FROM alert_state")
-        await db.commit()
-        return n
+    return n
 
 
 async def get_incident(incident_id: int) -> dict | None:
@@ -576,16 +632,14 @@ OUTBOX_MAX = 50
 async def outbox_add(text: str, reply_markup: str | None, priority: str) -> int:
     """Keep a message for a retry. Past OUTBOX_MAX rows the oldest NON-critical
     ones go first, then the oldest critical. Returns how many were dropped."""
-    db = await get_db()
-    async with _write_lock:
+    async with _tx() as db:
         await db.execute("INSERT INTO outbox (text, reply_markup, priority) VALUES (?, ?, ?)",
                          (text, reply_markup, priority))
         cursor = await db.execute(
             """DELETE FROM outbox WHERE id IN (
                    SELECT id FROM outbox ORDER BY priority = 'critical', id
                    LIMIT max(0, (SELECT COUNT(*) FROM outbox) - ?))""", (OUTBOX_MAX,))
-        await db.commit()
-        return cursor.rowcount
+    return cursor.rowcount
 
 
 async def outbox_peek() -> list[dict]:
@@ -633,26 +687,20 @@ async def count_feedback() -> int:
 async def rollup_old_checks(retention_days: int) -> int:
     """Aggregate raw checks older than N days into checks_daily, then delete
     them. Returns the number of raw rows rolled up."""
-    db = await get_db()
     # One FIXED cutoff for all statements: re-evaluating datetime('now') per
     # statement lets boundary-second rows slip between aggregate and delete.
     cutoff = (datetime.now(UTC) - timedelta(days=retention_days)
               ).strftime("%Y-%m-%d %H:%M:%S")
-    async with _write_lock:
+    # One transaction: half a rollup left open on the shared connection would
+    # be committed by the next save_check — and aggregated again the next
+    # night, doubling the 30/90-day numbers.
+    async with _tx() as db:
         cursor = await db.execute(
             "SELECT COUNT(*) FROM checks WHERE checked_at < ?", (cutoff,))
         count = (await cursor.fetchone())[0]
-        if not count:
-            return 0
-        try:
+        if count:
             await _rollup(db, cutoff)
-        except Exception:
-            # Half a rollup left open on the shared connection would be
-            # committed by the next save_check — and aggregated again the
-            # next night, doubling the 30/90-day numbers.
-            await db.rollback()
-            raise
-        return count
+    return count
 
 
 async def _rollup(db: aiosqlite.Connection, cutoff: str):
@@ -673,7 +721,6 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",
             (prefix + "%", prefix))
-    await db.commit()
 
 
 def _remove_quietly(*paths: str):

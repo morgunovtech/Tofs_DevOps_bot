@@ -93,6 +93,19 @@ Without TLS the widget does not load on https sites (browsers block it) and the 
 
 Prefer your own fork? Railway → **Deploy from GitHub repo** → variable `TELEGRAM_BOT_TOKEN`, a volume at `/app/data`, a generated domain on port 8080.
 
+### Rolling back a version
+
+Every image is also published as `:sha-<7 chars>` — the commit it was built from. Before a version changes the database schema the bot copies the database to `data/backups/schema-v<N>-<date>.db` (N is the schema the copy holds; the last 3 are kept). When there is no room for the copy the bot still migrates and says so in Telegram. An old version refuses to start on a newer database and logs «База от более новой версии бота…».
+
+Own server with Docker:
+1. `docker compose stop bot`.
+2. In `docker-compose.yml` replace `:latest` with the previous tag, e.g. `ghcr.io/morgunovtech/tofs_devops_bot:sha-1a2b3c4` (tags are on the package page on GitHub), and `docker compose up -d`. Building from source: `git checkout <sha> && docker compose up -d --build`.
+3. If `docker compose logs bot` shows «База от более новой версии бота», the schema had already changed: `docker compose stop bot`, keep the current database and put back the copy that fits the old version (its schema number is in that log line):
+   `docker compose run --rm --no-deps --entrypoint sh bot -c 'cp /app/data/bot.db /app/data/bot.db.before-rollback && cp /app/data/backups/schema-vNNN-DATE.db /app/data/bot.db && rm -f /app/data/bot.db-wal /app/data/bot.db-shm'`, then `docker compose up -d`. Everything the bot wrote after the update is lost.
+4. Back to updates: `:latest` again and `docker compose pull && docker compose up -d`.
+
+Railway: roll the deployment back in the Railway panel (Deployments → previous deployment → Redeploy). The copies live on the volume in `/app/data/backups`, reachable through the CLI — `railway volume` (check Railway's volume documentation). Without access to the volume, roll forward only: bring the newer version back.
+
 ## Status
 
 Personal project, shared as-is: Python 3.12+, aiogram 3, aiohttp, APScheduler, SQLite. Named after Tofs — an Irish Terrier who takes uptime personally. Built in pair with [Claude](https://claude.com/claude-code). [MIT](LICENSE) © Semyon Morgunov.

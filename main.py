@@ -46,6 +46,7 @@ from aiogram.types import MenuButtonDefault  # noqa: E402
 from aiogram.utils.token import TokenValidationError, validate_token  # noqa: E402
 
 from config import config  # noqa: E402
+from db import database  # noqa: E402
 from db.database import (  # noqa: E402
     close_db,
     count_sites_total,
@@ -54,6 +55,7 @@ from db.database import (  # noqa: E402
     init_db,
     set_state,
 )
+from db.migrations import StartRefused  # noqa: E402
 from handlers import router  # noqa: E402
 from handlers.common import BOTTOM, MAX_SITES  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
@@ -145,7 +147,16 @@ async def on_startup(bot: Bot):
         logger.warning("The database is not on a persistent disk — it is wiped on every deploy")
         await _step("volume warning", notifier.send(runtime.NO_VOLUME))
     await _step("update report", _report_update())
+    await _step("schema copy note", _report_schema_copy())
     await _step("catch-up after restart", catch_up_after_restart())
+
+
+async def _report_schema_copy():
+    reason = database.migrated_without_copy()
+    if reason:
+        await notifier.send("🟠 Обновил схему базы без копии перед обновлением: не смог её сохранить "
+                            f"({reason}). Откат на прошлую версию потребует ночной копии из data/backups. "
+                            "Проверь место на диске с базой.")
 
 
 async def _report_update():
@@ -260,11 +271,12 @@ async def stop(scheduler, web_runner, bot) -> None:
 
 
 def run() -> int:
-    """The exit code: 0 — stopped, 2 — a setting is wrong (said in one
-    sentence), 1 — anything else (with its traceback)."""
+    """The exit code: 0 — stopped, 2 — a setting or the database must be put
+    right by a person (said in one sentence), 1 — anything else (with its
+    traceback)."""
     try:
         asyncio.run(main())
-    except ConfigError as e:
+    except (ConfigError, StartRefused) as e:
         logger.critical("%s", e)
         return 2
     except (KeyboardInterrupt, asyncio.CancelledError):

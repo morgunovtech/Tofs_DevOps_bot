@@ -93,6 +93,19 @@ volumes:
 
 Подробно по кликам — [docs/SETUP.md](docs/SETUP.md). Хочешь свою копию кода — форкни репозиторий → Railway → **Deploy from GitHub repo** → переменная `TELEGRAM_BOT_TOKEN`, диск на `/app/data`, сгенерированный домен на порту 8080.
 
+### Откат версии
+
+Каждый образ публикуется и с тегом `:sha-<7 символов>` — коммитом, из которого он собран. Перед тем как версия меняет схему базы, бот копирует базу в `data/backups/schema-v<N>-<дата>.db` (N — схема, которая лежит в копии; хранятся 3 последние). Если места для копии не хватило, бот всё равно обновит схему и напишет об этом в Telegram. Старая версия на базе новее себя не запускается и пишет в лог «База от более новой версии бота…».
+
+Свой сервер с Docker:
+1. `docker compose stop bot`.
+2. В `docker-compose.yml` заменить `:latest` на прошлый тег, например `ghcr.io/morgunovtech/tofs_devops_bot:sha-1a2b3c4` (теги — на странице пакета на GitHub), и `docker compose up -d`. Сборка из исходников: `git checkout <sha> && docker compose up -d --build`.
+3. Если в `docker compose logs bot` появилось «База от более новой версии бота» — схема успела измениться: `docker compose stop bot`, сохранить текущую базу и вернуть копию, которая подходит старой версии (номер схемы назван в той же строке лога):
+   `docker compose run --rm --no-deps --entrypoint sh bot -c 'cp /app/data/bot.db /app/data/bot.db.before-rollback && cp /app/data/backups/schema-vNNN-ДАТА.db /app/data/bot.db && rm -f /app/data/bot.db-wal /app/data/bot.db-shm'`, затем `docker compose up -d`. Всё, что бот записал после обновления, пропадёт.
+4. Вернуться к обновлениям — снова `:latest` и `docker compose pull && docker compose up -d`.
+
+Railway: деплой откатывается в панели Railway (Deployments → прошлый деплой → Redeploy). Копии лежат на томе в `/app/data/backups`; добраться до них можно через CLI — `railway volume` (сверь с документацией Railway по volume). Без доступа к тому откатывайся только вперёд: верни новую версию.
+
 ## Статус
 
 Личный проект, выложен как есть: Python 3.12+, aiogram 3, aiohttp, APScheduler, SQLite. Назван в честь Тофса — ирландского терьера, который принимает аптайм близко к сердцу. Собран в паре с [Claude](https://claude.com/claude-code). [MIT](LICENSE) © Семён Моргунов.

@@ -1,16 +1,52 @@
 """Schema migrations, tracked with PRAGMA user_version.
 
 Every function takes an open aiosqlite connection and is applied once, in
-order; the caller (init_db) holds the write lock and commits. Existing
-databases created before versioning are at user_version 0 and get the
-whole list — migration 1 is idempotent (IF NOT EXISTS / ADD COLUMN guards)
-precisely so that legacy files upgrade in place.
+order; each step runs in its own transaction together with its user_version,
+so a failure leaves the database exactly as it was before the step. The
+caller (init_db) holds the write lock. Existing databases created before
+versioning are at user_version 0 and get the whole list — migration 1 is
+idempotent (IF NOT EXISTS / ADD COLUMN guards) precisely so that legacy
+files upgrade in place. A released migration is never edited: fix it with
+the next one. Inside a step use db.execute or _script, never executescript
+(it commits whatever is open first).
 """
 
 import logging
 import sqlite3
 
 logger = logging.getLogger(__name__)
+
+
+class StartRefused(RuntimeError):
+    """The database cannot be used by this build as it is: said in one
+    sentence, and the start stops before anything is changed."""
+
+
+class SchemaTooNew(StartRefused):
+    def __init__(self, found: int, known: int):
+        super().__init__(
+            f"База от более новой версии бота (схема v{found}, эта версия знает v{known}). "
+            f"Верни версию поновее или восстанови копию data/backups/schema-v{known:03d}-….db, "
+            f"сделанную перед обновлением, — раздел «Откат версии» в README.")
+        self.found, self.known = found, known
+
+
+async def schema_version(db) -> int:
+    cursor = await db.execute("PRAGMA user_version")
+    return (await cursor.fetchone())[0]
+
+
+async def _script(db, script: str):
+    """executescript() commits whatever is open first — inside a migration's
+    transaction it must not: the statements go one by one."""
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            await db.execute(statement)
+            statement = ""
+    if statement.strip():
+        raise ValueError(f"incomplete SQL in a migration: {statement.strip()[:60]}")
 
 
 async def _columns(db, table: str) -> set[str]:
@@ -35,7 +71,7 @@ async def _drop_column(db, table: str, column: str):
 
 
 async def m1_base_schema(db):
-    await db.executescript("""
+    await _script(db, """
         CREATE TABLE IF NOT EXISTS sites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             url TEXT UNIQUE NOT NULL,
@@ -158,7 +194,7 @@ async def m4_queued_buttons(db):
 async def m5_outbox(db):
     # Messages Telegram did not take (network, 5xx, flood limit): kept and
     # retried every minute — a lost «сайт лёг» would leave the silence lying.
-    await db.executescript("""
+    await _script(db, """
         CREATE TABLE IF NOT EXISTS outbox (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
@@ -177,7 +213,7 @@ async def m6_visitor_speed(db):
 async def m7_drop_visitor_samples(db):
     # The own measurement on sites is gone: real visitors' speed comes from
     # Google's Chrome data only, so its page views are not kept anywhere.
-    await db.executescript("""
+    await _script(db, """
         DROP INDEX IF EXISTS idx_rum_site_at;
         DROP TABLE IF EXISTS rum_samples;
     """)
@@ -188,18 +224,30 @@ MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m
 
 
 async def migrate(db, upto: int | None = None) -> int:
-    """Apply pending migrations; returns the number applied. `upto` stops
-    after that step: a restore builds the copy's own schema version first,
-    moves the rows in, and only then catches up — so migrations that change
-    data reach the restored rows too (db.database.restore_from_file)."""
-    cursor = await db.execute("PRAGMA user_version")
-    version = (await cursor.fetchone())[0]
+    """Apply pending migrations; returns the number applied. A database newer
+    than this build is refused, not used: old code on a new schema breaks in
+    ways nobody sees (a dropped column, a table it does not know). `upto`
+    stops after that step: a restore builds the copy's own schema version
+    first, moves the rows in, and only then catches up — so migrations that
+    change data reach the restored rows too (db.database.restore_from_file).
+    Each step is one transaction with its user_version: all or nothing."""
+    version = await schema_version(db)
+    if version > len(MIGRATIONS):
+        raise SchemaTooNew(version, len(MIGRATIONS))
     applied = 0
     for number, step in enumerate(MIGRATIONS, start=1):
         if number <= version or (upto is not None and number > upto):
             continue
         logger.info("DB migration %d: %s", number, step.__name__)
-        await step(db)
-        await db.execute(f"PRAGMA user_version = {number}")
+        if db.in_transaction:
+            await db.commit()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await step(db)
+            await db.execute(f"PRAGMA user_version = {number}")
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
         applied += 1
     return applied
