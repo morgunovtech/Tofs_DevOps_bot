@@ -323,7 +323,7 @@ def _tz_kb() -> InlineKeyboardMarkup:
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton(text="✏️ Другой", callback_data="tz_custom"),
-                 InlineKeyboardButton(text=f"↩︎ Из .env ({config.timezone})", callback_data="set_tz:env")])
+                 InlineKeyboardButton(text=f"↩︎ Как на сервере ({config.timezone})", callback_data="set_tz:env")])
     rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

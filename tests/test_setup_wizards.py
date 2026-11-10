@@ -2,12 +2,15 @@
 for a value from .env; «не достучался» is not «не принял»; Cloudflare is
 checked before «✅ сохранён»; the screen does not wait for probes in a row."""
 
+import asyncio
+import time
+
 from aiogram import Bot
 from aiogram.methods import EditMessageText
-from conftest import FakeMessage, FakeState
+from conftest import FakeCall, FakeMessage, FakeState, buttons
 from test_dispatcher import DP, MockedSession, _callback
 
-from handlers import setup
+from handlers import setup, speed
 from services import github, integrations, secrets, settings, yandex_webmaster
 from services.actions import deploy_hook_for
 from services.integrations import Probe
@@ -134,3 +137,97 @@ async def test_cloudflare_is_checked_before_it_is_saved(bot, db, monkeypatch):
     await setup.msg_cf_token(msg, state)
     assert integrations.cf_api_token() == "u" * 40 and "подтвердить не смог" in msg.texts[-1]
     assert state.state is None
+
+
+async def test_the_checklist_asks_probes_together_and_more_asks_none(bot, db, cfg, monkeypatch):
+    cfg(yandex_webmaster_token="y" * 30, github_token="g" * 40)
+    await integrations.load()
+    calls = []
+
+    async def slow(result):
+        calls.append(result)
+        await asyncio.sleep(0.3)
+        return result
+
+    monkeypatch.setattr(setup, "_web_ok", lambda: slow(True))
+    monkeypatch.setattr(yandex_webmaster, "check_token", lambda: slow(Probe.OK))
+    monkeypatch.setattr(github, "check_token", lambda token=None: slow((Probe.OK, "me")))
+    setup.forget_probes()
+    started = time.monotonic()
+    items = {i.key: i for i in await setup.build_items()}
+    assert time.monotonic() - started < 0.6 and items["github"].status == "ok" and items["yandex"].status == "ok"
+    assert len(calls) == 3
+    calls.clear()
+    await setup.cb_more(FakeCall("setup:more"))
+    assert calls == []
+    items = {i.key: i for i in await setup.build_items()}            # the answers of a minute ago
+    assert calls == [] and items["github"].status == "ok"
+    cfg(yandex_webmaster_token="", github_token="")
+    await integrations.load()
+
+
+async def test_a_slow_or_silent_api_is_not_an_expired_token(bot, db, cfg, monkeypatch):
+    cfg(yandex_webmaster_token="y" * 30, github_token="g" * 40)
+    await integrations.load()
+    monkeypatch.setattr(setup, "PROBE_DEADLINE_S", 0.05)
+
+    async def late():
+        await asyncio.sleep(0.3)
+        return Probe.OK
+
+    async def _const_tuple():
+        return (Probe.UNREACHABLE, None)
+
+    monkeypatch.setattr(setup, "_web_ok", lambda: _const(True))
+    monkeypatch.setattr(yandex_webmaster, "check_token", late)
+    monkeypatch.setattr(github, "check_token", lambda token=None: _const_tuple())
+    items = {i.key: i for i in await setup.build_items()}
+    for key in ("yandex", "github"):
+        assert "истёк" not in items[key].detail and "не принимает" not in items[key].detail
+        assert items[key].button is None and "не ответил" in items[key].detail
+    setup.forget_probes()
+    monkeypatch.setattr(yandex_webmaster, "check_token", lambda: _const(Probe.REJECTED))
+    items = {i.key: i for i in await setup.build_items()}
+    assert items["yandex"].status == "warn" and "не принял" in items["yandex"].detail
+    assert items["yandex"].button == ("🔎 Яндекс: проверить", "setup:yx")
+    cfg(yandex_webmaster_token="", github_token="")
+    await integrations.load()
+
+
+async def test_the_test_alert_is_sent_once_however_many_taps(bot, db, monkeypatch):
+    monkeypatch.setattr(setup, "RING_DELAY_S", 30)
+    first, second = FakeCall("ring:test"), FakeCall("ring:test")
+    await setup.cb_test_alert(first)
+    await setup.cb_test_alert(second)
+    assert len(setup._ring_tasks) == 1 and "уже в пути" in second.answers[-1]
+    for task in list(setup._ring_tasks):
+        task.cancel()
+    await asyncio.sleep(0)
+
+
+async def test_a_working_integration_has_its_button(bot, db, cfg, monkeypatch):
+    cfg(github_token="g" * 40)
+    await integrations.load()
+    monkeypatch.setattr(setup, "_web_ok", lambda: _const(True))
+    monkeypatch.setattr(github, "check_token", lambda token=None: _const((Probe.OK, "me")))
+    setup.forget_probes()
+    _, kb = await setup.render_checklist()
+    pairs = [(b.text, b.callback_data) for row in kb.inline_keyboard for b in row]
+    assert ("⚙️ GitHub", "setup:gh") in pairs and ("🔄 Проверить снова", "setup:recheck") in pairs
+    cfg(github_token="")
+    await integrations.load()
+
+
+async def test_speed_screen_without_a_key_offers_to_connect(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    _, kb = await speed.speed_page(await db.get_site(sid))
+    assert "setup:crux" in [b.callback_data for row in kb.inline_keyboard for b in row]
+
+
+async def test_guides_name_buttons_that_exist(bot, db):
+    call = FakeCall("setup:url")
+    await setup.cb_guide_url(call)
+    assert "«🔄 Проверить снова»" in call.message.texts[-1] and "🔄 Проверить снова" in buttons(call.message.reply_markup)
+    call = FakeCall("setup:docker")
+    await setup.cb_guide_docker(call)
+    assert "«🔄 Проверить снова»" in call.message.texts[-1] and "🔄 Проверить снова" in buttons(call.message.reply_markup)

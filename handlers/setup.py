@@ -11,6 +11,7 @@ import asyncio
 import json
 import platform
 import re
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -123,9 +124,46 @@ async def _yandex_probe() -> int | None:
     return None if summaries is None else len(summaries)
 
 
+# The live probes of the screen run together, each under the one deadline,
+# and their answers are kept for a while: «← К подключениям» from a wizard
+# must not wait for every API again. «🔄 Проверить снова» and a new value
+# in a wizard forget them (forget_probes).
+PROBE_DEADLINE_S = 10
+PROBE_TTL_S = 300
+_probes: dict[str, tuple[float, object]] = {}
+
+
+def forget_probes():
+    _probes.clear()
+
+
+async def _probe_all() -> dict[str, object]:
+    """{web: bool, gsc: bool, yandex: Probe, github: (Probe, login)} for
+    what is configured; None for a probe that raised or ran out of time."""
+    wanted = {"web": _web_ok}
+    if gsc.available():
+        wanted["gsc"] = _gsc_probe
+    if yandex_webmaster.available():
+        wanted["yandex"] = yandex_webmaster.check_token
+    if github.available():
+        wanted["github"] = github.check_token
+    now = time.monotonic()
+    fresh = {k: v for k, (at, v) in _probes.items() if now - at < PROBE_TTL_S and k in wanted}
+    todo = [k for k in wanted if k not in fresh]
+    results = await asyncio.gather(*(asyncio.wait_for(wanted[k](), PROBE_DEADLINE_S) for k in todo),
+                                   return_exceptions=True)
+    for k, r in zip(todo, results, strict=True):
+        fresh[k] = None if isinstance(r, BaseException) else r
+        _probes[k] = (now, fresh[k])
+    return fresh
+
+
 # ── Checklist ────────────────────────────────────────────────────────────────
 
-async def build_items() -> list[Item]:
+async def build_items(probe: bool = True) -> list[Item]:
+    """probe=False: no live calls — for a screen that only needs to know
+    what is configured («➕ Подключить ещё»)."""
+    probed = await _probe_all() if probe else {}
     items: list[Item] = []
     me = runtime.bot_username()
     via = f" через прокси {proxy_label(config.telegram_proxy)}" if config.telegram_proxy else ""
@@ -147,7 +185,7 @@ async def build_items() -> list[Item]:
             items.append(Item("railway", "warn", "тариф Railway",
                               "на пробном периоде через 30 дней с регистрации я остановлюсь молча — нужен Hobby",
                               ("💳 Railway: тариф", "setup:railway")))
-    items.append(Item("web", "ok" if await _web_ok() else "warn", "веб-сервер",
+    items.append(Item("web", "ok" if probed.get("web", True) else "warn", "веб-сервер",
                       f"не отвечает на localhost:{config.webhook_port} — перезапусти бота, "
                       f"проверь WEBHOOK_PORT"))
     if public_urls.base_url().startswith("http://") and public_urls.is_public():
@@ -160,7 +198,8 @@ async def build_items() -> list[Item]:
         items.append(Item("url", "ok", f"публичный адрес ({src})"))
     else:
         items.append(Item("url", "warn", "публичный адрес",
-                          "не задан — heartbeat-ссылки, виджет и статус-страница будут с плейсхолдером",
+                          "не задан — ссылки для задач, виджета и статус-страницы будут с заглушкой "
+                          f"{public_urls.PLACEHOLDER_HOST}",
                           ("🌍 Как задать адрес", "setup:url")))
 
     n_sites = len(await get_all_sites())
@@ -171,17 +210,17 @@ async def build_items() -> list[Item]:
                           ("➕ Добавить сайт", "site_add")))
 
     if secrets.ignored_env():
-        items.append(Item("secrets", "warn", "секреты",
+        items.append(Item("secrets", "warn", "ключи ссылок",
                           f"в окружении задан {', '.join(secrets.ignored_env())}, но я его не использую: он совпадает "
-                          "с публичным секретом виджета или был заменён кнопкой 🔑. Удали переменную из окружения — "
-                          "адреса на карточках задач уже новые"))
+                          "с публичным ключом виджета или был заменён кнопкой 🔑. Удали переменную из окружения — "
+                          "ссылки на карточках задач уже новые"))
     elif secrets.webhook_secret() != secrets.heartbeat_secret():
-        items.append(Item("secrets", "ok", "секреты"))
+        items.append(Item("secrets", "ok", "ключи ссылок"))
     else:
-        items.append(Item("secrets", "warn", "секреты",
-                          "heartbeat-секрет совпадает с webhook-секретом, который виден всем "
-                          "посетителям сайта — любой сможет глушить dead-man switch",
-                          ("🔑 Новый heartbeat-секрет", "setup:hb_regen")))
+        items.append(Item("secrets", "warn", "ключи ссылок",
+                          "ключ ссылок для задач совпадает с публичным ключом виджета — любой посетитель "
+                          "сайта сможет выдавать молчащую задачу за живую",
+                          ("🔑 Новый ключ ссылок для задач", "setup:hb_regen")))
 
     if settings.status_page_enabled():
         items.append(Item("status_page", "ok", "статус-страница"))
@@ -215,7 +254,7 @@ async def build_items() -> list[Item]:
                           ("⏰ Добавить задачу или бота", "hb_add")))
 
     if gsc.available():
-        ok = await _gsc_probe()
+        ok = probed.get("gsc", True) is not False
         items.append(Item("gsc", "ok" if ok else "warn", "Google Search Console",
                           "настроен, но API отвечает ошибкой: проверь, что email сервис-аккаунта "
                           "добавлен в пользователи ресурса в Search Console",
@@ -226,10 +265,18 @@ async def build_items() -> list[Item]:
                           ("🔎 Подключить Google", "setup:gsc")))
 
     if yandex_webmaster.available():
-        hosts = await _yandex_probe()
-        items.append(Item("yandex", "ok" if hosts is not None else "warn", "Яндекс.Вебмастер",
-                          "токен есть, но API отвечает ошибкой: токен истёк или без скоупа webmaster:read",
-                          ("🔎 Яндекс: проверить", "setup:yx")))
+        # Only a refusal is the token's fault; a Webmaster that did not
+        # answer in time is not a reason to reissue it (UNREACHABLE / None).
+        answer = probed.get("yandex", Probe.OK)
+        if answer is Probe.REJECTED:
+            items.append(Item("yandex", "warn", "Яндекс.Вебмастер",
+                              "токен есть, но Яндекс его не принял: токен истёк или без скоупа webmaster:read",
+                              ("🔎 Яндекс: проверить", "setup:yx")))
+        elif answer is Probe.OK:
+            items.append(Item("yandex", "ok", "Яндекс.Вебмастер"))
+        else:
+            items.append(Item("yandex", "warn", "Яндекс.Вебмастер",
+                              "сейчас не ответил — проверю позже, токен не виноват"))
     else:
         items.append(Item("yandex", "off", "🔎 Яндекс.Вебмастер",
                           "страницы в поиске, ИКС и фатальные проблемы сайта от Яндекса",
@@ -257,10 +304,15 @@ async def build_items() -> list[Item]:
                           ("☁️ Подключить Cloudflare", "setup:cf")))
 
     if github.available():
-        login = await github.viewer_login()
-        items.append(Item("github", "ok" if login else "warn", "GitHub",
-                          "токен есть, но GitHub его не принимает: истёк, отозван или скопирован не целиком",
-                          ("🐙 GitHub: проверить", "setup:gh")))
+        answer = probed.get("github") or (Probe.UNREACHABLE, None)
+        if answer[0] is Probe.REJECTED:
+            items.append(Item("github", "warn", "GitHub",
+                              "токен есть, но GitHub его не принимает: истёк, отозван или скопирован не целиком",
+                              ("🐙 GitHub: проверить", "setup:gh")))
+        elif answer[0] is Probe.OK or not probe:
+            items.append(Item("github", "ok", "GitHub"))
+        else:
+            items.append(Item("github", "warn", "GitHub", "сейчас не ответил — проверю позже, токен не виноват"))
     else:
         items.append(Item("github", "off", "🐙 GitHub",
                           "по воскресеньям — что прибрать в репозиториях: старые PR, лишние ветки, "
@@ -270,14 +322,14 @@ async def build_items() -> list[Item]:
     if not config.on_railway:
         # A live probe, not the file's existence: a socket nobody listens on is a mounted file too.
         if docker_api.docker_available() and await docker_api.ping():
-            items.append(Item("docker", "ok", "docker socket"))
+            items.append(Item("docker", "ok", "доступ к Docker"))
         elif docker_api.docker_available() and config.docker_socket_root_group:
-            items.append(Item("docker", "warn", "docker socket",
+            items.append(Item("docker", "warn", "доступ к Docker",
                               "сокет Docker принадлежит группе root: нужна ALLOW_ROOT_GROUP_SOCKET=1 в .env "
                               "или отфильтрованный доступ через socket-proxy (docs/SETUP.md)",
                               ("🐳 Как подключить", "setup:docker")))
         elif docker_api.docker_available():
-            items.append(Item("docker", "warn", "docker socket",
+            items.append(Item("docker", "warn", "доступ к Docker",
                               "сокет смонтирован, но Docker не отвечает — автоперезапуск и очистка не работают; "
                               "обычно помогает docker compose up -d",
                               ("🐳 Как подключить", "setup:docker")))
@@ -298,6 +350,13 @@ async def build_items() -> list[Item]:
                           "healthchecks.io скажет, если умрёт сам бот",
                           ("🛡 Подключить сторожа", "setup:watchdog")))
     return items
+
+
+# The wizard of a working integration: to replace a key or switch it off
+# without hunting for it in «➕ Подключить ещё».
+_CONFIGURE = {"gsc": ("⚙️ Google", "setup:gsc"), "yandex": ("⚙️ Яндекс", "setup:yx"),
+              "crux": ("⚙️ Скорость Chrome", "setup:crux"), "cloudflare": ("⚙️ Cloudflare", "setup:cf"),
+              "github": ("⚙️ GitHub", "setup:gh"), "watchdog": ("⚙️ Сторож", "setup:watchdog")}
 
 
 def _button_rows(items: list[Item]) -> list[list[InlineKeyboardButton]]:
@@ -335,12 +394,15 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
                  + (f" · сборка {esc(config.app_commit[:7])}" if config.app_commit else "") + "</i>")
 
     rows = _button_rows(warn)
-    # What works has no buttons of its own — except a switch to turn it off.
+    # What works has a way into its wizard too (to switch off, replace a key) — three to a row.
     manage = [InlineKeyboardButton(text=i.manage[0], callback_data=i.manage[1]) for i in ok if i.manage]
     if manage:
         rows.append(manage)
+    configure = [InlineKeyboardButton(text=_CONFIGURE[i.key][0], callback_data=_CONFIGURE[i.key][1])
+                 for i in ok + [w for w in warn if not w.button] if i.key in _CONFIGURE]
+    rows += [configure[n:n + 3] for n in range(0, len(configure), 3)]
     if warn:
-        rows.append([InlineKeyboardButton(text=RECHECK, callback_data="setup:check")])
+        rows.append([InlineKeyboardButton(text=RECHECK, callback_data="setup:recheck")])
     if integrations.deploy_hooks() or docker_api.docker_available():
         rows.append([InlineKeyboardButton(text="🤖 Что бот делает сам", callback_data="auto:menu")])
     if off:
@@ -353,7 +415,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
 async def cb_more(call: CallbackQuery):
     """Optional integrations — each with what it gives and one button."""
     await ack(call)
-    off = [i for i in await build_items() if i.status == "off"]
+    off = [i for i in await build_items(probe=False) if i.status == "off"]
     if not off:
         await render(call, "Всё уже подключено.", back_button("← К подключениям", "setup:check"))
         return
@@ -369,10 +431,14 @@ async def show_checklist(target):
     await render(target, text, kb)
 
 
-@router.callback_query(F.data.in_({"menu_diag", "setup:check"}))
+@router.callback_query(F.data.in_({"menu_diag", "setup:check", "setup:recheck"}))
 async def cb_checklist(call: CallbackQuery, state: FSMContext):
+    """«🔄 Проверить снова» (setup:recheck) asks every API again; the way
+    back from a wizard (setup:check) reuses the answers of the last minutes."""
     await ack(call)
     await state.clear()
+    if call.data == "setup:recheck":
+        forget_probes()
     await render(call, "▱▱▱ Проверяю сам себя...")
     await show_checklist(call)
 
@@ -420,6 +486,9 @@ def schedule_ring_test() -> asyncio.Task:
 
 @router.callback_query(F.data == "ring:test")
 async def cb_test_alert(call: CallbackQuery):
+    if any(not t.done() for t in _ring_tasks):
+        await ack(call, "Пробная тревога уже в пути — придёт в течение минуты.", show_alert=True)
+        return
     schedule_ring_test()
     await ack(call, "Через минуту пришлю пробную тревогу. Сверни Telegram везде — на телефоне и на "
                     "компьютере — и жди звонка.", show_alert=True)
@@ -644,6 +713,7 @@ async def _switch_off(call: CallbackQuery, group: str, toast: str) -> bool:
         return False
     for key in _OFF[group][0]:
         await integrations.switch_off(key)
+    forget_probes()
     return True
 
 
@@ -662,14 +732,18 @@ async def cb_use_env(call: CallbackQuery):
             await integrations.set_value(key, None)
     if group == "gsc":
         gsc.reset_token_cache()
+    forget_probes()
     await show_checklist(call)
 
 
 # ── Guides ───────────────────────────────────────────────────────────────────
 
-def _guide_kb(*buttons: tuple[str, str]) -> InlineKeyboardMarkup:
+def _guide_kb(*buttons: tuple[str, str], recheck: bool = False) -> InlineKeyboardMarkup:
+    """recheck: the guide ends with «нажми «🔄 Проверить снова»» — so that
+    button is here, not only on the checklist."""
     rows = [[InlineKeyboardButton(text=t, callback_data=c)] for t, c in buttons]
-    rows.append([InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")])
+    rows.append([InlineKeyboardButton(text=RECHECK, callback_data="setup:recheck")] if recheck
+                else [InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -691,7 +765,7 @@ async def cb_guide_url(call: CallbackQuery):
                 "и <code>TRUST_PROXY=1</code>.\n"
                 "3. Перезапусти бота и нажми «🔄 Проверить снова».\n\n"
                 "Пошагово — README.ru.md, раздел «Публичный адрес на своём сервере».")
-    await render(call, text, _guide_kb())
+    await render(call, text, _guide_kb(recheck=True))
 
 
 @router.callback_query(F.data == "setup:docker")
@@ -710,7 +784,8 @@ async def cb_guide_docker(call: CallbackQuery):
                         "3. <code>docker compose up -d</code> и «🔄 Проверить снова».\n\n"
                         "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
                         "Включай только на сервере, который полностью твой. Безопаснее — отфильтрованный "
-                        "доступ через socket-proxy: docs/SETUP.md, «Свой сервер: доступ к Docker»."), _guide_kb())
+                        "доступ через socket-proxy: docs/SETUP.md, «Свой сервер: доступ к Docker»."),
+                 _guide_kb(recheck=True))
 
 
 def _watchdog_kb() -> InlineKeyboardMarkup:
@@ -783,6 +858,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("self_heartbeat_url", url)
     await heartbeats.forget_watchdog()   # the old link's failures are not this one's
     await heartbeats.record_watchdog(None)
@@ -851,6 +927,7 @@ async def msg_yx_token(message: Message, state: FSMContext):
                              "не истёк — и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     if answer is Probe.UNREACHABLE:
         await message.answer(UNCHECKED_NOTE.format(service="Яндекс"),
                              reply_markup=back_button("← К подключениям", "setup:check"))
@@ -918,6 +995,7 @@ async def msg_crux_key(message: Message, state: FSMContext):
                              "или «✖️ Отмена».", reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("crux_key", key)
     rerun_visitors_soon()
     if answer is Probe.UNREACHABLE:
@@ -991,6 +1069,7 @@ async def msg_gsc_prop(message: Message, state: FSMContext):
                              reply_markup=cancel_kb("setup:gsc"))
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("gsc_property", prop)
     gsc.reset_token_cache()
     await message.answer(f"✅ Ресурс сохранён: <code>{esc(prop)}</code>\n{_gsc_state_line()}",
@@ -1021,6 +1100,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
                              reply_markup=cancel_kb("setup:gsc"))
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("gsc_key", json.dumps(creds))
     gsc.reset_token_cache()
     if not integrations.gsc_property():
@@ -1033,7 +1113,7 @@ async def msg_gsc_key(message: Message, state: FSMContext):
     else:
         await message.answer(f"Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан "
                              f"шаг 3: добавь <code>{esc(creds.get('client_email', ''))}</code> "
-                             f"в пользователи ресурса в Search Console и нажми «🔄 Проверить снова».",
+                             f"в пользователи ресурса в Search Console и нажми «← К подключениям».",
                              reply_markup=_gsc_kb())
 
 
@@ -1114,6 +1194,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     await integrations.set_deploy_hook(host, url)
     await message.answer(f"✅ Deploy hook для {esc(host)} сохранён.\n{esc(_cf_state_line())}",
                          reply_markup=_cf_kb())
@@ -1140,8 +1221,9 @@ async def msg_cf_token(message: Message, state: FSMContext):
                              "«✖️ Отмена».", reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("cf_api_token", token)
-    verdict = ("✅ Токен сохранён, Cloudflare его принял." if answer is Probe.OK else
+    verdict =("✅ Токен сохранён, Cloudflare его принял." if answer is Probe.OK else
                "⚠️ Токен сохранил, но подтвердить не смог: Cloudflare не ответил (или это токен аккаунта) — "
                "проверю при первом сбросе кэша.")
     await message.answer(f"{verdict}\n{esc(_cf_state_line())}", reply_markup=_cf_kb())
@@ -1162,6 +1244,7 @@ async def msg_cf_zone(message: Message, state: FSMContext):
         await message.answer("Zone ID — это 32 hex-символа. Попробуй ещё раз:", reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("cf_zone_id", zone)
     # No live check: whether the token may read this zone shows at the first purge.
     await message.answer(f"✅ Zone ID сохранён — проверю при первом сбросе кэша.\n{esc(_cf_state_line())}",
@@ -1232,6 +1315,7 @@ async def msg_gh_token(message: Message, state: FSMContext):
                              "и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb())
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("github_token", token)
     if answer is Probe.UNREACHABLE:
         await message.answer(UNCHECKED_NOTE.format(service="GitHub"),
@@ -1257,6 +1341,7 @@ async def msg_gh_owner(message: Message, state: FSMContext):
         await message.answer("Логин GitHub — латиница, цифры и дефис, до 39 символов.", reply_markup=cancel_kb("setup:gh"))
         return
     await state.clear()
+    forget_probes()
     await integrations.set_value("github_owner", None if owner == "-" else owner)
     await message.answer(f"✅ Сохранено: {_gh_state_line()}", reply_markup=_gh_kb())
 

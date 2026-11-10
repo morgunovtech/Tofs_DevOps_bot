@@ -52,8 +52,8 @@ async def bots_page() -> tuple[str, InlineKeyboardMarkup]:
     job_buttons = [InlineKeyboardButton(text=f"⚙️ {j.name}", callback_data=f"hb_show:{j.name}")
                    for j in jobs if len(f"hb_show:{j.name}".encode()) <= 64]
     rows = [job_buttons[i:i + 2] for i in range(0, len(job_buttons), 2)]
-    if watchdog is None:
-        rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа", callback_data="setup:watchdog")])
+    rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа" if watchdog is None else "🛡 Сторож",
+                                      callback_data="setup:watchdog")])
     rows.append([InlineKeyboardButton(text="💾 Скачать копию базы", callback_data="sys:backup")])
     rows.append([InlineKeyboardButton(text="➕ Бот или задача", callback_data="hb_add"), HOME])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)

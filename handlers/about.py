@@ -155,6 +155,8 @@ async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
         lines += ["", f"<b>{m.title}</b>{mark}", f"{m.gives[:1].upper()}{m.gives[1:]} → <i>{m.who}</i>."]
         if not on.get(key) or key == "second_opinion":   # its screen is where it is switched off too
             off.append(m.button)
+        elif key != "status_page":   # a connected one keeps a way into its wizard: a new key, «🗑 Отключить»
+            off.append((f"⚙️ {m.button[0].split(' ', 1)[-1]}", m.button[1]))
     rows, row = [], []
     for label, data in off:
         row.append(InlineKeyboardButton(text=label, callback_data=data))

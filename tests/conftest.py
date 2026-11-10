@@ -49,6 +49,7 @@ from config import config  # noqa: E402
 from db import database  # noqa: E402
 from handlers import alerts as alert_handlers  # noqa: E402
 from handlers import common  # noqa: E402
+from handlers import setup as setup_screen  # noqa: E402
 from handlers import sites as site_handlers  # noqa: E402
 from monitors import availability, dns_checker, links_checker, netcheck, parse_worker, rdap  # noqa: E402
 from reports import scheduler  # noqa: E402
@@ -402,6 +403,7 @@ async def db(tmp_path):
     await settings.load()
     await maintenance.load()
     await integrations.load()
+    setup_screen.forget_probes()      # the probe answers of «🔌 Подключения» are module state
     yield database
     await database.close_db()
 

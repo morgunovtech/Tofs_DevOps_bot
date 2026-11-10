@@ -54,6 +54,8 @@ async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     rows = [[InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(site["url"]))],
             [InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{site['id']}"),
              InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]]
+    if not crux.available():
+        rows.insert(0, [InlineKeyboardButton(text="⚡ Подключить данные Google", callback_data="setup:crux")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
