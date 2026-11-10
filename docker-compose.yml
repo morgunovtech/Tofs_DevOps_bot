@@ -1,6 +1,12 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      # The commit shown in «🩺 Диагностика» and compared with main by the
+      # «new version did not start» check: APP_COMMIT=$(git rev-parse --short HEAD)
+      # docker compose up -d --build. Without it the check stays off.
+      args:
+        APP_COMMIT: ${APP_COMMIT:-}
     container_name: tofs_devops
     restart: always
     # A small init as PID 1 passes SIGTERM on to the bot, and the stop gets

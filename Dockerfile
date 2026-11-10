@@ -1,7 +1,11 @@
-# 3.14, not 3.15: aiogram 3.31 caps Python below 3.15 and the image does
-# not build there (the 3.15 bump of 01.11.2026 failed to deploy). CI builds
-# this image, so the next bump goes in only once it builds.
-FROM python:3.14-slim
+# 3.14, not 3.15: aiogram 3.31 allows Python below 3.15 only, and the
+# pydantic-core of pydantic 2.13 has no 3.15 wheels (the 3.15 bump of
+# 01.11.2026 failed to deploy) — move on once an aiogram release allows both
+# Python 3.15 and pydantic >= 2.14. The OS suffix is explicit: a bare
+# «3.14-slim» changes OS with the next Debian stable. The digest pins the
+# exact image CI tested and ran; Dependabot (docker) proposes the next one
+# as a PR.
+FROM python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 
 # iputils-ping powers ping:// monitors. Debian's ping has no setuid and no
 # capabilities: it opens an ICMP datagram socket, which the kernel allows
@@ -15,15 +19,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping \
 
 WORKDIR /app
 
-# Install Python deps first (better layer caching)
+# Install Python deps first (better layer caching).
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Exactly the locked versions, each checked against its hash; -B keeps pip's
+# own bytecode out of the layer.
+RUN python -B -m pip install --no-cache-dir --require-hashes --no-deps -r requirements.txt
 
 COPY . .
 # The code stays root's: the bot (uid 10001) must not be able to rewrite what
 # root runs at the next start (entrypoint.sh, main.py). It owns only its data
-# directory. Bytecode is compiled now: the bot cannot write __pycache__ here.
-RUN python -m compileall -q /app \
+# directory. Bytecode of everything the bot imports (stdlib + /app) is
+# written now, as root: the bot cannot write __pycache__ here. `import main`
+# doubles as a smoke test of the image (every module and template in place;
+# it needs no token, no .env and no network).
+RUN python -c "import main" && python -m compileall -q /app \
     && mkdir -p /app/data && chown bot:bot /app/data \
     && chmod 0755 /app/entrypoint.sh
 

@@ -1,20 +1,19 @@
-.git
-.github
-.claude
-.venv
-venv
-data
-tests
-docs
-*.md
-.env
-.env.*
-!.env.example
-__pycache__
-.ruff_cache
-.pytest_cache
-*.pyc
-*.db
-*.sqlite3
-.DS_Store
-gsc-key.json
+# Allow-list: only what the image needs (Dockerfile: COPY requirements.txt, COPY . .).
+# A new top-level module goes here too — otherwise `import main` in the image
+# fails in CI («image builds and starts»), not on a user's server. Keys
+# (gsc-key.json), .env, data, tests, docs and audit notes never get in.
+*
+!main.py
+!config.py
+!entrypoint.sh
+!requirements.txt
+!LICENSE
+!db
+!handlers
+!monitors
+!reports
+!services
+!utils
+!web
+**/__pycache__
+**/*.pyc

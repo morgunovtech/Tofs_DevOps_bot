@@ -57,7 +57,7 @@ volumes:
 
 Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [Public address on your own server](#public-address-on-your-own-server).
 
-Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, put your `TELEGRAM_BOT_TOKEN` into `.env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
+Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, put your `TELEGRAM_BOT_TOKEN` into `.env`, `APP_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build`; the repository's `docker-compose.yml` builds the image (the commit is what «🩺 Диагностика» shows as the build and what the «new version did not start» check compares with `main`).
 
 **A server in Russia.** api.telegram.org is often unreachable from there directly, and the bot cannot talk to Telegram. Set a proxy in `.env`: `TELEGRAM_PROXY=socks5://user:password@host:1080` (`socks4://` and `http://host:3128` work too). Only the traffic to Telegram goes through it; the sites are checked directly.
 

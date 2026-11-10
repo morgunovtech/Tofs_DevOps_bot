@@ -165,7 +165,7 @@ git clone https://github.com/morgunovtech/Tofs_DevOps_bot.git
 cd Tofs_DevOps_bot
 cp .env.example .env
 # Fill in ONE value: TELEGRAM_BOT_TOKEN (from @BotFather)
-docker compose up -d --build
+APP_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build
 ```
 
 Send `/start` to your bot — the first user becomes the admin, and the bot
