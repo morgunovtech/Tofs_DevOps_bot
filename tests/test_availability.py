@@ -100,6 +100,8 @@ async def test_incident_opens_after_threshold_and_recovers(db):
         sid = await db.get_or_create_site(ok_url)
         await db.save_incident(sid, "availability", "Site down: HTTP 500", "critical")
         r = await check_availability(ok_url)
+        assert not r.recovered                      # one good answer is not «up» yet
+        r = await check_availability(ok_url)
         assert r.recovered and r.resolved_incident["message"].startswith("Site down")
 
 

@@ -5,9 +5,16 @@ opens what it means, what it usually is and the steps."""
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import get_active_incidents, get_incident, resolve_all_incidents, resolve_incident_by_id
+from db.database import (
+    get_active_incidents,
+    get_incident,
+    resolve_all_incidents,
+    resolve_incident_by_id,
+    set_state,
+)
 from handlers.common import STALE_TAP, ack, back_button, render
 from reports.formatter import incident_line
+from reports.scheduler import ACK_UNTIL_UP
 from services import crux, humanize, sitestatus
 from utils.clock import fmt_local
 from utils.text import esc
@@ -132,3 +139,20 @@ async def cb_incident_close(call: CallbackQuery):
     if not (arg.isdigit() and await resolve_incident_by_id(int(arg))):
         await call.message.answer("Уже закрыта.")
     await render_incidents(call)
+
+
+@router.callback_query(F.data.startswith("inc_quiet:"))
+async def cb_incident_quiet(call: CallbackQuery):
+    """«👀 Знаю, не напоминать» under an escalation: no more reminders about
+    this incident; the «✅ поднялся» still comes. The site is NOT paused."""
+    arg = call.data.split(":")[1]
+    inc = await get_incident(int(arg)) if arg.isdigit() else None
+    if not inc or inc.get("resolved"):
+        await ack(call, "Эта проблема уже закрыта", show_alert=True)
+        return
+    if not await ack(call, "Не напоминаю"):
+        await call.message.answer(STALE_TAP)
+        return
+    await set_state(f"ack:{inc['id']}", ACK_UNTIL_UP)
+    await call.message.answer(f"👀 Понял: больше не напоминаю про {esc(incident_line(inc))}. "
+                              f"Когда поднимется — напишу.")

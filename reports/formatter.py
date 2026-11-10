@@ -42,7 +42,11 @@ def _tech(*parts) -> str:
 
 # ── Availability ─────────────────────────────────────────────────────────────
 
-def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True) -> str:
+def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True, *,
+                              threshold: int = 2, interval_min: int = 5) -> str:
+    """threshold and interval_min — the site's own dials: the text says how
+    many checks it took and how often the site is checked, not «дважды» and
+    «каждую минуту» for everyone."""
     if r.ok:
         return ""
     label = esc(site_label(r.url))
@@ -55,30 +59,35 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
         noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
         header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
         situation = expl.meaning
+        if r.failed_of:
+            how = f"Сбой в {r.failed_of[0]} из {r.failed_of[1]} последних проверок"
+        else:
+            how = f"Проверил {humanize.times_in_a_row(threshold)}"
         if r.cert_failed:
-            situation += (" Проверил дважды подряд: сервер отвечает, но его сертификат не принимается — "
-                          "так его видят и посетители.")
+            situation += (f" {how}: сервер отвечает, но его сертификат не принимается — "
+                          f"так его видят и посетители.")
         elif r.external_ok is False:
-            situation += " Проверил дважды подряд и с внешних серверов: не открывается ни у кого."
+            situation += f" {how} и с внешних серверов: не открывается ни у кого."
         elif r.external_region and r.external_ups:
-            situation += (f" Проверил дважды подряд; снаружи открывается (с {r.external_ups} из "
+            situation += (f" {how}; снаружи открывается (с {r.external_ups} из "
                           f"{r.external_total} серверов), но не {region_words(r.external_region)} — "
                           f"посетители оттуда его тоже не видят.")
         elif r.external_region:
-            situation += (f" Проверил дважды подряд; {region_words(r.external_region)} тоже не открывается, "
+            situation += (f" {how}; {region_words(r.external_region)} тоже не открывается, "
                           f"остальные внешние серверы не успели ответить.")
         elif r.external_ups and r.external_total >= 2:
-            situation += (f" Проверил дважды подряд; снаружи открывается только с {r.external_ups} из "
+            situation += (f" {how}; снаружи открывается только с {r.external_ups} из "
                           f"{r.external_total} серверов — похоже, сайт лежит не везде.")
         elif second_opinion:
-            situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
+            situation += f" {how}; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:
-            situation += " Проверил дважды подряд."
+            situation += f" {how}."
     # A phrase verdict is about a site that opens: «поднимется» would send
     # the owner to the server instead of the page.
     back = (f"когда {'в ответе' if r.api else 'на странице'} снова будет как надо" if r.keyword_failed
             else "когда поднимется")
-    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, {back}."
+    return (f"{header}\n{situation}\nПродолжаю проверять {humanize.every_minutes(interval_min)} "
+            f"и напишу, {back}."
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 

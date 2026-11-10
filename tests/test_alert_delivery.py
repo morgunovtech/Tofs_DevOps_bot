@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from db.database import get_active_incidents, resolve_incident_by_id, save_incident
-from db.migrations import MIGRATIONS
+from db.migrations import MIGRATIONS, m8_incident_alerted_at
 from monitors.base import CheckResult, SslInfo, SslResult
 from monitors.ladder import apply_ladder
 from reports import scheduler
@@ -183,8 +183,8 @@ async def test_update_does_not_resend_alerts_of_incidents_opened_before_it(bot, 
     inc_id, _ = await save_incident(sid, "availability", "Site down: HTTP 500", "critical")
     conn = await db.get_db()
     await conn.execute("UPDATE incidents SET alerted_at = NULL, created_at = datetime('now', '-1 hour')")
-    # The database as the previous version left it: everything but the last migration (this one).
-    await conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
+    # The database as the version before incidents.alerted_at left it: that migration still ahead.
+    await conn.execute(f"PRAGMA user_version = {MIGRATIONS.index(m8_incident_alerted_at)}")
     await conn.commit()
     await db.init_db()                                    # the update runs the migration
     assert (await (await conn.execute("PRAGMA user_version")).fetchone())[0] == len(MIGRATIONS)

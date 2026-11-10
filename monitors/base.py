@@ -69,6 +69,10 @@ class AvailabilityResult(CheckResult):
     api: bool = False
     # The bot's own server had no network: the tick says it once for every site.
     own_outage: bool = False
+    # The incident opened by the share of failures, not a streak: (failed, of).
+    failed_of: tuple[int, int] | None = None
+    # The incident closed minutes ago was reopened by this failure (a flap).
+    flapping: bool = False
 
 
 @dataclass

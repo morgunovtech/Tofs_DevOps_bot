@@ -46,9 +46,10 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         url2 = str(server2.make_url("")).rstrip("/")
         sid2 = await db.activate_or_create_site(url2)
         await save_incident(sid2, "availability", "Site down: HTTP 500", "critical")
-        scheduler._next_avail_check.clear()
-        await scheduler.run_availability_checks()
-        await scheduler.drain_alert_worker()
+        for _ in range(2):                          # up after two planned successes
+            scheduler._next_avail_check.clear()
+            await scheduler.run_availability_checks()
+            await scheduler.drain_alert_worker()
         assert "снова открывается" in bot.sent[-1]["text"]
 
 
@@ -57,11 +58,17 @@ async def test_slow_streak_opens_performance_incident(bot, db):
     r.site_id, r.url, r.response_time_ms, r.ok = 1, "https://slow.test", 5000, True
     await db.get_or_create_site("https://slow.test")
     scheduler._slow_streak.clear()
+    scheduler._fast_streak.clear()
     for _ in range(scheduler.SLOW_RESPONSE_STREAK):
         await scheduler._track_slow(r, slow_ms=3000)
     assert any("медленно" in m["text"] for m in bot.sent)
     assert len([i for i in await get_active_incidents() if i["check_type"] == "performance"]) == 1
+    r.response_time_ms = 2900                       # not slow, not clearly fast either
+    await scheduler._track_slow(r, slow_ms=3000)
     r.response_time_ms = 100
+    for _ in range(2):
+        await scheduler._track_slow(r, slow_ms=3000)
+        assert "снова" not in bot.sent[-1]["text"]  # closes after three clearly fast answers
     await scheduler._track_slow(r, slow_ms=3000)
     assert "снова открывается за 0.10 с" in bot.sent[-1]["text"]
     assert not [i for i in await get_active_incidents() if i["check_type"] == "performance"]
@@ -76,7 +83,7 @@ async def test_escalation_respects_ack(bot, db, cfg):
                        (inc_id,))
     await conn.commit()
     await scheduler.run_escalation_watch()
-    assert "Лежит уже" in bot.sent[-1]["text"] and "Я чиню" in bot.sent[-1]["text"]
+    assert "лежит уже" in bot.sent[-1]["text"] and "Я чиню" in bot.sent[-1]["text"]
     n = len(bot.sent)
     await scheduler.run_escalation_watch()                 # within repeat window
     assert len(bot.sent) == n

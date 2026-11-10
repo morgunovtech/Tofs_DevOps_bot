@@ -231,8 +231,15 @@ async def m8_incident_alerted_at(db):
     await db.execute("DELETE FROM bot_state WHERE key LIKE 'announced:%'")
 
 
+async def m9_checks_scheduled(db):
+    # Which availability rows came from the schedule: a «🔄 Проверить», a
+    # digest snapshot or a follow-up also writes a row, and the threshold
+    # «N сбоев подряд» must count planned checks only. Old rows count as planned.
+    await _add_columns(db, "checks", {"scheduled": "INTEGER NOT NULL DEFAULT 1"})
+
+
 MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
-              m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at]
+              m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at, m9_checks_scheduled]
 
 
 async def migrate(db, upto: int | None = None) -> int:

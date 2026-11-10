@@ -17,13 +17,15 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
+from config import config
 from db.database import (
     get_active_incidents,
     get_last_incident,
-    get_recent_check_statuses,
+    get_recent_checks,
     get_site_by_url,
     get_state,
     relabel_recent_failures,
+    reopen_incident,
     resolve_incident,
     save_check,
     save_incident,
@@ -36,7 +38,7 @@ from services import health, hosting, humanize, integrations, settings, sitestat
 from utils.net import PRIVATE_REFUSED, owner_connector, refused_private
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
-from utils.text import parse_iso_utc
+from utils.text import parse_iso_utc, parse_sqlite_utc
 from utils.urls import USER_AGENT, host_of, is_api_check
 
 logger = logging.getLogger(__name__)
@@ -48,8 +50,21 @@ PROBE_TIMEOUT_SEC = 10
 # Consecutive failures before an incident opens (per-site override in
 # «⚙️ Настройки сайта»). A single transient flap should not page the user.
 CONSECUTIVE_FAILURE_THRESHOLD = 2
-# The last statuses per site, newest last: the failure threshold keeps
-# working while the database refuses to store the history.
+# A site that fails every other check never makes «N подряд»: it also counts
+# as down when at least half of the last 2×N (at least 6) planned checks
+# failed — and at least N of them.
+FLAP_WINDOW_MIN_CHECKS = 6
+# Up only after two planned successes in a row: one good answer between
+# failures is not a recovery to ring about. A site checked rarely (every
+# half hour or less often) is up on the first: waiting another interval
+# would call it down for an hour after it is back.
+RECOVERY_STREAK = 2
+RECOVERY_SINGLE_FROM_MIN = 30
+# An incident closed less than this ago is reopened, not opened anew: no
+# second ring, no second rebuild.
+REOPEN_WITHIN_MIN = 30
+# The last planned statuses per site, newest last: the failure threshold
+# keeps working while the database refuses to store the history.
 RECENT_IN_MEMORY = 50
 _recent: dict[int, deque[str]] = {}
 # Sites alerted while the database refused writes: no incident row exists,
@@ -71,6 +86,40 @@ def code_accepted(status: int, ranges: list[tuple[int, int]] | None) -> bool:
     return any(lo <= status <= hi for lo, hi in ranges)
 
 
+def share_window(threshold: int) -> int:
+    return max(FLAP_WINDOW_MIN_CHECKS, 2 * threshold)
+
+
+def down_verdict(statuses: list[str], threshold: int) -> tuple[int, int] | bool:
+    """statuses — the latest planned checks, newest first. False — not down;
+    True — «threshold» failures in a row; (failed, window) — by the share."""
+    if len(statuses) >= threshold and all(s == "error" for s in statuses[:threshold]):
+        return True
+    window = statuses[:share_window(threshold)]
+    failed = window.count("error")
+    if len(window) == share_window(threshold) and failed >= max(threshold, len(window) // 2):
+        return failed, len(window)
+    return False
+
+
+def recovery_streak(interval_min: int) -> int:
+    """Planned successes in a row that close an incident, by the site's interval."""
+    return 1 if interval_min >= RECOVERY_SINGLE_FROM_MIN else RECOVERY_STREAK
+
+
+def up_verdict(statuses: list[str], streak: int = RECOVERY_STREAK) -> bool:
+    """`streak` planned successes in a row, newest first."""
+    return len(statuses) >= streak and all(s == "ok" for s in statuses[:streak])
+
+
+def _first_ok_at(recent: list[dict]) -> datetime | None:
+    """When the leading run of successes began — the end of the downtime."""
+    moment = None
+    for check in recent:
+        if check["status"] != "ok":
+            break
+        moment = parse_sqlite_utc(check.get("checked_at")) or moment
+    return moment
 
 
 def request_options(site: dict) -> tuple[str, dict[str, str], str | None]:
@@ -367,12 +416,15 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         r.error = "у сервера бота нет сети"
 
     memory = _recent.setdefault(r.site_id, deque(maxlen=RECENT_IN_MEMORY))
-    memory.append(r.status)
+    if manage:
+        memory.append(r.status)
     # While writes fail, do not even try: under «database is locked» each one
     # holds the only DB thread for busy_timeout (5 s). run_alive probes it.
+    # Only the tick's check is planned: a «🔄 Проверить», a follow-up or a
+    # snapshot writes its row for uptime, but must not count toward the threshold.
     stored = not health.db_failing() and await _write(save_check(
         r.site_id, "availability", r.status, response_time_ms=r.response_time_ms,
-        status_code=r.status_code, details=r.error))
+        status_code=r.status_code, details=r.error, scheduled=manage))
     # Remember the hosting so alerts can link to its panel even when the
     # failing response carries no headers at all.
     if r.hosting:
@@ -388,14 +440,24 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         return r
 
     threshold = site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD
+    streak = recovery_streak(site.get("check_interval_min") or config.check_interval_minutes)
+    window = max(streak, share_window(threshold))
+    if stored:
+        recent = await get_recent_checks(r.site_id, "availability", limit=window, scheduled_only=True)
+    else:
+        recent = [{"status": s, "checked_at": None} for s in reversed(memory)][:window]
+    statuses = [c["status"] for c in recent]
     if r.ok:
         if await get_state(f"ext_ok:{r.site_id}"):
             await _write(set_state(f"ext_ok:{r.site_id}", None))   # the episode «up from outside» is over
+        if not up_verdict(statuses, streak):
+            return r                                  # one good answer between failures is not «up»
         if r.site_id in _down_without_db:            # alerted from memory: say it is back
             _down_without_db.discard(r.site_id)
             r.recovered = True
         try:
-            resolved = await resolve_incident(r.site_id, "availability")
+            # The downtime ended with the first good answer, not the one that confirmed it.
+            resolved = await resolve_incident(r.site_id, "availability", resolved_at=_first_ok_at(recent))
         except sqlite3.OperationalError as e:
             health.db_write_failed(e)                 # closed by a check once writes work
             resolved = None
@@ -409,12 +471,11 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         # bot's too — no flicker between 🔴 and ⚠️, no downtime counted.
         await _outside_is_up(r, 1)
         return r
-    if stored:
-        recent = await get_recent_check_statuses(r.site_id, "availability", limit=threshold)
-    else:
-        recent = list(memory)[-threshold:]
-    if len(recent) < threshold or any(s != "error" for s in recent):
+    verdict = down_verdict(statuses, threshold)
+    if not verdict:
         return r  # a single flap is normal on the public internet
+    if isinstance(verdict, tuple):
+        r.failed_of = verdict
     # Second opinion from external nodes before paging: reachable from
     # outside means the problem is on our side. Skipped for keyword
     # failures — our own fetch succeeded, so the content problem is real —,
@@ -438,6 +499,10 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         await _write(set_state(f"ext_ok:{r.site_id}", None))   # confirmed down this time
     prefix = "Bad content" if r.keyword_failed else "Site down"
     try:
+        # Fell again minutes after it came back: the same incident continues —
+        # no second ring, no second rebuild, no re-checks; the tick says «мигает».
+        if await reopen_incident(r.site_id, "availability", REOPEN_WITHIN_MIN):
+            r.flapping = True
         r.incident_id, r.incident_new = await save_incident(
             r.site_id, "availability", f"{prefix}: {r.error}", severity="critical")
         if r.site_id in _down_without_db:            # said from memory already: the row catches up

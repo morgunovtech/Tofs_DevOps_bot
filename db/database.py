@@ -306,14 +306,17 @@ async def update_site_settings(site_id: int, **fields):
 async def save_check(site_id: int, check_type: str, status: str,
                      response_time_ms: int | None = None,
                      status_code: int | None = None,
-                     details: str | None = None):
+                     details: str | None = None,
+                     scheduled: bool = True):
+    """scheduled=False: a row written outside the schedule (a «🔄 Проверить»,
+    a follow-up, a snapshot) — it feeds uptime, not the failure threshold."""
     db = await get_db()
     async with _write_lock:
         await db.execute(
             """INSERT INTO checks (site_id, check_type, status,
-                                   response_time_ms, status_code, details)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (site_id, check_type, status, response_time_ms, status_code, details))
+                                   response_time_ms, status_code, details, scheduled)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (site_id, check_type, status, response_time_ms, status_code, details, int(scheduled)))
         await db.commit()
 
 
@@ -326,14 +329,22 @@ async def get_last_check(site_id: int, check_type: str) -> dict | None:
     return dict(row) if row else None
 
 
-async def get_recent_check_statuses(site_id: int, check_type: str,
-                                    limit: int = 5) -> list[str]:
-    """Most recent N statuses for a site/type, newest first."""
+async def get_recent_checks(site_id: int, check_type: str, limit: int = 5,
+                            scheduled_only: bool = False) -> list[dict]:
+    """Most recent N checks (status, checked_at) for a site/type, newest
+    first; scheduled_only — the planned ones, which the thresholds count."""
     db = await get_db()
     cursor = await db.execute(
-        """SELECT status FROM checks WHERE site_id = ? AND check_type = ?
-           ORDER BY checked_at DESC, id DESC LIMIT ?""", (site_id, check_type, limit))
-    return [r[0] for r in await cursor.fetchall()]
+        """SELECT status, checked_at FROM checks WHERE site_id = ? AND check_type = ?
+             AND (scheduled = 1 OR ? = 0)
+           ORDER BY checked_at DESC, id DESC LIMIT ?""", (site_id, check_type, int(scheduled_only), limit))
+    return [dict(r) for r in await cursor.fetchall()]
+
+
+async def get_recent_check_statuses(site_id: int, check_type: str,
+                                    limit: int = 5, scheduled_only: bool = False) -> list[str]:
+    """Most recent N statuses for a site/type, newest first."""
+    return [c["status"] for c in await get_recent_checks(site_id, check_type, limit, scheduled_only)]
 
 
 
@@ -448,9 +459,18 @@ async def save_incident(site_id: int, check_type: str, message: str,
         return cursor.lastrowid, True
 
 
-async def resolve_incident(site_id: int, check_type: str) -> dict | None:
-    """Resolve the open incident for site/type. Returns the row as it was
-    (incl. created_at) for post-incident summaries, or None if nothing was open."""
+def _sqlite_utc(moment: datetime) -> str:
+    """A datetime as SQLite's datetime('now') writes it: UTC, no zone."""
+    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+async def resolve_incident(site_id: int, check_type: str,
+                           resolved_at: datetime | None = None) -> dict | None:
+    """Resolve the open incident for site/type. Returns the row (incl.
+    created_at and the stored resolved_at) for post-incident summaries, or
+    None if nothing was open. resolved_at — when the problem really ended
+    when that is known (the first good planned check of a recovery series,
+    not the one that confirmed it); None — now."""
     db = await get_db()
     async with _write_lock:
         cursor = await db.execute(
@@ -460,11 +480,33 @@ async def resolve_incident(site_id: int, check_type: str) -> dict | None:
         row = await cursor.fetchone()
         if not row:
             return None
+        ended = _sqlite_utc(resolved_at or datetime.now(UTC))
         await db.execute(
-            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
-               WHERE id = ?""", (row["id"],))
+            """UPDATE incidents SET resolved = 1, resolved_at = ? WHERE id = ?""", (ended, row["id"]))
         await db.commit()
-        return dict(row)
+        return {**dict(row), "resolved": 1, "resolved_at": ended}
+
+
+async def reopen_incident(site_id: int, check_type: str, within_min: int) -> int | None:
+    """A flap: reopen this site/type's incident closed less than `within_min`
+    minutes ago (keeping its start) instead of opening a new one. None when
+    there is no such incident or one is open anyway."""
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute(
+            """SELECT id FROM incidents
+               WHERE site_id = ? AND check_type = ? AND resolved = 1
+                 AND resolved_at >= datetime('now', ?)
+                 AND NOT EXISTS (SELECT 1 FROM incidents
+                                 WHERE site_id = ? AND check_type = ? AND resolved = 0)
+               ORDER BY resolved_at DESC, id DESC LIMIT 1""",
+            (site_id, check_type, f"-{within_min} minutes", site_id, check_type))
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        await db.execute("UPDATE incidents SET resolved = 0, resolved_at = NULL WHERE id = ?", (row[0],))
+        await db.commit()
+        return row[0]
 
 
 async def resolve_incident_by_id(incident_id: int) -> bool:
@@ -813,7 +855,7 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
              sum_ms = sum_ms + excluded.sum_ms""", (cutoff,))
     await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
     # Escalation/ack markers for long-resolved incidents are dead weight.
-    for prefix in ("escalated:", "ack:", "held:"):
+    for prefix in ("escalated:", "escalated_n:", "ack:", "flap:", "flap_noted:", "held:"):
         await db.execute(
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",

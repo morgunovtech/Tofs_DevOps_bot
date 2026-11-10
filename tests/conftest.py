@@ -179,6 +179,7 @@ def _fresh_module_state(monkeypatch):
     scheduler._next_avail_check.clear()
     scheduler._failed_jobs.clear()
     scheduler._slow_streak.clear()
+    scheduler._fast_streak.clear()
     scheduler._ext_ok_noted.clear()
     notifier._released.clear()
     availability._recent.clear()

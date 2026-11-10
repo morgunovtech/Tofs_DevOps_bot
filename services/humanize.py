@@ -123,6 +123,24 @@ def link_reason(status_code: int | None, error: str | None, url: str = "") -> st
     return describe_error(error)
 
 
+def every_minutes(minutes: int) -> str:
+    """«каждую минуту», «каждые 5 мин», «каждый час» — how often a site is checked."""
+    if minutes <= 1:
+        return "каждую минуту"
+    if minutes == 60:
+        return "каждый час"
+    return f"каждые {minutes} мин"
+
+
+def times_in_a_row(n: int) -> str:
+    """«один раз», «дважды подряд», «3 раза подряд»."""
+    if n <= 1:
+        return "один раз"
+    if n == 2:
+        return "дважды подряд"
+    return f"{n} {plural(n, 'раз', 'раза', 'раз')} подряд"
+
+
 def describe_error(text: str | None) -> str:
     """Technical error / incident message → short human phrase (Russian
     text that is already human passes through unchanged)."""
@@ -152,7 +170,7 @@ EXPLANATIONS: dict[str, Explanation] = {
                    "Посетители видят страницу с ошибкой вместо сайта.",
                    "хостинг отвечает ошибкой сервера — сбой на стороне хостинга, упавший деплой или "
                    "закончившиеся лимиты тарифа",
-                   ("Подождать 5 минут: я проверяю каждую минуту и напишу, как только сайт поднимется.",
+                   ("Подождать 5 минут: я продолжаю проверять и напишу, как только сайт поднимется.",
                     "Если не поднимется — открыть панель хостинга, посмотреть последний деплой и "
                     "перезапустить или откатить его.",
                     "Если панель тоже не открывается — проверить статус хостинга и написать в его поддержку.")),
