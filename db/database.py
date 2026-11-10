@@ -29,6 +29,11 @@ def configure(path: str):
     _db_path = path
 
 
+def db_file() -> str:
+    """The database file in use (DB_PATH, or what configure() set)."""
+    return _db_path
+
+
 async def get_db() -> aiosqlite.Connection:
     global _conn
     if _conn is None:
@@ -80,7 +85,13 @@ async def get_site(site_id: int) -> dict | None:
 
 
 async def get_site_by_url(url: str) -> dict:
-    """Full site row (incl. per-site settings), creating the row if needed."""
+    """Full site row (incl. per-site settings), creating the row if needed.
+    Reads first: a check must not need a write before it has even started."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM sites WHERE url = ?", (url,))
+    row = await cursor.fetchone()
+    if row:
+        return dict(row)
     return await get_site(await get_or_create_site(url))
 
 

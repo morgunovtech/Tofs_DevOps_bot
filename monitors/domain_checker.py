@@ -85,4 +85,4 @@ async def check_all_domains(urls: list[str], manage: bool = True) -> list[Domain
         if domain not in seen:
             seen.add(domain)
             unique.append(url)
-    return await gather_checks((check_domain(u, manage=manage) for u in unique), "domain")
+    return await gather_checks(unique, check_domain, "domain", manage=manage)

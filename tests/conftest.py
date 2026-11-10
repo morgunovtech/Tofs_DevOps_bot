@@ -32,8 +32,18 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
+from monitors import availability  # noqa: E402
 from reports import scheduler  # noqa: E402
-from services import integrations, maintenance, notifier, runtime, secrets, settings, sitestatus  # noqa: E402
+from services import (  # noqa: E402
+    health,
+    integrations,
+    maintenance,
+    notifier,
+    runtime,
+    secrets,
+    settings,
+    sitestatus,
+)
 from web import status_page, webhook  # noqa: E402
 
 
@@ -153,6 +163,12 @@ def _fresh_module_state(monkeypatch):
     scheduler._slow_streak.clear()
     scheduler._ext_ok_noted.clear()
     notifier._released.clear()
+    availability._recent.clear()
+    availability._down_without_db.clear()
+    notifier._unsent.clear()
+    notifier._delivered_rows.clear()
+    monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
+    health.reset()
     monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())

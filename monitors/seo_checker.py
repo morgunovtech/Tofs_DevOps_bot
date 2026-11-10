@@ -315,4 +315,4 @@ def incident_message(problems: list[SeoProblem]) -> str:
 
 
 async def check_all_seo(urls: list[str], manage: bool = True) -> list[SeoResult]:
-    return await gather_checks((check_seo(u, manage=manage) for u in urls), "seo")
+    return await gather_checks(urls, check_seo, "seo", manage=manage)

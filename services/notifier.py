@@ -32,6 +32,8 @@ import json
 import logging
 import sqlite3
 import time
+from collections import deque
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 
@@ -47,6 +49,7 @@ from aiogram.exceptions import (
 from aiogram.types import InlineKeyboardMarkup, Message
 
 from db.database import (
+    OUTBOX_MAX,
     delete_notifications,
     get_active_incidents,
     get_state,
@@ -58,7 +61,7 @@ from db.database import (
     queue_notification,
     set_state,
 )
-from services import helpers, maintenance, runtime, settings
+from services import health, helpers, maintenance, runtime, settings
 from utils.clock import now_local, to_local
 from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc
 
@@ -195,13 +198,16 @@ async def send(text: str, priority: Priority = Priority.NORMAL, *,
     if site_id is not None and await maintenance.is_paused(site_id) \
             and not (resolves is not None and await announced_at(resolves)):
         if announces is not None:
-            await _hold(announces, site_id, text, reply_markup, priority, always_ring, to_helpers)
-            logger.info("Site %s paused — holding until the silence ends: %s", site_id, text[:60])
+            try:
+                await _hold(announces, site_id, text, reply_markup, priority, always_ring, to_helpers)
+                logger.info("Site %s paused — holding until the silence ends: %s", site_id, text[:60])
+            except sqlite3.OperationalError as e:
+                health.db_write_failed(e)
+                logger.error("Site %s paused and the database refuses the hold — dropped: %s", site_id, text[:60])
         else:
             logger.info("Site %s paused — dropping: %s", site_id, text[:60])
         return False
-    if await _defer(priority):
-        await queue_notification(text, _markup_json(reply_markup))
+    if await _defer(priority) and await _queue(text, _markup_json(reply_markup)):
         logger.info("Queued (mute / quiet hours): %s", text[:60])
         result: Message | bool = True
     else:
@@ -298,12 +304,65 @@ def _late_note(late: datetime) -> str:
     return f"⏳ Задержалось с {at}, отправляю сейчас:\n\n"
 
 
+@dataclass
+class _Unsent:
+    """A message Telegram did not take while the database refused the outbox
+    row: kept in memory (gone after a restart) instead of being dropped."""
+    text: str
+    reply_markup: str | None
+    priority: str
+    created: datetime
+
+
+_unsent: deque[_Unsent] = deque(maxlen=OUTBOX_MAX)
+# Outbox rows already delivered whose DELETE the database refused — not sent twice.
+_delivered_rows: set[int] = set()
+
+
+async def send_direct(text: str) -> bool:
+    """Straight to the owner with no database on the way (no pause check, no
+    quiet queue, no outbox): for «не могу записать в базу» itself. Rings —
+    unless the owner asked to be woken only by «сайт лёг»."""
+    if not runtime.admin_chat_id() or _bot is None:
+        return False
+    priority = Priority.NORMAL if settings.ring_only_down() else Priority.CRITICAL
+    return bool(await _deliver(text, None, priority))
+
+
+async def _queue(text: str, markup_json: str | None) -> bool:
+    """Into the quiet queue; False when the database refused it — the caller
+    then delivers right away (silently): late beats lost."""
+    if health.db_failing():
+        return False
+    try:
+        await queue_notification(text, markup_json)
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
+        logger.warning("Quiet queue unavailable (%s) — delivering now: %s", e, text[:60])
+        return False
+    return True
+
+
 async def _keep(text: str, reply_markup, priority: Priority):
-    dropped = await outbox_add(text, _markup_json(reply_markup), priority.value)
+    """Into the outbox; into memory while the database refuses writes."""
+    markup_json = _markup_json(reply_markup)
     logger.warning("Telegram did not take the message — kept for a retry: %s", text[:60])
-    if dropped:
-        logger.warning("Outbox full: dropped %d undelivered message(s)", dropped)
-        await set_state(DROPPED_KEY, str(await _dropped() + dropped))
+    if not health.db_failing():
+        try:
+            dropped = await outbox_add(text, markup_json, priority.value)
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)
+        else:
+            if dropped:
+                logger.warning("Outbox full: dropped %d undelivered message(s)", dropped)
+                try:
+                    await set_state(DROPPED_KEY, str(await _dropped() + dropped))
+                except sqlite3.OperationalError as e:
+                    health.db_write_failed(e)
+            return
+    if len(_unsent) == _unsent.maxlen:
+        logger.error("In-memory outbox is full — the oldest message is dropped: %s", _unsent[0].text[:60])
+    _unsent.append(_Unsent(text, markup_json, priority.value, datetime.now(UTC)))
 
 
 async def _dropped() -> int:
@@ -389,22 +448,42 @@ async def flush_outbox():
     quiet hours or mute joins the quiet queue like any other."""
     if _bot is None or not runtime.admin_chat_id():
         return
+    # Memory first: what the database could not take while it was failing.
+    while _unsent:
+        u = _unsent[0]
+        if not await _retry(u.text, u.reply_markup, Priority(u.priority), u.created):
+            return
+        _unsent.popleft()
     for i, row in enumerate(await outbox_peek()):
         if i:
             await asyncio.sleep(FLUSH_PACE_SEC)
-        priority = Priority(row["priority"])
-        late = parse_sqlite_utc(row["created_at"])
-        text = clip((_late_note(late) if late else "") + row["text"])
-        if await _defer(priority):
-            await queue_notification(text, row["reply_markup"])
-        elif _later(await _deliver(text, _markup(row["reply_markup"]), priority)):
+        if row["id"] not in _delivered_rows and not await _retry(
+                row["text"], row["reply_markup"], Priority(row["priority"]), parse_sqlite_utc(row["created_at"])):
             return
-        await outbox_delete(row["id"])
+        try:
+            await outbox_delete(row["id"])
+            _delivered_rows.discard(row["id"])
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)
+            _delivered_rows.add(row["id"])     # delivered: never again, even if the row stays
     lost = await _dropped()
     if lost and not _later(await _deliver(
             f"⚠️ Пока Telegram не принимал сообщения, {lost} из них не поместились в очередь и потерялись. "
             "Что сейчас не так — на 🏠 Главной.", None, Priority.NORMAL)):
-        await set_state(DROPPED_KEY, None)
+        try:
+            await set_state(DROPPED_KEY, None)
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)
+
+
+async def _retry(text: str, markup_json: str | None, priority: Priority, late: datetime | None) -> bool:
+    """One kept message, with the time it should have arrived; False while
+    Telegram is still away. A silent message that now falls into quiet hours
+    or mute joins the quiet queue like any other."""
+    text = clip((_late_note(late) if late else "") + text)
+    if await _defer(priority) and await _queue(text, markup_json):
+        return True
+    return not _later(await _deliver(text, _markup(markup_json), priority))
 
 
 async def edit(message_id: int, text: str, reply_markup=None) -> bool:
@@ -435,8 +514,9 @@ async def send_document(document, caption: str) -> bool:
 async def flush_queue():
     """Deliver deferred notifications as a digest — several messages when
     the backlog is long, deleting only the rows that were actually sent."""
-    if _bot is None or not runtime.admin_chat_id() or in_quiet_hours() or await is_muted():
-        return
+    if _bot is None or not runtime.admin_chat_id() or in_quiet_hours() or await is_muted() \
+            or health.db_failing():
+        return      # a delivered batch could not be deleted: it would come again in ten minutes
     rows = await peek_notifications()
     if not rows:
         return

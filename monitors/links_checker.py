@@ -227,4 +227,4 @@ def _suspects(raw: str | None, now: datetime) -> dict[str, str]:
 
 
 async def check_all_links(urls: list[str], manage: bool = True) -> list[LinksResult]:
-    return await gather_checks((check_links(u, manage=manage) for u in urls), "links")
+    return await gather_checks(urls, check_links, "links", manage=manage)

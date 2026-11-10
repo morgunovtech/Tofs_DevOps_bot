@@ -69,7 +69,9 @@ def _usage(*readings):
     """A disk_usage_pct stand-in: the given readings in order, then the last
     one forever — a repeated prune must fail an assert, not exhaust an iterator."""
     seq = itertools.chain(readings, itertools.repeat(readings[-1]))
-    return lambda path="/": next(seq)
+    # The database directory is also measured now (PLAN-09): an empty test
+    # volume, so the root disk stays the fullest and drives the readings.
+    return lambda path="/": next(seq) if path == "/" else (1, 0.0, 1.0)
 
 
 async def test_prune_removes_only_dangling_images_and_old_build_cache(db, cfg):

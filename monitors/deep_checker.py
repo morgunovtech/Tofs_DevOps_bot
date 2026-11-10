@@ -90,4 +90,4 @@ async def check_deep(url: str) -> DeepResult:
 
 
 async def check_all_deep(urls: list[str]) -> list[DeepResult]:
-    return await gather_checks((check_deep(u) for u in urls), "deep")
+    return await gather_checks(urls, check_deep, "deep")

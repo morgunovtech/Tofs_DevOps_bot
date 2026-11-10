@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from aiogram.types import FSInputFile, InlineKeyboardButton, Message
@@ -38,7 +39,7 @@ from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
 from monitors.dns_checker import check_all_dns
 from monitors.domain_checker import check_all_domains
-from monitors.host_checker import check_disk, watch_containers
+from monitors.host_checker import DISK_CRITICAL_PCT, check_disk, watch_containers
 from monitors.links_checker import check_all_links
 from monitors.mail_checker import MAIL_CHECKS, carriers, check_all_mail
 from monitors.second_opinion import repeatable
@@ -69,6 +70,7 @@ from services import (
     crux,
     github,
     gsc,
+    health,
     heartbeats,
     humanize,
     index_status,
@@ -633,9 +635,14 @@ async def run_heartbeat_watch():
 
 # ── Bot-host monitoring ──────────────────────────────────────────────────────
 
+_DISK_RANK = {"warning": 1, "critical": 2, "1": 1}     # "1" — the flag older versions wrote
+_disk_level_unsaved: str | None = None                 # the level said when the flag could not be written
+
+
 async def run_host_checks():
+    global _disk_level_unsaved
     result = await check_disk()
-    already = await get_state("disk_alerted")
+    already = await get_state("disk_alerted") or _disk_level_unsaved
     cleaned = result["cleaned"]
     if cleaned and cleaned["bytes"]:
         # Every prune is said, with what it removed — never a silent deletion.
@@ -645,25 +652,34 @@ async def run_host_checks():
             f"−{cleaned['bytes'] / 1e9:.1f} GB, сейчас {result['pct_after']}%. Остановленные контейнеры "
             f"и образы с тегами не трогаю; следующая очистка — не раньше чем через 12 ч.")
         if result["pct_after"] < config.disk_alert_pct:
+            _disk_level_unsaved = None
             await set_state("disk_alerted", None)
             return
     if result["over_threshold"]:
-        if not already:
+        # 🟠 at the threshold, 🔴 when writes are about to fail: a rise is a new message.
+        level = "critical" if result["pct_after"] >= DISK_CRITICAL_PCT else "warning"
+        if _DISK_RANK[level] > _DISK_RANK.get(already or "", 0):
             expl = humanize.EXPLANATIONS["disk"]
-            level = "critical" if result["pct_after"] >= 95 else "warning"
             useless = ("\n\nПочистить docker было нечего: место занимают не образы — смотри тома и логи "
                        "(docker system df)." if cleaned is not None and not cleaned["bytes"] else "")
             # Percent and gigabytes are both measured after the prune, so they agree.
             sent = await notifier.send(
-                f"{humanize.level_icon(level)} Диск на сервере бота заполнен на {result['pct_after']}% "
+                f"{humanize.level_icon(level)} {result['label']} заполнен на {result['pct_after']}% "
                 f"({result['used_gb_after']} из {result['total_gb']} GB).\n{expl.meaning}\n\n"
                 f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}" + useless,
                 notifier.priority_for(level))
             if sent:
-                await set_state("disk_alerted", "1")
+                try:
+                    await set_state("disk_alerted", level)
+                    _disk_level_unsaved = None
+                except sqlite3.OperationalError as e:
+                    # The flag lives on the full volume: remember it here, or 🔴 rings every 30 min.
+                    health.db_write_failed(e)
+                    _disk_level_unsaved = level
     elif already:
+        _disk_level_unsaved = None
         await set_state("disk_alerted", None)
-        await notifier.send(f"✅ Диск на сервере бота снова в норме: {result['pct']}%. Ничего делать не нужно.")
+        await notifier.send(f"✅ {result['label']} снова в норме: {result['pct']}%. Ничего делать не нужно.")
 
 
 async def run_container_watch():
@@ -738,8 +754,42 @@ LATE_MORNING_UNTIL = 21     # a missed morning report still comes, but not at ni
 
 async def run_alive():
     """A mark every minute: after a restart, the gap since the last one is
-    how long nobody was watching."""
-    await set_state("alive_at", datetime.now(UTC).isoformat())
+    how long nobody was watching. The same write probes the database: when
+    writes fail, the owner hears it straight from Telegram."""
+    try:
+        await set_state("alive_at", datetime.now(UTC).isoformat())
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
+    await report_db_health()
+
+
+def _db_failure_text(error: str) -> str:
+    low = error.lower()
+    if "full" in low:
+        why, fix = ("на диске с базой кончилось место",
+                    "освободи место на этом диске (например, старые копии в data/backups) или увеличь его")
+    elif "locked" in low:
+        why, fix = ("базу держит другая программа",
+                    "закрой программу, которая открыла файл базы (sqlite3, второй экземпляр бота), "
+                    "или перезапусти бота")
+    else:
+        why, fix = "база не принимает запись", "посмотри логи бота и место на диске"
+    return (f"🔴 Не могу записать в базу: {why}.\n"
+            f"Проверки идут и тревоги приходят, но история не сохраняется, а то, что Telegram "
+            f"не принял, держу только в памяти до перезапуска.\n\n"
+            f"Что сделать: {fix}." + _tech_line(error))
+
+
+async def report_db_health():
+    """«Не могу записать в базу» — past the outbox (it lives in that very
+    database), at most once an hour while it lasts; one «✅» after."""
+    if health.db_alert_due():
+        if await notifier.send_direct(_db_failure_text(health.db_error())):
+            health.mark_db_alerted()
+    elif health.db_recovery_due() and await notifier.send(
+            "✅ База снова записывается: история проверок и очередь сообщений работают. "
+            "Ничего делать не нужно."):
+        health.mark_db_recovery_said()
 
 
 async def catch_up_after_restart():
@@ -925,7 +975,7 @@ async def _morning_extras(ssl_results, domain_results, incidents: list[dict]) ->
 
     try:
         disk = await check_disk(auto_cleanup=False)
-        icon = "✅" if not disk["over_threshold"] else humanize.level_icon("critical" if disk["pct"] >= 95 else "warning")
+        icon = "✅" if not disk["over_threshold"] else humanize.level_icon("critical" if disk["pct"] >= DISK_CRITICAL_PCT else "warning")
         extras.append(f"💾 Диск сервера: {icon} занято {disk['pct']}%")
     except Exception as e:
         logger.warning("Disk stat for morning report failed: %s", e)
