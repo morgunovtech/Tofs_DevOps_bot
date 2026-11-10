@@ -126,7 +126,12 @@ async def build_items() -> list[Item]:
     items.append(Item("web", "ok" if await _web_ok() else "warn", "веб-сервер",
                       f"не отвечает на localhost:{config.webhook_port} — перезапусти бота, "
                       f"проверь WEBHOOK_PORT"))
-    if public_urls.is_public():
+    if public_urls.base_url().startswith("http://") and public_urls.is_public():
+        items.append(Item("url", "warn", "публичный адрес без TLS",
+                          "http:// — секрет heartbeat идёт открытым текстом, а виджет на https-сайтах "
+                          "браузер заблокирует. Нужен reverse proxy с TLS и адрес https://",
+                          ("🌍 Как задать адрес", "setup:url")))
+    elif public_urls.is_public():
         src = "из PUBLIC_BASE_URL" if config.public_base_url else "домен Railway"
         items.append(Item("url", "ok", f"публичный адрес ({src})"))
     else:
@@ -452,11 +457,13 @@ async def cb_guide_url(call: CallbackQuery):
                 "3. Нажми «🔁 Проверить снова».")
     else:
         text = ("🌍 Публичный адрес\n\n"
-                "1. Открой порт бота наружу (reverse proxy с TLS или проброс порта "
-                f"{config.webhook_port}).\n"
+                "1. Поставь перед ботом reverse proxy с TLS (Caddy, nginx или Cloudflare Tunnel) "
+                f"на 127.0.0.1:{config.webhook_port}. Голый проброс порта не подходит: секрет "
+                "heartbeat пойдёт открытым текстом, а виджет на https-сайте браузер заблокирует.\n"
                 "2. Пропиши в .env: <code>PUBLIC_BASE_URL=https://bot.example.com</code> "
-                "и, если есть прокси, <code>TRUST_PROXY=1</code>.\n"
-                "3. Перезапусти бота и нажми «🔁 Проверить снова».")
+                "и <code>TRUST_PROXY=1</code>.\n"
+                "3. Перезапусти бота и нажми «🔁 Проверить снова».\n\n"
+                "Пошагово — README.ru.md, раздел «Публичный адрес на своём сервере».")
     await render(call, text, _guide_kb())
 
 

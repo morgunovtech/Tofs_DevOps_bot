@@ -7,6 +7,7 @@ lazy drive-by bots — real protection is the per-IP/global rate limit and
 strict size caps. The heartbeat secret is a different value on purpose.
 """
 
+import asyncio
 import hmac
 import logging
 import re
@@ -43,6 +44,12 @@ RATE_LIMIT_GLOBAL = 30
 _ip_hits: dict[str, deque] = defaultdict(deque)
 _global_hits: deque = deque()
 _WIDGET = Path(__file__).parent / "feedback-widget.js"
+# The server shares the process — and the container's file-descriptor limit,
+# 1024 by default — with every check the bot makes. A real client sends its
+# request within milliseconds; a socket that stays silent only holds a slot.
+KEEPALIVE_SEC = 15
+MAX_CONNECTIONS = 200
+MAX_HEADER_BYTES = 4096
 
 
 def client_ip(request: web.Request) -> str:
@@ -244,11 +251,31 @@ def create_app() -> web.Application:
     return app
 
 
-async def start_web_server() -> web.AppRunner:
+def _cap_connections(server: web.Server, limit: int) -> None:
+    """aiohttp has no ceiling on open connections, and middleware never sees a
+    socket that sends nothing, so the ceiling sits where aiohttp registers
+    every accepted socket. Past it the OLDEST connections are closed: a flood
+    of silent sockets cannot eat the process's file descriptors, and a fresh
+    request (the newest connection) still gets through."""
+    register = server.connection_made
+
+    def connection_made(handler: web.RequestHandler, transport: asyncio.Transport) -> None:
+        register(handler, transport)
+        open_now = server.connections            # oldest first
+        for victim in open_now[:max(0, len(open_now) - limit)]:
+            victim.force_close()
+
+    server.connection_made = connection_made
+
+
+async def start_web_server(host: str = "0.0.0.0", port: int | None = None) -> web.AppRunner:
     # No access log: request lines carry the heartbeat secret and the status
     # page slug in the path, and stdout ends up in the hosting's logs.
-    runner = web.AppRunner(create_app(), access_log=None)
+    runner = web.AppRunner(create_app(), access_log=None, keepalive_timeout=KEEPALIVE_SEC,
+                           max_line_size=MAX_HEADER_BYTES, max_field_size=MAX_HEADER_BYTES)
     await runner.setup()
-    await web.TCPSite(runner, host="0.0.0.0", port=config.webhook_port).start()
-    logger.info("Web server running on port %s", config.webhook_port)
+    _cap_connections(runner.server, MAX_CONNECTIONS)
+    port = config.webhook_port if port is None else port
+    await web.TCPSite(runner, host=host, port=port).start()
+    logger.info("Web server running on port %s", port)
     return runner

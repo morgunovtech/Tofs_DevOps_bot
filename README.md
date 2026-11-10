@@ -51,13 +51,34 @@ volumes:
   bot_data:
 ```
 
-Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
+Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [Public address on your own server](#public-address-on-your-own-server).
 
-Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
+Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, put your `TELEGRAM_BOT_TOKEN` into `.env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
 
 **A server in Russia.** api.telegram.org is often unreachable from there directly, and the bot cannot talk to Telegram. Set a proxy in `.env`: `TELEGRAM_PROXY=socks5://user:password@host:1080` (`socks4://` and `http://host:3128` work too). Only the traffic to Telegram goes through it; the sites are checked directly.
 
 Every `.env` integration, the architecture and the development loop: [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
+
+#### Public address on your own server
+
+The feedback widget, the links for your cron jobs and the status page need the bot's web server to be reachable from the internet over **HTTPS**. The bot itself speaks plain HTTP on port 8080, so put a reverse proxy with TLS in front of it and keep the port closed to everyone else:
+
+1. In `docker-compose.yml` publish the port on this machine only:
+   ```yaml
+       ports:
+         - "127.0.0.1:8080:8080"
+   ```
+   Not `"8080:8080"`: a port published by Docker bypasses ufw, the heartbeat secret then travels in clear text, and anyone can fake the visitor address the rate limit relies on.
+2. Run a reverse proxy with TLS on the same machine — for example Caddy, which gets the certificate by itself. `/etc/caddy/Caddyfile`:
+   ```
+   bot.example.com {
+       reverse_proxy 127.0.0.1:8080
+   }
+   ```
+   nginx with a certificate or a Cloudflare Tunnel works too.
+3. In `.env`: `PUBLIC_BASE_URL=https://bot.example.com` and `TRUST_PROXY=1`, then `docker compose up -d`.
+
+Without TLS the widget does not load on https sites (browsers block it) and the heartbeat secret is visible to anyone on the way.
 
 ### Easier: Railway in one click — 5 minutes
 
