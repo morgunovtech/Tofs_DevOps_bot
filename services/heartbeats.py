@@ -9,7 +9,7 @@ healthchecks.io answers a check that does not exist with HTTP 200 and
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
@@ -28,6 +28,11 @@ LATE = 1.25
 WATCHDOG_FAIL_MIN = 15
 WATCHDOG_ALERT_MIN = 30
 _WATCHDOG_KEY = "watchdog"
+# The bot hears nothing while it is not running. Its last such gap —
+# [the last «alive» mark, this start] — is kept here (note_downtime) and
+# taken out of every job's silence. Only the latest one: an earlier gap was
+# already allowed for when the jobs' silence was last judged.
+_DOWN_KEY = "bot_down"
 
 
 def every(interval: int) -> str:
@@ -37,6 +42,55 @@ def every(interval: int) -> str:
 
 def is_late(interval: int, ago: float) -> bool:
     return ago > interval * LATE
+
+
+async def note_downtime(down_from: datetime | None, down_until: datetime):
+    """Remember the bot's last downtime, once at startup: from the last
+    «alive» mark (reports.scheduler.run_alive) to this start."""
+    if down_from is None or down_from >= down_until:
+        return
+    await set_state(_DOWN_KEY, json.dumps([down_from.isoformat(timespec="seconds"),
+                                           down_until.isoformat(timespec="seconds")]))
+
+
+async def last_downtime() -> tuple[datetime, datetime] | None:
+    try:
+        raw = json.loads(await get_state(_DOWN_KEY) or "null")
+    except ValueError:
+        return None
+    if not isinstance(raw, list) or len(raw) != 2 or not all(isinstance(v, str) for v in raw):
+        return None
+    start, end = parse_iso_utc(raw[0]), parse_iso_utc(raw[1])
+    return (start, end) if start and end and start < end else None
+
+
+async def silence_since(name: str, last: datetime | None) -> datetime:
+    """Where a job's silence is counted from: its last mark or when it was
+    added — the later. A job is not to blame for the time it did not exist.
+    A job the bot sees for the first time without either (one from
+    HEARTBEAT_JOBS on the server) is taken as added now — or at its last
+    mark, when it has one: it existed at least since then."""
+    added = parse_iso_utc(await get_state(f"hb_added:{name}"))
+    if added is None:
+        added = last or datetime.now(UTC)
+        await set_state(f"hb_added:{name}", added.isoformat(timespec="seconds"))
+    return max(t for t in (last, added) if t)
+
+
+async def silent_minutes(name: str, last: datetime | None, now: datetime | None = None) -> float:
+    """How long nothing has been heard from the job, less the time the bot
+    itself was down to hear it (the last such gap, note_downtime). The one
+    rule for the card, the main screen, the digest and the watch — so a
+    restart neither forgives a dead job nor makes a live one «молчит»."""
+    now = now or datetime.now(UTC)
+    since = await silence_since(name, last)
+    silent = now - since
+    down = await last_downtime()
+    if down:
+        overlap = min(now, down[1]) - max(since, down[0])
+        if overlap > timedelta(0):
+            silent -= overlap
+    return max(silent, timedelta(0)).total_seconds() / 60
 
 
 class Job(NamedTuple):
@@ -63,7 +117,9 @@ async def job_states() -> list[Job]:
     for name, interval in jobs.items():
         last = parse_sqlite_utc(beats.get(name))
         ago = (now - last).total_seconds() / 60 if last else None
-        if ago is not None and is_late(interval, ago):
+        # Late by the silence the bot could hear; the words still say how long since the mark.
+        silent = await silent_minutes(name, last, now)
+        if ago is not None and is_late(interval, silent):
             icon, state = "🟠", f"молчит {fmt_duration(ago)}"
         elif ago is not None:
             icon, state = "✅", ("на связи, только что" if ago < 1
@@ -97,7 +153,7 @@ def digest_line(job: Job) -> tuple[str, bool]:
 # watches, so «всё в порядке» is one screen for sites, bots and what they
 # see. The bot keeps its own alerts and deep screens; here it is shown only.
 #
-#   POST /api/heartbeat/<secret>/<job>      Content-Type: application/json
+#   POST /api/heartbeat/<job's token>/<job>  Content-Type: application/json
 #   {"title": "📣 Соцсети",                       ≤ 40 chars
 #    "items": [{"name": "Telegram-канал",         ≤ 10 items, name ≤ 40
 #               "level": "ok",                    ok | warning | critical | unknown
@@ -129,18 +185,34 @@ def parse_status(data) -> dict:
         name, level, text = item.get("name"), item.get("level", "ok"), item.get("text", "")
         if not isinstance(name, str) or not name.strip():
             raise StatusError(f"items[{i}].name is required")
-        if level not in STATUS_ICONS:
+        if not isinstance(level, str) or level not in STATUS_ICONS:
             raise StatusError(f"items[{i}].level: one of {', '.join(STATUS_ICONS)}")
         if not isinstance(text, str):
             raise StatusError(f"items[{i}].text: a string is required")
         out_items.append({"name": name.strip()[:40], "level": level, "text": text.strip()[:120]})
     title = data.get("title")
     open_url = data.get("open_url")
-    if open_url is not None and not (isinstance(open_url, str) and open_url.startswith("https://")
-                                     and len(open_url) <= 200):
+    if open_url is not None and not _https_link(open_url):
         raise StatusError("open_url: an https link up to 200 characters")
     return {"title": title.strip()[:40] if isinstance(title, str) and title.strip() else None,
             "items": out_items, "open_url": open_url}
+
+
+def _https_link(value) -> bool:
+    """An absolute https URL with a host, no spaces or control characters —
+    what Telegram takes for a URL button."""
+    if not isinstance(value, str) or len(value) > 200 or any(c.isspace() or ord(c) < 32 for c in value):
+        return False
+    try:
+        p = urlsplit(value)
+    except ValueError:
+        return False
+    return p.scheme == "https" and bool(p.hostname)
+
+
+def link_host(url: str) -> str:
+    """The host to name on a button: the owner sees where it leads before tapping."""
+    return urlsplit(url).hostname or url
 
 
 async def save_status(job: str, status: dict):
@@ -165,10 +237,16 @@ def status_title(job: Job, status: dict) -> str:
 
 
 def status_items(job: Job, status: dict) -> list[tuple[str, str, str]]:
-    """(icon, name, text) for each line — only while the job marks on time:
-    a status from a bot that went silent says nothing about now."""
+    """(icon, name, text) for each line — only while the job marks on time
+    and the lines themselves are fresh: a status from a bot that went
+    silent, or one it last sent an interval ago, says nothing about now."""
     if job.icon != "✅":
         return [(humanize.UNCHECKED, job.name, "молчит — не знаю, что сейчас")]
+    at = parse_iso_utc(status.get("at"))
+    age = (datetime.now(UTC) - at).total_seconds() / 60 if at else None
+    if age is None or is_late(job.interval, age):
+        when = f" {fmt_duration(age)} назад" if age is not None else ""
+        return [(humanize.UNCHECKED, job.name, f"что видит, присылал последний раз{when} — строки устарели")]
     return [(STATUS_ICONS[i["level"]], i["name"], i["text"]) for i in status["items"]]
 
 

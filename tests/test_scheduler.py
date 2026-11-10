@@ -88,7 +88,7 @@ async def test_escalation_respects_ack(bot, db, cfg):
 
 async def test_heartbeat_watch_and_recovery_flag(bot, db, monkeypatch):
     await settings.add_heartbeat_job("backup", 60)
-    monkeypatch.setattr(scheduler, "_started_at", datetime.now(UTC) - timedelta(hours=2))
+    await set_state("hb_added:backup", (datetime.now(UTC) - timedelta(hours=2)).isoformat())   # added 2 h ago
     await scheduler.run_heartbeat_watch()
     # Never marked = not connected: no «крон упал», and both ways out are one tap.
     assert bot.sent[-1]["text"].startswith("⚠️ «backup» так и не выходит на связь") and await get_state("hb_alerted:backup")

@@ -1,9 +1,13 @@
 """Ready-to-paste URLs for things the bot serves over HTTP."""
 
+from urllib.parse import quote
+
 from config import config
 from services import integrations, secrets
 
 PLACEHOLDER_HOST = "YOUR_SERVER"
+NOT_PUBLIC = ("⚠️ У бота нет публичного адреса, поэтому ссылка ниже не заработает: вместо YOUR_SERVER "
+              "нужен адрес сервера бота. Задай PUBLIC_BASE_URL (https://…) — кнопка «🌍 Как задать адрес».")
 
 
 def base_url() -> str:
@@ -19,11 +23,14 @@ def is_public() -> bool:
     return PLACEHOLDER_HOST not in base_url()
 
 
+def _seg(value: str) -> str:
+    """One path segment, percent-encoded: a space or «/» in it must not break the link."""
+    return quote(value, safe="")
+
+
 def _status_path() -> str:
-    path = "/status"
-    if integrations.status_page_slug():
-        path += f"/{integrations.status_page_slug()}"
-    return path
+    slug = integrations.status_page_slug()
+    return f"/status/{_seg(slug)}" if slug else "/status"
 
 
 def status_page_url() -> str:
@@ -36,7 +43,8 @@ def badge_url(site_id: int) -> str:
 
 
 def heartbeat_url(job: str) -> str:
-    return f"{base_url()}/api/heartbeat/{secrets.heartbeat_secret()}/{job}"
+    """The job's own address: its token, not the shared secret (services.secrets)."""
+    return f"{base_url()}/api/heartbeat/{secrets.heartbeat_token(job)}/{_seg(job)}"
 
 
 def widget_url() -> str:

@@ -13,6 +13,7 @@ of their own, never shown anywhere.
 """
 
 import hashlib
+import hmac
 import logging
 import secrets as _secrets
 
@@ -113,6 +114,13 @@ def webhook_secret() -> str:
 
 def heartbeat_secret() -> str:
     return _heartbeat
+
+
+def heartbeat_token(job: str) -> str:
+    """The job's own token for its ping address, derived from the heartbeat
+    secret: a cron line that leaks exposes this one job, not all of them.
+    Rotating the secret («🔑») therefore changes every job's address."""
+    return hmac.new(_heartbeat.encode(), f"hb:{job}".encode(), hashlib.sha256).hexdigest()[:24]
 
 
 def shots_key() -> str:

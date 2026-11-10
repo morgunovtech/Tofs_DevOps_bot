@@ -12,6 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from db.database import get_state
 from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, render
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
@@ -29,12 +30,15 @@ def _kind_rows(name: str) -> list[list[InlineKeyboardButton]]:
             [InlineKeyboardButton(text="🗓 Это задача по расписанию", callback_data=f"hb_cron:{name}")]]
 
 
-async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
+async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup] | None:
     """The card answers «what is this and is it fine?» first. A task that
     never marked asks one question — a bot, a scheduled task, or nothing
     of the kind — and the address with its how-to sits behind the answer:
-    a raw curl line with a secret in it explained nothing to anybody."""
-    job = next(j for j in await job_states() if j.name == name)
+    a raw curl line with a secret in it explained nothing to anybody.
+    None when the job is no longer watched (a button on an old message)."""
+    job = next((j for j in await job_states() if j.name == name), None)
+    if job is None:
+        return None
     n, rhythm = esc(name), every(job.interval)
     lines = [f"⏰ {n}"]
     rows: list[list[InlineKeyboardButton]] = []
@@ -57,7 +61,13 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
         lines[2:2] = ["", f"{esc(heartbeats.status_title(job, status))}:",
                       *(f"{icon} {esc(item)} · {esc(text)}" for icon, item, text in heartbeats.status_items(job, status))]
         if status.get("open_url"):
-            rows.insert(0, [InlineKeyboardButton(text=f"↗️ Открыть {name}", url=status["open_url"])])
+            # The host on the button: the owner sees where a bot's link leads before tapping.
+            rows.insert(0, [InlineKeyboardButton(text=f"↗️ {heartbeats.link_host(status['open_url'])}",
+                                                 url=status["open_url"])])
+    if await get_state(f"hb_legacy:{name}"):
+        lines += ["", "⚠️ Выходит на связь по старому адресу, общему для всех задач. Он работает, но лучше "
+                      "заменить его на собственный адрес задачи — он за кнопкой «🔗» ниже: тогда утечка одной "
+                      "строки не откроет остальные."]
     rows.append([InlineKeyboardButton(text="🗑 Такой задачи нет — убрать" if job.icon not in ("✅", "🟠")
                                       else "🗑 Убрать", callback_data=f"hb_del:{name}")])
     rows.append([InlineKeyboardButton(text="← Боты", callback_data="blk:bots")])
@@ -66,6 +76,26 @@ async def job_screen(name: str) -> tuple[str, InlineKeyboardMarkup]:
 
 def _url_line(name: str) -> str:
     return f"<code>{esc(public_urls.heartbeat_url(name))}</code>"
+
+
+def _connect_kb(name: str) -> InlineKeyboardMarkup:
+    """The connection screen's buttons — and, while the bot has no public
+    address, the way to set one."""
+    rows = [] if public_urls.is_public() else [[InlineKeyboardButton(text="🌍 Как задать адрес",
+                                                                     callback_data="setup:url")]]
+    return InlineKeyboardMarkup(inline_keyboard=[*rows, *_back(name).inline_keyboard])
+
+
+def _not_public_note() -> str:
+    return "" if public_urls.is_public() else f"{public_urls.NOT_PUBLIC}\n\n"
+
+
+async def _job_gone(call: CallbackQuery, name: str) -> bool:
+    """A button from an old message for a job that is no longer watched."""
+    if name in settings.heartbeat_jobs():
+        return False
+    await ack(call, "Задачи больше нет", show_alert=True)
+    return True
 
 
 # A plain string, not an f-string: GitHub reads «${{ }}» itself.
@@ -84,8 +114,7 @@ def _back(name: str) -> InlineKeyboardMarkup:
 @router.callback_query(F.data.startswith("hb_ask:"))
 async def cb_hb_ask(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
-    if name not in settings.heartbeat_jobs():
-        await ack(call, "Задачи больше нет", show_alert=True)
+    if await _job_gone(call, name):
         return
     await ack(call)
     await render(call, f"⏰ {esc(name)}\n\nЧто такое «{esc(name)}» у тебя?",
@@ -95,22 +124,26 @@ async def cb_hb_ask(call: CallbackQuery):
 @router.callback_query(F.data.startswith("hb_bot:"))
 async def cb_hb_bot(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
+    if await _job_gone(call, name):
+        return
     await ack(call)
-    await render(call, f"🤖 Подключить «{esc(name)}»\n\n"
+    await render(call, f"🤖 Подключить «{esc(name)}»\n\n{_not_public_note()}"
                        f"Дай этому боту адрес — нажми на него, он скопируется:\n{_url_line(name)}\n\n"
                        f"Бот должен открывать его каждый раз, когда удачно поработал. В его настройках такое "
                        f"поле обычно называется «healthcheck URL» или «heartbeat URL» — например, у SocialBot "
                        f"это переменная <code>HEALTHCHECK_URL</code> на Railway.\n\n"
                        f"{HEARTBEAT_SECRET_NOTE}\n\n"
-                       f"Как только связь появится, строка на главном экране станет ✅.", _back(name))
+                       f"Как только связь появится, строка на главном экране станет ✅.", _connect_kb(name))
 
 
 @router.callback_query(F.data.startswith("hb_cron:"))
 async def cb_hb_cron(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
+    if await _job_gone(call, name):
+        return
     await ack(call)
     url = esc(public_urls.heartbeat_url(name))
-    await render(call, f"🗓 Подключить «{esc(name)}»\n\n"
+    await render(call, f"🗓 Подключить «{esc(name)}»\n\n{_not_public_note()}"
                        f"В самом конце задача должна открыть адрес — нажми на него, он скопируется:\n"
                        f"{_url_line(name)}\n{HEARTBEAT_SECRET_NOTE}\n\n"
                        f"Где задача запускается:\n"
@@ -124,7 +157,7 @@ async def cb_hb_cron(call: CallbackQuery):
                        f"окружения сервиса <code>HEARTBEAT_URL</code> и допиши в конец команды "
                        f"<code>&& curl -fsS \"$HEARTBEAT_URL\"</code>; в render.yaml и railway.json адрес не пиши.\n\n"
                        f"Задача упадёт раньше — адрес не откроется, и я напишу. Как только связь появится, "
-                       f"строка на главном экране станет ✅.", _back(name))
+                       f"строка на главном экране станет ✅.", _connect_kb(name))
 
 
 @router.callback_query(F.data.startswith("hb_show:") | F.data.startswith("hb_how:"))
@@ -132,11 +165,12 @@ async def cb_hb_show(call: CallbackQuery):
     """hb_show: from the main screen, edits it in place. hb_how: from the
     morning digest or an alert — answers below and leaves that message as is."""
     kind, name = call.data.split(":", 1)
-    if name not in settings.heartbeat_jobs():
+    screen = await job_screen(name) if name in settings.heartbeat_jobs() else None
+    if screen is None:
         await ack(call, "Задачи больше нет", show_alert=True)
         return
     await ack(call)
-    text, kb = await job_screen(name)
+    text, kb = screen
     if kind == "hb_how" and call.message is not None:
         await call.message.answer(text, reply_markup=kb)
     else:
@@ -167,6 +201,15 @@ async def msg_hb_name(message: Message, state: FSMContext):
         await message.answer(f"Больше {settings.MAX_HB_JOBS} задач добавить нельзя — удали ненужные.",
                              reply_markup=back_button())
         return
+    jobs = settings.heartbeat_jobs()
+    if name in jobs:
+        # Re-adding would silently change the interval of a job that works.
+        await state.clear()
+        await message.answer(f"«{esc(name)}» уже есть — выходит на связь {every(jobs[name])}.",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                 [InlineKeyboardButton(text="Открыть её", callback_data=f"hb_show:{name}")],
+                                 *back_button().inline_keyboard]))
+        return
     await state.update_data(hb_name=name)
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"hbint:{mins}") for label, mins in INTERVALS[:2]],
@@ -177,13 +220,19 @@ async def msg_hb_name(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("hbint:"))
 async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
+    again = "Начни заново: 🏠 Главная → «🤖 Боты» → «➕ Бот или задача»"
+    if await state.get_state() != AddHeartbeatForm.name.state:
+        # A button from an old message: whatever is being typed now is not ours to drop.
+        await ack(call, again, show_alert=True)
+        return
     name = (await state.get_data()).get("hb_name")
     await state.clear()
     arg = call.data.split(":", 1)[1]
-    if not name or not arg.isdigit():
-        await ack(call, "Начни заново: 🏠 Главная → «🤖 Боты» → «➕ Бот или задача»", show_alert=True)
+    mins = int(arg) if arg.isdigit() else 0
+    # The interval only from the list, and the outcome checked: «Добавил» must be true.
+    if not name or mins not in {m for _, m in INTERVALS} or not await settings.add_heartbeat_job(name, mins):
+        await ack(call, f"Не добавил. {again}", show_alert=True)
         return
-    await settings.add_heartbeat_job(name, int(arg))
     await ack(call, "Добавил ✅")
     await render(call, f"✅ «{esc(name)}» под присмотром и уже на главном экране.\n\n"
                        f"Осталось подключить. Что такое «{esc(name)}»?",

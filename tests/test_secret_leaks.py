@@ -20,7 +20,7 @@ from handlers import common, setup, sites
 from monitors.availability import check_availability
 from monitors.base import AvailabilityResult
 from monitors.second_opinion import endpoint_for, repeatable
-from services import actions, crux, heartbeats, integrations, screenshots, secrets
+from services import actions, crux, heartbeats, integrations, screenshots, secrets, settings
 from utils.redact import RedactingFormatter, redact
 from web.webhook import create_app
 
@@ -125,9 +125,11 @@ async def test_equal_env_secrets_never_open_the_heartbeat_to_the_widget_secret(b
     await secrets.load()
     assert secrets.heartbeat_secret() != secrets.webhook_secret()
     assert secrets.ignored_env() == ["HEARTBEAT_SECRET"]
+    await settings.add_heartbeat_job("backup", 1440)
     async with TestClient(TestServer(create_app())) as c:
         assert (await c.get("/api/heartbeat/same-value-for-both/backup")).status == 403
-        assert (await c.get(f"/api/heartbeat/{secrets.heartbeat_secret()}/backup")).status == 200
+        assert (await c.get(f"/api/heartbeat/{secrets.heartbeat_token('backup')}/backup")).status == 200
+        assert (await c.get(f"/api/heartbeat/{secrets.heartbeat_secret()}/backup")).status == 200   # the old address
 
 
 async def test_a_regenerated_secret_survives_a_restart(db, cfg):

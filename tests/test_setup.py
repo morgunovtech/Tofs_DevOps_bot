@@ -108,7 +108,9 @@ async def test_one_tap_fixes(bot, db, cfg):
     call = FakeCall("setup:hb_regen")
     await setup.cb_regen_heartbeat(call)
     assert secrets.heartbeat_secret() != before
-    assert secrets.heartbeat_secret() in call.message.texts[-1]
+    # The screen shows a job's new address, never the shared secret itself.
+    assert secrets.heartbeat_token("backup") in call.message.texts[-1]
+    assert secrets.heartbeat_secret() not in call.message.texts[-1]
     assert "HEARTBEAT_SECRET" not in call.message.texts[-1]   # env var not set → no warning
 
 

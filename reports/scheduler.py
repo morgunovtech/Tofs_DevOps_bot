@@ -118,9 +118,6 @@ from utils.urls import is_api_check, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
-# Set when the scheduler starts; grace reference for heartbeat jobs that
-# have never pinged.
-_started_at: datetime | None = None
 _scheduler: AsyncIOScheduler | None = None
 
 SLOW_RESPONSE_STREAK = 3
@@ -925,13 +922,14 @@ async def run_heartbeat_watch():
     for job, interval_min in jobs.items():
         with _isolated(f"Heartbeat check of {job}"):
             last = parse_sqlite_utc(beats.get(job))
-            overdue, detail = False, ""
+            # From the last mark or the job's addition, less the bot's own downtime
+            # (services.heartbeats): neither a new job nor a redeploy is silence.
+            silence_min = await heartbeats.silent_minutes(job, last, now)
             if last:
-                silence_min = (now - last).total_seconds() / 60
                 overdue = heartbeats.is_late(interval_min, silence_min)
-                detail = f"последний раз на связи {fmt_duration(silence_min)} назад"
-            elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
-                overdue, detail = True, "на связь так и не выходит"
+                detail = f"последний раз на связи {fmt_duration((now - last).total_seconds() / 60)} назад"
+            else:
+                overdue, detail = silence_min > interval_min, "на связь так и не выходит"
             alerted = await get_state(f"hb_alerted:{job}")
             if overdue and not alerted:
                 expl = humanize.EXPLANATIONS["heartbeat"]
@@ -1286,6 +1284,8 @@ async def catch_up_after_restart():
                             "Остальное работает. Подробности — в логе бота.")
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
+    # The gap is taken out of the tasks' silence: the bot heard nothing in it.
+    await heartbeats.note_downtime(last, now)
     await run_alive()
     await catch_up_missed(now, last, skip=_SOON_AFTER_START)
     if not last or now - last < timedelta(minutes=DOWNTIME_NOTE_MIN) or _scheduler is None:
@@ -1773,8 +1773,7 @@ def reschedule_all() -> list[str]:
 
 
 def setup_scheduler() -> AsyncIOScheduler:
-    global _started_at, _scheduler
-    _started_at = datetime.now(UTC)
+    global _scheduler
     # APScheduler's default grace is 1 s: an event loop busy parsing a page at
     # 09:00:00 would silently skip that day's morning report.
     scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})

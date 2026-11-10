@@ -3,7 +3,7 @@ import os
 from aiohttp.test_utils import TestClient, TestServer
 
 from db.database import get_heartbeats, get_state, set_state
-from services import heartbeats, screenshots, settings
+from services import heartbeats, screenshots, secrets, settings
 from web import webhook
 from web.webhook import create_app
 
@@ -52,9 +52,12 @@ async def test_feedback_rate_limit_and_forwarded_for(bot, cfg, monkeypatch):
 
 
 async def test_heartbeat_secrets(bot):
+    await settings.add_heartbeat_job("backup", 1440)
+    await settings.add_heartbeat_job("backup2", 1440)
+    token = secrets.heartbeat_token("backup")
     async with await _client() as c:
         assert (await c.get("/api/heartbeat/wrong/backup")).status == 403
-        assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200
+        assert (await c.get(f"/api/heartbeat/{token}/backup")).status == 200
         assert "backup" in await get_heartbeats()
         # The webhook secret is public (it is in every site's widget code):
         # it must not keep a job alive.
@@ -62,7 +65,7 @@ async def test_heartbeat_secrets(bot):
         assert "backup2" not in await get_heartbeats()
         # Recovery announcement clears the alerted flag.
         await set_state("hb_alerted:backup", "1")
-        assert (await c.get(f"/api/heartbeat/{HB}/backup")).status == 200
+        assert (await c.get(f"/api/heartbeat/{token}/backup")).status == 200
         assert await get_state("hb_alerted:backup") is None
         assert "снова на связи" in bot.sent[-1]["text"]
 
@@ -96,8 +99,8 @@ async def test_a_bot_sends_what_it_sees_with_its_mark(bot, db):
         assert (await get_heartbeats())["socialtracker"].startswith("2000")      # not a mark
         assert (await heartbeats.job_status("socialtracker"))["items"][0]["level"] == "critical"
         # A job nobody watches keeps no status; a plain GET is still a mark.
-        assert (await c.post(f"/api/heartbeat/{HB}/stranger", json=SOCIAL)).status == 200
-        assert await heartbeats.job_status("stranger") is None
+        assert (await c.post(f"/api/heartbeat/{HB}/stranger", json=SOCIAL)).status == 404
+        assert await heartbeats.job_status("stranger") is None and "stranger" not in await get_heartbeats()
         assert (await c.get(f"/api/heartbeat/{HB}/socialtracker")).status == 200
     await settings.remove_heartbeat_job("socialtracker")
 

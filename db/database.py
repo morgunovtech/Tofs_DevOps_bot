@@ -601,6 +601,14 @@ async def heartbeat_ping(job: str):
         await db.commit()
 
 
+async def delete_heartbeat(job: str):
+    """Forget a job's last mark: a job added again under the same name starts clean."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("DELETE FROM heartbeats WHERE job = ?", (job,))
+        await db.commit()
+
+
 async def get_heartbeats() -> dict[str, str | None]:
     """{job: last_ping (sqlite UTC string)}."""
     db = await get_db()

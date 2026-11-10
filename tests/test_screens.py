@@ -8,7 +8,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 from conftest import FakeCall, FakeMessage, FakeState, buttons
 
-from db.database import get_active_incidents, save_feedback, save_incident
+from db.database import get_active_incidents, save_feedback, save_incident, set_state
 from handlers import (
     blocks,
     feedback,
@@ -26,7 +26,7 @@ from monitors import links_checker
 from monitors.base import LinkCheck, SeoResult
 from reports import scheduler
 from services import heartbeats as heartbeats_service
-from services import integrations, recommend, screenshots, sitestatus
+from services import integrations, recommend, screenshots, secrets, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
 from services.actions import heartbeat_keyboard
@@ -181,7 +181,8 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
         "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "blk:bots"]
     call = FakeCall("hb_bot:backup")
     await heartbeats.cb_hb_bot(call)
-    assert "unit-test-heartbeat-secret/backup</code>" in call.message.texts[-1] and "HEALTHCHECK_URL" in call.message.texts[-1]
+    assert f"{secrets.heartbeat_token('backup')}/backup</code>" in call.message.texts[-1]
+    assert "unit-test-heartbeat-secret" not in call.message.texts[-1] and "HEALTHCHECK_URL" in call.message.texts[-1]
     call = FakeCall("hb_cron:backup")
     await heartbeats.cb_hb_cron(call)
     text = call.message.texts[-1]
@@ -233,12 +234,21 @@ async def test_main_menu_header_is_short_when_all_is_well(bot, db):
     assert [len(row) for row in kb.inline_keyboard] == [2, 1]
 
 
+async def _long_standing(*jobs):
+    """These jobs have been around for days: their silence counts from the
+    last mark, not from when they were added."""
+    past = datetime.now(UTC) - timedelta(days=10)
+    for job in jobs:
+        await set_state(f"hb_added:{job}", past.isoformat())
+
+
 async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     """03.11.2026: SocialBot was added to «⏰ Контроль задач» and the owner
     could not find it — the main screen showed sites only."""
     sid = await db.activate_or_create_site("https://ok.test")
     await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
     await settings_service.add_heartbeat_job("socialbot", 1440)
+    await _long_standing("socialbot")
     header, kb = await menu.build_main_menu()
     lines = header.split("\n")
     # Not marked yet and not alerted: waiting, not counted, not a problem.
@@ -574,6 +584,7 @@ async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
     sid = await db.activate_or_create_site("https://a.test")
     await sitestatus.update(sid, "avail", status="ok", ms=100)
     await settings_service.add_heartbeat_job("socialtracker", 1440)
+    await _long_standing("socialtracker")
     await db.heartbeat_ping("socialtracker")
     await heartbeats_service.save_status("socialtracker", heartbeats_service.parse_status({
         "title": "📣 Соцсети", "open_url": "https://t.me/social_tracker_bot",

@@ -145,6 +145,10 @@ class FakeState:
     async def set_state(self, s):
         self.state = s
 
+    async def get_state(self):
+        """Like FSMContext: the state's name, not the State object."""
+        return getattr(self.state, "state", self.state)
+
     async def update_data(self, **kw):
         self.data.update(kw)
 

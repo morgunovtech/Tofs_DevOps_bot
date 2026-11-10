@@ -297,6 +297,8 @@ async def show_status_page(target):
     lines = ["🌐 Публичная статус-страница", ""]
     if on:
         lines.append(f"Включена: {esc(public_urls.status_page_url())}")
+        if not public_urls.is_public():
+            lines.append(esc(public_urls.NOT_PUBLIC))
         lines.append("Показывает, открываются ли сайты, простой за сутки/неделю/месяц и историю проблем без "
                      "подробностей. Удобно давать клиентам или ставить в README.")
     else:
@@ -311,6 +313,8 @@ async def show_status_page(target):
         rows.append([InlineKeyboardButton(
             text="🔑 Секретная ссылка: выключить" if slug_src == "bot" else "🔑 Сделать ссылку секретной",
             callback_data=f"sp_secret:{'off' if slug_src == 'bot' else 'on'}")])
+    if on and not public_urls.is_public():
+        rows.append([InlineKeyboardButton(text="🌍 Как задать адрес", callback_data="setup:url")])
     rows.append([InlineKeyboardButton(text="← Для посетителей", callback_data="menu_visitors")])
     await render(target, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
