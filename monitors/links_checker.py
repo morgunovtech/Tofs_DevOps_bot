@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 from db.database import get_or_create_site, get_state, resolve_incident, save_check, save_incident, set_state
 from monitors.base import LinkCheck, LinksResult, decode_body, gather_checks, read_capped
 from services import sitestatus
+from utils.net import owner_connector, refused_private
 from utils.text import parse_iso_utc
 from utils.urls import USER_AGENT, host_of, same_site
 
@@ -100,6 +101,9 @@ async def _check_link(session: aiohttp.ClientSession, url: str, base_url: str) -
         except TimeoutError:
             return LinkCheck(url=url, status_code=None, ok=False, error="timeout")
         except Exception as e:
+            if refused_private(e):
+                # A link into the bot's own network is not checked — and not broken.
+                return LinkCheck(url=url, status_code=None, ok=True, error="internal")
             return LinkCheck(url=url, status_code=None, ok=False, error=str(e) or type(e).__name__)
 
     result = await attempt()
@@ -154,7 +158,7 @@ def is_definite(c: LinkCheck) -> bool:
 async def check_links(url: str, manage: bool = True) -> LinksResult:
     site_id = await get_or_create_site(url)
     r = LinksResult(url=url, site_id=site_id)
-    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=20)) as session:
+    async with aiohttp.ClientSession(connector=owner_connector(url, limit=20)) as session:
         html = await _fetch_page(session, url)
         if not html:
             r.status, r.error, r.transient = "error", "Could not fetch page", True

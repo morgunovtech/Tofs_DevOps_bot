@@ -284,6 +284,14 @@ class Config:
     # whole host when the disk is full (services.docker_api.prune).
     auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
 
+    # ── Where checks may connect (utils.net) ─────────────────────────────────
+    # 1: a monitor the owner types may be an internal address (a NAS, a LAN
+    # service) — as before; so may its own name when the DNS points it inside.
+    # 0: only public addresses, even typed ones — the strict mode for watching
+    # other people's sites. Links, nested sitemaps, the redirects of public
+    # sites and the screenshot service's image never lead inside either way.
+    allow_private_targets: bool = _bool("ALLOW_PRIVATE_TARGETS", "1")
+
     # ── SSL renewal watch ────────────────────────────────────────────────────
     ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10, 0, 60)
 

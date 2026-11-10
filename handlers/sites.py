@@ -85,6 +85,7 @@ from services import (
 from services import hosting as hosting_svc
 from utils import validate
 from utils.clock import to_local, utcnow
+from utils.net import is_lan_host, normalize_ipv4
 from utils.parse import parse_accepted_codes
 from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural
 from utils.urls import (
@@ -116,6 +117,24 @@ def _valid_lengths(host: str) -> bool:
     return len(host) <= 253 and all(len(label) <= 63 for label in host.split("."))
 
 
+PRIVATE_OFF = ("Внутренние адреса (локальная сеть, 127.0.0.1, 10.x, 192.168.x) выключены на этом сервере: "
+               "ALLOW_PRIVATE_TARGETS=0.")
+
+
+def _host_policy(host: str) -> tuple[str, str | None]:
+    """An IPv4 in any spelling (0x7f.1, 2130706433) becomes 127.0.0.1-style:
+    what is checked is what the owner sees. With ALLOW_PRIVATE_TARGETS=0 an
+    internal host is refused — for http(s) a public name that merely
+    resolves inside is refused by the connector (utils.net) as well; for
+    tcp:// and ping:// only what is typed is judged."""
+    host = normalize_ipv4(host) or host
+    if host in ("0.0.0.0", "255.255.255.255"):
+        return host, "Это не адрес сервера. Пришли домен или IP сайта"
+    if not config.allow_private_targets and is_lan_host(host):
+        return host, PRIVATE_OFF
+    return host, None
+
+
 API_PATH_LIMIT = 300
 
 
@@ -135,6 +154,9 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
             host, port = "", None
         if not _HOST_RE.fullmatch(host) or not _valid_lengths(host):
             return None, "Не понял хост. Примеры: tcp://mail.example.com:25, ping://10.0.0.1"
+        host, refused = _host_policy(host)
+        if refused:
+            return None, refused
         if parsed.scheme == "tcp":
             if not port:
                 return None, "Для tcp нужен порт: tcp://host:порт (например, tcp://mail.example.com:25)"
@@ -149,6 +171,9 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
         return None, "Не похоже на адрес. Пришли что-то вроде example.com"
     if not _DOMAIN_RE.fullmatch(host) or not _valid_lengths(host):
         return None, "Не похоже на домен. Пришли что-то вроде example.com"
+    host, refused = _host_policy(host)
+    if refused:
+        return None, refused
     port = f":{port_n}" if port_n and port_n not in (80, 443) else ""
     site = f"{parsed.scheme}://{host}{port}"
     if not is_api_url(site + parsed.path):

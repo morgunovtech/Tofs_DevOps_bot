@@ -23,6 +23,7 @@ import aiohttp
 
 from config import config
 from services import public_urls, secrets, sitestatus
+from utils.net import owner_connector
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,10 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
     """(image, reason) — reason explains a None image in plain words."""
     api = config.screenshot_template.format(url=quote(url, safe=":/"))
     image: bytes | None = None
-    async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+    # The service's host (SCREENSHOT_TEMPLATE) is the owner's choice — a
+    # renderer on localhost keeps working; the image URL in its answer is
+    # someone else's and must be public.
+    async with aiohttp.ClientSession(timeout=_TIMEOUT, connector=owner_connector(api)) as session:
         for attempt in range(RETRIES):
             try:
                 image = await _fetch_once(session, api)

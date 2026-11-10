@@ -27,6 +27,7 @@ from db.database import get_or_create_site, get_state
 from monitors.base import CheckResult, Finding, decode_body, read_capped
 from monitors.ladder import apply_incident
 from services import humanize, sitestatus
+from utils.net import owner_connector
 from utils.text import plural
 from utils.urls import USER_AGENT
 
@@ -199,7 +200,7 @@ async def check_security(url: str, manage: bool = True) -> list[SecurityResult]:
     not answer leaves the snapshot and the incidents as they were."""
     site_id = await get_or_create_site(url)
     origin = _origin(url)
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+    async with aiohttp.ClientSession(timeout=TIMEOUT, connector=owner_connector(url)) as session:
         home, git, env, plain = await asyncio.gather(
             _get(session, url, redirects=True), _get(session, f"{origin}/.git/HEAD"),
             _get(session, f"{origin}/.env"), plain_http_opens(session, url))

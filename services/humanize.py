@@ -96,6 +96,9 @@ _RULES: list[tuple[re.Pattern, object]] = [
      lambda m: f"{m.group(2)} из {m.group(3)} проверенных страниц отдают ошибку"
      + (" или не отвечают" if m.group(1) else "")),
     (re.compile(r"^Could not fetch page$"), lambda m: "страница не загрузилась"),
+    # aiohttp wraps the guard's refusal (utils.net) in «Cannot connect to
+    # host …[…]» — it is a policy, not a network error.
+    (re.compile(r"адрес во внутренней сети[^\]]*"), lambda m: m.group(0)),
     (re.compile(r"name or service not known|nodename nor servname|does not resolve|"
                 r"name resolution|хост не резолвится|Temporary failure in name", re.I),
      lambda m: "адрес сайта не находится (проблема с DNS)"),

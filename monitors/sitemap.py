@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import aiohttp
 
 from monitors.base import decode_body, read_capped
-from utils.urls import USER_AGENT, bare_host, host_of
+from utils.urls import USER_AGENT, bare_host, host_of, same_site
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,9 @@ async def scan_sitemap(session: aiohttp.ClientSession, base_url: str) -> Sitemap
     if _INDEX_RE.search(text):
         nested: list[str] = []
         failed = 0
-        for sm in locs[:5]:
+        # Nested maps of the site's own domain only (cdn.example.com is fine,
+        # another domain is not): the pages of a foreign map are dropped below anyway.
+        for sm in [u for u in locs if same_site(u, base_url)][:5]:
             _, sub = await fetch_text(session, sm)
             if sub is None:
                 failed += 1

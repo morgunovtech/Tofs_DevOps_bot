@@ -13,7 +13,7 @@ import sqlite3
 import time
 from collections import deque
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
@@ -33,10 +33,11 @@ from monitors import netcheck, region
 from monitors.base import AvailabilityResult, decode_body, gather_checks, phrase_found, read_capped
 from monitors.second_opinion import repeatable, second_opinion
 from services import health, hosting, humanize, integrations, settings, sitestatus
+from utils.net import PRIVATE_REFUSED, owner_connector, refused_private
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
 from utils.text import parse_iso_utc
-from utils.urls import USER_AGENT, is_api_check
+from utils.urls import USER_AGENT, host_of, is_api_check
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,10 @@ _down_without_db: set[int] = set()
 KEYWORD_BODY_LIMIT = 1024 * 1024
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+_REDIRECT_CODES = (301, 302, 303, 307, 308)
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+# Hops a check with its own headers or body follows by hand (aiohttp's own limit).
+MAX_REDIRECTS = 10
 
 
 def code_accepted(status: int, ranges: list[tuple[int, int]] | None) -> bool:
@@ -100,15 +105,81 @@ def _is_json(body: str) -> bool:
     return True
 
 
+class RedirectStopped(Exception):
+    """A check with its own headers or body was redirected where they must
+    not go (another origin), or round and round."""
+
+
+def _stays_home(src: str, dst: str) -> bool:
+    """The hop keeps the request with the same server: the same host and
+    port (http:// → https:// of one host on the standard ports is the same
+    server too), and never https:// → http://."""
+    try:
+        a, b = urlparse(src), urlparse(dst)
+        if b.scheme not in _DEFAULT_PORTS or not host_of(dst) or host_of(src) != host_of(dst):
+            return False
+        if a.scheme == "https" and b.scheme == "http":
+            return False
+        pa, pb = a.port or _DEFAULT_PORTS.get(a.scheme), b.port or _DEFAULT_PORTS[b.scheme]
+    except ValueError:
+        return False
+    return pa == pb or (a.scheme, pa, pb) == ("http", 80, 443)
+
+
+def _netloc(url: str) -> str:
+    """host, or host:port when the port is explicit — never the login."""
+    try:
+        p = urlparse(url)
+        return f"{host_of(url)}:{p.port}" if p.port else host_of(url)
+    except ValueError:
+        return host_of(url)
+
+
+async def _request_at_home(session: aiohttp.ClientSession, method: str, url: str,
+                           headers: dict[str, str], body: str | None) -> aiohttp.ClientResponse:
+    """The request of a check with its own headers or body (an API key,
+    credentials). aiohttp would carry them to whatever host a redirect
+    names (it drops only Authorization and Cookie), so the redirects are
+    followed by hand and only while they stay with the same server; every
+    hop goes through the session's guarded connector all the same."""
+    for _ in range(MAX_REDIRECTS):
+        resp = await session.request(method, url, headers=headers, data=body, ssl=True, allow_redirects=False)
+        location = resp.headers.get("Location")
+        if resp.status not in _REDIRECT_CODES or not location:
+            return resp
+        resp.release()
+        target = urljoin(url, location)
+        if not _stays_home(url, target):
+            raise RedirectStopped(f"API перенаправляет на {_netloc(target)} — ключ туда не отправляю")
+        # As a browser (and aiohttp) does: after a 303, and after a 301/302 of
+        # a POST, the request continues as a GET without the body.
+        if (resp.status == 303 and method != "HEAD") or (resp.status in (301, 302) and method == "POST"):
+            method, body = "GET", None
+        url = target
+    raise RedirectStopped("слишком много перенаправлений (редирект по кругу)")
+
+
+def _request(session: aiohttp.ClientSession, method: str, url: str, headers: dict[str, str],
+             body: str | None, own: bool):
+    """Awaitable → ClientResponse: aiohttp follows the redirects of a plain
+    request; a request with its own headers or body keeps them at home."""
+    if own:
+        return _request_at_home(session, method, url, headers, body)
+    return session.request(method, url, headers=headers, data=body, ssl=True, allow_redirects=True)
+
+
+def _own_request(site: dict, body: str | None) -> bool:
+    return bool(site.get("http_headers")) or body is not None
+
+
 async def _probe_http(url: str, site: dict, r: AvailabilityResult):
     keyword = (site.get("keyword") or "").strip()
     ranges = parse_accepted_codes(site.get("accepted_codes"))
     method, headers, body = request_options(site)
     start = time.monotonic()
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-            async with session.request(method, url, headers=headers, data=body,
-                                       ssl=True, allow_redirects=True) as resp:
+        async with aiohttp.ClientSession(timeout=TIMEOUT, connector=owner_connector(url)) as session:
+            async with await _request(session, method, url, headers, body, _own_request(site, body)) as resp:
                 r.status_code = resp.status
                 r.response_time_ms = int((time.monotonic() - start) * 1000)
                 r.hosting = hosting.detect_hosting(resp.headers)
@@ -131,13 +202,18 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
     except TimeoutError:
         r.status, r.error = "error", f"Timeout ({int(TIMEOUT.total)}s)"
         r.response_time_ms = int((time.monotonic() - start) * 1000)
+    except RedirectStopped as e:
+        # The endpoint answered — with a redirect the key must not follow.
+        r.status, r.error = "error", str(e)
+        r.response_time_ms = int((time.monotonic() - start) * 1000)
     except aiohttp.ClientConnectorCertificateError as e:   # a ClientError too: must come first
         # The server is there and answered: its certificate is what every
         # visitor's browser rejects. Nothing to ask the outside about.
         r.status, r.error, r.cert_failed = "error", _error_text(e), True
         r.response_time_ms = int((time.monotonic() - start) * 1000)
     except aiohttp.ClientError as e:
-        r.status, r.error = "error", _error_text(e)
+        r.status = "error"
+        r.error = PRIVATE_REFUSED if refused_private(e) else _error_text(e)
         r.response_time_ms = int((time.monotonic() - start) * 1000)
 
 
@@ -148,10 +224,10 @@ async def phrase_state(site: dict, phrase: str) -> bool | None:
     method, headers, body = request_options(site)
     if method == "HEAD":
         return None
+    url = site["url"]
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
-            async with session.request(method, site["url"], headers=headers, data=body,
-                                       ssl=True, allow_redirects=True) as resp:
+        async with aiohttp.ClientSession(timeout=TIMEOUT, connector=owner_connector(url)) as session:
+            async with await _request(session, method, url, headers, body, _own_request(site, body)) as resp:
                 if not code_accepted(resp.status, parse_accepted_codes(site.get("accepted_codes"))):
                     return None
                 raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
