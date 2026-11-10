@@ -319,8 +319,9 @@ class Config:
     retention_days: int = _int("RETENTION_DAYS", 30, 1, 3650)
     db_backup_keep: int = _int("DB_BACKUP_KEEP", 7, 1, 365)
     self_heartbeat_url: str = _url("SELF_HEARTBEAT_URL", ("https://", "http://"))
-    # Weekly OSV vulnerability check of the bot's own packages, plus the hourly
-    # GitHub deploy watch (services.updates) — one switch for both.
+    # Weekly OSV vulnerability check of every installed package, plus the hourly
+    # GitHub deploy watch (services.updates; it reads GITHUB_REPOSITORY itself) —
+    # one switch for both.
     dependency_watch: bool = _bool("DEPENDENCY_WATCH", "1")
 
     def seed_site_urls(self) -> list[str]:

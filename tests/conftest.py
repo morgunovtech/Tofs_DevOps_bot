@@ -47,6 +47,7 @@ from services import (  # noqa: E402
     secrets,
     settings,
     sitestatus,
+    updates,
 )
 from web import status_page, webhook  # noqa: E402
 
@@ -209,6 +210,7 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(rdap, "_bootstrap_failed_at", None)
     gsc.reset_token_cache()
     monkeypatch.setattr(integrations, "_gsc_key_problem", None)
+    monkeypatch.setattr(updates, "_no_repo_said", False)
 
 
 @pytest.fixture

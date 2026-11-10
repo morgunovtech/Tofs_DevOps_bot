@@ -4,12 +4,13 @@ The bot cannot safely upgrade its own packages inside an immutable container
 (the change would vanish at the next restart and nothing would test it).
 What it CAN do:
 
-  * on startup, notice that its installed packages or git commit changed
-    since the last boot and say so («🔄 Бот обновился: aiohttp 3.10 → 3.14»);
+  * on startup, notice that Python or an installed package changed since
+    the last boot and say so («🔄 Бот обновился: aiohttp 3.10 → 3.14»); a
+    new build with the same versions is a log line, not a message;
   * every hour, notice that the newest commit on main failed to deploy while
     the bot still runs an older build — then every next update fails too;
-  * once a week, ask OSV about known vulnerabilities and list the Dependabot
-    PRs that wait for a human.
+  * once a week, ask OSV about known vulnerabilities in every installed
+    package and list the Dependabot PRs that wait for a human.
 
 The actual upgrades arrive as Dependabot pull requests (.github/dependabot.yml)
 that CI tests and auto-merges; the hosting platform redeploys from main. A
@@ -36,10 +37,16 @@ from utils.text import err_text, esc, fmt_date, plural
 
 logger = logging.getLogger(__name__)
 
+# The direct dependencies (requirements.txt): named one by one in «🔄 Бот
+# обновился». Everything installed is compared and asked about in OSV —
+# yarl, multidict, certifi… carry every request too. A test keeps this
+# list equal to the requirements file (idna is pinned there: the bot imports
+# it directly).
 PACKAGES = (
-    "aiogram", "aiohttp", "aiosqlite", "apscheduler", "beautifulsoup4",
-    "python-dotenv", "cryptography", "dnspython",
+    "aiogram", "aiohttp", "aiohttp-socks", "aiosqlite", "apscheduler", "beautifulsoup4",
+    "python-dotenv", "cryptography", "dnspython", "idna",
 )
+_NOT_THE_BOTS = {"pip", "setuptools", "wheel"}   # the installer, not the bot
 GITHUB_PULLS = "https://api.github.com/repos/{slug}/pulls"
 GITHUB_COMMIT = "https://api.github.com/repos/{slug}/commits/{ref}"
 GITHUB_STATUS = "https://api.github.com/repos/{slug}/commits/{ref}/status"
@@ -50,20 +57,32 @@ OSV_BATCH = "https://api.osv.dev/v1/querybatch"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
+def _canonical(name: str) -> str:
+    """PEP 503 form: «APScheduler», «python_dotenv» → «apscheduler», «python-dotenv»."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def installed_versions() -> dict[str, str]:
+    """{name: version} of every installed distribution (the image holds only
+    the bot's packages), the installer itself left out. A name found twice on
+    sys.path keeps the first — the one `import` would load."""
     out: dict[str, str] = {}
-    for name in PACKAGES:
-        try:
-            out[name] = metadata.version(name)
-        except metadata.PackageNotFoundError:
-            continue
-    return out
+    for dist in metadata.distributions():
+        name = _canonical(dist.metadata["Name"] or "")
+        if name and name not in _NOT_THE_BOTS:
+            out.setdefault(name, dist.version)
+    return dict(sorted(out.items()))
 
 
 # ── Startup: "what changed since last boot?" ─────────────────────────────────
 
 async def report_startup_changes() -> bool:
-    """True when the build, Python or a package changed since the last boot."""
+    """Tell the owner when Python or a package changed since the last boot:
+    the direct dependencies by name, the rest as one «и ещё N» line. A new
+    build with the same versions (a commit that touched only the code or
+    requirements-dev.txt) is a log line — the build number stays visible in
+    «🩺 Диагностика». True when anything changed, build included: main.py
+    re-runs the SEO audit on that."""
     current = {
         "commit": config.app_commit,
         "python": platform.python_version(),
@@ -77,18 +96,27 @@ async def report_startup_changes() -> bool:
         prev = json.loads(prev_raw)
     except ValueError:
         return False
+    new_build = bool(current["commit"]) and prev.get("commit") != current["commit"]
     lines = []
-    if prev.get("commit") != current["commit"] and current["commit"]:
-        lines.append(f"  • сборка {esc(prev.get('commit') or '?')} → {esc(current['commit'])}")
     if prev.get("python") != current["python"]:
         lines.append(f"  • Python {esc(prev.get('python'))} → {esc(current['python'])}")
-    old_pkgs = prev.get("packages") or {}
-    for name, ver in current["packages"].items():
-        if old_pkgs.get(name) and old_pkgs[name] != ver:
-            lines.append(f"  • {name} {esc(old_pkgs[name])} → {esc(ver)}")
+    old_pkgs = {_canonical(k): v for k, v in (prev.get("packages") or {}).items()}
+    changed = {name: (old_pkgs[name], ver) for name, ver in current["packages"].items()
+               if old_pkgs.get(name) and old_pkgs[name] != ver}
+    for name in PACKAGES:
+        if name in changed:
+            lines.append(f"  • {name} {esc(changed[name][0])} → {esc(changed[name][1])}")
+    others = sorted(set(changed) - set(PACKAGES))
+    if others:
+        n = len(others)
+        lines.append(f"  • и ещё {n} {plural(n, 'вспомогательный пакет', 'вспомогательных пакета', 'вспомогательных пакетов')}: "
+                     f"{esc(', '.join(others[:5]))}{'…' if n > 5 else ''}")
     if lines:
         await notifier.send("🔄 Бот обновился:\n" + "\n".join(lines), Priority.NORMAL)
-    return bool(lines)
+    elif new_build:
+        logger.info("New build %s → %s, same Python and packages: nothing to tell the owner",
+                    prev.get("commit"), current["commit"])
+    return bool(lines) or new_build
 
 
 # ── Weekly: OSV + PRs waiting for a human ───────────────────────────────────
@@ -134,17 +162,44 @@ def repo_slug() -> str | None:
 
 
 _BUMP = re.compile(r"bump (\S+) from (\d+)(\S*) to (\d+)(\S*)", re.I)
+# A group PR («Bump the python-deps group with 2 updates») names each update
+# in its text: «Updates `aiogram` from 3.31.0 to 4.0.0».
+_UPDATES = re.compile(r"Updates `([^`]+)` from (\d+)(\S*) to (\d+)(\S*)")
+_MAJOR_MARK = re.compile(r"update-type:\s*version-update:semver-major")
 
 
-def is_major_bump(title: str) -> bool:
-    """Dependabot title «Bump aiogram from 3.31.0 to 4.0.0» → major changed."""
-    m = _BUMP.search(title)
-    return bool(m) and m.group(2) != m.group(4)
+def _bumps(title: str, body: str = "") -> list[tuple[str, str, str, bool]]:
+    """[(name, old, new, major)] from a Dependabot title and its text."""
+    found = [(m.group(1), m.group(2) + m.group(3), m.group(4) + m.group(5), m.group(2) != m.group(4))
+             for m in (*_BUMP.finditer(title), *_UPDATES.finditer(body or ""))]
+    return list(dict.fromkeys(found))
 
 
-def short_bump(title: str) -> str:
-    m = _BUMP.search(title)
-    return f"{m.group(1)} {m.group(2)}{m.group(3)}→{m.group(4)}{m.group(5)}" if m else title[:60]
+def is_major_bump(title: str, body: str = "") -> bool:
+    """«Bump aiogram from 3.31.0 to 4.0.0», or a group PR with such an
+    update inside → the major version changed: auto-merge will not take it."""
+    return any(b[3] for b in _bumps(title, body)) or bool(_MAJOR_MARK.search(body or ""))
+
+
+def short_bump(title: str, body: str = "") -> str:
+    """«aiogram 3.31.0→4.0.0»; a group PR lists its updates, majors first."""
+    bumps = sorted(_bumps(title, body), key=lambda b: not b[3])   # majors first
+    if not bumps:
+        return title[:60]
+    return ", ".join(f"{name} {old}→{new}" for name, old, new, _ in bumps[:2]) + ("…" if len(bumps) > 2 else "")
+
+
+_no_repo_said = False
+
+
+def _say_no_repo() -> None:
+    """Once per start: without the repository the deploy check and the list of
+    PRs that wait for a human are off — say why instead of being silent."""
+    global _no_repo_said
+    if not _no_repo_said:
+        _no_repo_said = True
+        logger.info("Deploy check and waiting Dependabot PRs are off: set GITHUB_REPOSITORY=owner/name "
+                    "(Railway and GitHub Actions set it themselves)")
 
 
 class _Unknown(Exception):
@@ -179,6 +234,7 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     answer — «unknown» is not «none waiting»."""
     slug = repo_slug()
     if not slug:
+        _say_no_repo()
         return []
     data = await _gh_json(session, GITHUB_PULLS.format(slug=slug), state="open", per_page="50")
     if not isinstance(data, list):
@@ -188,26 +244,29 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     for pr in data:
         login = str(((pr or {}).get("user") or {}).get("login") or "")
         title = str((pr or {}).get("title") or "")
+        body = str((pr or {}).get("body") or "")
         if not login.startswith("dependabot"):
             continue
         # The base image (a new Python) and the Actions are merged by a human,
-        # whatever their CI says (.github/workflows/dependabot-automerge.yml).
+        # whatever their CI says (.github/workflows/dependabot-automerge.yml);
+        # a major bump too — alone or inside the weekly group PR.
         branch = str(((pr or {}).get("head") or {}).get("ref") or "")
-        major = is_major_bump(title) or branch.startswith(("dependabot/docker/", "dependabot/github_actions/"))
+        manual = is_major_bump(title, body) or branch.startswith(("dependabot/docker/", "dependabot/github_actions/"))
         try:
             opened = datetime.fromisoformat(str(pr.get("created_at")).replace("Z", "+00:00"))
         except ValueError:
             opened = now
-        if major or now - opened > STUCK_AFTER:
-            out.append({"number": pr.get("number"), "title": title, "url": pr.get("html_url") or "",
-                        "major": major})
+        if manual or now - opened > STUCK_AFTER:
+            out.append({"number": pr.get("number"), "title": title, "label": short_bump(title, body),
+                        "url": pr.get("html_url") or "", "major": manual})
     return out
 
 
 async def check_dependencies() -> dict:
     """{"vulns": {name: [ids]} or None when OSV did not answer,
-    "waiting_prs": [{number, title, url, major}] or None when GitHub did not
-    answer, "checked_at": iso}."""
+    "waiting_prs": [{number, title, label, url, major}] or None when GitHub
+    did not answer, "checked_at": iso}. Every installed package goes to OSV:
+    a hole in yarl or certifi is as real as one in aiohttp."""
     versions = installed_versions()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
         vulns = await _vulnerabilities(session, versions)
@@ -223,7 +282,10 @@ async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
     reported a failed deploy for it and this bot still runs an older build.
     Raises _Unknown when GitHub did not answer."""
     slug, running = repo_slug(), config.app_commit
-    if not slug or not running:
+    if not slug:
+        _say_no_repo()
+        return None
+    if not running:
         return None
     head = await _gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
     if not isinstance(head, dict):
@@ -343,7 +405,8 @@ async def last_check() -> dict | None:
 
 
 def _pr_links(prs: list[dict]) -> str:
-    return ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(short_bump(p.get("title") or ""))}</a>'
+    # A result stored before «label» existed has only the title.
+    return ", ".join(f'<a href="{esc(p.get("url") or "")}">{esc(p.get("label") or short_bump(p.get("title") or ""))}</a>'
                      for p in prs[:4])
 
 
@@ -368,6 +431,7 @@ def summary_lines(result: dict | None) -> list[str]:
         lines.append(f"🟠 Обновление не встало само — тесты не прошли: {_pr_links(stuck)}. "
                      f"Открой PR и посмотри, что упало.")
     if major:
-        lines.append(f"🔀 Ждут твоего решения: {len(major)} PR с крупным обновлением — {_pr_links(major)}. "
-                     f"Такие сами не вливаются: открой, прочитай «что поменялось» и нажми Merge.")
+        lines.append(f"🔀 Ждут твоего решения: {len(major)} PR — {_pr_links(major)}. "
+                     f"Такие сами не вливаются (крупная версия или базовый образ): "
+                     f"открой, прочитай «что поменялось» и нажми Merge.")
     return lines
