@@ -12,7 +12,7 @@ import html
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import aiohttp
 
@@ -117,6 +117,9 @@ class DnsChange(TypedDict):
     old: str
     new: str
     critical: bool
+    # The name stopped answering (FAILS_TO_SAY lookups in a row): «old» is
+    # the last known answer and stays the baseline.
+    failing: NotRequired[bool]
 
 
 @dataclass

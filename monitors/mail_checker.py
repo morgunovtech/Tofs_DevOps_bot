@@ -33,7 +33,7 @@ from monitors.ladder import apply_incident
 from monitors.second_opinion import second_opinion_up
 from services import hosting, humanize, integrations, sitestatus
 from utils.text import plural
-from utils.urls import host_of, registrable_domain
+from utils.urls import host_of, owned_domain, registrable_domain
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +42,6 @@ MAIL_CHECKS = ("mail", "mail_auth")   # incident types: delivery, spam
 FAILS_TO_ALERT = 2
 # A receiving server gives up on an SPF record past ten DNS lookups.
 SPF_LOOKUP_LIMIT = 10
-
-# Shared hosting domains: x.pages.dev is not the owner's domain, its mail
-# is not the owner's business.
-PLATFORM_DOMAINS = frozenset({
-    "pages.dev", "workers.dev", "github.io", "vercel.app", "netlify.app", "herokuapp.com",
-    "railway.app", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
-    "azurewebsites.net", "glitch.me", "surge.sh", "replit.app", "deno.dev", "gitlab.io",
-})
 
 
 @dataclass(frozen=True)
@@ -351,11 +343,10 @@ def carriers(urls: list[str]) -> dict[str, str]:
     bare domain, then www., then the first by name."""
     by_domain: dict[str, list[str]] = {}
     for url in urls:
-        host = host_of(url)
-        domain = registrable_domain(host)
-        if "." not in domain or domain in PLATFORM_DOMAINS or host.replace(".", "").isdigit() or ":" in host:
-            continue
-        by_domain.setdefault(domain, []).append(url)
+        # An IP, a bare name, x.pages.dev: no domain of the owner's, no mail of theirs.
+        domain = owned_domain(host_of(url))
+        if domain:
+            by_domain.setdefault(domain, []).append(url)
     out = {}
     for domain, group in by_domain.items():
         def rank(u: str, d: str = domain) -> tuple[int, str]:

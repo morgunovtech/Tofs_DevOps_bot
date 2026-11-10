@@ -13,6 +13,7 @@ from monitors.base import (
     SeoResult,
     SslResult,
 )
+from monitors.dns_checker import FAILS_TO_SAY
 from monitors.mail_checker import MailResult
 from monitors.region import region_words
 from monitors.security_checker import SecurityResult
@@ -201,7 +202,28 @@ def format_seo_alert(r: SeoResult) -> str:
     return "\n".join(lines)
 
 
+def format_dns_failing(change: DnsChange) -> str:
+    """The name stopped answering FAILS_TO_SAY hourly checks in a row — the
+    other names answer, so it is not the bot's network."""
+    n = FAILS_TO_SAY
+    icon = level_icon("critical" if change["critical"] else "warning")
+    rtype = change["rtype"]
+    hint = ("Так бывает, когда перестали работать NS-серверы домена (не оплачен хостинг DNS, "
+            "удалили зону) или после смены NS не обновили DNSSEC (запись DS у регистратора): "
+            "браузеры тоже не находят сайт." if rtype == "NS" else
+            "Так бывает, когда у DNS-серверов домена сбой или сломана зона: посетители могут не найти сайт.")
+    steps = ("1. Открыть сайт в браузере: если не открывается — виноват DNS, а не хостинг.\n"
+             "2. Проверить домен на dnschecker.org: отвечают ли его NS-серверы.\n"
+             "3. Если DNSSEC включён у регистратора, а зона переехала — снять или обновить запись DS.")
+    return (f"{icon} {esc(change['host'])}: DNS не отвечает на запрос {esc(rtype)} уже "
+            f"{n} {plural(n, 'проверку', 'проверки', 'проверок')} подряд ({n} ч). "
+            f"Другие имена при этом отвечают — дело не в моей сети.\n{hint}\n\n"
+            f"Последний известный ответ: {esc(change['old'])}\n\n{steps}")
+
+
 def format_dns_change(change: DnsChange) -> str:
+    if change.get("failing"):
+        return format_dns_failing(change)
     key = {"NS": "ns_change", "MX": "mx_gone" if change["new"] == "—" else "mx_change"}.get(change["rtype"],
                                                                                          "dns_change")
     expl = humanize.EXPLANATIONS[key]

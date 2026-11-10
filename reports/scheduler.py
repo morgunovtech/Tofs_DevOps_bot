@@ -46,7 +46,7 @@ from monitors.availability import check_all, check_availability
 from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
 from monitors.dns_checker import check_all_dns
-from monitors.domain_checker import check_all_domains
+from monitors.domain_checker import check_all_domains, domain_groups
 from monitors.host_checker import (
     DISK_CRITICAL_PCT,
     HEALTHY_RESET,
@@ -676,8 +676,11 @@ async def run_ssl_checks():
 @_once("domain_checks", mark=True)
 @_alerts_on("domain")
 async def run_domain_checks():
+    """The ladder and the incident of a domain live on its carrier site: a
+    finding left on a former carrier, or on an address that has no domain
+    of the owner's (an IP, user.github.io), would never close by itself."""
     urls = await get_active_host_urls()
-    await close_inapplicable(("domain",), urls)
+    await close_inapplicable(("domain",), [g[0] for g in domain_groups(urls).values()])
     await _notify_transitions(
         await check_all_domains(urls), format_domain_alert,
         lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.",
@@ -818,7 +821,9 @@ async def run_dns_checks():
         with _isolated(f"DNS alert for {change['host']} {change['rtype']}"):
             sent = await notifier.send(format_dns_change(change),
                                        Priority.CRITICAL if change["critical"] else Priority.NORMAL)
-            if sent:
+            # A name that stopped answering keeps its baseline: «не отвечает»
+            # is not an answer, and the last known one is what the owner compares with.
+            if sent and not change.get("failing"):
                 await set_dns_state(change["host"], change["rtype"], change["new"])
 
 

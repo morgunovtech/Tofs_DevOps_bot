@@ -64,6 +64,7 @@ from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.speed import speed_lines
 from handlers.start import rules_of_the_game
+from monitors import dns_checker
 from monitors.availability import HTTP_METHODS, check_availability
 from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
@@ -98,6 +99,7 @@ from utils.urls import (
     is_api_url,
     is_http_url,
     is_web_page,
+    owned_domain,
     registrable_domain,
     site_label,
     ssl_applies,
@@ -434,8 +436,14 @@ def _domain_lines(dom: dict | None, api: bool) -> list[str]:
 
 
 async def _dns_lines(site: dict) -> list[str]:
-    """Whether the domain's servers stayed put."""
-    ns = await get_dns_record(registrable_domain(host_of(site["url"])), "NS")
+    """Whether the domain's servers stayed put — and whether they answer at all."""
+    domain = owned_domain(host_of(site["url"]))
+    if not domain:
+        return []      # an IP or a platform's domain: no DNS of the owner's to watch
+    n = dns_checker.failing(domain, "NS")
+    if n >= dns_checker.FAILS_TO_SAY:
+        return [f"🔴 DNS: NS-серверы {esc(domain)} не отвечают уже {n} ч"]
+    ns = await get_dns_record(domain, "NS")
     since = parse_sqlite_utc(ns[1]) if ns and ns[0] else None
     return [f"✅ DNS не менялись с {to_local(since).strftime('%d.%m.%Y')}"] if since else []
 
