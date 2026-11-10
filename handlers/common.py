@@ -4,10 +4,12 @@ keyboards, the running progress bar, the error handler and the ⛔ router."""
 import asyncio
 import contextlib
 import logging
+import time
 
 from aiogram import BaseMiddleware, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import StateFilter
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -249,7 +251,7 @@ async def on_handler_error(event: ErrorEvent):
     logger.exception("Handler error: %s", event.exception)
     try:
         data = (call.data or "") if call else ""
-        if call and (data.startswith(("act:", "hb_how:", "hb_rm:")) or data.endswith(":a")):
+        if call and (data.startswith(("act:", "hb_how:", "hb_rm:", "hb_rm_ok:")) or data.endswith(":a")):
             # Buttons that live ON alert messages and digests — never
             # overwrite that text with an error screen; reply separately.
             await call.message.answer("❌ Действие не удалось. Попробуй ещё раз чуть позже.")
@@ -314,14 +316,86 @@ def refusal(message: Message) -> str:
     return ELSEWHERE if _admin_elsewhere(message) else DENIED
 
 
+# A stranger hears «⛔» once in DENY_EVERY_S, not for every message: a flood
+# of strangers' messages must not take the connection pool from the alerts
+# (SEC-014). In memory — a restart forgives, that is fine.
+DENY_EVERY_S = 600
+_denied: dict[int, float] = {}
+
+
+def deny_due(who: int) -> bool:
+    """True when this person may hear the refusal now (and is marked as told)."""
+    now = time.monotonic()
+    if now - _denied.get(who, -DENY_EVERY_S) < DENY_EVERY_S:
+        return False
+    if len(_denied) >= 1000:
+        _denied.clear()
+    _denied[who] = now
+    return True
+
+
+async def deny(message: Message, text: str = DENIED) -> None:
+    """The refusal (or a helper's own note) — at most once in DENY_EVERY_S
+    per person, and never into a foreign group (a bot that answers every
+    stranger there is a toy for them). The owner's own mistakes — a foreign
+    chat, a missing TELEGRAM_ADMIN_USER_ID — are answered every time: the
+    limit is for strangers and helpers, who may be many. Each refusal that
+    is said goes to the log, no more."""
+    who = message.from_user.id if message.from_user else message.chat.id
+    if (message.chat.type != "private" and str(message.chat.id) != str(runtime.admin_chat_id())
+            and not _admin_elsewhere(message)):
+        return
+    if text in (ELSEWHERE, NO_OWNER):
+        await message.answer(text)
+        return
+    if deny_due(who):
+        logger.info("Refused user %s in chat %s", who, message.chat.id)
+        await message.answer(text)
+
+
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
 async def deny_command(message: Message):
     if await helpers.is_helper(message.chat.id):
-        await message.answer(HELPER_NOTE)
+        await deny(message, HELPER_NOTE)
         return
-    await message.answer(refusal(message))
+    await deny(message, refusal(message))
 
 
 @deny_router.callback_query(~AdminFilter())
 async def deny_callback(call: CallbackQuery):
-    await ack(call, ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён", show_alert=True)
+    who = call.from_user.id if call.from_user else 0
+    text = ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён"
+    await ack(call, text if deny_due(who) else None, show_alert=True)
+
+
+# ── FSM storage ──────────────────────────────────────────────────────────────
+
+class LeanMemoryStorage(MemoryStorage):
+    """MemoryStorage creates a record for every key it is asked about —
+    every stranger who writes once leaves an entry for ever (STAB-016).
+    This one reads without creating and drops a record that became empty."""
+
+    async def get_state(self, key):
+        rec = self.storage.get(key)
+        return rec.state if rec else None
+
+    async def get_data(self, key):
+        rec = self.storage.get(key)
+        return rec.data.copy() if rec else {}
+
+    async def get_value(self, storage_key, dict_key, default=None):
+        rec = self.storage.get(storage_key)
+        return rec.data.get(dict_key, default) if rec else default
+
+    async def set_state(self, key, state=None):
+        await super().set_state(key, state)
+        self._drop_if_empty(key)
+
+    async def set_data(self, key, data):
+        await super().set_data(key, data)
+        self._drop_if_empty(key)
+
+    def _drop_if_empty(self, key):
+        rec = self.storage.get(key)
+        if rec is not None and rec.state is None and not rec.data:
+            del self.storage[key]

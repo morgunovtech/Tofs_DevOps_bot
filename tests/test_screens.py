@@ -319,7 +319,12 @@ async def test_add_offers_every_kind_and_old_screens_land_on_main(bot, db):
     assert settings_service.ui_heartbeat_jobs() == {"socialbot": 1440}
     assert "на главном экране" in call.message.texts[-1]
     call = FakeCall("hb_del:socialbot")
-    await heartbeats.cb_hb_del(call)
+    await heartbeats.cb_hb_del(call)                           # one tap: the question, the task stays
+    assert settings_service.heartbeat_jobs() and "Перестать ждать «socialbot»?" in call.message.texts[-1]
+    assert [b.callback_data for row in call.message.reply_markup.inline_keyboard for b in row] == [
+        "hb_del_ok:socialbot", "hb_show:socialbot"]
+    call = FakeCall("hb_del_ok:socialbot")
+    await heartbeats.cb_hb_del_ok(call)
     assert not settings_service.heartbeat_jobs() and "больше не жду" in call.message.texts[-1]
 
     for old in ("menu_sites", "menu_hb"):                     # buttons on messages sent before this layout
@@ -570,8 +575,8 @@ async def test_a_task_from_the_server_variable_can_be_removed_in_the_bot(bot, db
     a dead end for someone who never set that variable consciously."""
     cfg(heartbeat_jobs={"backup": 1440})
     assert "backup" in settings_service.heartbeat_jobs() and settings_service.heartbeat_job_from_env("backup")
-    call = FakeCall("hb_del:backup")
-    await heartbeats.cb_hb_del(call)
+    call = FakeCall("hb_del_ok:backup")
+    await heartbeats.cb_hb_del_ok(call)
     assert "backup" not in settings_service.heartbeat_jobs()
     assert "больше не жду" in call.message.texts[-1] and "HEARTBEAT_JOBS" in call.message.texts[-1]
     await settings_service.load()                                    # survives a restart
@@ -620,8 +625,8 @@ async def test_what_a_bot_sees_is_on_the_main_screen_card_and_digest(bot, db):
     header, _ = await menu.build_main_menu()
     assert "<b>Соцсети</b>\n⚠️ socialtracker · молчит — не знаю, что сейчас" in header and "LinkedIn" not in header
 
-    call = FakeCall("hb_del:socialtracker")
-    await heartbeats.cb_hb_del(call)
+    call = FakeCall("hb_del_ok:socialtracker")
+    await heartbeats.cb_hb_del_ok(call)
     assert await heartbeats_service.job_status("socialtracker") is None
 
 

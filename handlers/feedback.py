@@ -3,8 +3,8 @@
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
-from db.database import count_feedback, list_feedback
-from handlers.common import ack, render
+from db.database import count_feedback, delete_feedback, list_feedback
+from handlers.common import STALE_TAP, ack, render
 from services import public_urls, secrets
 from utils.clock import fmt_local
 from utils.text import esc
@@ -32,10 +32,15 @@ def widget_snippet() -> str:
 async def cb_feedback(call: CallbackQuery):
     await ack(call)
     arg = call.data.split(":", 1)[1]
-    offset = int(arg) if arg.isdigit() else 0
+    await show_feedback(call, int(arg) if arg.isdigit() else 0)
+
+
+async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
+    """The page of visitors' messages from `offset`; note — a line above it."""
     total = await count_feedback()
     rows = await list_feedback(PAGE, offset)
-    lines = [f"📩 Обратная связь с сайтов ({total}):\n"]
+    lines = [f"{note}\n" if note else "", f"📩 Обратная связь с сайтов ({total}):\n"]
+    lines = lines[1:] if not note else lines
     if not rows:
         lines.append("Пока ни одного сообщения." if offset == 0 else "Дальше пусто.")
     for fb in rows:
@@ -57,5 +62,32 @@ async def cb_feedback(call: CallbackQuery):
     if offset + PAGE < total:
         nav.append(InlineKeyboardButton(text="Старее →", callback_data=f"menu_feedback:{offset + PAGE}"))
     kb_rows = [nav] if nav else []
+    if rows:   # spam and tests from the widget pile up: the page can be removed, after a question
+        ids = [fb["id"] for fb in rows]
+        kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить эти {len(ids)}",
+                                             callback_data=f"fb_del:{max(ids)}:{min(ids)}")])
     kb_rows.append([InlineKeyboardButton(text="← Для посетителей", callback_data="menu_visitors")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))
+
+
+@router.callback_query(F.data.startswith("fb_del"))
+async def cb_feedback_delete(call: CallbackQuery):
+    """fb_del:<max>:<min> asks; fb_del_ok:<max>:<min> deletes the messages
+    with ids in that range and shows the list again (CR-613)."""
+    parts = (call.data or "").split(":")
+    if len(parts) != 3 or not (parts[1].isdigit() and parts[2].isdigit()):
+        await ack(call, "Кнопка устарела — открой список заново", show_alert=True)
+        return
+    hi, lo = int(parts[1]), int(parts[2])
+    if parts[0] == "fb_del":
+        await ack(call)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"fb_del_ok:{hi}:{lo}")],
+            [InlineKeyboardButton(text="← Не надо", callback_data="menu_feedback:0")]])
+        await render(call, "Удалить эти сообщения посетителей? Вернуть их будет нельзя.", kb)
+        return
+    if not await ack(call):           # «Да» from the queue after a restart: nothing is deleted
+        await call.message.answer(STALE_TAP)
+        return
+    n = await delete_feedback(hi, lo)
+    await show_feedback(call, 0, note=f"🗑 Удалил: {n}")

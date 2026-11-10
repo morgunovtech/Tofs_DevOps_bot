@@ -57,7 +57,7 @@ from db.database import (  # noqa: E402
 )
 from db.migrations import StartRefused  # noqa: E402
 from handlers import router  # noqa: E402
-from handlers.common import BOTTOM, MAX_SITES  # noqa: E402
+from handlers.common import BOTTOM, MAX_SITES, LeanMemoryStorage  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
 from handlers.start import BOTTOM_SHOWN  # noqa: E402
 from monitors import parse_worker  # noqa: E402
@@ -233,7 +233,8 @@ async def main():
         link_preview_is_disabled=True))
     # Every Bot API call, getMe and getUpdates included, feeds the pulse.
     bot.session.middleware(health.TelegramWatch())
-    dp = Dispatcher()
+    # The FSM in memory, without a record per stranger who ever wrote (STAB-016).
+    dp = Dispatcher(storage=LeanMemoryStorage())
     dp.include_router(router)
 
     web_runner = scheduler = None
@@ -262,8 +263,10 @@ async def main():
         await on_startup(bot)
         logger.info("Starting polling...")
         # The session stays open after polling: running jobs still send alerts.
+        # A storm of taps or strangers' messages is handled 50 at a time: the
+        # rest wait in the queue, the alerts keep their share of the connection pool.
         polling = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(),
-                                                       close_bot_session=False))
+                                                       close_bot_session=False, tasks_concurrency_limit=50))
         # Outside APScheduler on purpose: a dead scheduler cannot stop it.
         guard = asyncio.create_task(health.watchdog(on_clock_step=clock_stepped))
         done, _ = await asyncio.wait({polling, guard}, return_when=asyncio.FIRST_COMPLETED)

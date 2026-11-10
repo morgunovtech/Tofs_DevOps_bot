@@ -12,8 +12,9 @@ from aiogram.types import Chat, InaccessibleMessage
 from conftest import FakeCall, buttons
 from test_dispatcher import DP, GROUP, MockedSession, _callback, _message, _raw
 
-from handlers import alerts, common, mute, settings, site_settings, sites, start
-from handlers.common import with_running_bar
+from db.database import count_feedback, save_feedback
+from handlers import alerts, common, feedback, heartbeats, mute, settings, site_settings, sites, start
+from handlers.common import LeanMemoryStorage, with_running_bar
 from monitors.base import AvailabilityResult
 from services import actions, maintenance, runtime, sitestatus
 from services import settings as settings_service
@@ -226,3 +227,74 @@ def test_one_label_for_one_thing():
     assert buttons(common.back_button()) == [common.HOME] == ["🏠 Главная"]
     assert buttons(common.cancel_kb()) == [common.CANCEL]
     assert "/menu" not in common.STALE_BUTTON and "🏠 Главная" in common.STALE_BUTTON
+
+
+async def test_removing_a_task_asks_first(bot, db):
+    await settings_service.add_heartbeat_job("backup", 1440)
+    tg, session = await _bot()
+    await DP.feed_raw_update(tg, _callback(777, "hb_rm:backup", 831))
+    assert "backup" in settings_service.heartbeat_jobs()                    # one tap: only the question
+    asked = [m for m in session.calls if isinstance(m, SendMessage)][-1]
+    yes = [b.callback_data for row in asked.reply_markup.inline_keyboard for b in row][0]
+    await DP.feed_raw_update(tg, _callback(777, yes, 832))
+    assert "backup" not in settings_service.heartbeat_jobs()
+    edits = [m for m in session.calls if isinstance(m, EditMessageText)]
+    assert edits and edits[-1].text == "🗑 «backup» больше не жду."           # the question became the answer
+    await tg.session.close()
+
+
+async def test_leaving_a_task_removes_the_question_buttons(bot, db):
+    call = FakeCall("noop")
+    call.message.reply_markup = common.back_button()
+    await heartbeats.cb_noop(call)
+    assert call.answers == ["Ок, оставил"] and call.message.reply_markup is None
+
+
+async def test_visitor_messages_can_be_deleted(bot, db):
+    for i in range(7):
+        await save_feedback("https://ex.test", "https://ex.test/p", f"spam {i}", "", "1.1.1.1")
+    call = FakeCall("menu_feedback:0")
+    await feedback.cb_feedback(call)
+    delete = next(b for row in call.message.reply_markup.inline_keyboard for b in row if b.text.startswith("🗑"))
+    assert delete.text == "🗑 Удалить эти 5"
+    ask = FakeCall(delete.callback_data)
+    await feedback.cb_feedback_delete(ask)
+    assert await count_feedback() == 7                                       # asked, not deleted
+    yes = next(b for row in ask.message.reply_markup.inline_keyboard for b in row if b.text.startswith("🗑"))
+    done = FakeCall(yes.callback_data)
+    await feedback.cb_feedback_delete(done)
+    assert await count_feedback() == 2
+    assert done.message.texts[-1].startswith("🗑 Удалил: 5\n\n📩 Обратная связь с сайтов (2)")
+
+
+async def test_a_stranger_gets_one_denial_per_ten_minutes(bot, db):
+    common._denied.clear()
+    tg, session = await _bot()
+    for n in range(3):
+        await DP.feed_raw_update(tg, _message(4242, f"/x{n}", 841 + n))
+    assert len([m for m in session.calls if isinstance(m, SendMessage)]) == 1
+    session.calls.clear()
+    for n in range(2):                                                       # a tap: the alert once, then a bare answer
+        await DP.feed_raw_update(tg, _callback(4343, "menu_settings", 845 + n))
+    answers = [m for m in session.calls if isinstance(m, AnswerCallbackQuery)]
+    assert [a.text for a in answers] == ["⛔ Доступ запрещён", None]
+    assert not [m for m in session.calls if isinstance(m, SendMessage)]
+    session.calls.clear()                                                    # a foreign group: silence
+    await DP.feed_raw_update(tg, _raw(4444, "/start", 848, chat=GROUP))
+    await DP.feed_raw_update(tg, _raw(4444, "/menu", 849, chat=GROUP))
+    assert not [m for m in session.calls if isinstance(m, SendMessage)]
+    await tg.session.close()
+
+
+async def test_reading_a_strangers_state_leaves_no_record():
+    storage = LeanMemoryStorage()
+    key = StorageKey(bot_id=1, chat_id=5, user_id=5)
+    assert await storage.get_state(key) is None and await storage.get_data(key) == {}
+    assert await storage.get_value(key, "a", 7) == 7
+    assert not storage.storage
+    await storage.set_state(key, "Form:step")
+    await storage.set_data(key, {"a": 1})
+    assert storage.storage and await storage.get_value(key, "a") == 1
+    await storage.set_state(key, None)
+    await storage.set_data(key, {})
+    assert not storage.storage

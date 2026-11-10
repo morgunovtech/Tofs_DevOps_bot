@@ -48,6 +48,7 @@ from aiogram.methods import SendMessage  # noqa: E402
 from config import config  # noqa: E402
 from db import database  # noqa: E402
 from handlers import alerts as alert_handlers  # noqa: E402
+from handlers import common  # noqa: E402
 from handlers import sites as site_handlers  # noqa: E402
 from monitors import availability, dns_checker, links_checker, netcheck, parse_worker, rdap  # noqa: E402
 from reports import scheduler  # noqa: E402
@@ -362,6 +363,7 @@ def _fresh_module_state(monkeypatch):
     notifier._unsent.clear()
     notifier._delivered_rows.clear()
     alert_handlers._busy.clear()
+    common._denied.clear()
     site_handlers._live_running.clear()
     monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
     for state in (scheduler._in_flight, scheduler._busy, scheduler._sent_unrecorded):

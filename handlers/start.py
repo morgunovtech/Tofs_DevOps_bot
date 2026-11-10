@@ -10,7 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import get_all_sites, get_state, set_state
-from handlers.common import BOTTOM, DENIED, HELPER_NOTE, back_button, refusal
+from handlers.common import BOTTOM, HELPER_NOTE, back_button, deny, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from handlers.setup import last_steps
@@ -133,7 +133,7 @@ async def cmd_stop(message: Message):
         return
     gone = await helpers.remove(message.chat.id)
     if not gone:
-        await message.answer(DENIED)
+        await deny(message)
         return
     await message.answer("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца.")
     await notifier.send(f"👥 {esc(gone['name'])} больше не получает «сайт лёг» и «снова работает».")
@@ -185,7 +185,7 @@ async def cmd_start(message: Message, state: FSMContext):
             if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
                 await message.answer(runtime.NO_VOLUME)
     if not in_admin_chat(message):
-        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
+        await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
     if claimed:
         await message.answer(
@@ -207,6 +207,6 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(Command("help"))
 async def cmd_help(message: Message):
     if not in_admin_chat(message):
-        await message.answer(HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
+        await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
     await message.answer(HELP, reply_markup=back_button())

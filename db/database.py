@@ -985,6 +985,16 @@ async def count_feedback() -> int:
     return (await cursor.fetchone())[0]
 
 
+async def delete_feedback(max_id: int, min_id: int) -> int:
+    """Remove the visitors' messages with ids in [min_id, max_id] (one page of
+    the chat's list, by the ids it showed); how many went."""
+    db = await get_db()
+    async with _write_lock:
+        cursor = await db.execute("DELETE FROM feedback WHERE id BETWEEN ? AND ?", (min_id, max_id))
+        await db.commit()
+    return cursor.rowcount
+
+
 # ── Retention & backup ───────────────────────────────────────────────────────
 
 async def rollup_old_checks(retention_days: int) -> int:
