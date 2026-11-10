@@ -44,6 +44,8 @@ services:
   bot:
     image: ghcr.io/morgunovtech/tofs_devops_bot:latest
     restart: always
+    init: true
+    stop_grace_period: 20s
     env_file: .env
     volumes:
       - bot_data:/app/data

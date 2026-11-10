@@ -271,7 +271,8 @@ def _cap_connections(server: web.Server, limit: int) -> None:
 async def start_web_server(host: str = "0.0.0.0", port: int | None = None) -> web.AppRunner:
     # No access log: request lines carry the heartbeat secret and the status
     # page slug in the path, and stdout ends up in the hosting's logs.
-    runner = web.AppRunner(create_app(), access_log=None, keepalive_timeout=KEEPALIVE_SEC,
+    # A request in flight must not stretch a stop past the container's grace period.
+    runner = web.AppRunner(create_app(), access_log=None, keepalive_timeout=KEEPALIVE_SEC, shutdown_timeout=5,
                            max_line_size=MAX_HEADER_BYTES, max_field_size=MAX_HEADER_BYTES)
     await runner.setup()
     _cap_connections(runner.server, MAX_CONNECTIONS)

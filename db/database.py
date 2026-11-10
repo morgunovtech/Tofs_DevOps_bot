@@ -8,6 +8,7 @@ can't interleave statements into each other's transactions.
 
 import asyncio
 import contextlib
+import logging
 import os
 import shutil
 import sqlite3
@@ -20,6 +21,8 @@ from config import config
 from db import migrations as _migrations
 from db.migrations import migrate
 from utils.urls import host_key, is_api_check, is_http_url, is_web_page
+
+logger = logging.getLogger(__name__)
 
 _conn: aiosqlite.Connection | None = None
 _conn_lock = asyncio.Lock()
@@ -50,15 +53,24 @@ async def get_db() -> aiosqlite.Connection:
                 with contextlib.suppress(OSError):
                     os.chmod(os.path.dirname(_db_path) or ".", 0o700)
                 conn = await aiosqlite.connect(_db_path)
-                with contextlib.suppress(OSError):
-                    os.chmod(_db_path, 0o600)
-                conn.row_factory = aiosqlite.Row
-                await conn.execute("PRAGMA journal_mode=WAL")
-                await conn.execute("PRAGMA busy_timeout=5000")
-                await conn.execute("PRAGMA foreign_keys=ON")
-                # A token removed with «🗑 Отключить» must not stay as bytes
-                # in the free pages of the live file.
-                await conn.execute("PRAGMA secure_delete=ON")
+                try:
+                    with contextlib.suppress(OSError):
+                        os.chmod(_db_path, 0o600)
+                    conn.row_factory = aiosqlite.Row
+                    cursor = await conn.execute("PRAGMA journal_mode=WAL")
+                    mode = (await cursor.fetchone())[0]
+                    if str(mode).lower() != "wal":
+                        logger.warning("SQLite journal_mode=%s: WAL is not available on this volume", mode)
+                    await conn.execute("PRAGMA busy_timeout=5000")
+                    await conn.execute("PRAGMA foreign_keys=ON")
+                    # A token removed with «🗑 Отключить» must not stay as bytes
+                    # in the free pages of the live file.
+                    await conn.execute("PRAGMA secure_delete=ON")
+                except BaseException:
+                    # Not in _conn yet, so close_db() would not see it — and its
+                    # worker thread would keep the process alive forever.
+                    await conn.close()
+                    raise
                 _conn = conn
     return _conn
 

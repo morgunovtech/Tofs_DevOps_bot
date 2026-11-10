@@ -3,6 +3,10 @@ services:
     build: .
     container_name: tofs_devops
     restart: always
+    # A small init as PID 1 passes SIGTERM on to the bot, and the stop gets
+    # time to finish running checks and alerts (the bot itself uses ≤ 13 s).
+    init: true
+    stop_grace_period: 20s
     env_file: .env
     volumes:
       - bot_data:/app/data
