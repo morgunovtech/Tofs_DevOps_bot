@@ -172,9 +172,14 @@ def pending_note(pending: list) -> str:
             f"если так и останется.")
 
 
+def _deep_page_error(code: int) -> str:
+    """A 5xx by its words; code 0 is a page that did not answer at all."""
+    return describe_error(f"HTTP {code}") if code else "не ответила за 15 секунд"
+
+
 def format_deep_alert(r) -> str:
     expl = explain("deep", r.error)
-    errors = "\n".join(f"  • {esc(u)} — {esc(describe_error(f'HTTP {code}'))}" for u, code in r.errors[:5])
+    errors = "\n".join(f"  • {esc(u)} — {esc(_deep_page_error(code))}" for u, code in r.errors[:5])
     return f"🟠 {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}"
 
 

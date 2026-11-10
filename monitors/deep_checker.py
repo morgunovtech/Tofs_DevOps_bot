@@ -23,6 +23,10 @@ from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
 
+# The «code» of a page that did not answer in time (a timeout, a dropped
+# connection): kept next to the 5xx codes in the snapshot and the incident.
+NO_ANSWER = 0
+
 
 def _path(page: str, site_url: str) -> str:
     """«/privacy» for a page of the site itself, the whole address otherwise."""
@@ -42,9 +46,11 @@ async def check_deep(url: str) -> DeepResult:
             return r   # sitemap unreadable right now: no verdict either way
         if not pages:
             # A previously opened deep incident must not stay open forever
-            # just because the sitemap is gone (the site said 404).
-            closed = await resolve_incident(site_id, "deep")
-            r.recovered, r.resolved_incident = closed is not None, closed
+            # just because the sitemap is gone (the site said 404) — but
+            # nothing was checked, so this is not «✅ все страницы снова
+            # отвечают»: the incident closes quietly, the card forgets the pages.
+            await resolve_incident(site_id, "deep")
+            await sitestatus.update(site_id, "deep", sampled=0, errors=0, pages=[])
             return r
         sample = pick_sample(pages, config.deep_check_sample)
         r.sampled = len(sample)
@@ -57,11 +63,16 @@ async def check_deep(url: str) -> DeepResult:
                                            headers={"Range": "bytes=0-256"}) as resp:
                         if resp.status >= 500:
                             return page, resp.status
+                except (TimeoutError, aiohttp.ClientConnectionError):
+                    return page, NO_ANSWER     # a page that hangs is not a healthy one
                 except Exception:
-                    pass  # network flakes are the availability checker's job
+                    pass  # anything else is the availability checker's job
                 return None
 
         r.errors = [p for p in await asyncio.gather(*(probe(p) for p in sample)) if p]
+
+    if r.errors and all(code == NO_ANSWER for _, code in r.errors) and len(r.errors) == r.sampled:
+        return r   # nobody answered: the bot's network or the whole site — the availability monitor's call
 
     # The card says how the rest of the site is, not only the home page —
     # each page with its own mark.
@@ -72,7 +83,9 @@ async def check_deep(url: str) -> DeepResult:
     threshold = 1 if r.sampled <= 3 else 2
     if len(r.errors) >= threshold:
         r.status = "error"
-        r.error = f"5xx на {len(r.errors)} из {r.sampled} проверенных страниц"
+        silent = any(code == NO_ANSWER for _, code in r.errors)
+        r.error = (f"5xx {'или нет ответа ' if silent else ''}на {len(r.errors)} "
+                   f"из {r.sampled} проверенных страниц")
         preview = ", ".join(f"{u} ({code})" for u, code in r.errors[:5])
         previous = await get_recent_check_statuses(site_id, "deep", 1)
         await save_check(site_id, "deep", "error", details=preview)

@@ -92,8 +92,9 @@ _RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"^Slow responses: ~(\d+)ms$"), lambda m: f"открывается за {fmt_seconds(int(m.group(1)))}"),
     (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"),
      lambda m: f"{m.group(1)} {plural(int(m.group(1)), 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"),
-    (re.compile(r"^5xx на (\d+) из (\d+) проверенных страниц$"),
-     lambda m: f"{m.group(1)} из {m.group(2)} проверенных страниц отдают ошибку"),
+    (re.compile(r"^5xx( или нет ответа)? на (\d+) из (\d+) проверенных страниц$"),
+     lambda m: f"{m.group(2)} из {m.group(3)} проверенных страниц отдают ошибку"
+     + (" или не отвечают" if m.group(1) else "")),
     (re.compile(r"^Could not fetch page$"), lambda m: "страница не загрузилась"),
     (re.compile(r"name or service not known|nodename nor servname|does not resolve|"
                 r"name resolution|хост не резолвится|Temporary failure in name", re.I),

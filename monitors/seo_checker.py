@@ -40,7 +40,7 @@ from config import config
 from db.database import get_open_incident, get_or_create_site, resolve_incident, save_check, save_incident
 from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, read_capped
 from monitors.security_checker import plain_http_opens
-from monitors.sitemap import pick_sample, sitemap_urls
+from monitors.sitemap import pick_sample, scan_sitemap
 from services import seo_fixes, sitestatus
 from utils.text import plural
 from utils.urls import USER_AGENT, bare_host
@@ -346,14 +346,18 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         elif status is not None and (status >= 500 or status == 429):
             problems.append(_p("robots_http_error", "warning", f"robots.txt отвечает ошибкой HTTP {status}"))
 
-        # [] is the site's own answer (404, no pages); None — could not read,
-        # which is not a finding.
-        pages = await sitemap_urls(session, base)
-        if pages == [] and not declared:
+        # «missing» is the site's own answer (404, or an SPA shell at
+        # /sitemap.xml); «not read» is not a finding. A map whose every
+        # address is on another host is a map of the old domain.
+        scan = await scan_sitemap(session, base)
+        if scan.missing and not declared:
             problems.append(_p("sitemap_missing", "warning", "нет карты сайта (sitemap.xml)"))
+        if scan.foreign_hosts:
+            problems.append(_p("sitemap_foreign", "warning",
+                               "карта сайта ведёт на другой адрес: " + ", ".join(scan.foreign_hosts[:2])))
         home_key = _key(base + "/")
         sample = [base + "/"] + pick_sample(
-            [p for p in pages or [] if _key(p) != home_key], max(0, config.seo_pages_sample - 1))
+            [p for p in scan.pages or [] if _key(p) != home_key], max(0, config.seo_pages_sample - 1))
         seen: set[tuple[str, str]] = set()     # final addresses already analysed
         for page in sample:
             is_home = page == sample[0]

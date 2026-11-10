@@ -391,12 +391,16 @@ def _pages_lines(deep: dict | None) -> list[str]:
         return []
     n, bad = deep["sampled"], deep.get("errors") or 0
     pages = deep.get("pages") or []
+    # code None — answered fine; 0 — did not answer at all; else a 5xx.
+    silent = any(code == 0 for _, code in pages)
     if bad:
-        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера")
+        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера"
+                + (" или не отвечают" if silent else ""))
     else:
         head = "✅ Страницы из карты сайта" + ("" if pages else f": {n} из {n} отвечают")
     lines = [head]
-    lines += [f"    {'🔴' if code else '✅'} {esc(path)}{f' — ошибка {code}' if code else ''}"
+    lines += [f"    ✅ {esc(path)}" if code is None
+              else f"    🔴 {esc(path)} — {'не ответила' if code == 0 else f'ошибка {code}'}"
               for path, code in pages[:10]]
     if len(pages) > 10:
         lines.append(f"    … и ещё {len(pages) - 10}")

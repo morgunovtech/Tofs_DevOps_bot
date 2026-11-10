@@ -2,17 +2,24 @@
 noindex, robots.txt read the same on every Python, an audit that read
 nothing closes nothing, a vanished sitemap is not «all pages answer»."""
 
+import asyncio
+import gzip
 import time
 
+import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from db.database import get_active_incidents
-from monitors import seo_checker
-from monitors.base import SeoResult
+from db.database import get_active_incidents, save_incident
+from handlers.sites import _pages_lines
+from monitors import deep_checker, seo_checker
+from monitors.base import DeepResult, SeoResult
 from monitors.seo_checker import _key, _page, analyze_page, analyze_robots
+from monitors.sitemap import scan_sitemap
 from reports import scheduler
+from reports.formatter import format_deep_alert
 from services import sitestatus
+from services.humanize import describe_error
 
 GOOD = ("<html lang='ru'><head><title>Магазин кофе в Ташкенте</title>"
         "<meta name='description' content='Свежая обжарка каждый день, доставка по городу за час.'>"
@@ -179,6 +186,109 @@ async def test_an_incomplete_audit_still_opens_what_it_saw(db, cfg, monkeypatch)
         assert r.status == "error" and r.transient and not r.recovered
         assert "incomplete (robots.txt read: False, homepage read: True)" in \
             (await db.get_last_check(r.site_id, "seo"))["details"]
+
+
+async def test_sitemap_of_another_host_a_gzipped_one_and_an_spa_shell():
+    state = {"body": b"", "type": "text/xml"}
+
+    async def sitemap(request):
+        return web.Response(body=state["body"], content_type=state["type"])
+
+    app = web.Application()
+    app.router.add_get("/sitemap.xml", sitemap)
+    async with TestServer(app) as server:
+        base = str(server.make_url("")).rstrip("/")
+        async with aiohttp.ClientSession() as session:
+            state["body"] = b"<urlset><url><loc>https://old-domain.example/a</loc></url></urlset>"
+            scan = await scan_sitemap(session, base)
+            assert scan.pages == [] and not scan.missing and scan.foreign_hosts == ["old-domain.example"]
+            state["body"] = gzip.compress(f"<urlset><url><loc>{base}/p</loc></url></urlset>".encode())
+            state["type"] = "application/x-gzip"
+            assert (await scan_sitemap(session, base)).pages == [f"{base}/p"]
+            # An SPA answers /sitemap.xml with its index.html: that is «no
+            # sitemap», not a map with no pages — and so is an empty <urlset/>.
+            state["body"], state["type"] = b"<html><body>app</body></html>", "text/html"
+            scan = await scan_sitemap(session, base)
+            assert scan.missing and scan.pages == [] and not scan.foreign_hosts
+            state["body"], state["type"] = b"<?xml version='1.0'?><urlset/>", "text/xml"
+            assert (await scan_sitemap(session, base)).missing
+
+
+async def test_a_sitemap_of_the_old_domain_is_a_finding(db, cfg, monkeypatch):
+    cfg(seo_pages_sample=1)
+    monkeypatch.setattr(seo_checker, "plain_http_opens", _no)
+
+    async def sitemap(request):
+        return web.Response(text="<urlset><url><loc>https://old-domain.example/a</loc></url></urlset>",
+                            content_type="text/xml")
+
+    app = web.Application()
+    app.router.add_get("/", lambda r: web.Response(text=GOOD, content_type="text/html"))
+    app.router.add_get("/sitemap.xml", sitemap)
+    async with TestServer(app) as server:
+        r = await seo_checker.check_seo(str(server.make_url("")).rstrip("/"), manage=False)
+    found = {p.code: p.message for p in r.problems}
+    assert "sitemap_missing" not in found
+    assert found["sitemap_foreign"] == "карта сайта ведёт на другой адрес: old-domain.example"
+
+
+async def test_deep_check_without_sitemap_and_with_silent_pages(bot, db, monkeypatch):
+    async def page(request):
+        if request.path.startswith("/slow"):
+            await asyncio.sleep(2)
+        return web.Response(text="ok")
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", page)
+    async with TestServer(app) as server:
+        base = str(server.make_url("")).rstrip("/")
+        sid = await db.get_or_create_site(base)
+        await save_incident(sid, "deep", "5xx на 4 из 10 проверенных страниц")
+        await sitestatus.update(sid, "deep", sampled=10, errors=4, pages=[["/a", 502]])
+
+        async def no_pages(session, url):
+            return []
+
+        monkeypatch.setattr(deep_checker, "sitemap_urls", no_pages)
+        r = await deep_checker.check_deep(base)
+        assert not r.recovered and not [i for i in await get_active_incidents() if i["check_type"] == "deep"]
+        deep = (await sitestatus.get(sid))["deep"]
+        assert (deep["sampled"], deep["errors"], deep["pages"]) == (0, 0, [])    # nothing was checked
+
+        async def three(session, url):
+            return [f"{base}/ok", f"{base}/slow1", f"{base}/slow2"]
+
+        monkeypatch.setattr(deep_checker, "sitemap_urls", three)
+        monkeypatch.setattr(deep_checker, "TIMEOUT", aiohttp.ClientTimeout(total=0.5))
+        r = await deep_checker.check_deep(base)
+        assert r.status == "error" and r.error == "5xx или нет ответа на 2 из 3 проверенных страниц"
+        deep = (await sitestatus.get(sid))["deep"]
+        assert deep["pages"] == [["/ok", None], ["/slow1", 0], ["/slow2", 0]]
+
+        # Not one page answered: the bot's network or the whole site — no verdict.
+        async def two_slow(session, url):
+            return [f"{base}/slow1", f"{base}/slow2"]
+
+        monkeypatch.setattr(deep_checker, "sitemap_urls", two_slow)
+        r = await deep_checker.check_deep(base)
+        assert r.status == "ok" and r.error is None and not r.recovered
+        assert (await sitestatus.get(sid))["deep"]["pages"] == deep["pages"]     # the card keeps the last verdict
+
+
+def test_a_silent_page_is_not_a_healthy_one_on_the_card_and_in_the_alert():
+    lines = _pages_lines({"sampled": 3, "errors": 2, "pages": [["/ok", None], ["/slow", 0], ["/broken", 502]]})
+    assert lines == ["🟠 Страницы из карты сайта: 2 из 3 отвечают ошибкой сервера или не отвечают",
+                     "    ✅ /ok", "    🔴 /slow — не ответила", "    🔴 /broken — ошибка 502"]
+    assert _pages_lines({"sampled": 2, "errors": 1, "pages": [["/a", None], ["/b", 500]]})[0] == \
+        "🟠 Страницы из карты сайта: 1 из 2 отвечают ошибкой сервера"
+    assert describe_error("5xx или нет ответа на 2 из 3 проверенных страниц") == \
+        "2 из 3 проверенных страниц отдают ошибку или не отвечают"
+    assert describe_error("5xx на 3 из 10 проверенных страниц") == "3 из 10 проверенных страниц отдают ошибку"
+    r = DeepResult(url="https://ex.test", site_id=1, status="error",
+                   error="5xx или нет ответа на 2 из 3 проверенных страниц",
+                   errors=[("https://ex.test/slow", 0), ("https://ex.test/broken", 502)])
+    text = format_deep_alert(r)
+    assert "https://ex.test/slow — не ответила за 15 секунд" in text and "HTTP 0" not in text
 
 
 async def test_the_lifted_ban_is_said_once_and_quietly(bot, db, monkeypatch):
