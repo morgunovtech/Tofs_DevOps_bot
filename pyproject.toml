@@ -1,7 +1,7 @@
 [project]
 name = "tofsdevops"
 version = "2.0.0"
-description = "Personal DevOps in Telegram: monitoring, SEO/GEO visibility, self-healing"
+description = "Personal DevOps in Telegram (the bot speaks Russian): monitoring, SEO/GEO visibility, self-healing"
 # <3.15: aiogram 3.31 allows Python below 3.15 only, and pydantic-core of
 # pydantic 2.13 has no 3.15 wheels — lift once aiogram allows both.
 requires-python = ">=3.12,<3.15"

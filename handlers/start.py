@@ -6,7 +6,7 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import set_state
@@ -14,6 +14,7 @@ from handlers.common import BOTTOM, DENIED, HELPER_NOTE, back_button, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from services import helpers, notifier, railway, runtime, settings
+from utils.clock import now_local
 from utils.text import esc
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,15 @@ def rules_of_the_game() -> str:
             "• Пишу только если что-то сломалось, и сразу говорю, что делать.\n"
             f"• Каждое утро в {settings.morning_hour()}:00 одно короткое «всё в порядке».\n"
             f"• {quiet_line}\n"
-            f"• {_down_line()}")
+            f"• {_down_line()}\n"
+            # Moscow by default: an owner in Berlin or London would get «9:00» at night otherwise.
+            f"• Время — по поясу {esc(settings.timezone())}: у меня сейчас {now_local():%H:%M}. "
+            "Если у тебя другое — ⚙️ Настройки → 🕐 Часовой пояс.")
+
+
+# Under «Как я работаю» after /start: the timezone screen (handlers.settings).
+TZ_BUTTON = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="🕐 Сменить часовой пояс", callback_data="menu_tz")]])
 
 
 def _down_line() -> str:
@@ -159,7 +168,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "аптайм близко к сердцу.",
         reply_markup=BOTTOM)
     await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
-    await message.answer(rules_of_the_game())
+    await message.answer(rules_of_the_game(), reply_markup=TZ_BUTTON)
     await send_main_menu(message)
 
 

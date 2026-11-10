@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="ru">
+<html lang="$lang">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta http-equiv="refresh" content="60">
-<title>Статус сервисов</title>
+<title>$title</title>
 <style>
   :root {
     --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #70757d;
@@ -25,6 +25,7 @@
     font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
     max-width: 640px; margin: 0 auto; padding: 24px 16px 48px;
   }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 14px; }
   .banner { border-radius: 12px; padding: 16px 20px; font-weight: 600; font-size: 18px;
             color: #fff; margin-bottom: 20px; }
   .banner-up { background: #1a7f44; }
@@ -59,8 +60,8 @@
   .incidents th { color: var(--muted); font-weight: 500; }
   .inc-open { color: var(--down); font-weight: 600; }
   footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
-  /* A phone: incidents as a list, the «сейчас» column first — no sideways scroll;
-     a long state («работает с проблемами · 120 ms») goes under the name, not beside it. */
+  /* A phone: incidents as a list, the duration column first — no sideways scroll;
+     a long state (degraded · 120 ms) goes under the name, not beside it. */
   @media (max-width: 560px) {
     .site-head { flex-wrap: wrap; }
     .site-state { margin-left: 20px; white-space: normal; width: 100%; }
@@ -72,9 +73,10 @@
 </style>
 </head>
 <body>
+  $heading
   <h1 class="banner $banner_cls">$banner</h1>
   $sites_html
   $incidents_html
-  <footer>$checked · страница собрана $now и обновляется сама раз в минуту · TofsDevOps 🐕</footer>
+  <footer>$checked · $built · TofsDevOps 🐕</footer>
 </body>
 </html>

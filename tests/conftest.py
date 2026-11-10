@@ -17,6 +17,9 @@ os.environ.update({
     "PUBLIC_BASE_URL": "https://bot.example.test",
     "STATUS_PAGE": "0",
     "STATUS_PAGE_SLUG": "",
+    # A developer's .env may say STATUS_PAGE_LANG=en: the tests expect the default.
+    "STATUS_PAGE_LANG": "ru",
+    "STATUS_PAGE_TITLE": "",
     "SITES": "",
     "HEARTBEAT_JOBS": "",
     "TRUST_PROXY": "0",

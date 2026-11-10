@@ -116,17 +116,19 @@ def parse_iso_utc(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def fmt_duration(minutes: float) -> str:
-    """The one duration formatter: '12 мин' · '3 ч 5 мин' · '2 дн 3 ч'."""
+def fmt_duration(minutes: float, units: tuple[str, str, str] = ("мин", "ч", "дн")) -> str:
+    """The one duration formatter: '12 мин' · '3 ч 5 мин' · '2 дн 3 ч'
+    (units — minute, hour, day words, e.g. ("min", "h", "d") for visitors)."""
+    mins, hours, days = units
     m = max(0, round(minutes))
     if m < 60:
-        return f"{m} мин"
+        return f"{m} {mins}"
     if m < 24 * 60:
         h, rest = divmod(m, 60)
-        return f"{h} ч {rest} мин" if rest else f"{h} ч"
+        return f"{h} {hours} {rest} {mins}" if rest else f"{h} {hours}"
     d, rest = divmod(m, 24 * 60)
     h = rest // 60
-    return f"{d} дн {h} ч" if h else f"{d} дн"
+    return f"{d} {days} {h} {hours}" if h else f"{d} {days}"
 
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"

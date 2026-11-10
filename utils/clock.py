@@ -32,6 +32,13 @@ def to_local(dt: datetime) -> datetime:
     return dt.astimezone(local_tz())
 
 
+def zone_label(dt: datetime | None = None) -> str:
+    """Short name of the owner's zone for people elsewhere: «MSK», «CET»;
+    «UTC+05» where the zone has no letter abbreviation."""
+    name = (dt or now_local()).strftime("%Z")
+    return f"UTC{name}" if name[:1] in "+-" else name
+
+
 def fmt_local(sqlite_utc: str | None, fmt: str = "%d.%m %H:%M") -> str:
     dt = parse_sqlite_utc(sqlite_utc)
     if not dt:

@@ -4,7 +4,9 @@
 
 🇷🇺 [По-русски](README.ru.md) · [Everything it does](docs/FEATURES.en.md) · [Why (RU)](docs/WHY.md) · [Setup click by click (RU)](docs/SETUP.md)
 
-Made for people who have never heard of DNS or a 502. Three buttons: **is everything OK**, **one site in detail**, **settings**. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server). **The bot speaks Russian:** every screen and alert is in Russian.
+**For Russian-speaking site owners.** The bot itself speaks Russian — every screen, alert and report. What your visitors see — the status page, its badges and the feedback widget — can be in English (`STATUS_PAGE_LANG=en`; the widget follows the language of the page).
+
+Made for people who have never heard of DNS or a 502. Three buttons: **is everything OK**, **one site in detail**, **settings**. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
 
 ## What you get
 
@@ -36,6 +38,8 @@ Make a folder with two files. `.env` — one line:
 ```
 TELEGRAM_BOT_TOKEN=token-from-BotFather
 ```
+
+The bot keeps Moscow time until you pick yours: «⚙️ Настройки → 🕐 Часовой пояс» or `TIMEZONE=Europe/Berlin` in `.env` — reports and quiet hours follow it.
 
 `docker-compose.yml`:
 

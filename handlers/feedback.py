@@ -45,7 +45,9 @@ async def cb_feedback(call: CallbackQuery):
         lines.append("\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке.")
     lines.append(f"\nПодключение виджета на сайт (перед <code>&lt;/body&gt;</code>):\n"
                  f"<code>{esc(widget_snippet())}</code>\n"
-                 f"Любая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму. "
+                 f"Любая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму.\n"
+                 f"Язык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; "
+                 f"закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. "
                  f"После обновления бота сниппет может смениться — бот скажет, и его надо заменить на сайтах.\n"
                  f"Строгий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией "
                  f"файла у себя — в начале файла {esc(public_urls.widget_url())}")

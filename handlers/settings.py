@@ -17,6 +17,7 @@ from config import config
 from db.database import count_feedback
 from handlers.common import STALE_TAP, ack, back_button, cancel_kb, render
 from handlers.menu import mute_until_local
+from monitors import region
 from reports.scheduler import reschedule_all
 from services import (
     github,
@@ -288,9 +289,14 @@ async def cb_settings_pick(call: CallbackQuery):
 # ── Timezone ─────────────────────────────────────────────────────────────────
 
 def _tz_text() -> str:
+    where = ""
+    if integrations.region_speed_enabled():      # the same switch as run_region_checks
+        country = region.country_for_timezone(settings.timezone())
+        where = (f" По нему же выбираю, откуда раз в 6 ч мерить скорость «у посетителей»: "
+                 f"{region.node_name(country)}.")
     return (f"🕐 Часовой пояс: <b>{esc(settings.timezone())}</b>, сейчас у тебя {now_local().strftime('%H:%M')}.\n"
-            "От него зависят время сводок, тихие часы и все времена в сообщениях.\n\nВыбери город или пришли "
-            "свой ключ вида <code>Europe/Prague</code>:")
+            f"От него зависят время сводок, тихие часы и все времена в сообщениях.{where}\n\n"
+            "Выбери город или пришли свой ключ вида <code>Europe/Prague</code>:")
 
 
 def _tz_kb() -> InlineKeyboardMarkup:

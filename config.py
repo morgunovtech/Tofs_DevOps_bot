@@ -175,6 +175,17 @@ def _tg_id(name: str) -> str:
     return raw
 
 
+def _choice(name: str, allowed: tuple[str, ...], default: str) -> str:
+    """One of a few fixed words; anything else is reported and replaced."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in allowed:
+        return raw
+    logger.warning("Invalid %s=%r — using %s (allowed: %s)", name, raw, default, ", ".join(allowed))
+    return default
+
+
 def _timezone(name: str, default: str = "Europe/Moscow") -> str:
     raw = os.getenv(name, "").strip() or default
     try:
@@ -314,6 +325,10 @@ class Config:
     # ── Public status page ───────────────────────────────────────────────────
     status_page: bool = _bool("STATUS_PAGE")
     status_page_slug: str = _slug("STATUS_PAGE_SLUG")
+    # Language of what visitors see (status page, its JSON texts, badges): ru | en.
+    status_page_lang: str = _choice("STATUS_PAGE_LANG", ("ru", "en"), "ru")
+    # Name shown above the banner and in the browser tab; empty — a generic one.
+    status_page_title: str = os.getenv("STATUS_PAGE_TITLE", "").strip()
 
     # ── Self-maintenance ─────────────────────────────────────────────────────
     retention_days: int = _int("RETENTION_DAYS", 30, 1, 3650)
