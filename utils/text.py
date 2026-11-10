@@ -16,6 +16,11 @@ def esc(value) -> str:
     return html.escape(str(value), quote=False)
 
 
+def err_text(e: BaseException) -> str:
+    """Never empty: TimeoutError() and friends stringify to ''."""
+    return str(e) or type(e).__name__
+
+
 _TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
 
 
@@ -91,6 +96,13 @@ def parse_sqlite_utc(value: str | None) -> datetime | None:
             tzinfo=UTC)
     except ValueError:
         return None
+
+
+def incident_start(incident: dict | None) -> datetime | None:
+    """When a problem began: the first failed check of its series when that
+    is known (incidents.started_at), else the moment the incident opened."""
+    inc = incident or {}
+    return parse_sqlite_utc(inc.get("started_at") or inc.get("created_at"))
 
 
 def parse_iso_utc(value: str | None) -> datetime | None:

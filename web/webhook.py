@@ -25,7 +25,7 @@ from aiohttp import web
 from config import config
 from db.database import get_all_sites, get_state, heartbeat_ping, save_feedback, set_state
 from reports.formatter import format_feedback
-from services import health, heartbeats, integrations, notifier, screenshots, secrets, settings
+from services import health, heartbeats, integrations, notifier, public_urls, screenshots, secrets, settings
 from services.notifier import Priority
 from utils.text import esc, plural
 from utils.urls import bare_host, host_of, is_http_url
@@ -418,7 +418,27 @@ async def handle_status_json(request: web.Request) -> web.Response:
 _SID_RE = re.compile(r"[0-9]{1,9}")
 
 
+async def handle_badge(request: web.Request) -> web.Response:
+    """/badge/<id>-<token>.svg — the address the bot gives for a README: its
+    own key, no page slug in it. Served while the status page is on."""
+    if not settings.status_page_enabled():
+        return web.Response(status=404, text="Not Found")
+    sid = int(request.match_info["sid"])
+    if not public_urls.badge_token_ok(sid, request.match_info["tok"]):
+        return web.Response(status=404, text="Not Found")
+    found, pct = await status_page.badge_pct(sid)
+    if not found:
+        return web.Response(status=404, text="Not Found")
+    return web.Response(text=status_page.badge_svg(pct), content_type="image/svg+xml",
+                        charset="utf-8",
+                        headers={"Cache-Control": "public, max-age=300",
+                                 "X-Robots-Tag": "noindex, nofollow"})
+
+
 async def handle_status_badge(request: web.Request) -> web.Response:
+    """The old badge addresses (/status/badge/… and /status/<slug>/badge/…):
+    kept for badges already pasted into READMEs, to be removed in a later
+    release — the bot hands out handle_badge's address now."""
     if not _status_allowed(request):
         return web.Response(status=404, text="Not Found")
     sid = request.match_info.get("sid", "").removesuffix(".svg")
@@ -493,6 +513,7 @@ def create_app() -> web.Application:
     app.router.add_get("/feedback-widget.{ver:[0-9a-f]{12}}.js", handle_widget_versioned)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/shot/{sig}/{sid}", handle_shot)
+    app.router.add_get(r"/badge/{sid:\d{1,9}}-{tok:[0-9a-f]{16}}.svg", handle_badge)
     # Registration order matters: literal segments before the {slug} catch-all.
     app.router.add_get("/status", handle_status_page)
     app.router.add_get("/status.json", handle_status_json)

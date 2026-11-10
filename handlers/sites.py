@@ -3,6 +3,7 @@ export/import."""
 
 import asyncio
 import contextlib
+import ipaddress
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
+import idna
 from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
@@ -62,12 +64,13 @@ from handlers.security import security_lines
 from handlers.setup import last_steps
 from handlers.speed import speed_lines
 from handlers.start import rules_of_the_game
+from monitors import dns_checker
 from monitors.availability import HTTP_METHODS, check_availability
 from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
 from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
-from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
+from monitors.security_checker import SECURITY_CHECKS, check_security
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
 from services import (
@@ -88,7 +91,7 @@ from utils import validate
 from utils.clock import to_local, utcnow
 from utils.net import is_lan_host, normalize_ipv4
 from utils.parse import parse_accepted_codes
-from utils.text import esc, fmt_date, fmt_duration, parse_sqlite_utc, plural
+from utils.text import esc, fmt_date, fmt_duration, incident_start, parse_sqlite_utc, plural
 from utils.urls import (
     host_key,
     host_of,
@@ -96,8 +99,10 @@ from utils.urls import (
     is_api_url,
     is_http_url,
     is_web_page,
+    owned_domain,
     registrable_domain,
     site_label,
+    ssl_applies,
 )
 
 router = Router(name="sites")
@@ -116,6 +121,28 @@ _DOMAIN_RE = re.compile(rf"{_LABEL}(\.{_LABEL})+")
 def _valid_lengths(host: str) -> bool:
     """DNS limits: 253 chars total, 63 per label."""
     return len(host) <= 253 and all(len(label) <= 63 for label in host.split("."))
+
+
+def _ascii_host(host: str) -> str | None:
+    """пример.рф → xn--e1afmkfd.xn--p1ai: the form DNS, certificates and every
+    monitor use (the same IDNA 2008/UTS 46 rules as aiohttp).
+    None when the name cannot be one. ASCII names pass as they are: IDNA is
+    stricter than DNS for them (ab--cd.com)."""
+    if host.isascii():
+        return host
+    try:
+        return idna.encode(host, uts46=True).decode("ascii")
+    except UnicodeError:   # idna.IDNAError is a UnicodeError
+        return None
+
+
+def _ipv6(host: str) -> str | None:
+    """'2001:DB8:0::1' → '2001:db8::1'; None for anything that is not IPv6."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return addr.compressed if addr.version == 6 else None
 
 
 PRIVATE_OFF = ("Внутренние адреса (локальная сеть, 127.0.0.1, 10.x, 192.168.x) выключены на этом сервере: "
@@ -153,11 +180,17 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
             host, port = parsed.hostname or "", parsed.port
         except ValueError:
             host, port = "", None
-        if not _HOST_RE.fullmatch(host) or not _valid_lengths(host):
-            return None, "Не понял хост. Примеры: tcp://mail.example.com:25, ping://10.0.0.1"
-        host, refused = _host_policy(host)
+        v6 = _ipv6(host)
+        if not v6:
+            host = _ascii_host(host) or ""
+            if not _HOST_RE.fullmatch(host) or not _valid_lengths(host):
+                return None, ("Не понял хост. Примеры: tcp://mail.example.com:25, ping://10.0.0.1, "
+                              "ping://[2001:db8::1]")
+        host, refused = _host_policy(v6 or host)
         if refused:
             return None, refused
+        if v6:
+            host = f"[{host}]"   # stored in brackets: a URL needs them around an IPv6 address
         if parsed.scheme == "tcp":
             if not port:
                 return None, "Для tcp нужен порт: tcp://host:порт (например, tcp://mail.example.com:25)"
@@ -170,12 +203,14 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
         host, port_n = parsed.hostname or "", parsed.port
     except ValueError:
         return None, "Не похоже на адрес. Пришли что-то вроде example.com"
+    host = _ascii_host(host) or ""
     if not _DOMAIN_RE.fullmatch(host) or not _valid_lengths(host):
         return None, "Не похоже на домен. Пришли что-то вроде example.com"
     host, refused = _host_policy(host)
     if refused:
         return None, refused
-    port = f":{port_n}" if port_n and port_n not in (80, 443) else ""
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = f":{port_n}" if port_n and port_n != default_port else ""
     site = f"{parsed.scheme}://{host}{port}"
     if not is_api_url(site + parsed.path):
         return site, None
@@ -253,15 +288,17 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
     search: list[str] = []
     covered_by = await host_checked_by(site)
     if covered_by and covered_by != site["url"]:
-        domain.append(f"Сертификат и домен — на карточке {esc(site_label(covered_by))}: проверяю их один раз "
+        what = "Сертификат и домен" if ssl_applies(site["url"]) else "Домен"
+        domain.append(f"{what} — на карточке {esc(site_label(covered_by))}: проверяю их один раз "
                       f"на адрес")
     if covered_by == site["url"]:
         domain += _domain_lines(st.get("domain"), api)
-        domain += _ssl_lines(st.get("ssl"))
+        if ssl_applies(site["url"]):
+            domain += _ssl_lines(st.get("ssl"))
         domain += await _dns_lines(site)
         if await carrier_of(site["url"]) == site["url"]:
             mail += mail_lines(st.get("mail"))
-        if page and is_https(site["url"]):
+        if page:
             protection += security_lines(st.get("security"))
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
@@ -326,13 +363,11 @@ async def _avail_line(site: dict, st: dict, page: bool) -> str:
 
 async def _history_lines(site: dict) -> list[str]:
     """Downtime over the week and the month, and when it last went down."""
-    interval = site.get("check_interval_min") or config.check_interval_minutes
     week = await get_uptime_over_days(site["id"], 7)
     parts = []
     if week["total_checks"]:
         month = await get_uptime_over_days(site["id"], 30)
-        w = humanize.downtime(week["total_checks"], week["ok_checks"], interval)
-        m = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        w, m = humanize.downtime(week), humanize.downtime(month)
         parts.append("без сбоев ни за неделю, ни за месяц" if w == m == "без сбоев" else
                      f"простой: за неделю {w.removeprefix('недоступен ')}, за месяц {m.removeprefix('недоступен ')}")
     outage = await _last_outage(site)
@@ -345,7 +380,7 @@ async def _history_lines(site: dict) -> list[str]:
 async def _last_outage(site: dict) -> str:
     """«последний сбой 05.11 14:03 — 5 мин, хостинг отвечает ошибкой 502»."""
     inc = await get_last_incident(site["id"], "availability")
-    started = parse_sqlite_utc(inc["created_at"]) if inc else None
+    started = incident_start(inc) if inc else None
     if not inc or not inc["resolved"] or not started or utcnow() - started > timedelta(days=90):
         return ""   # nothing recent; an open one is a problem at the top
     ended = parse_sqlite_utc(inc.get("resolved_at")) or started
@@ -399,8 +434,14 @@ def _domain_lines(dom: dict | None, api: bool) -> list[str]:
 
 
 async def _dns_lines(site: dict) -> list[str]:
-    """Whether the domain's servers stayed put."""
-    ns = await get_dns_record(registrable_domain(host_of(site["url"])), "NS")
+    """Whether the domain's servers stayed put — and whether they answer at all."""
+    domain = owned_domain(host_of(site["url"]))
+    if not domain:
+        return []      # an IP or a platform's domain: no DNS of the owner's to watch
+    n = dns_checker.failing(domain, "NS")
+    if n >= dns_checker.FAILS_TO_SAY:
+        return [f"🔴 DNS: NS-серверы {esc(domain)} не отвечают уже {n} ч"]
+    ns = await get_dns_record(domain, "NS")
     since = parse_sqlite_utc(ns[1]) if ns and ns[0] else None
     return [f"✅ DNS не менялись с {to_local(since).strftime('%d.%m.%Y')}"] if since else []
 
@@ -597,12 +638,14 @@ async def cb_check_site_live(call: CallbackQuery):
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
         mail_domain = registrable_domain(host_of(url)) if await carrier_of(url) == url else None
-        await render(call, f"▰▱▱ Смотрю сертификат, срок домена{', почту' if mail_domain else ''} и защиту сайта...")
-        await check_ssl(url, manage=False)
+        cert = "сертификат, " if ssl_applies(url) else ""
+        await render(call, f"▰▱▱ Смотрю {cert}срок домена{', почту' if mail_domain else ''} и защиту сайта...")
+        if ssl_applies(url):
+            await check_ssl(url, manage=False)
         await check_domain(url, manage=False)
         if mail_domain:
             await check_mail(mail_domain, url, manage=False)
-        if is_https(url) and is_web_page(url, site.get("http_method")):
+        if is_web_page(url, site.get("http_method")):
             await check_security(url, manage=False)
     if is_web_page(url, site.get("http_method")):
         base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
@@ -623,10 +666,8 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
     """«➕ Добавить» — one door for everything that can be watched: a site
     is just typed in, the other two kinds are a button away."""
     await ack(call)
-    if len(await get_all_sites()) >= MAX_SITES:
-        await render(call, f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга. Бота или задачу "
-                           f"по расписанию добавить можно.", InlineKeyboardMarkup(inline_keyboard=[
-                               [_HB_BUTTON], *back_button().inline_keyboard]))
+    if await _limit_reached():
+        await render(call, *_limit_screen())
         return
     await state.set_state(AddSiteForm.url)
     await render(call, "➕ Пришли адрес сайта, например <code>example.com</code>.\n\n"
@@ -634,6 +675,20 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
 
 
 _HB_BUTTON = InlineKeyboardButton(text="⏰ Бот или задача по расписанию", callback_data="hb_add")
+
+
+async def _limit_reached(url: str | None = None) -> bool:
+    """MAX_SITES monitors are watched and url is not one of them — one rule
+    for «➕ Добавить», «🛠 API, порт или ping» and the address typed in
+    (re-adding a watched address is not a new site)."""
+    active = {s["url"] for s in await get_all_sites()}
+    return url not in active and len(active) >= MAX_SITES
+
+
+def _limit_screen() -> tuple[str, InlineKeyboardMarkup]:
+    return (f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга. Бота или задачу "
+            f"по расписанию добавить можно.",
+            InlineKeyboardMarkup(inline_keyboard=[[_HB_BUTTON], *back_button().inline_keyboard]))
 
 
 def _add_kb() -> InlineKeyboardMarkup:
@@ -646,6 +701,10 @@ def _add_kb() -> InlineKeyboardMarkup:
 @router.callback_query(F.data == "site_add_adv")
 async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
     await ack(call)
+    if await _limit_reached():               # «🛠» on an «➕» screen opened before the limit was reached
+        await state.clear()
+        await render(call, *_limit_screen())
+        return
     await state.set_state(AddSiteForm.url)
     await render(call, "🛠 Кроме сайтов я умею следить за сервисами без веб-страницы:\n\n"
                        "• <code>example.com/api/health</code> — главная функция сайта, его API: "
@@ -668,6 +727,10 @@ async def msg_site_add(message: Message, state: FSMContext):
     raw = urlparse((message.text or "").strip())
     if urlparse(url).query or raw.password or "@" in raw.netloc:
         await forget_secret(message)        # an API address with ?token=… or user:pass@ in it
+    if await _limit_reached(url):            # the form may have been opened before the limit was reached
+        text, kb = _limit_screen()
+        await message.answer(text, reply_markup=kb)
+        return
     first_site = not await get_all_sites()
     site_id = await activate_or_create_site(url)
     label = site_label(url)
@@ -696,13 +759,14 @@ async def msg_site_add(message: Message, state: FSMContext):
                      "тело и фраза, которая должна быть в ответе."
                      + ("" if r.ok else " Ошибка выше уйдёт, когда запрос станет правильным."))
     if await host_checked_by(site) == url:
-        ssl_r = await check_ssl(url, manage=False)
-        if ssl_r.ssl_info:
-            lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн.")
-        elif ssl_r.transient:
-            lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
-        else:
-            lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
+        if ssl_applies(url):
+            ssl_r = await check_ssl(url, manage=False)
+            if ssl_r.ssl_info:
+                lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн.")
+            elif ssl_r.transient:
+                lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
+            else:
+                lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
         lines.append("\nСрок домена, ссылки, поиск и ИИ проверю в ближайшие часы сам." if page
                      else "\nСрок домена проверю в ближайшие часы сам.")
     if first_site:
@@ -768,7 +832,9 @@ async def cb_site_del_confirm(call: CallbackQuery):
         [InlineKeyboardButton(text="🗑 Да, убрать", callback_data=f"delok:{site['id']}")],
         [InlineKeyboardButton(text="← Отмена", callback_data=f"sset:{site['id']}")]])
     await render(call, f"Убрать {esc(site_label(site['url']))} из мониторинга?\n"
-                       "Открытые инциденты по нему закроются, история останется.", kb)
+                       "Открытые инциденты по нему закроются, история останется. Его настройки (фраза, "
+                       "метод, заголовки, пороги) и пауза «🔧 Я чиню» сбросятся — если добавишь его снова, "
+                       "начнёшь с чистого листа.", kb)
 
 
 @router.callback_query(F.data.startswith("delok:"))
@@ -780,8 +846,8 @@ async def cb_site_del_do(call: CallbackQuery):
     if site and await deactivate_site(site["id"]):
         await maintenance.remove_windows_for_site(site["id"])
         reset_site_schedule(site["id"])
-        await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась.",
-                     back_button())
+        await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась, "
+                     f"настройки сброшены.", back_button())
     else:
         await render(call, "Сайт уже убран.", back_button())
 

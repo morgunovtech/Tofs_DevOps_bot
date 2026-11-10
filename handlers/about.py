@@ -144,11 +144,13 @@ async def _connected() -> dict[str, bool]:
 
 async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
     on = await _connected()
+    # Connected, but its key is refused or it has not answered for a day.
+    silent = {key for key in ("gsc", "yandex", "crux", "github") if on.get(key) and await integrations.broken(key)}
     lines = ["🔌 <b>Что можно подключить</b> — всё необязательно, я работаю и без этого.",
              "<i>Что даёт → кому нужно</i>"]
     off = []
     for key, m in MODULES:
-        mark = " ✅ подключено" if on.get(key) else ""
+        mark = (" ⚠️ подключено, но не отвечает" if key in silent else " ✅ подключено") if on.get(key) else ""
         lines += ["", f"<b>{m.title}</b>{mark}", f"{m.gives[:1].upper()}{m.gives[1:]} → <i>{m.who}</i>."]
         if not on.get(key) or key == "second_opinion":   # its screen is where it is switched off too
             off.append(m.button)

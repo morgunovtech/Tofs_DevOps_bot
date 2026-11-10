@@ -7,7 +7,6 @@ This is where everything 🟠 is promised to show up."""
 import logging
 from datetime import UTC, date, datetime, timedelta
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_all_sites,
@@ -15,7 +14,7 @@ from db.database import (
     get_incidents_since,
     get_uptime_over_days,
 )
-from services import github, gsc, humanize, index_status, sitestatus, updates, yandex_webmaster
+from services import github, gsc, humanize, index_status, integrations, sitestatus, updates, yandex_webmaster
 from utils.clock import to_local
 from utils.text import bar, esc, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_http_url, is_web_page, short_host, site_label
@@ -53,7 +52,9 @@ def render_ascii_chart(series: dict[str, list[dict]]) -> list[str]:
 
 
 async def search_metrics_lines(site_urls: list[str]) -> list[str]:
-    """Weekly search-visibility lines from GSC + Yandex.Webmaster."""
+    """Weekly search-visibility lines from GSC + Yandex.Webmaster. Only the
+    sites the Search Console property covers are asked about; a service
+    that gave nothing is said so, with its reason — not left out."""
     lines: list[str] = []
     if gsc.available():
         # GSC data lags ~2 days; compare the freshest full week with the
@@ -62,25 +63,32 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
         start = end - timedelta(days=6)
         prev_end = start - timedelta(days=1)
         prev_start = prev_end - timedelta(days=6)
+        prop = integrations.gsc_property()
+        covered = [url for url in site_urls if gsc.covers(prop, url)]
         g_lines = []
-        for url in site_urls:
+        for url in covered:
             cur = await gsc.search_totals(start.isoformat(), end.isoformat(), page_prefix=url)
-            prev = await gsc.search_totals(prev_start.isoformat(), prev_end.isoformat(),
-                                           page_prefix=url)
             if cur is None:
                 continue
-            prev = prev or {"clicks": 0, "impressions": 0}
-            g_lines.append(
-                f"  {esc(short_host(url))}: "
-                f"{cur['clicks']} {plural(cur['clicks'], 'клик', 'клика', 'кликов')} "
-                f"({_pct_change(cur['clicks'], prev['clicks'])}), "
-                f"{cur['impressions']} {plural(cur['impressions'], 'показ', 'показа', 'показов')} "
-                f"({_pct_change(cur['impressions'], prev['impressions'])})")
+            prev = await gsc.search_totals(prev_start.isoformat(), prev_end.isoformat(),
+                                           page_prefix=url)
+            clicks = f"{cur['clicks']} {plural(cur['clicks'], 'клик', 'клика', 'кликов')}"
+            shows = f"{cur['impressions']} {plural(cur['impressions'], 'показ', 'показа', 'показов')}"
+            if prev is None:
+                g_lines.append(f"  {esc(short_host(url))}: {clicks}, {shows} (с прошлой неделей сравнить не удалось)")
+            else:
+                g_lines.append(f"  {esc(short_host(url))}: {clicks} ({_pct_change(cur['clicks'], prev['clicks'])}), "
+                               f"{shows} ({_pct_change(cur['impressions'], prev['impressions'])})")
         if g_lines:
             lines += ["🔎 Google (неделя к неделе):", *g_lines]
+        elif covered:
+            lines.append(f"⚠️ Google Search Console: не смог получить данные — {esc(await _reason('gsc'))}")
     if yandex_webmaster.available():
+        summaries = await yandex_webmaster.get_summaries()
+        if summaries is None:
+            lines.append(f"⚠️ Яндекс.Вебмастер: не смог получить данные — {esc(await _reason('yandex'))}")
         y_lines = []
-        for host, s in (await yandex_webmaster.get_summaries() or {}).items():
+        for host, s in (summaries or {}).items():
             chunks = []
             if s.get("searchable_pages") is not None:
                 chunks.append(f"{s['searchable_pages']} стр. в поиске")
@@ -88,12 +96,18 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
                 chunks.append(f"ИКС {s['sqi']}")
             if s["alert_problems"]:
                 icon = humanize.level_icon(index_status.yandex_problem_level(s["alert_problems"]))
-                chunks.append(f"{icon} проблем в Вебмастере: {len(s['alert_problems'])}")
+                n = index_status.yandex_problem_count(s["alert_problems"])
+                chunks.append(f"{icon} {n} {plural(n, 'проблема', 'проблемы', 'проблем')} в Вебмастере")
             if chunks:
                 y_lines.append(f"  {esc(host)}: " + ", ".join(chunks))
         if y_lines:
             lines += ["🔎 Яндекс:", *y_lines]
     return lines
+
+
+async def _reason(name: str) -> str:
+    """Why the service gave nothing, from its health record."""
+    return (await integrations.health(name)).get("reason") or "не ответил"
 
 
 async def build_weekly_report() -> tuple[str, list[str]]:
@@ -110,15 +124,14 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         if not total:
             lines.append(f"⏳ {esc(label)} — нет данных")
             continue
-        ok = sum(r["ok"] for r in rows)
-        interval = s.get("check_interval_min") or config.check_interval_minutes
+        week = await get_uptime_over_days(s["id"], 7)
         month = await get_uptime_over_days(s["id"], 30)
-        avg_ms = round(sum((r["avg_ms"] or 0) * r["total"] for r in rows) / total)
+        avg_ms = week["avg_response_ms"]
         # Last week's downtime is history, not an open problem: ✅ when there
         # was none, 📉 otherwise — never a level icon.
-        icon = "✅" if ok == total else "📉"
-        week_txt = humanize.downtime(total, ok, interval)
-        month_txt = humanize.downtime(month["total_checks"], month["ok_checks"], interval)
+        icon = "📉" if week["down_min"] else "✅"
+        week_txt = humanize.downtime(week)
+        month_txt = humanize.downtime(month)
         verb = "Открывается" if is_web_page(s["url"], s.get("http_method")) else "Отвечает"
         lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
                      f"{verb} {humanize.speed(avg_ms)}.")

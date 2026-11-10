@@ -32,6 +32,7 @@ from handlers.common import (
     forget_secret,
     render,
 )
+from handlers.settings import publish_screen
 from reports.scheduler import audit_time
 from services import (
     automation,
@@ -183,8 +184,14 @@ async def build_items() -> list[Item]:
                           ("🌐 Включить статус-страницу", "setup:sp_on")))
 
     if integrations.second_opinion_enabled():
-        items.append(Item("second_opinion", "ok", "вторая точка проверки (check-host.net)",
-                          manage=("🌐 Вторая точка: выключить", "setup:so")))
+        h = await integrations.health("checkhost")
+        if integrations.is_broken(h):
+            items.append(Item("second_opinion", "warn", "вторая точка проверки (check-host.net)",
+                              f"check-host.net не отвечает ({h.get('reason') or 'нет ответа'}): тревога «сайт лёг» "
+                              f"уходит без перепроверки извне", ("🌐 Вторая точка", "setup:so")))
+        else:
+            items.append(Item("second_opinion", "ok", "вторая точка проверки (check-host.net)",
+                              manage=("🌐 Вторая точка: выключить", "setup:so")))
     else:
         # A screen with what goes where, not a one-tap switch: the service
         # learns the sites' addresses, and that is the owner's choice.
@@ -222,7 +229,13 @@ async def build_items() -> list[Item]:
                           ("🔎 Подключить Яндекс", "setup:yx")))
 
     if crux.available():
-        items.append(Item("crux", "ok", "скорость у посетителей Chrome (Google)"))
+        h = await integrations.health("crux")
+        if integrations.is_broken(h):
+            items.append(Item("crux", "warn", "скорость у посетителей Chrome (Google)",
+                              f"Google не отвечает на ключ ({h.get('reason') or 'нет ответа'}): строка «у посетителей» "
+                              f"не обновляется", ("⚡ Заменить ключ", "setup:crux")))
+        else:
+            items.append(Item("crux", "ok", "скорость у посетителей Chrome (Google)"))
     else:
         items.append(Item("crux", "off", "⚡ Скорость у посетителей Chrome",
                           "сколько реальные посетители ждут твой сайт — данные Google за 28 дней, для сайтов, "
@@ -477,12 +490,10 @@ async def msg_key_without_wizard(message: Message):
 
 @router.callback_query(F.data == "setup:sp_on")
 async def cb_status_page_on(call: CallbackQuery):
-    if not await ack(call, "Статус-страница включена"):
-        await call.message.answer(STALE_TAP)
-        return
-    await settings.set_status_page(True)
-    await render(call, f"🌐 Статус-страница включена:\n{esc(public_urls.status_page_url())}\n\n"
-                       f"Выключить можно в ⚙️ Настройках.", back_button("← К подключениям", "setup:check"))
+    """Not one tap: the same question as in ⚙️ — what becomes public, and a
+    secret link; the screen after publishing leads back here."""
+    await ack(call)
+    await render(call, *await publish_screen(back="setup:check"))
 
 
 def _switch_source(key: str, env_name: str, env_value: bool) -> str:
@@ -813,7 +824,12 @@ async def msg_crux_key(message: Message, state: FSMContext):
                              reply_markup=cancel_kb())
         return
     await state.clear()
-    if not await crux.key_works(key):
+    works = await crux.key_works(key)
+    if works is None:
+        await message.answer("⚠️ Google сейчас не ответил — ключ не проверен и не сохранён. Пришли его ещё раз "
+                             "через минуту.", reply_markup=_crux_kb())
+        return
+    if not works:
         await message.answer("❌ Google не принял ключ. Проверь, что Chrome UX Report API включён в том же "
                              "проекте, где создан ключ, и что ключ скопирован целиком.", reply_markup=_crux_kb())
         return
@@ -843,8 +859,10 @@ def _gsc_kb() -> InlineKeyboardMarkup:
 def _gsc_state_line() -> str:
     prop = integrations.gsc_property()
     creds = integrations.gsc_credentials()
+    problem = integrations.gsc_key_problem()
     parts = [f"Ресурс: <code>{esc(prop)}</code>" if prop else "Ресурс не указан",
-             f"ключ: {esc(creds.get('client_email', '?'))}" if creds else "ключ не загружен"]
+             f"ключ: {esc(creds.get('client_email', '?'))}" if creds
+             else f"ключ не загружен: {esc(problem)}" if problem else "ключ не загружен"]
     return " · ".join(parts)
 
 

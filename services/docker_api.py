@@ -17,6 +17,7 @@ import stat
 import aiohttp
 
 from config import config
+from utils.text import err_text
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ async def list_containers() -> list[dict] | None:
             for c in data
         ]
     except Exception as e:
-        logger.warning("Docker API list_containers failed: %s", e)
+        logger.warning("Docker API list_containers failed: %s", err_text(e))
         return None
 
 
@@ -132,7 +133,7 @@ async def restart_container(name: str) -> bool:
             ) as resp:
                 return resp.status == 204
     except Exception as e:
-        logger.warning("Docker API restart %s failed: %s", name, e)
+        logger.warning("Docker API restart %s failed: %s", name, err_text(e))
         return False
 
 
@@ -168,5 +169,5 @@ async def prune() -> dict | None:
         logger.info("Docker prune: %s", out)
         return out
     except Exception as e:
-        logger.warning("Docker API prune failed: %s", e)
+        logger.warning("Docker API prune failed: %s", err_text(e))
         return None

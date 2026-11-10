@@ -14,6 +14,7 @@ from db.database import get_or_create_site, get_state, save_check, set_state
 from monitors.base import SslInfo, SslResult, gather_checks
 from monitors.ladder import apply_ladder
 from services import sitestatus
+from utils.urls import ssl_applies
 
 logger = logging.getLogger(__name__)
 
@@ -116,5 +117,5 @@ async def check_all_ssl(urls: list[str], manage: bool = True) -> list[SslResult]
     """https:// sites only: on an http:// one port 443 answers with the
     hosting's default certificate (a false «недействителен»), and on
     http://host:8080 there is no TLS at all."""
-    https = [u for u in urls if u.lower().startswith("https://")]
+    https = [u for u in urls if ssl_applies(u)]
     return await gather_checks(https, check_ssl, "ssl", manage=manage)

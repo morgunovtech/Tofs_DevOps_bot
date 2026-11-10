@@ -1,5 +1,7 @@
 """Ready-to-paste URLs for things the bot serves over HTTP."""
 
+import hashlib
+import hmac
 from urllib.parse import quote
 
 from config import config
@@ -38,9 +40,20 @@ def status_page_url() -> str:
     return base_url() + _status_path()
 
 
+def badge_token(site_id: int) -> str:
+    """The badge's own key: a README badge must not carry the page's secret
+    slug, and a site number alone must not be enough to fetch it."""
+    return hmac.new(secrets.badge_key().encode(), f"badge:{site_id}".encode(), hashlib.sha256).hexdigest()[:16]
+
+
+def badge_token_ok(site_id: int, token: str) -> bool:
+    return hmac.compare_digest(badge_token(site_id).encode(), token.encode())
+
+
 def badge_url(site_id: int) -> str:
-    """Shields-style SVG uptime badge for embedding in a README."""
-    return f"{base_url()}{_status_path()}/badge/{site_id}.svg"
+    """Shields-style SVG uptime badge for embedding in a README: its own
+    signed address — no secret page slug in it, and not guessable by number."""
+    return f"{base_url()}/badge/{site_id}-{badge_token(site_id)}.svg"
 
 
 def heartbeat_url(job: str) -> str:

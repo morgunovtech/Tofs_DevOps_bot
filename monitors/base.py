@@ -12,7 +12,7 @@ import html
 import logging
 import re
 from dataclasses import asdict, dataclass, field
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import aiohttp
 
@@ -69,6 +69,10 @@ class AvailabilityResult(CheckResult):
     api: bool = False
     # The bot's own server had no network: the tick says it once for every site.
     own_outage: bool = False
+    # The incident opened by the share of failures, not a streak: (failed, of).
+    failed_of: tuple[int, int] | None = None
+    # The incident closed minutes ago was reopened by this failure (a flap).
+    flapping: bool = False
 
 
 @dataclass
@@ -117,6 +121,9 @@ class DnsChange(TypedDict):
     old: str
     new: str
     critical: bool
+    # The name stopped answering (FAILS_TO_SAY lookups in a row): «old» is
+    # the last known answer and stays the baseline.
+    failing: NotRequired[bool]
 
 
 @dataclass

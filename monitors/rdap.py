@@ -3,17 +3,21 @@ gTLDs in January 2025), with a tiny async WHOIS fallback for the Russian
 zones (.ru/.su/.рф) that still have no RDAP server.
 
 Bootstrap: IANA publishes tld → RDAP base URLs (dns.json); it is cached for
-a day. rdap.org acts as a redirector when the bootstrap has nothing.
+a day, downloaded once however many lookups wait for it, and a failed
+download is not repeated for an hour. rdap.org acts as a redirector when
+the bootstrap has nothing.
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import UTC, datetime
 
 import aiohttp
 
-from monitors.base import DomainInfo
+from monitors.base import DomainInfo, read_capped
+from utils.text import err_text
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -25,8 +29,13 @@ WHOIS_FALLBACK = {
 }
 _TIMEOUT = aiohttp.ClientTimeout(total=25)
 _BOOTSTRAP_TTL = 24 * 3600
+_BOOTSTRAP_RETRY = 3600            # a failed IANA download is not repeated for an hour
+_MAX_BYTES = 4 * 1024 * 1024       # an answer bigger than this is not a domain record
 _bootstrap: dict[str, list[str]] = {}
 _bootstrap_at = 0.0
+# None, not 0.0: time.monotonic() on a freshly booted machine can be under 3600.
+_bootstrap_failed_at: float | None = None
+_bootstrap_lock = asyncio.Lock()
 
 
 class DomainLookupError(Exception):
@@ -46,22 +55,32 @@ def ascii_tld(domain: str) -> str:
 
 
 async def _bootstrap_servers(session: aiohttp.ClientSession) -> dict[str, list[str]]:
-    global _bootstrap, _bootstrap_at
-    if _bootstrap and time.monotonic() - _bootstrap_at < _BOOTSTRAP_TTL:
+    """The IANA table, downloaded once for every lookup that waits for it
+    (the lock); a failure is remembered for an hour, so a morning of ten
+    domains does not download the list ten times, nor fail ten times."""
+    global _bootstrap, _bootstrap_at, _bootstrap_failed_at
+    async with _bootstrap_lock:
+        now = time.monotonic()
+        if _bootstrap and now - _bootstrap_at < _BOOTSTRAP_TTL:
+            return _bootstrap
+        if _bootstrap_failed_at is not None and now - _bootstrap_failed_at < _BOOTSTRAP_RETRY:
+            return _bootstrap
+        try:
+            async with session.get(IANA_BOOTSTRAP) as resp:
+                if resp.status != 200:
+                    raise DomainLookupError(f"HTTP {resp.status}")
+                data = json.loads(await read_capped(resp, _MAX_BYTES))
+            table: dict[str, list[str]] = {}
+            for tlds, urls in data.get("services", []):
+                for tld in tlds:
+                    table[tld.lower()] = [u if u.endswith("/") else u + "/" for u in urls]
+            if not table:
+                raise DomainLookupError("empty table")
+            _bootstrap, _bootstrap_at, _bootstrap_failed_at = table, now, None
+        except Exception as e:
+            _bootstrap_failed_at = now
+            logger.warning("IANA RDAP bootstrap failed (%s) — asking rdap.org, IANA again in an hour", err_text(e))
         return _bootstrap
-    try:
-        async with session.get(IANA_BOOTSTRAP) as resp:
-            if resp.status == 200:
-                data = await resp.json(content_type=None)
-                table: dict[str, list[str]] = {}
-                for tlds, urls in data.get("services", []):
-                    for tld in tlds:
-                        table[tld.lower()] = [u if u.endswith("/") else u + "/" for u in urls]
-                if table:
-                    _bootstrap, _bootstrap_at = table, time.monotonic()
-    except Exception as e:
-        logger.debug("IANA RDAP bootstrap fetch failed: %s", e)
-    return _bootstrap
 
 
 def _parse_date(value) -> datetime | None:
@@ -74,7 +93,11 @@ def _parse_date(value) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-def _registrar_name(entities: list) -> str:
+def _registrar_name(entities: list, depth: int = 0) -> str:
+    # A registrar is at most a few levels down; a document nested without
+    # end is not a domain record and must not blow the stack.
+    if depth > 5:
+        return ""
     for ent in entities or []:
         roles = [r.lower() for r in ent.get("roles", [])]
         if "registrar" in roles:
@@ -85,7 +108,7 @@ def _registrar_name(entities: list) -> str:
             for pid in ent.get("publicIds", []):
                 if pid.get("identifier"):
                     return f"IANA #{pid['identifier']}"
-        nested = _registrar_name(ent.get("entities") or [])
+        nested = _registrar_name(ent.get("entities") or [], depth + 1)
         if nested:
             return nested
     return ""
@@ -124,7 +147,7 @@ async def _rdap_get(session: aiohttp.ClientSession, url: str) -> dict | None:
             raise DomainLookupError("RDAP rate limit (429)")
         if resp.status != 200:
             raise DomainLookupError(f"RDAP HTTP {resp.status}")
-        return await resp.json(content_type=None)
+        return json.loads(await read_capped(resp, _MAX_BYTES))
 
 
 async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo:
@@ -145,10 +168,16 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
             last_error = e
             continue
         except Exception as e:
-            last_error = DomainLookupError(str(e) or type(e).__name__)
+            last_error = DomainLookupError(err_text(e))
             continue
         if data is not None:
-            return parse_rdap(data, domain)
+            try:
+                return parse_rdap(data, domain)
+            except (AttributeError, TypeError, ValueError) as e:
+                # Not a domain record (an error page as JSON, a list, a
+                # string): the next server may have the real one.
+                last_error = DomainLookupError(f"RDAP: неожиданный ответ ({type(e).__name__}: {err_text(e)})")
+                continue
     if not servers and last_error is None:
         raise RdapUnsupported(f"зона .{tld} без RDAP")
     raise last_error or DomainLookupError("RDAP: домен не найден")
@@ -157,12 +186,19 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
 # ── WHOIS fallback for zones without RDAP ────────────────────────────────────
 
 def parse_whois(text: str, domain: str) -> DomainInfo:
-    """Pure: TCI-style key: value WHOIS text → DomainInfo."""
+    """Pure: TCI-style key: value WHOIS text → DomainInfo. A TCI record
+    always carries «domain:»; a text without it (a rate-limit notice, an
+    empty answer, «No entries found») is not a record of the zone saying
+    nothing about the expiry — it is a failed lookup."""
     fields: dict[str, list[str]] = {}
     for line in text.splitlines():
         key, sep, value = line.partition(":")
         if sep and not line.startswith("%"):
             fields.setdefault(key.strip().lower(), []).append(value.strip())
+    if not fields.get("domain"):
+        if "no entries found" in text.lower():
+            raise DomainLookupError("WHOIS: домен не найден")
+        raise DomainLookupError("WHOIS: ответ без записи о домене")
 
     def first(*names):
         for n in names:
@@ -213,7 +249,7 @@ async def whois_lookup(domain: str, server: str) -> DomainInfo:
         await writer.drain()
         raw = await asyncio.wait_for(_read_until_eof(reader, 64 * 1024), timeout=15)
     except (TimeoutError, OSError) as e:
-        raise DomainLookupError(f"WHOIS {server}: {e}") from e
+        raise DomainLookupError(f"WHOIS {server}: {err_text(e)}") from e
     finally:
         if writer is not None:
             writer.close()

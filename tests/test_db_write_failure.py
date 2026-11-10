@@ -78,6 +78,8 @@ async def test_site_down_is_alerted_while_the_database_refuses_writes(bot, db):
             assert len([m for m in bot.sent if "не открывается" in m["text"]]) == 1   # said once
             state["status"] = 200
             await _tick()
+            assert "снова открывается" not in bot.sent[-1]["text"]   # one good answer is not «up» yet
+            await _tick()
             assert "снова открывается" in bot.sent[-1]["text"]
 
 

@@ -13,6 +13,7 @@ from monitors.base import (
     SeoResult,
     SslResult,
 )
+from monitors.dns_checker import FAILS_TO_SAY
 from monitors.mail_checker import MailResult
 from monitors.region import region_words
 from monitors.security_checker import SecurityResult
@@ -29,7 +30,7 @@ from services.humanize import (
     worst_severity,
 )
 from utils.clock import now_local, to_local
-from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
+from utils.text import esc, fmt_duration, incident_start, parse_sqlite_utc, plural
 from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
@@ -41,57 +42,76 @@ def _tech(*parts) -> str:
 
 # ── Availability ─────────────────────────────────────────────────────────────
 
-def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True) -> str:
+def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True, *,
+                              threshold: int = 2, interval_min: int = 5,
+                              since: datetime | None = None) -> str:
+    """threshold and interval_min — the site's own dials: the text says how
+    many checks it took and how often the site is checked, not «дважды» and
+    «каждую минуту» for everyone. since — when the problem began (the first
+    failed check), so the alert says «не открывается с 14:03»."""
     if r.ok:
         return ""
     label = esc(site_label(r.url))
     expl = explain("availability", r.error)
+    when = f" с {to_local(since).strftime('%H:%M')}" if since else ""
     if r.keyword_failed:
-        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то"
+        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то{when}"
         what = esc(describe_error(r.error))
         situation = f"{expl.meaning} Сейчас {what}."
     else:
         noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
-        header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
+        header = f"🔴 {label} {noun}{when}: {esc(describe_error(r.error))}"
         situation = expl.meaning
+        if r.failed_of:
+            how = f"Сбой в {r.failed_of[0]} из {r.failed_of[1]} последних проверок"
+        else:
+            how = f"Проверил {humanize.times_in_a_row(threshold)}"
         if r.cert_failed:
-            situation += (" Проверил дважды подряд: сервер отвечает, но его сертификат не принимается — "
-                          "так его видят и посетители.")
+            situation += (f" {how}: сервер отвечает, но его сертификат не принимается — "
+                          f"так его видят и посетители.")
         elif r.external_ok is False:
-            situation += " Проверил дважды подряд и с внешних серверов: не открывается ни у кого."
+            situation += f" {how} и с внешних серверов: не открывается ни у кого."
         elif r.external_region and r.external_ups:
-            situation += (f" Проверил дважды подряд; снаружи открывается (с {r.external_ups} из "
+            situation += (f" {how}; снаружи открывается (с {r.external_ups} из "
                           f"{r.external_total} серверов), но не {region_words(r.external_region)} — "
                           f"посетители оттуда его тоже не видят.")
         elif r.external_region:
-            situation += (f" Проверил дважды подряд; {region_words(r.external_region)} тоже не открывается, "
+            situation += (f" {how}; {region_words(r.external_region)} тоже не открывается, "
                           f"остальные внешние серверы не успели ответить.")
         elif r.external_ups and r.external_total >= 2:
-            situation += (f" Проверил дважды подряд; снаружи открывается только с {r.external_ups} из "
+            situation += (f" {how}; снаружи открывается только с {r.external_ups} из "
                           f"{r.external_total} серверов — похоже, сайт лежит не везде.")
         elif second_opinion:
-            situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
+            situation += f" {how}; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:
-            situation += " Проверил дважды подряд."
+            situation += f" {how}."
     # A phrase verdict is about a site that opens: «поднимется» would send
     # the owner to the server instead of the page.
     back = (f"когда {'в ответе' if r.api else 'на странице'} снова будет как надо" if r.keyword_failed
             else "когда поднимется")
-    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, {back}."
+    return (f"{header}\n{situation}\nПродолжаю проверять {humanize.every_minutes(interval_min)} "
+            f"и напишу, {back}."
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 
 def incident_duration_line(incident: dict | None) -> str | None:
-    """'12 мин (14:03–14:15)' in the user's timezone."""
+    """'12 мин (14:03–14:15)' in the user's timezone: from the first failed
+    check to the moment it was seen up. When nobody checked in between (the
+    bot was down), the end is only known from below — said so."""
     if not incident:
         return None
-    started = parse_sqlite_utc(incident.get("created_at"))
+    started = incident_start(incident)
     if not started:
         return None
-    ended = datetime.now(UTC)
+    ended = parse_sqlite_utc(incident.get("resolved_at")) or datetime.now(UTC)
     minutes = max(1, round((ended - started).total_seconds() / 60))
     fmt = "%H:%M" if minutes < 24 * 60 else "%d.%m %H:%M"
-    return f"{fmt_duration(minutes)} ({to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)})"
+    span = f"{to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)}"
+    unseen = parse_sqlite_utc(incident.get("unseen_until"))
+    if unseen:
+        return (f"не меньше {fmt_duration(minutes)} ({span}); когда именно поднялся — не знаю: "
+                f"с {to_local(ended).strftime(fmt)} до {to_local(unseen).strftime(fmt)} я его не проверял")
+    return f"{fmt_duration(minutes)} ({span})"
 
 
 def format_recovery_alert(r: AvailabilityResult) -> str:
@@ -201,7 +221,28 @@ def format_seo_alert(r: SeoResult) -> str:
     return "\n".join(lines)
 
 
+def format_dns_failing(change: DnsChange) -> str:
+    """The name stopped answering FAILS_TO_SAY hourly checks in a row — the
+    other names answer, so it is not the bot's network."""
+    n = FAILS_TO_SAY
+    icon = level_icon("critical" if change["critical"] else "warning")
+    rtype = change["rtype"]
+    hint = ("Так бывает, когда перестали работать NS-серверы домена (не оплачен хостинг DNS, "
+            "удалили зону) или после смены NS не обновили DNSSEC (запись DS у регистратора): "
+            "браузеры тоже не находят сайт." if rtype == "NS" else
+            "Так бывает, когда у DNS-серверов домена сбой или сломана зона: посетители могут не найти сайт.")
+    steps = ("1. Открыть сайт в браузере: если не открывается — виноват DNS, а не хостинг.\n"
+             "2. Проверить домен на dnschecker.org: отвечают ли его NS-серверы.\n"
+             "3. Если DNSSEC включён у регистратора, а зона переехала — снять или обновить запись DS.")
+    return (f"{icon} {esc(change['host'])}: DNS не отвечает на запрос {esc(rtype)} уже "
+            f"{n} {plural(n, 'проверку', 'проверки', 'проверок')} подряд ({n} ч). "
+            f"Другие имена при этом отвечают — дело не в моей сети.\n{hint}\n\n"
+            f"Последний известный ответ: {esc(change['old'])}\n\n{steps}")
+
+
 def format_dns_change(change: DnsChange) -> str:
+    if change.get("failing"):
+        return format_dns_failing(change)
     key = {"NS": "ns_change", "MX": "mx_gone" if change["new"] == "—" else "mx_change"}.get(change["rtype"],
                                                                                          "dns_change")
     expl = humanize.EXPLANATIONS[key]
@@ -261,10 +302,11 @@ def format_mail_recovery(r: MailResult) -> str:
     domain = esc(r.domain)
     if r.kind == "mail_auth":
         return f"✅ Почта на {domain}: настройки в порядке, письмам ничего не мешает."
-    started = parse_sqlite_utc((r.resolved_incident or {}).get("created_at"))
+    started = incident_start(r.resolved_incident)
     how_long = ""
     if started:
-        minutes = max(1, round((datetime.now(UTC) - started).total_seconds() / 60))
+        ended = parse_sqlite_utc((r.resolved_incident or {}).get("resolved_at")) or datetime.now(UTC)
+        minutes = max(1, round((ended - started).total_seconds() / 60))
         how_long = f" (не принимала около {fmt_duration(minutes)})"
     return (f"✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
             f"обычно доходят сами: серверы отправителей повторяют попытки.")

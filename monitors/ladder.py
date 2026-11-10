@@ -1,7 +1,9 @@
 """Incident bookkeeping shared by monitors: the alert ladder of SSL and
 domain expiry (notify once per threshold crossing, 14 → 7 → 3 → 1 → 0
 days, never daily about the same band) and the plain open / keep / close
-of mail and security findings."""
+of mail and security findings — where a finding the owner has not heard
+of yet, inside an incident already open, is said again (told_before,
+told_after, apply_findings)."""
 
 from db.database import (
     get_last_alert_threshold,
@@ -36,6 +38,8 @@ async def apply_ladder(result: CheckResult, check_type: str,
             # 7/3/1 would never be said.
             last = None
         result.incident_id, created = await save_incident(result.site_id, check_type, result.error, result.severity)
+        if result.incident_id is None:
+            return          # the site was removed while it was being checked
         if last is None or (current is not None and current < last):
             # Force "new" even if the incident was already open from a prior
             # threshold, so the scheduler sends the worse-threshold alert.
@@ -43,8 +47,10 @@ async def apply_ladder(result: CheckResult, check_type: str,
             result.threshold_crossed = current
             await set_last_alert_threshold(result.site_id, check_type, current)
         elif created:
-            # A fresh row for a step already said (the owner closed the previous
-            # one): nothing is owed, or the re-send would call it a lost alert.
+            # A fresh row for a step already said (the previous one was closed
+            # by an older version, which kept the step; «✓ Закрыть» now starts
+            # the ladder over): nothing is owed, or the re-send would call it
+            # a lost alert.
             await mark_incident_alerted(result.incident_id)
         return
     closed = await resolve_incident(result.site_id, check_type)
@@ -54,14 +60,43 @@ async def apply_ladder(result: CheckResult, check_type: str,
         await set_last_alert_threshold(result.site_id, check_type, None)
 
 
-async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, open_new: bool = True):
+async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, open_new: bool = True,
+                         started_at: str | None = None):
     """Open, keep or close r's incident. settled=False — the check had no
     verdict (its service is down): an open incident stays as it is. A check
     from a screen (open_new=False) may close what got fixed — the owner is
-    looking at it — but never opens: the alert belongs to the scheduled check."""
+    looking at it — but never opens: the alert belongs to the scheduled check.
+    started_at — when the problem began (SQLite UTC text), for a kind that
+    keeps it itself; None — db.database.save_incident works it out."""
     if not r.ok and r.error:
         if open_new:
-            r.incident_id, r.incident_new = await save_incident(r.site_id, check_type, r.error, r.severity)
+            r.incident_id, r.incident_new = await save_incident(r.site_id, check_type, r.error, r.severity,
+                                                                started_at=started_at)
     elif settled:
         closed = await resolve_incident(r.site_id, check_type)
         r.recovered, r.resolved_incident = closed is not None, closed
+
+
+def told_before(previous: dict) -> set[str]:
+    """Finding codes the scheduled check has already alerted. A snapshot
+    written before «told» existed counts its findings as said: an upgrade
+    must not repeat every open alert."""
+    if "told" in previous:
+        return set(previous.get("told") or [])
+    return {f["code"] for f in previous.get("findings") or []}
+
+
+def told_after(told: set[str], codes: set[str], manage: bool) -> list[str]:
+    """What to remember as said. A check from a screen adds nothing: the
+    scheduled check must still alert what the screen saw first."""
+    return sorted(codes if manage else told & codes)
+
+
+async def apply_findings(r: CheckResult, check_type: str, codes: set[str], told: set[str],
+                         settled: bool = True, open_new: bool = True, started_at: str | None = None):
+    """apply_incident for an incident that holds several findings: a finding
+    the scheduled check has not alerted yet sends the incident's alert again
+    (it lists all of them, the new one among them)."""
+    await apply_incident(r, check_type, settled=settled, open_new=open_new, started_at=started_at)
+    if open_new and r.incident_id and codes - told:
+        r.incident_new = True

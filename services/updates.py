@@ -30,9 +30,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import config
 from db.database import get_state, set_state
-from services import notifier
+from services import integrations, notifier
 from services.notifier import Priority
-from utils.text import esc, plural
+from utils.text import err_text, esc, fmt_date, plural
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,16 @@ async def _vulnerabilities(session: aiohttp.ClientSession,
     try:
         async with session.post(OSV_BATCH, json=body) as resp:
             if resp.status != 200:
+                logger.warning("OSV answered HTTP %s", resp.status)
+                await integrations.record_result("osv", False, f"OSV ответил HTTP {resp.status}")
                 return None
-            data = await resp.json()
+            data = await resp.json(content_type=None)
     except Exception as e:
-        logger.debug("OSV query failed: %s", e)
+        logger.warning("OSV query failed: %s", err_text(e))
+        await integrations.record_result("osv", False, f"OSV не ответил ({err_text(e)})")
+        return None
+    await integrations.record_result("osv", True)
+    if not isinstance(data, dict):
         return None
     out: dict[str, list[str]] = {}
     for name, result in zip(names, data.get("results", []), strict=False):
@@ -145,27 +151,41 @@ class _Unknown(Exception):
     """GitHub did not answer (rate limit on a shared IP, network)."""
 
 
+def _gh_headers() -> dict:
+    """With the bot's GitHub token when there is one: the unauthenticated
+    limit (60 requests an hour per address) is shared with everyone on the
+    hosting's address."""
+    token = integrations.github_token()
+    return {**_GH_HEADERS, "Authorization": f"Bearer {token}"} if token else dict(_GH_HEADERS)
+
+
 async def _gh_json(session: aiohttp.ClientSession, url: str, **params):
-    """GitHub REST without a token (public repositories): JSON or None."""
+    """GitHub REST (public repositories; the token, if any): JSON or None."""
     try:
-        async with session.get(url, params=params or None, headers=_GH_HEADERS) as resp:
-            return await resp.json() if resp.status == 200 else None
+        async with session.get(url, params=params or None, headers=_gh_headers()) as resp:
+            if resp.status != 200:
+                logger.warning("GitHub %s: HTTP %s", url, resp.status)
+                return None
+            return await resp.json(content_type=None)
     except Exception as e:
-        logger.debug("GitHub %s: %s", url, e)
+        logger.warning("GitHub %s: %s", url, err_text(e))
         return None
 
 
-async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
+async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     """Dependabot PRs that wait for a human: major bumps and base-image bumps
     (never auto-merged) and pip ones still open after STUCK_AFTER (auto-merge
-    waits for a green CI, so the tests failed)."""
+    waits for a green CI, so the tests failed). None when GitHub did not
+    answer — «unknown» is not «none waiting»."""
     slug = repo_slug()
     if not slug:
         return []
     data = await _gh_json(session, GITHUB_PULLS.format(slug=slug), state="open", per_page="50")
+    if not isinstance(data, list):
+        return None
     now = datetime.now(UTC)
     out = []
-    for pr in data if isinstance(data, list) else []:
+    for pr in data:
         login = str(((pr or {}).get("user") or {}).get("login") or "")
         title = str((pr or {}).get("title") or "")
         if not login.startswith("dependabot"):
@@ -186,7 +206,8 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
 
 async def check_dependencies() -> dict:
     """{"vulns": {name: [ids]} or None when OSV did not answer,
-    "waiting_prs": [{number, title, url, major}], "checked_at": iso}."""
+    "waiting_prs": [{number, title, url, major}] or None when GitHub did not
+    answer, "checked_at": iso}."""
     versions = installed_versions()
     async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
         vulns = await _vulnerabilities(session, versions)
@@ -205,13 +226,13 @@ async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
     if not slug or not running:
         return None
     head = await _gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
-    if head is None:
+    if not isinstance(head, dict):
         raise _Unknown
     sha = str(head.get("sha") or "")
     if not sha or sha.startswith(running):
         return None
     status = await _gh_json(session, GITHUB_STATUS.format(slug=slug, ref=sha))
-    if status is None:
+    if not isinstance(status, dict):
         raise _Unknown
     # Only a deploy status counts: a red status from some other integration
     # on the same commit is not «the bot did not start».
@@ -219,9 +240,10 @@ async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
               and "deploy" in f"{st.get('description')} {st.get('context')}".lower()]
     if not failed:
         return None   # deployed, or still deploying
-    title = str((head.get("commit") or {}).get("message") or "").splitlines()[0][:80]
+    message = str((head.get("commit") or {}).get("message") or "")
+    title = (message.splitlines() or [sha[:7]])[0][:80]    # an empty commit message is not a crash
     return {"sha": sha[:7], "title": title, "url": head.get("html_url") or "",
-            "log": failed[0].get("target_url") or ""}
+            "log": failed[0].get("target_url") or "", "running": running}
 
 
 async def run_deploy_watch():
@@ -230,11 +252,17 @@ async def run_deploy_watch():
     and every next update fails the same way."""
     if not config.dependency_watch:
         return
+    stale = await deploy_problem()
+    if stale and stale.get("running") and stale["running"] != config.app_commit:
+        await set_state("deploy:failed", None)   # a newer build is running: that failure is history
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
             failed = await failed_deploy(session)
     except _Unknown:
         return   # could not check — the last known state stays as it was
+    except Exception:
+        logger.exception("Deploy watch failed")
+        return
     await set_state("deploy:failed", json.dumps(failed) if failed else None)
     if not failed or failed["sha"] == await get_state("deploy:failed_alerted"):
         return
@@ -268,11 +296,19 @@ async def run_dependency_watch():
     if not config.dependency_watch:
         return
     result = await check_dependencies()
+    last = await last_check() or {}
+    if result["waiting_prs"] is None:
+        # GitHub did not answer: last week's list, marked as such.
+        result["waiting_prs"] = last.get("waiting_prs") or []
+        result["prs_unknown"] = True
     if result["vulns"] is None:
         # OSV did not answer: keep last week's verdict, say nothing new.
-        result["vulns"] = (await last_check() or {}).get("vulns") or {}
+        result["vulns"] = last.get("vulns") or {}
+        result["vulns_unknown"] = True
+        result["vulns_checked_at"] = last.get("vulns_checked_at")
         await set_state("deps:last_check", json.dumps(result))
         return
+    result["vulns_checked_at"] = result["checked_at"]
     await set_state("deps:last_check", json.dumps(result))
     vuln_ids = sorted(i for ids in result["vulns"].values() for i in ids)
     signature = ",".join(vuln_ids)
@@ -317,6 +353,11 @@ def summary_lines(result: dict | None) -> list[str]:
     if not result:
         return []
     lines: list[str] = []
+    if result.get("vulns_unknown"):
+        when = f", последняя проверка {fmt_date(result['vulns_checked_at'])}" if result.get("vulns_checked_at") else ""
+        lines.append(f"⚠️ Уязвимости: база OSV не ответила{when} — повторю через неделю")
+    if result.get("prs_unknown"):
+        lines.append("⚠️ PR Dependabot: GitHub не ответил — список прошлой недели")
     if result.get("vulns"):
         names = ", ".join(sorted(result["vulns"]))
         lines.append(f"🛡 Уязвимые пакеты: {esc(names)} — исправление придёт с Dependabot и встанет само")

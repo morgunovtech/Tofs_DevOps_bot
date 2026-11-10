@@ -139,8 +139,7 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await incidents.cb_incidents(call)
     assert "&lt;b&gt;" in call.message.texts[-1] and "не открывается" in call.message.texts[-1]
     assert call.message.texts[-1].startswith("🔴 Что сейчас не так (1)")
-    assert any("Я чиню" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
-    assert any("Что делать" in b.text for r in call.message.reply_markup.inline_keyboard for b in r)
+    assert buttons(call.message.reply_markup)[0] == "ℹ️ 1"      # «🔧 Я чиню» and «✓ Закрыть» are on its «ℹ️» screen
     call = FakeCall(f"inc_explain:{inc_id}")                       # the button used to have no handler at all
     await incidents.cb_incident_explain(call)
     text = call.message.texts[-1]
@@ -414,10 +413,10 @@ def test_seo_headline_asserts_only_what_was_measured():
     yx = {"searchable_pages": 0, "sqi": 0, "alert_problems": {"FATAL": 1}, "at": NOW}
     text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
     assert "🔴 <b>В Яндексе сайта нет</b>" in text
-    assert "📇 Яндекс: в поиске 0 страниц 🔴, ИКС 0, 🔴 проблем в Вебмастере: 1" in text
+    assert "📇 Яндекс: в поиске 0 страниц 🔴, ИКС 0, 🔴 1 проблема в Вебмастере" in text
     yx = {"searchable_pages": 12, "sqi": 10, "alert_problems": {"CRITICAL": 2}, "at": NOW}
     text = seo.seo_text(url, _snap(yandex=yx), yandex_on=True)
-    assert "📇 Яндекс: 12 стр. в поиске, ИКС 10, 🟠 проблем в Вебмастере: 1" in text
+    assert "📇 Яндекс: 12 стр. в поиске, ИКС 10, 🟠 2 проблемы в Вебмастере" in text
 
     hindered = [{"code": "sitemap_missing", "severity": "warning", "message": "нет карты сайта (sitemap.xml)"}]
     text = seo.seo_text(url, _snap("warning", hindered, google=gone), google_on=True)
@@ -474,12 +473,15 @@ async def test_timezone_ring_and_status_page_screens(bot, db):
     assert "Выключена" in call.message.texts[-1]
     call = FakeCall("set_sp:on")
     await settings.cb_settings_pick(call)
+    assert "Её увидит любой" in call.message.texts[-1]                 # asked first
+    call = FakeCall("sp_pub:open")
+    await settings.cb_status_page_publish(call)
     assert "Включена: https://bot.example.test/status" in call.message.texts[-1]
     call = FakeCall("sp_secret:on")
     await settings.cb_status_page_secret(call)
     slug = integrations.status_page_slug()
     assert slug and slug in call.message.texts[-1] and "Секретная ссылка включена" in call.message.texts[-1]
-    await settings.cb_status_page_secret(FakeCall("sp_secret:off"))
+    await settings.cb_status_page_secret(FakeCall("sp_secret:off_ok"))
     assert not integrations.status_page_slug()
     await settings.cb_settings_pick(FakeCall("set_sp:off"))
 

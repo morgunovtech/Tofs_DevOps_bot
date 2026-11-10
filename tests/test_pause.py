@@ -51,7 +51,8 @@ async def test_recovery_during_fix_arrives_and_lifts_the_silence(bot, db):
         ack = parse_iso_utc(await get_state(f"ack:{inc['id']}"))
         assert ack - datetime.now(UTC) <= timedelta(minutes=60)           # was 2 h
         state["status"] = 200
-        await _tick()
+        for _ in range(2):                                                  # up after two planned successes
+            await _tick()
     assert "снова открывается" in bot.sent[-1]["text"] and "Тишину снял" in bot.sent[-1]["text"]
     assert await maintenance.paused_until(sid) is None
 
@@ -108,7 +109,8 @@ async def test_a_problem_that_ended_inside_the_window_stays_silent(bot, db, monk
         monkeypatch.setattr(maintenance, "maintenance_now", lambda site_id=None: True)
         await _tick()
         state["status"] = 200
-        await _tick()                                                       # recovery of an unannounced fall
+        for _ in range(2):
+            await _tick()                                                   # recovery of an unannounced fall
         monkeypatch.setattr(maintenance, "maintenance_now", lambda site_id=None: False)
         await notifier.release_held()
     assert bot.sent == []

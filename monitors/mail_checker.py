@@ -16,24 +16,32 @@ The result is the "mail" section of the snapshot (services.sitestatus) of
 the domain's carrier site — example.com rather than www.example.com — and
 incidents are opened on that site too. A domain without MX and without
 SPF has no mail: nothing to check, nothing to say.
+
+No verdict is never «fixed»: a domain gone from DNS (NXDOMAIN), lookups
+that failed, a check-host that did not answer leave the snapshot and the
+incidents as they were. MX that vanished close «mail» silently — nothing
+got fixed, dns_checker rings about them. A spam finding the owner has not
+heard of yet, inside an open «mail_auth», is said (ladder.apply_findings).
 """
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from db.database import (
     get_active_host_urls,
     get_dns_record,
     get_or_create_site,
+    resolve_incident,
 )
 from monitors.base import CheckResult, Finding
 from monitors.dns_checker import query, resolve
-from monitors.ladder import apply_incident
-from monitors.second_opinion import second_opinion_up
+from monitors.ladder import apply_findings, apply_incident, told_after, told_before
+from monitors.second_opinion import BUDGET_SEC, tcp_by_node
 from services import hosting, humanize, integrations, sitestatus
 from utils.text import plural
-from utils.urls import host_of, registrable_domain
+from utils.urls import host_of, owned_domain, registrable_domain
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +50,10 @@ MAIL_CHECKS = ("mail", "mail_auth")   # incident types: delivery, spam
 FAILS_TO_ALERT = 2
 # A receiving server gives up on an SPF record past ten DNS lookups.
 SPF_LOOKUP_LIMIT = 10
-
-# Shared hosting domains: x.pages.dev is not the owner's domain, its mail
-# is not the owner's business.
-PLATFORM_DOMAINS = frozenset({
-    "pages.dev", "workers.dev", "github.io", "vercel.app", "netlify.app", "herokuapp.com",
-    "railway.app", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
-    "azurewebsites.net", "glitch.me", "surge.sh", "replit.app", "deno.dev", "gitlab.io",
-})
+# One domain's check: up to three check-host calls (two MX, the control
+# server), each within its budget, plus the DNS. A domain that takes
+# longer keeps its last result and must not hold the other domains.
+DOMAIN_BUDGET_SEC = 3 * BUDGET_SEC + 30
 
 
 @dataclass(frozen=True)
@@ -112,8 +116,10 @@ async def _txt(name: str) -> list[str] | None:
 
 
 async def _mx(domain: str) -> list[str] | None:
-    """MX hosts, most preferred first; [] = no mail (a null MX «.» too)."""
-    answer = await query(domain, "MX")
+    """MX hosts, most preferred first; [] = no mail (a null MX «.» too);
+    None = the lookup failed — or the domain does not exist (NXDOMAIN),
+    which is not «no mail»: dns_checker and domain_checker say that."""
+    answer = await query(domain, "MX", nxdomain_none=True)
     if answer is None:
         return None
     hosts = [r.exchange.to_text().rstrip(".").lower() for r in sorted(answer, key=lambda r: r.preference)]
@@ -157,28 +163,32 @@ def _terms(record: str) -> list[str]:
 
 async def spf_expand(record: str) -> tuple[int, set[str]]:
     """(DNS lookups the record costs a receiving server, every domain it
-    includes — nested ones too). Stops once past the limit."""
-    lookups, included, queue = 0, set(), [record]
-    while queue and lookups <= SPF_LOOKUP_LIMIT:
-        for term in _terms(queue.pop(0)):
-            t = term.lstrip("+-~?").lower()
-            name = None
-            if t.startswith("include:"):
-                name = t[len("include:"):]
-            elif t.startswith("redirect="):
-                name = t[len("redirect="):]
-            elif t in ("a", "mx", "ptr") or t.startswith(("a:", "a/", "mx:", "mx/", "ptr:", "exists:")):
+    includes — nested ones too). Every term is counted; DNS is asked level
+    by level, in parallel, and not at all once the limit is passed: «too
+    long» is known then, and the top-level senders are still named."""
+    lookups, included, level = 0, set(), [record]
+    while level:
+        names: list[str] = []
+        for rec in level:
+            for term in _terms(rec):
+                t = term.lstrip("+-~?").lower()
+                if t.startswith("include:"):
+                    name = t[len("include:"):]
+                elif t.startswith("redirect="):
+                    name = t[len("redirect="):]
+                elif t in ("a", "mx", "ptr") or t.startswith(("a:", "a/", "mx:", "mx/", "ptr:", "exists:")):
+                    name = ""
+                else:
+                    continue
                 lookups += 1
-                continue
-            if not name:
-                continue
-            lookups += 1
-            if name in included or "%" in name:
-                continue
-            included.add(name)
-            nested = spf_records(await _txt(name) or [])
-            if len(nested) == 1:
-                queue.append(nested[0])
+                if name and name not in included and "%" not in name:
+                    included.add(name)
+                    if lookups <= SPF_LOOKUP_LIMIT:
+                        names.append(name)
+        if lookups > SPF_LOOKUP_LIMIT:
+            return lookups, included
+        answers = await asyncio.gather(*(_txt(n) for n in names))
+        level = [nested[0] for nested in (spf_records(a or []) for a in answers) if len(nested) == 1]
     return lookups, included
 
 
@@ -196,15 +206,24 @@ async def _dkim_found(domain: str, selectors: tuple[str, ...]) -> bool | None:
 # ── Findings ─────────────────────────────────────────────────────────────────
 
 def merge_spf(records: list[str], provider: Provider | None) -> str:
-    """One record out of several: every mechanism once, the provider's
-    include first, the softest «all» the records had (never +all)."""
+    """One record out of several: every mechanism once (a bare «mx» and
+    «+mx» are the same), the provider's include first, the softest «all»
+    the records had (never +all). A redirect= becomes an include: of the
+    same senders — a second redirect= would break the record; exp= is
+    dropped, it only names an explanation."""
     terms: list[str] = []
     alls = []
     for rec in records:
         for t in _terms(rec):
-            if t.lstrip("+-~?").lower() == "all":
+            bare = t.lstrip("+-~?").lower()
+            if bare == "all":
                 alls.append(t[0] if t[0] in "+-~?" else "+")
-            elif t.lower() not in (x.lower() for x in terms):
+                continue
+            if bare.startswith("redirect="):
+                t = "include:" + t.split("=", 1)[1]
+            elif bare.startswith("exp="):
+                continue
+            if t.lstrip("+").lower() not in {x.lstrip("+").lower() for x in terms}:
                 terms.append(t)
     if provider and provider.sends and not any(t.lower() == f"include:{s}" for s in provider.spf for t in terms):
         terms.insert(0, f"include:{provider.spf[0]}")
@@ -249,24 +268,32 @@ def assess(domain: str, mx: list[str], spf: list[str], spf_lookups: int, spf_inc
                            f"Оставь {where} одну запись TXT, начинающуюся с v=spf1, — вот такую, а остальные "
                            f"удали:", merged, note))
     else:
+        # One corrected record for every SPF finding: the owner pastes it
+        # once, not one version per finding.
         terms = [t.lower() for t in _terms(spf[0])]
-        if "+all" in terms or "all" in terms:
+        open_all = "+all" in terms or "all" in terms
+        no_provider = bool(sending and not spf_includes & set(sending.spf))
+        fixed = spf[0]
+        if open_all:
+            fixed = " ".join(["v=spf1", *(t for t in _terms(fixed) if t.lstrip("+").lower() != "all"), "~all"])
+        if no_provider:
+            fixed = _with_include(fixed, sending.spf[0])
+        if open_all:
             out.append(Finding("spf_open", "SPF разрешает слать письма от твоего имени кому угодно",
                                "в записи стоит «+all» — подделать твой адрес может любой",
-                               f"Замени {where} запись SPF на такую:",
-                               " ".join(["v=spf1", *(t for t in _terms(spf[0])
-                                                     if t.lstrip("+").lower() != "all"), "~all"])))
+                               f"Замени {where} запись SPF на такую:", fixed))
         if spf_lookups > SPF_LOOKUP_LIMIT:
             out.append(Finding("spf_too_long", f"В SPF больше {SPF_LOOKUP_LIMIT} вложенных проверок",
                                f"почтовые сервисы бросают такую запись на полпути и считают ошибкой, поэтому {spam}",
                                "Убери из записи SPF сервисы, через которые ты больше не отправляешь почту: "
                                "каждый include стоит одну или несколько проверок."))
-        if sending and not spf_includes & set(sending.spf):
+        if no_provider:
             out.append(Finding("spf_no_provider", f"В SPF нет {sending.name}",
                                f"письма, которые ты отправляешь через {sending.name}, не проходят проверку, поэтому "
                                f"могут уходить в спам",
-                               f"Добавь {sending.name} в запись SPF {where} — получится так:",
-                               _with_include(spf[0], sending.spf[0])))
+                               f"Запись SPF из пункта выше уже включает {sending.name} — вставь её." if open_all
+                               else f"Добавь {sending.name} в запись SPF {where} — получится так:",
+                               "" if open_all else fixed))
     if sending and dkim is False:
         out.append(Finding("dkim_missing", "Письма не подписаны (нет DKIM)",
                            "без подписи письма с домена чаще попадают в спам, а подделку от них не отличить",
@@ -311,24 +338,32 @@ class Delivery:
 
 
 async def delivery(mx: list[str]) -> Delivery:
+    """Does port 25 of the MX open from outside. «Silent» only when every
+    node that reached no MX does open the control server: a node that
+    cannot open port 25 at all says nothing about the owner's mail."""
     exists = await asyncio.gather(*(_exists(h) for h in mx))
     if exists and all(e is False for e in exists):
         return Delivery(False, "nowhere")
     if not integrations.second_opinion_enabled():
         return Delivery()
     candidates = [h for h, e in zip(mx, exists, strict=True) if e is not False][:2]
-    verdicts = []
+    failed: set[str] = set()       # nodes that reached no MX
+    complete = True
     for host in candidates:
-        up = await second_opinion_up(f"tcp://{host}:25")
-        if up:
+        by_node = await tcp_by_node(f"{host}:25")
+        if any(by_node.values()):
             return Delivery(True, backup_only=host != mx[0])
-        verdicts.append(up)
-    if not verdicts or None in verdicts:
+        if not by_node or None in by_node.values():
+            complete = False
+        failed.update(n for n, ok in by_node.items() if ok is False)
+    if not complete or not failed:
         return Delivery()
     google = any(_matches(mx[0], s) for s in ("google.com", "googlemail.com"))
     control = CONTROL_MX[1] if google else CONTROL_MX[0]
-    if not await second_opinion_up(f"tcp://{control}:25"):
-        logger.info("Mail delivery for %s: control %s fails too — no verdict", mx[0], control)
+    # The control server is asked on the SAME nodes.
+    ctrl = await tcp_by_node(f"{control}:25", nodes=sorted(failed))
+    if not any(ctrl.values()):
+        logger.info("Mail delivery for %s: control %s fails on the same nodes — no verdict", mx[0], control)
         return Delivery()
     return Delivery(False, "silent")
 
@@ -351,11 +386,10 @@ def carriers(urls: list[str]) -> dict[str, str]:
     bare domain, then www., then the first by name."""
     by_domain: dict[str, list[str]] = {}
     for url in urls:
-        host = host_of(url)
-        domain = registrable_domain(host)
-        if "." not in domain or domain in PLATFORM_DOMAINS or host.replace(".", "").isdigit() or ":" in host:
-            continue
-        by_domain.setdefault(domain, []).append(url)
+        # An IP, a bare name, x.pages.dev: no domain of the owner's, no mail of theirs.
+        domain = owned_domain(host_of(url))
+        if domain:
+            by_domain.setdefault(domain, []).append(url)
     out = {}
     for domain, group in by_domain.items():
         def rank(u: str, d: str = domain) -> tuple[int, str]:
@@ -395,19 +429,26 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
     deliv = await delivery(mx) if mx else Delivery()
 
     previous = (await sitestatus.get(site_id)).get("mail") or {}
+    codes = {f["code"] for f in findings}
+    told = told_before(previous)
     fails = previous.get("fails") or 0   # no verdict: the count stands
+    # fail_since: when it stopped accepting — the first failed check of the
+    # series; mail has no rows in `checks`, so the snapshot keeps it and the
+    # incident (opened after FAILS_TO_ALERT) says «не принимала около N».
+    fail_since = previous.get("fail_since")
     if deliv.ok is False:
         fails += 1
+        fail_since = fail_since or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     elif deliv.ok or not mx:
-        fails = 0
+        fails, fail_since = 0, None
     dmarc = dmarc_records(dmarc_txt)
     await sitestatus.update(
         site_id, "mail", domain=domain, mx=mx, provider=provider.name if provider else None,
-        accepts=deliv.ok, reason=deliv.reason, backup_only=deliv.backup_only, fails=fails,
+        accepts=deliv.ok, reason=deliv.reason, backup_only=deliv.backup_only, fails=fails, fail_since=fail_since,
         sends_only=not mx and sends_mail(spf), locked=not mx and bool(spf) and not sends_mail(spf),
         spf=len(spf), dkim=dkim,
         dmarc=dmarc_policy(dmarc[0]) if len(dmarc) == 1 else None, findings=findings,
-        status_page=provider.status if provider else None)
+        status_page=provider.status if provider else None, told=told_after(told, codes, manage))
 
     base = dict(url=url, site_id=site_id, domain=domain, provider=provider.name if provider else None,
                 status_page=provider.status if provider else None)
@@ -417,9 +458,17 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
         down.status, down.error = "critical", down_message(deliv.reason, provider.name if provider else None)
     if findings:
         spam.status, spam.error = "warning", summary(findings)
-    for r in (down, spam):
-        await apply_incident(r, r.kind, settled=r.kind == "mail_auth" or bool(deliv.ok) or not mx,
-                             open_new=manage)
+    # No MX any more, or the delivery check is switched off: «does it accept
+    # letters» stopped applying — close silently, nothing got fixed (a vanished
+    # MX is dns_checker's 🔴). No mail at all: the same for the spam settings.
+    if not mx or (deliv.ok is None and not integrations.second_opinion_enabled()):
+        await resolve_incident(site_id, "mail")
+    else:
+        await apply_incident(down, "mail", settled=bool(deliv.ok), open_new=manage, started_at=fail_since)
+    if not mx and not sends_mail(spf):
+        await resolve_incident(site_id, "mail_auth")
+    else:
+        await apply_findings(spam, "mail_auth", codes, told, open_new=manage)
     return [down, spam]
 
 
@@ -433,7 +482,10 @@ async def check_all_mail(urls: list[str], manage: bool = True) -> list[MailResul
     out: list[MailResult] = []
     for domain, url in sorted(carriers(urls).items()):
         try:
-            out += await check_mail(domain, url, manage=manage)
-        except Exception as e:   # one domain must not stop the others
-            logger.error("Mail check for %s failed: %r", domain, e)
+            async with asyncio.timeout(DOMAIN_BUDGET_SEC):
+                out += await check_mail(domain, url, manage=manage)
+        except TimeoutError:
+            logger.warning("Mail check for %s took over %s s — keeping the last result", domain, DOMAIN_BUDGET_SEC)
+        except Exception:   # one domain must not stop the others
+            logger.exception("Mail check for %s failed", domain)
     return out

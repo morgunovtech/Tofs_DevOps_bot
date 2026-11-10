@@ -10,18 +10,21 @@ faster / slow.
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 import aiohttp
 
 from services import humanize, integrations
-from utils.text import esc
+from utils.clock import to_local
+from utils.text import err_text, esc, parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
 API = "https://chromeuxreport.googleapis.com/v1/records:queryRecord"
 TIMEOUT = aiohttp.ClientTimeout(total=20)
 WINDOW_DAYS = 28
+STALE_DAYS = 3         # older data on the card is dated: Google has not been answering
 _METRICS = {"largest_contentful_paint": "lcp", "interaction_to_next_paint": "inp",
             "cumulative_layout_shift": "cls", "experimental_time_to_first_byte": "ttfb"}
 
@@ -38,6 +41,10 @@ _BY_KEY = {m.key: m for m in METRICS}
 
 
 # ── Asking Google ────────────────────────────────────────────────────────────
+
+class KeyRejected(Exception):
+    """Google answered 400/401/403: the key is wrong, revoked or the API is off."""
+
 
 def available() -> bool:
     return bool(integrations.crux_key())
@@ -57,7 +64,10 @@ def parse(record: dict) -> dict:
 
 async def query(origin: str, key: str | None = None) -> dict | None:
     """p75 values for the origin; {} when Google has too little data for it;
-    None when the API could not be asked (no key, rejected key, network)."""
+    None when the API could not be asked (no key, network). A rejected key
+    raises KeyRejected. The health record (services.integrations) is kept
+    for the configured key only — a candidate from the wizard is not it."""
+    probe = key is not None
     key = key or integrations.crux_key()
     if not key:
         return None
@@ -67,19 +77,39 @@ async def query(origin: str, key: str | None = None) -> dict | None:
             async with session.post(API, json={"origin": origin}, headers={"X-Goog-Api-Key": key},
                                     allow_redirects=False) as resp:
                 if resp.status == 404:
+                    if not probe:
+                        await integrations.record_result("crux", True)
                     return {}
                 if resp.status != 200:
                     logger.warning("CrUX for %s: HTTP %s", origin, resp.status)
+                    refused = resp.status in (400, 401, 403)
+                    if not probe:
+                        await integrations.record_result("crux", False, f"Google ответил HTTP {resp.status}",
+                                                         refused=refused)
+                    if refused:
+                        raise KeyRejected(f"HTTP {resp.status}")
                     return None
-                return parse((await resp.json()).get("record") or {})
+                data = await resp.json(content_type=None)
+    except KeyRejected:
+        raise
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
-        logger.warning("CrUX for %s failed: %s", origin, type(e).__name__)
+        logger.warning("CrUX for %s failed: %s", origin, err_text(e))
+        if not probe:
+            await integrations.record_result("crux", False, f"Google не ответил ({err_text(e)})")
         return None
+    if not probe:
+        await integrations.record_result("crux", True)
+    return parse((data if isinstance(data, dict) else {}).get("record") or {})
 
 
-async def key_works(key: str) -> bool:
-    """A live question about a site Google surely has data for."""
-    return bool(await query("https://www.google.com", key))
+async def key_works(key: str) -> bool | None:
+    """A live question about a site Google surely has data for: True — the
+    key works, False — Google refused it, None — Google did not answer."""
+    try:
+        data = await query("https://www.google.com", key)
+    except KeyRejected:
+        return False
+    return None if data is None else bool(data)
 
 
 def has_data(values: dict | None) -> bool:
@@ -127,10 +157,18 @@ def slow_parts(values: dict) -> list[str]:
 SOURCE = f"посетители Chrome за {WINDOW_DAYS} дней, данные Google"
 
 
+def _dated(values: dict) -> str:
+    """« (данные на 07.11)» when the snapshot is older than STALE_DAYS."""
+    at = parse_iso_utc(values.get("at"))
+    if at and (datetime.now(UTC) - at) > timedelta(days=STALE_DAYS):
+        return f" (данные на {to_local(at).strftime('%d.%m')})"
+    return ""
+
+
 def card_line(values: dict | None) -> str | None:
     """The card line once Google has answered; None before (or without a key)."""
     if has_data(values):
-        return f"{verdict_icon(values)} У посетителей: {esc(describe(values))} · {SOURCE}"
+        return f"{verdict_icon(values)} У посетителей: {esc(describe(values))} · {SOURCE}{_dated(values)}"
     if values and values.get("none"):
         return "👥 У посетителей: у Google пока мало данных по сайту — так у большинства небольших сайтов"
     return None

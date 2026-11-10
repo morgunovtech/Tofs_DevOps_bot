@@ -1,8 +1,11 @@
 """URL helpers used by every monitor, formatter and handler. One place for
 the registrable-domain heuristic, the User-Agent and the monitor kinds."""
 
+import ipaddress
 import re
 from urllib.parse import urlparse
+
+import idna
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -18,11 +21,47 @@ _TWO_LEVEL_SUFFIXES = frozenset({
     "co.jp", "ne.jp", "or.jp", "co.kr", "co.nz", "co.za", "com.ua",
     "spb.ru", "msk.ru", "com.ru", "net.ru", "org.ru", "in.ua", "kiev.ua",
 })
+# A «generic» second label under a two-letter country zone (com.kz, org.ua,
+# gob.mx, ac.za, …) is a public suffix too: this one rule covers most of
+# the ICANN section of the PSL without pulling the list in.
+_GENERIC_SLDS = frozenset({
+    "com", "net", "org", "co", "gov", "edu", "ac", "or", "ne", "go", "gob", "mil", "nom", "in",
+})
+
+# Shared hosting platforms: x.github.io or nas.synology.me is not the
+# owner's domain — its registration, NS and mail are the platform's
+# business, and a change there is nothing the owner can act on.
+PLATFORM_DOMAINS = frozenset({
+    "pages.dev", "workers.dev", "github.io", "vercel.app", "netlify.app", "herokuapp.com",
+    "railway.app", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
+    "azurewebsites.net", "glitch.me", "surge.sh", "replit.app", "deno.dev", "gitlab.io",
+    "synology.me", "duckdns.org", "keenetic.pro", "myqnapcloud.com", "tilda.ws", "wixsite.com",
+})
 
 
 def is_http_url(url: str) -> bool:
     """True for web monitors; tcp:// and ping:// get availability only."""
     return url.startswith(("http://", "https://"))
+
+
+def ssl_applies(url: str) -> bool:
+    """THE rule for certificates: only an https:// monitor has one to check.
+    On an http:// one port 443 answers with the hosting's default
+    certificate (a false «недействителен»), and http://host:8080 has no TLS
+    at all. The daily check, the card, the main screen, «🔄 Перепроверить»
+    and adding a site all ask this."""
+    return url.lower().startswith("https://")
+
+
+def display_host(host: str) -> str:
+    """xn--e1afmkfd.xn--p1ai → пример.рф for screens and messages; a name
+    that does not decode stays as stored."""
+    if "xn--" not in host:
+        return host
+    try:
+        return idna.decode(host)
+    except UnicodeError:   # idna.IDNAError is a UnicodeError
+        return host
 
 
 # Methods that read a page. Any other one (POST, PUT, …) calls a function.
@@ -93,7 +132,8 @@ def site_label(url: str) -> str:
     """Compact display label: host for web sites (plus the path when the
     monitor watches one — an API endpoint next to its site must not look
     like the same thing; never the query, it may carry a token), host:port
-    for tcp:// monitors, 'ping host' for ping:// ones.
+    for tcp:// monitors ([v6]:port for an IPv6 address), 'ping host' for
+    ping:// ones. International names are shown as people write them.
 
     Never raises: one malformed stored address (a port «5432x», an
     unclosed «[») must not take down every screen, report and alert loop
@@ -107,24 +147,49 @@ def site_label(url: str) -> str:
 
 def _label(url: str) -> str:
     p = urlparse(url)
+    port = p.port
+    host = display_host(p.hostname or "")
     if p.scheme == "tcp":
-        return f"{p.hostname}:{p.port}" if p.port else (p.hostname or url)
+        shown = f"[{host}]" if ":" in host else host
+        return f"{shown}:{port}" if host and port else (shown or url)
     if p.scheme == "ping":
-        return f"ping {p.hostname}" if p.hostname else url
-    if not p.hostname:
+        return f"ping {host}" if host else url
+    if not host:
         return url
-    return p.hostname + (p.path or "").rstrip("/")
+    return host + (p.path or "").rstrip("/")
 
 
 def registrable_domain(host: str) -> str:
-    """example.com for www.example.com; example.co.uk for a.example.co.uk."""
+    """example.com for www.example.com; example.co.uk for a.example.co.uk;
+    example.com.kz for shop.example.com.kz; an IP address stays itself."""
     host = (host or "").lower().rstrip(".")
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return host
+    except ValueError:
+        pass
     parts = host.split(".")
     if len(parts) <= 2:
         return host
-    if ".".join(parts[-2:]) in _TWO_LEVEL_SUFFIXES:
+    suffix = ".".join(parts[-2:])
+    if suffix in _TWO_LEVEL_SUFFIXES or (parts[-2] in _GENERIC_SLDS and len(parts[-1]) == 2):
         return ".".join(parts[-3:])
-    return ".".join(parts[-2:])
+    return suffix
+
+
+def owned_domain(host: str) -> str | None:
+    """The owner's registrable domain behind host — None when there is none
+    to watch: an IP address, a single-label name, a platform's domain."""
+    host = (host or "").lower().rstrip(".").strip("[]")
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    domain = registrable_domain(host)
+    if "." not in domain or domain in PLATFORM_DOMAINS:
+        return None
+    return domain
 
 
 def same_site(url_a: str, url_b: str) -> bool:

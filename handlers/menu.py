@@ -27,7 +27,7 @@ from services import heartbeats, humanize, maintenance, notifier, sitestatus, up
 from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
 from utils.text import esc, plural
-from utils.urls import is_api_check, is_web_page, site_label
+from utils.urls import is_api_check, is_web_page, site_label, ssl_applies
 
 router = Router(name="menu")
 
@@ -81,7 +81,9 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
         own_host = site["url"] in await get_active_host_urls()
         st = {k: v for k, v in st.items() if k in ("avail", "region") or (own_host and k in ("ssl", "domain"))}
     notes: list[tuple[str, str, str]] = []   # (kind, severity, words)
-    ssl, dom = st.get("ssl") or {}, st.get("domain") or {}
+    # A certificate snapshot left on an http:// site by an older version says nothing.
+    ssl = (st.get("ssl") or {}) if ssl_applies(site["url"]) else {}
+    dom = st.get("domain") or {}
     days = ssl.get("days_left")
     if days is not None and days <= 14:
         notes.append(("ssl", "critical" if days <= 3 else "warning",

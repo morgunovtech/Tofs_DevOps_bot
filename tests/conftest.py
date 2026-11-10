@@ -33,10 +33,11 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from monitors import availability, dns_checker, links_checker, netcheck  # noqa: E402
+from monitors import availability, dns_checker, links_checker, netcheck, rdap  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
+    gsc,
     health,
     integrations,
     maintenance,
@@ -168,6 +169,7 @@ def _fresh_module_state(monkeypatch):
     """Module-level caches, rate limits, schedules and asyncio locks start
     clean in every test: results must not depend on the order of the tests."""
     monkeypatch.setattr(status_page, "_cache", None)
+    monkeypatch.setattr(status_page, "_lock", asyncio.Lock())
     status_page._badge_cache.clear()
     for window in (webhook._ip_hits, webhook._site_hits, webhook._bad_hits, webhook._notified,
                    webhook._held, webhook._warned):
@@ -178,6 +180,7 @@ def _fresh_module_state(monkeypatch):
     scheduler._next_avail_check.clear()
     scheduler._failed_jobs.clear()
     scheduler._slow_streak.clear()
+    scheduler._fast_streak.clear()
     scheduler._ext_ok_noted.clear()
     notifier._released.clear()
     availability._recent.clear()
@@ -201,6 +204,11 @@ def _fresh_module_state(monkeypatch):
     screenshots._inflight.clear()
     monkeypatch.setattr(links_checker, "_loop_state", None)
     monkeypatch.setattr(dns_checker, "_slots", None)
+    monkeypatch.setattr(dns_checker, "_failures", {})
+    monkeypatch.setattr(rdap, "_bootstrap_lock", asyncio.Lock())
+    monkeypatch.setattr(rdap, "_bootstrap_failed_at", None)
+    gsc.reset_token_cache()
+    monkeypatch.setattr(integrations, "_gsc_key_problem", None)
 
 
 @pytest.fixture

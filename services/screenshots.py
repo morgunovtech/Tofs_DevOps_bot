@@ -28,6 +28,7 @@ import aiohttp
 from config import TEMPLATE_OFF, config
 from services import public_urls, secrets, sitestatus
 from utils.net import is_private_target, owner_connector
+from utils.text import err_text
 
 logger = logging.getLogger(__name__)
 
@@ -138,11 +139,11 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
             except QuotaExceeded:
                 return None, QUOTA_REASON
             except ProviderRefused as e:
-                return None, f"сервис снимков не смог открыть страницу ({e})"
+                return None, f"сервис снимков не смог открыть страницу ({err_text(e)})"
             except Exception as e:
                 # First hit often times out while the provider renders the
                 # page; the result is cached server-side, so retry.
-                logger.info("Screenshot attempt %s for %s: %s", attempt + 1, url, e)
+                logger.info("Screenshot attempt %s for %s: %s", attempt + 1, url, err_text(e))
                 image = None
             # A GIF or tiny image is the provider's "still rendering"
             # placeholder; give it time and ask again.

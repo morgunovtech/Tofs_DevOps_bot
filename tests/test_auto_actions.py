@@ -15,6 +15,7 @@ from db.database import get_active_incidents, get_site, get_state, save_incident
 from handlers import alerts, incidents, setup, sites
 from handlers import automation as auto_handlers
 from handlers import heartbeats as hb_handlers
+from handlers import settings as settings_screen
 from monitors import host_checker
 from reports import scheduler
 from services import actions, automation, docker_api, integrations, maintenance, settings
@@ -378,7 +379,11 @@ async def test_queued_taps_do_not_delete(bot, db):
     await setup.cb_yx_off(StaleCall("setup:yx_off"))
     assert integrations.yandex_token() == "y" * 40
     await setup.cb_status_page_on(StaleCall("setup:sp_on"))
+    await settings_screen.cb_status_page_publish(StaleCall("sp_pub:open"))
     assert not settings.status_page_enabled()
+    await integrations.set_value("status_page_slug", "kept")
+    await settings_screen.cb_status_page_secret(StaleCall("sp_secret:new_ok"))
+    assert integrations.status_page_slug() == "kept"
 
 
 # ── A key sent after the wizard was lost to a restart ────────────────────────

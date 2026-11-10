@@ -123,6 +123,24 @@ def link_reason(status_code: int | None, error: str | None, url: str = "") -> st
     return describe_error(error)
 
 
+def every_minutes(minutes: int) -> str:
+    """«каждую минуту», «каждые 5 мин», «каждый час» — how often a site is checked."""
+    if minutes <= 1:
+        return "каждую минуту"
+    if minutes == 60:
+        return "каждый час"
+    return f"каждые {minutes} мин"
+
+
+def times_in_a_row(n: int) -> str:
+    """«один раз», «дважды подряд», «3 раза подряд»."""
+    if n <= 1:
+        return "один раз"
+    if n == 2:
+        return "дважды подряд"
+    return f"{n} {plural(n, 'раз', 'раза', 'раз')} подряд"
+
+
 def describe_error(text: str | None) -> str:
     """Technical error / incident message → short human phrase (Russian
     text that is already human passes through unchanged)."""
@@ -152,7 +170,7 @@ EXPLANATIONS: dict[str, Explanation] = {
                    "Посетители видят страницу с ошибкой вместо сайта.",
                    "хостинг отвечает ошибкой сервера — сбой на стороне хостинга, упавший деплой или "
                    "закончившиеся лимиты тарифа",
-                   ("Подождать 5 минут: я проверяю каждую минуту и напишу, как только сайт поднимется.",
+                   ("Подождать 5 минут: я продолжаю проверять и напишу, как только сайт поднимется.",
                     "Если не поднимется — открыть панель хостинга, посмотреть последний деплой и "
                     "перезапустить или откатить его.",
                     "Если панель тоже не открывается — проверить статус хостинга и написать в его поддержку.")),
@@ -389,14 +407,15 @@ def steps_block(expl: Explanation) -> str:
 
 # ── Uptime in minutes, not percent ───────────────────────────────────────────
 
-def downtime(total: int, ok: int, interval_min: float) -> str:
-    """'без сбоев' · 'недоступен ≈12 мин' — from check counts and cadence."""
-    if not total:
+def downtime(stats: dict) -> str:
+    """'без сбоев' · 'недоступен ≈12 мин' — from the measured time
+    (db.database uptime dicts: total_checks, down_min)."""
+    if not stats.get("total_checks"):
         return "нет данных"
-    failed = max(0, total - ok)
-    if not failed:
+    down = stats.get("down_min") or 0
+    if not down:
         return "без сбоев"
-    return f"недоступен ≈{fmt_duration(max(1, failed * interval_min))}"
+    return f"недоступен ≈{fmt_duration(max(1, down))}"
 
 
 def incident_headline(check_type: str, message: str | None, label: str, page: bool = True) -> str:

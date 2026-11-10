@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from db.database import get_active_incidents, resolve_incident_by_id, save_incident
-from db.migrations import MIGRATIONS
+from db.migrations import MIGRATIONS, m8_incident_alerted_at
 from monitors.base import CheckResult, SslInfo, SslResult
 from monitors.ladder import apply_ladder
 from reports import scheduler
@@ -183,8 +183,8 @@ async def test_update_does_not_resend_alerts_of_incidents_opened_before_it(bot, 
     inc_id, _ = await save_incident(sid, "availability", "Site down: HTTP 500", "critical")
     conn = await db.get_db()
     await conn.execute("UPDATE incidents SET alerted_at = NULL, created_at = datetime('now', '-1 hour')")
-    # The database as the previous version left it: everything but the last migration (this one).
-    await conn.execute(f"PRAGMA user_version = {len(MIGRATIONS) - 1}")
+    # The database as the version before incidents.alerted_at left it: that migration still ahead.
+    await conn.execute(f"PRAGMA user_version = {MIGRATIONS.index(m8_incident_alerted_at)}")
     await conn.commit()
     await db.init_db()                                    # the update runs the migration
     assert (await (await conn.execute("PRAGMA user_version")).fetchone())[0] == len(MIGRATIONS)
@@ -193,16 +193,25 @@ async def test_update_does_not_resend_alerts_of_incidents_opened_before_it(bot, 
 
 
 async def test_a_ladder_step_reopened_after_close_is_not_a_lost_alert(bot, db):
-    """«✅ Закрыть» on an SSL finding, the next check reopens the same step
-    silently (by design) — the re-send must not call that a lost alert."""
+    """«✓ Закрыть» on an SSL finding starts its ladder over: the next check
+    says the step again, as a new alert of its own. A row closed by an older
+    version (the ladder kept its step) reopens silently — the re-send must
+    not call that a lost alert."""
     sid = await db.activate_or_create_site("https://ssl.test")
     r1 = CheckResult(url="https://ssl.test", site_id=sid, status="warning", error="SSL expires in 6 days")
     await apply_ladder(r1, "ssl", 6, [1, 3, 7, 14])
     assert r1.incident_new
-    await resolve_incident_by_id(r1.incident_id)                 # the owner closes it
+    await resolve_incident_by_id(r1.incident_id)                 # the owner closes it: the ladder starts over
     r2 = CheckResult(url="https://ssl.test", site_id=sid, status="warning", error="SSL expires in 6 days")
     await apply_ladder(r2, "ssl", 6, [1, 3, 7, 14])
-    assert not r2.incident_new and r2.incident_id != r1.incident_id
-    await _age(db, r2.incident_id)
+    assert r2.incident_new and r2.incident_id != r1.incident_id
+    conn = await db.get_db()
+    await conn.execute("UPDATE incidents SET resolved = 1, resolved_at = datetime('now') WHERE id = ?",
+                       (r2.incident_id,))                        # closed the old way: alert_state kept
+    await conn.commit()
+    r3 = CheckResult(url="https://ssl.test", site_id=sid, status="warning", error="SSL expires in 6 days")
+    await apply_ladder(r3, "ssl", 6, [1, 3, 7, 14])
+    assert not r3.incident_new and r3.incident_id != r2.incident_id
+    await _age(db, r3.incident_id)
     await scheduler.deliver_missed_alerts()
-    assert bot.sent == [] and await _alerted(r2.incident_id)
+    assert bot.sent == [] and await _alerted(r3.incident_id)
