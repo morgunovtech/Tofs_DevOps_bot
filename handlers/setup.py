@@ -855,7 +855,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
         # The step stays open: the next paste is answered, not left in the chat.
         await message.answer(f"❌ Сторож не на связи: {esc(error)}. Проверь, что скопировал ссылку "
                              f"целиком и check не удалён, — и пришли её ещё раз, или «✖️ Отмена».",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:watchdog"))
         return
     await state.clear()
     forget_probes()
@@ -924,7 +924,7 @@ async def msg_yx_token(message: Message, state: FSMContext):
         if was_off:
             await integrations.switch_off("yandex_token")
         await message.answer("❌ Яндекс не принял токен (401/403): проверь скоуп webmaster:read и что токен "
-                             "не истёк — и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb())
+                             "не истёк — и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb("setup:yx"))
         return
     await state.clear()
     forget_probes()
@@ -992,7 +992,7 @@ async def msg_crux_key(message: Message, state: FSMContext):
     if answer is Probe.REJECTED:
         await message.answer("❌ Google не принял ключ. Проверь, что Chrome UX Report API включён в том же "
                              "проекте, где создан ключ, и что ключ скопирован целиком, — и пришли другой, "
-                             "или «✖️ Отмена».", reply_markup=cancel_kb())
+                             "или «✖️ Отмена».", reply_markup=cancel_kb("setup:crux"))
         return
     await state.clear()
     forget_probes()
@@ -1191,7 +1191,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
         hint = (f" У тебя есть {esc(', '.join(like[:3]))}: пришли «{esc(like[0])} URL»." if like
                 else " Сначала добавь сайт, потом хук.")
         await message.answer(f"Ни один сайт не открывается по {esc(host)} — хук не сработал бы.{hint}",
-                             reply_markup=cancel_kb())
+                             reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
     forget_probes()
@@ -1218,7 +1218,7 @@ async def msg_cf_token(message: Message, state: FSMContext):
     if answer is Probe.REJECTED:
         await message.answer("❌ Cloudflare не принял токен: нужен API-токен с правами Zone → Zone → Read и "
                              "Zone → Cache Purge на зону сайта, скопированный целиком. Пришли другой, или "
-                             "«✖️ Отмена».", reply_markup=cancel_kb())
+                             "«✖️ Отмена».", reply_markup=cancel_kb("setup:cf"))
         return
     await state.clear()
     forget_probes()
@@ -1312,7 +1312,7 @@ async def msg_gh_token(message: Message, state: FSMContext):
     answer, login = await github.check_token(token)
     if answer is Probe.REJECTED:
         await message.answer("❌ GitHub не принял токен. Проверь, что он скопирован целиком и не истёк, — "
-                             "и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb())
+                             "и пришли другой, или «✖️ Отмена».", reply_markup=cancel_kb("setup:gh"))
         return
     await state.clear()
     forget_probes()
