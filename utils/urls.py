@@ -81,6 +81,11 @@ def short_host(url: str) -> str:
     return host_of(url) or url
 
 
+def bare_host(host: str) -> str:
+    """The host without a leading «www.»: one site however it is spelled."""
+    return host[4:] if host.startswith("www.") else host
+
+
 _USERINFO_RE = re.compile(r"//[^/?#@]*@")
 
 

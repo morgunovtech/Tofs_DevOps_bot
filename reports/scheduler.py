@@ -732,14 +732,26 @@ async def run_seo_checks():
     fresh = await _recently_added()
     if fresh:
         await check_all_seo([u for u in urls if u in fresh], manage=False)
+    results = await check_all_seo([u for u in urls if u not in fresh])
     await _notify_transitions(
-        await check_all_seo([u for u in urls if u not in fresh]), format_seo_alert,
+        results, format_seo_alert,
         # The closed incident may have been a 🟠 «нет sitemap», not a closed
         # site — the recovery line must be true for both levels.
         lambda r: f"✅ {esc(site_label(r.url))}: поисковикам больше ничего не мешает. Ничего делать не нужно.",
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
+    # 🔴 → 🟠: the ban is lifted, lesser findings remain. Not a recovery (the
+    # incident is open) and not an alert (nothing new is wrong) — one quiet
+    # line to the owner. The helpers hear it the way they heard the 🔴: the
+    # SEO alert above goes out without a copy to them, so does this.
+    for r in results:
+        if r.downgraded:
+            with _isolated(f"Search ban lifted for {site_label(r.url)}"):
+                await notifier.send(
+                    f"✅ {esc(site_label(r.url))}: запрет для поисковиков снят — сайт снова открыт для поиска. "
+                    "Мелкие помехи остались, они в «🔎 Поиск и ИИ».",
+                    Priority.NORMAL, site_id=r.site_id, to_helpers=False)
 
 
 @_once("card_pictures", mark=True)

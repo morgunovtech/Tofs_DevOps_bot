@@ -635,6 +635,16 @@ async def get_dns_record(host: str, rtype: str) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
+async def get_open_incident(site_id: int, check_type: str) -> dict | None:
+    """The incident of this site and type that is open right now, or None."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT * FROM incidents WHERE site_id = ? AND check_type = ? AND resolved = 0""",
+        (site_id, check_type))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
 async def get_last_incident(site_id: int, check_type: str) -> dict | None:
     db = await get_db()
     cursor = await db.execute(

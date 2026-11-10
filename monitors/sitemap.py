@@ -7,7 +7,7 @@ import re
 import aiohttp
 
 from monitors.base import decode_body, read_capped
-from utils.urls import USER_AGENT, host_of
+from utils.urls import USER_AGENT, bare_host, host_of
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +54,6 @@ def _locs(xml: str) -> list[str]:
     return out
 
 
-def _bare(host: str) -> str:
-    return host[4:] if host.startswith("www.") else host
-
-
 async def sitemap_urls(session: aiohttp.ClientSession, base_url: str) -> list[str] | None:
     """Page URLs from /sitemap.xml (one level of sitemap index followed),
     limited to the site's own host (www or not).
@@ -86,5 +82,5 @@ async def sitemap_urls(session: aiohttp.ClientSession, base_url: str) -> list[st
         if not nested and failed:
             return None
         locs = nested
-    base_host = _bare(host_of(base_url))
-    return [loc for loc in locs if _bare(host_of(loc)) == base_host]
+    base_host = bare_host(host_of(base_url))
+    return [loc for loc in locs if bare_host(host_of(loc)) == base_host]

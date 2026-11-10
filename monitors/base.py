@@ -160,6 +160,9 @@ class SeoResult(CheckResult):
     problems: list[SeoProblem] = field(default_factory=list)
     pages_checked: int = 0
     no_js_chars: int | None = None
+    # The open 🔴 became a 🟠 in this audit: the ban is lifted, lesser
+    # findings remain — the owner hears «запрет снят», not «всё хорошо».
+    downgraded: bool = False
 
     @property
     def has_critical(self) -> bool:
