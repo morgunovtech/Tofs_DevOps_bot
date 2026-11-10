@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -107,6 +108,7 @@ from utils.urls import (
     ssl_applies,
 )
 
+logger = logging.getLogger(__name__)
 router = Router(name="sites")
 
 
@@ -587,20 +589,30 @@ async def render_card(call: CallbackQuery, site: dict):
     picture = None
     if is_web_page(url, site.get("http_method")):
         picture = await screenshots.card_picture_url(sid)
-        if await screenshots.is_due(sid, url):   # the first time, or a stale one: ready by the next look
-            _later(screenshots.refresh(sid, url))
+        # The first time, or a stale one: ready by the next look. is_due is
+        # false without a public address (nowhere to show it), and refresh
+        # itself takes one picture per site at a time.
+        if await screenshots.is_due(sid, url):
+            _later(screenshots.refresh(sid, url), f"screenshot of site {sid}")
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows), picture=picture)
 
 
 _background: set = set()
 
 
-def _later(coro):
+def _later(coro, what: str):
     """Run without holding the screen; keep a reference so it is not
-    collected half-way."""
+    collected half-way, and put its failure in the log — a background task
+    that dies silently looks like a feature that never runs."""
     task = asyncio.get_running_loop().create_task(coro)
     _background.add(task)
-    task.add_done_callback(_background.discard)
+
+    def _done(t: asyncio.Task):
+        _background.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("%s failed", what, exc_info=t.exception())
+
+    task.add_done_callback(_done)
 
 
 SITES_PAGE = 8
@@ -653,35 +665,64 @@ async def cb_check_single_site(call: CallbackQuery):
     await render_card(call, site)
 
 
+# Sites whose «🔄» is running: a second tap waits for the first.
+_live_running: set[int] = set()
+LIVE_CHECK_SEC = 180
+
+
 @router.callback_query(F.data.startswith("check_site_live:"))
 async def cb_check_site_live(call: CallbackQuery):
     """«🔄 Перепроверить»: everything the card shows, live — availability,
     certificate and domain (when this site is the one they are checked
-    for), links and search — then the same card."""
-    await ack(call, "Проверяю…")
+    for), links and search — then the same card. One run per site at a
+    time, and the whole run within LIVE_CHECK_SEC: a host that hangs on
+    every port must not leave a «▱▱▱ Проверяю…» for ever."""
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
+        await ack(call)
         await render(call, "Сайт не найден.", back_button())
         return
+    if site["id"] in _live_running:
+        await ack(call, "Уже проверяю — подожди")
+        return
+    await ack(call, "Проверяю…")
+    _live_running.add(site["id"])
+    try:
+        async with asyncio.timeout(LIVE_CHECK_SEC):
+            await _live_checks(call, site)
+    except TimeoutError:
+        await render(call, f"⌛ Проверка {esc(site_label(site['url']))} не уложилась в {LIVE_CHECK_SEC // 60} мин — "
+                           f"сайт или его DNS отвечают очень медленно. Ниже карточка по тому, что успел узнать.")
+    finally:
+        _live_running.discard(site["id"])
+    await render_card(call, site)
+
+
+async def _live_checks(call: CallbackQuery, site: dict):
     url = site["url"]
     await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
         mail_domain = registrable_domain(host_of(url)) if await carrier_of(url) == url else None
         cert = "сертификат, " if ssl_applies(url) else ""
-        await render(call, f"▰▱▱ Смотрю {cert}срок домена{', почту' if mail_domain else ''} и защиту сайта...")
-        if ssl_applies(url):
-            await check_ssl(url, manage=False)
-        await check_domain(url, manage=False)
-        if mail_domain:
-            await check_mail(mail_domain, url, manage=False)
-        if is_web_page(url, site.get("http_method")):
-            await check_security(url, manage=False)
+        base = f"Смотрю {cert}срок домена{', почту' if mail_domain else ''} и защиту сайта..."
+        await render(call, f"▰▱▱ {base}")
+        await with_running_bar(call.message, base, _host_now(site, mail_domain))
     if is_web_page(url, site.get("http_method")):
         base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
         await render(call, f"▰▰▱ {base}")
         await with_running_bar(call.message, base, _pages_now(site))
-    await render_card(call, site)
+
+
+async def _host_now(site: dict, mail_domain: str | None):
+    url = site["url"]
+    if ssl_applies(url):
+        await check_ssl(url, manage=False)
+    await check_domain(url, manage=False)
+    if mail_domain:
+        await check_mail(mail_domain, url, manage=False)
+    if is_web_page(url, site.get("http_method")):
+        await check_security(url, manage=False)
 
 
 async def _pages_now(site: dict):

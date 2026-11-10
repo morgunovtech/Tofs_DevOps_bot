@@ -2,6 +2,7 @@
 keyboards, the running progress bar, the error handler and the ⛔ router."""
 
 import asyncio
+import contextlib
 import logging
 
 from aiogram import BaseMiddleware, F, Router
@@ -186,10 +187,13 @@ async def site_by_cb(arg: str | None) -> dict | None:
 
 async def with_running_bar(message: Message, base_text: str, coro, tick: float = 4.0):
     """Await a long coroutine while a runner segment (▰▱▱ → ▱▰▱ → ▱▱▰)
-    metronomes on the status message. The task is cancelled if the
-    animation itself fails, so nothing is left running as an orphan."""
+    metronomes on the status message. A frame that cannot be drawn — a
+    message too old to edit, flood control, the network — never cancels
+    the check: the animation is decoration. The task is cancelled only if
+    the caller itself is, so nothing is left running as an orphan."""
     task = asyncio.ensure_future(coro)
     frames = ("▰▱▱", "▱▰▱", "▱▱▰", "▱▰▱")
+    can_edit = hasattr(message, "edit_text")   # not an InaccessibleMessage
     i = 0
     try:
         while True:
@@ -199,10 +203,9 @@ async def with_running_bar(message: Message, base_text: str, coro, tick: float =
                 if task.done():   # a TimeoutError from INSIDE the task
                     return task.result()
                 i += 1
-                try:
-                    await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
-                except TelegramBadRequest:
-                    pass
+                if can_edit:
+                    with contextlib.suppress(TelegramAPIError):
+                        await message.edit_text(f"{frames[i % len(frames)]} {base_text}")
     except BaseException:
         if not task.done():
             task.cancel()

@@ -3,13 +3,18 @@ opened, a forgotten step does not swallow the next message, long buttons
 show progress and do not run twice, destructive taps ask first, strangers
 get one «⛔» and leave nothing behind."""
 
+import asyncio
+
 from aiogram import Bot
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
+from aiogram.types import Chat, InaccessibleMessage
 from conftest import FakeCall, buttons
 from test_dispatcher import DP, MockedSession, _callback, _message
 
-from handlers import mute, settings, site_settings, sites
+from handlers import alerts, mute, settings, site_settings, sites
+from handlers.common import with_running_bar
+from monitors.base import AvailabilityResult
 from services import maintenance, sitestatus
 from services import settings as settings_service
 
@@ -140,3 +145,48 @@ def test_when_to_write_marks_the_current_values():
     labels = buttons(settings._reports_kb())
     assert f"✅ 🌅 {settings_service.morning_hour()}:00" in labels
     assert "✅ 🔔 Будить: всё критичное" in labels and "🔔 Только «сайт лёг»" in labels
+
+
+async def test_a_check_from_an_alert_shows_progress_and_does_not_run_twice(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    runs = []
+
+    async def slow_check(url, manage=True):
+        runs.append(url)
+        await asyncio.sleep(0.05)
+        return AvailabilityResult(url=url, site_id=sid, status_code=200, response_time_ms=90)
+
+    monkeypatch.setattr(alerts, "check_availability", slow_check)
+    first, second = FakeCall(f"act:recheck:{sid}"), FakeCall(f"act:recheck:{sid}")
+    await asyncio.gather(alerts.cb_alert_action(first), alerts.cb_alert_action(second))
+    assert len(runs) == 1
+    assert first.message.texts[0].startswith("⏳ Проверяю") and first.message.texts[-1].startswith("✅")
+    assert any(a and a.startswith("Уже проверяю") for a in second.answers)
+    assert not alerts._busy                                                # released for the next tap
+
+
+async def test_a_live_check_runs_once_at_a_time_and_ends_in_time(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    monkeypatch.setattr(sites.screenshots, "is_due", lambda *a: _const(False))
+
+    async def hanging(url, manage=True):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(sites, "check_availability", hanging)
+    monkeypatch.setattr(sites, "LIVE_CHECK_SEC", 0.1)
+    first, second = FakeCall(f"check_site_live:{sid}"), FakeCall(f"check_site_live:{sid}")
+    await asyncio.gather(sites.cb_check_site_live(first), sites.cb_check_site_live(second))
+    assert any(a and a.startswith("Уже проверяю") for a in second.answers) and not second.message.texts
+    assert any(t.startswith("⌛ Проверка ex.test не уложилась") for t in first.message.texts)
+    assert first.message.texts[-1].startswith("<b>ex.test</b>")           # the card, from what is known
+    assert not sites._live_running
+
+
+async def test_progress_on_an_old_message_does_not_cancel_the_check():
+    old = InaccessibleMessage(chat=Chat(id=1, type="private"), message_id=1)
+
+    async def work():
+        await asyncio.sleep(0.05)
+        return "done"
+
+    assert await with_running_bar(old, "x", work(), tick=0.01) == "done"

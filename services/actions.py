@@ -217,9 +217,13 @@ async def purge_cf_cache(url: str) -> str:
             if body.get("success"):
                 return f"🧹 Кэш Cloudflare для {esc(host)} сброшен — посетители увидят свежую версию сайта"
             return "❌ Cloudflare: " + esc(_cf_error(body, status))
+    except (TimeoutError, aiohttp.ClientError) as e:
+        logger.warning("CF cache purge failed: %s", type(e).__name__)
+        return (f"❌ Cloudflare не ответил за {int(_TIMEOUT.total)} с — попробуй через минуту или сбрось кэш "
+                f"в панели Cloudflare")
     except Exception as e:
         logger.warning("CF cache purge failed: %s", type(e).__name__)
-        return f"❌ Не удалось сбросить кэш: {esc(type(e).__name__)} — попробуй через минуту"
+        return "❌ Не удалось сбросить кэш — подробности в логе бота; попробуй через минуту"
 
 
 async def _cf_json(resp: aiohttp.ClientResponse) -> dict:

@@ -3,10 +3,12 @@ Results go out as replies — the alert text itself stays intact and the
 buttons remain usable. «🚀»/«🧹» change production: the first tap asks,
 «Да» (act:ok:…) within automation.CONFIRM_TTL does — once, journaled."""
 
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_state, set_state
@@ -77,13 +79,15 @@ async def cb_alert_confirmed(call: CallbackQuery):
     if row is None:
         await call.message.answer(f"⏳ Не запускаю второй раз: {esc(why)}.")
         return
+    # The hook may take up to 30 s: a line that says so at once, replaced by the outcome.
+    status = await call.message.answer("⏳ Запускаю пересборку…" if action == "redeploy" else "⏳ Сбрасываю кэш…")
     if action == "redeploy":
         res = await trigger_redeploy(url)
         text = ("🚀 " if res.ok else "❌ ") + res.text
     else:
         text = await purge_cf_cache(url)
     await automation.finish(row, text)
-    await call.message.answer(text)
+    await status.edit_text(text)
 
 
 async def _quiet_hour(site_id: int):
@@ -134,6 +138,11 @@ async def cb_alert_group(call: CallbackQuery):
                                                                                  for i in range(0, len(buttons), 4)]))
 
 
+# Long buttons under way, by (action, site id): a second tap while the
+# first is still running gets a toast, not a second run.
+_busy: set[tuple[str, int]] = set()
+
+
 @router.callback_query(F.data.startswith("act:"))
 async def cb_alert_action(call: CallbackQuery):
     args = cb_args(call, 2)
@@ -147,18 +156,15 @@ async def cb_alert_action(call: CallbackQuery):
         return
     url = site["url"]
     label = esc(site_label(url))
-    if action == "recheck":
-        await ack(call, "Проверяю…")
-        r = await check_availability(url, manage=False)
-        speed = f" {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
-        if r.ok:
-            text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
-                    else f"✅ {label} сейчас отвечает{speed}.")
-        elif r.transient:
-            text = f"⚠️ {label}: проверить сейчас не могу — {esc(humanize.describe_error(r.error))}."
-        else:
-            text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
-        await call.message.answer(text)
+    if action in ("recheck", "shot"):
+        if (action, site["id"]) in _busy:
+            await ack(call, "Уже проверяю — ответ будет в чате")
+            return
+        _busy.add((action, site["id"]))
+        try:
+            await _recheck(call, site) if action == "recheck" else await _shot(call, site)
+        finally:
+            _busy.discard((action, site["id"]))
     elif action == "fix":
         # An old alert about a site that opens by now: a pause would mute the
         # next real fall for an hour. Pages with errors (deep) are still a fix.
@@ -172,23 +178,6 @@ async def cb_alert_action(call: CallbackQuery):
         await ack(call, f"Понял, молчу {length}")
         await call.message.answer(f"🔧 Понял, ты чинишь {label}. {length.capitalize()} не пишу про него, проверки "
                                   f"продолжаются. Поднимется раньше — сразу напишу и сниму тишину.")
-    elif action == "shot":
-        if not is_web_page(url, site.get("http_method")):
-            await ack(call, "Здесь нет страницы, которую можно сфотографировать: это API или порт",
-                      show_alert=True)
-            return
-        await ack(call, "Делаю скрин… (~15 сек)")
-        try:
-            await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
-        except Exception:
-            pass
-        image, reason = await fetch_screenshot(url)
-        if image:
-            await call.message.answer_photo(
-                BufferedInputFile(image, filename="screenshot.png"),
-                caption=f"📸 {esc(short_host(url))} · {now_local().strftime('%d.%m %H:%M')}")
-        else:
-            await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
     elif action in _CONFIRM:
         await ack(call)
         await _ask(call, action, site)
@@ -197,3 +186,43 @@ async def cb_alert_action(call: CallbackQuery):
         await render(call, "✖️ Хорошо, ничего не делаю.")
     else:
         await ack(call, "Неизвестное действие", show_alert=True)
+
+
+async def _recheck(call: CallbackQuery, site: dict):
+    """«🔍»: a line below the alert at once (the check takes up to half a
+    minute on a dead host), then the same line becomes the outcome."""
+    url, label = site["url"], esc(site_label(site["url"]))
+    await ack(call)
+    status = await call.message.answer(f"⏳ Проверяю {label}…")
+    r = await check_availability(url, manage=False)
+    speed = f" {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
+    if r.ok:
+        text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
+                else f"✅ {label} сейчас отвечает{speed}.")
+    elif r.transient:
+        text = f"⚠️ {label}: проверить сейчас не могу — {esc(humanize.describe_error(r.error))}."
+    else:
+        text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
+    await status.edit_text(text)
+
+
+async def _shot(call: CallbackQuery, site: dict):
+    """«📸»: the screenshot service may take minutes — said below the alert,
+    not in a toast that promises 15 seconds."""
+    url = site["url"]
+    if not is_web_page(url, site.get("http_method")):
+        await ack(call, "Здесь нет страницы, которую можно сфотографировать: это API или порт", show_alert=True)
+        return
+    await ack(call)
+    status = await call.message.answer("📸 Делаю снимок — до нескольких минут")
+    with contextlib.suppress(Exception):
+        await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
+    image, reason = await fetch_screenshot(url)
+    if image:
+        await call.message.answer_photo(
+            BufferedInputFile(image, filename="screenshot.png"),
+            caption=f"📸 {esc(short_host(url))} · {now_local().strftime('%d.%m %H:%M')}")
+        with contextlib.suppress(TelegramAPIError):
+            await status.delete()
+    else:
+        await status.edit_text(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
