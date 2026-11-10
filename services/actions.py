@@ -14,17 +14,50 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
 from services import humanize, integrations, maintenance, seo_fixes
+from services.integrations import Probe
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
+_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=10)
 CF_API = "https://api.cloudflare.com/client/v4"   # a constant so tests can point it at a local server
 _ZONE_ID = re.compile(r"[0-9a-f]{32}")
 # The same words as handlers.common.RECHECK (a test keeps them equal): the
 # handlers package cannot be imported from a service without a cycle.
 RECHECK = "🔄 Проверить снова"
+
+
+async def cf_token_status(token: str) -> Probe:
+    """Is the Cloudflare API token any good — asked before «✅ сохранён».
+    With a Zone ID in hand the question is the one «🧹» asks first, GET
+    /zones/{id}: a refusal there is a refusal (the token must read the
+    zone to purge it). Without one, GET /user/tokens/verify: an active
+    token is OK; a 4xx there is not called a refusal — an account-owned
+    token has a verify endpoint of its own (/accounts/{id}/tokens/verify,
+    docs: developers.cloudflare.com/api/resources/accounts/subresources/
+    tokens/methods/verify/), and such a token would be turned away here
+    [not verified against the real API] — it is saved unconfirmed and the
+    first purge tells."""
+    zone_id = integrations.cf_zone_id()
+    by_zone = bool(_ZONE_ID.fullmatch(zone_id))
+    url = f"{CF_API}/zones/{zone_id}" if by_zone else f"{CF_API}/user/tokens/verify"
+    try:
+        async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as s:
+            async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as resp:
+                body, status = await _cf_json(resp), resp.status
+    except Exception as e:
+        logger.warning("Cloudflare token probe failed: %s", type(e).__name__)
+        return Probe.UNREACHABLE
+    if status == 200 and body.get("success"):
+        if by_zone or str((body.get("result") or {}).get("status")) == "active":
+            return Probe.OK
+        return Probe.REJECTED                       # verify answered: disabled or expired
+    if status in (400, 401, 403):
+        logger.warning("Cloudflare token probe: HTTP %s (%s)", status, _cf_error(body, status))
+        return Probe.REJECTED if by_zone else Probe.UNREACHABLE
+    return Probe.UNREACHABLE
 
 
 def deploy_hook_for(url: str) -> str | None:

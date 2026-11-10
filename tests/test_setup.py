@@ -18,6 +18,7 @@ from services import (
     yandex_webmaster,
 )
 from services.actions import deploy_hook_for
+from services.integrations import Probe
 
 
 async def _items(monkeypatch, web_ok=True):
@@ -127,6 +128,8 @@ async def test_yandex_wizard_validates_live(bot, db, monkeypatch):
         return {"a.example": {}, "b.example": {}} if integrations.yandex_token().startswith("good") else None
 
     monkeypatch.setattr(yandex_webmaster, "get_summaries", fake_summaries)
+    monkeypatch.setattr(yandex_webmaster, "check_token",
+                        lambda: _const(Probe.OK if integrations.yandex_token().startswith("good") else Probe.REJECTED))
     msg = FakeMessage("short")
     await setup.msg_yx_token(msg, FakeState())
     assert "Не похоже" in msg.texts[-1]
@@ -183,6 +186,8 @@ async def test_gsc_wizard(bot, db, monkeypatch):
 
 
 async def test_cloudflare_wizard(bot, db, monkeypatch):
+    monkeypatch.setattr(setup, "cf_token_status", lambda token: _const(Probe.OK))
+    await db.activate_or_create_site("https://example.com")
     monkeypatch.setattr(setup, "_web_ok", lambda: _const(True))
     msg = FakeMessage("example.com http://not-https")
     await setup.msg_cf_hook(msg, FakeState())

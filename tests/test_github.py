@@ -13,8 +13,9 @@ from handlers import setup
 from reports import scheduler
 from reports.weekly import build_weekly_report
 from services import github, integrations
+from services.integrations import Probe
 
-OLD = (datetime.now(UTC) - timedelta(days=12)).isoformat().replace("+00:00", "Z")
+OLD =(datetime.now(UTC) - timedelta(days=12)).isoformat().replace("+00:00", "Z")
 FRESH = (datetime.now(UTC) - timedelta(days=1)).isoformat().replace("+00:00", "Z")
 
 
@@ -161,6 +162,11 @@ async def test_setup_wizard_checks_the_token_live(bot, db, monkeypatch):
     async def login(token=None):
         return "me" if (token or integrations.github_token()).startswith("github_pat_good") else None
     monkeypatch.setattr(github, "viewer_login", login)
+
+    async def check(token=None):
+        name = await login(token)
+        return (Probe.OK, name) if name else (Probe.REJECTED, None)
+    monkeypatch.setattr(github, "check_token", check)
     msg = FakeMessage("short")
     await setup.msg_gh_token(msg, FakeState())
     assert "Не похоже" in msg.texts[-1]

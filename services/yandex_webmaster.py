@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from services import integrations
+from services.integrations import Probe
 from utils.text import err_text
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,27 @@ async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:
             logger.warning("Yandex.Webmaster %s HTTP %s: %s", path, resp.status, (await resp.text())[:200])
             return None
         return await resp.json()
+
+
+_PROBE_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+
+async def check_token() -> Probe:
+    """One GET /user with the configured token — the three-way probe for
+    the wizard and «🔌 Подключения»: a token Yandex refused is REJECTED,
+    a Webmaster that did not answer is UNREACHABLE (the token is not to
+    blame). Counting the hosts is get_summaries' job."""
+    try:
+        async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as session:
+            async with session.get(BASE + "/user", headers=_headers()) as resp:
+                if resp.status == 200:
+                    return Probe.OK
+                if resp.status in (401, 403):
+                    return Probe.REJECTED
+                logger.warning("Yandex.Webmaster /user HTTP %s", resp.status)
+    except (aiohttp.ClientError, TimeoutError) as e:
+        logger.warning("Yandex.Webmaster probe failed: %s", err_text(e))
+    return Probe.UNREACHABLE
 
 
 def _summary(summary: dict) -> dict:

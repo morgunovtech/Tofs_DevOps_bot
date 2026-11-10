@@ -30,6 +30,7 @@ import aiohttp
 
 from db.database import get_state, set_state
 from services import integrations, updates
+from services.integrations import Probe
 from utils.text import err_text, esc, esc_attr, plural
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,19 @@ async def viewer_login(token: str | None = None) -> str | None:
     except GitHubError:
         return None
     return ((data.get("viewer") or {}).get("login")) or None
+
+
+async def check_token(token: str | None = None) -> tuple[Probe, str | None]:
+    """The three-way probe for the wizard and «🔌 Подключения»: (OK, the
+    token's account), (REJECTED, None) when GitHub turned the token down,
+    (UNREACHABLE, None) when GitHub could not be asked."""
+    try:
+        async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as session:
+            data = await _graphql(session, _VIEWER, token=token)
+    except GitHubError as e:
+        return (Probe.REJECTED if e.refused else Probe.UNREACHABLE), None
+    login = (data.get("viewer") or {}).get("login")
+    return (Probe.OK, login) if login else (Probe.REJECTED, None)
 
 
 async def _repositories(session: aiohttp.ClientSession, fields: str,
