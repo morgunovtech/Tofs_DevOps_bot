@@ -219,8 +219,20 @@ async def m7_drop_visitor_samples(db):
     """)
 
 
+async def m8_incident_alerted_at(db):
+    # When the incident's alert went out (delivered, queued or kept in the
+    # outbox); NULL — still owed, reports.scheduler.deliver_missed_alerts
+    # sends it. Incidents opened before this version count as alerted:
+    # re-sending all of them after an update would be a storm of stale alerts.
+    await _add_columns(db, "incidents", {"alerted_at": "TEXT"})
+    await db.execute("UPDATE incidents SET alerted_at = COALESCE(created_at, datetime('now')) "
+                     "WHERE alerted_at IS NULL")
+    # The mark used to live in bot_state (announced:<id>); the column replaces it.
+    await db.execute("DELETE FROM bot_state WHERE key LIKE 'announced:%'")
+
+
 MIGRATIONS = [m1_base_schema, m2_site_dials_and_indexes, m3_drop_dead_columns, m4_queued_buttons, m5_outbox,
-              m6_visitor_speed, m7_drop_visitor_samples]
+              m6_visitor_speed, m7_drop_visitor_samples, m8_incident_alerted_at]
 
 
 async def migrate(db, upto: int | None = None) -> int:

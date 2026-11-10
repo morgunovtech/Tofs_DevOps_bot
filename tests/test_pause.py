@@ -34,6 +34,7 @@ def _switchable_site():
 async def _tick():
     scheduler._next_avail_check.clear()
     await scheduler.run_availability_checks()
+    await scheduler.drain_alert_worker()
 
 
 async def test_recovery_during_fix_arrives_and_lifts_the_silence(bot, db):

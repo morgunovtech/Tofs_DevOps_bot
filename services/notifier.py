@@ -54,6 +54,8 @@ from db.database import (
     get_active_incidents,
     get_state,
     get_states_like,
+    incident_alerted_at,
+    mark_incident_alerted,
     outbox_add,
     outbox_delete,
     outbox_peek,
@@ -232,15 +234,17 @@ _released: set[int] = set()     # held alerts said this process; a refused delet
 
 async def announced_at(incident_id: int) -> datetime | None:
     """When the owner was told about this incident (delivered, queued or
-    kept for a retry); None — never. The one place that reads the mark."""
-    return parse_iso_utc(await get_state(f"announced:{incident_id}"))
+    kept for a retry); None — never. The one place that reads the mark:
+    incidents.alerted_at, which reports.scheduler.deliver_missed_alerts
+    uses to re-send what is still owed."""
+    return parse_sqlite_utc(await incident_alerted_at(incident_id))
 
 
 async def _mark_announced(incident_id: int):
     """Best effort: the message is out, a database that refuses the write
     must not turn into «not announced» and a repeat (PLAN-09 watches the disk)."""
     try:
-        await set_state(f"announced:{incident_id}", datetime.now(UTC).isoformat())
+        await mark_incident_alerted(incident_id)
     except sqlite3.OperationalError as e:
         logger.warning("Could not mark incident %s as announced: %s", incident_id, e)
 

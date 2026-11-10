@@ -60,7 +60,13 @@ from handlers import router  # noqa: E402
 from handlers.common import BOTTOM, MAX_SITES  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
 from handlers.start import BOTTOM_SHOWN  # noqa: E402
-from reports.scheduler import catch_up_after_restart, rerun_seo_after_update, setup_scheduler  # noqa: E402
+from reports.scheduler import (  # noqa: E402
+    cancel_alert_worker,
+    catch_up_after_restart,
+    drain_alert_worker,
+    rerun_seo_after_update,
+    setup_scheduler,
+)
 from services import integrations, maintenance, notifier, runtime, secrets, settings, updates  # noqa: E402
 from utils.urls import proxy_label, proxy_problem, site_label  # noqa: E402
 from web.webhook import start_web_server  # noqa: E402
@@ -256,6 +262,11 @@ async def stop(scheduler, web_runner, bot) -> None:
             if web_runner is not None:
                 await web_runner.cleanup()
         finally:
+            # Alerts queued by the last tick go out first; then the worker, which
+            # waits for work forever, is cancelled so it does not eat the drain time.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(drain_alert_worker(), timeout=5)
+            cancel_alert_worker()
             others = {t for t in asyncio.all_tasks() if t is not asyncio.current_task()}
             if others:
                 _, pending = await asyncio.wait(others, timeout=STOP_DRAIN_SEC)

@@ -60,6 +60,7 @@ async def _server(state: dict):
 async def _tick():
     scheduler._next_avail_check.clear()
     await scheduler.run_availability_checks()
+    await scheduler.drain_alert_worker()
 
 
 async def test_site_down_is_alerted_while_the_database_refuses_writes(bot, db):

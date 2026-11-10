@@ -88,8 +88,8 @@ async def test_a_broken_deploy_hook_does_not_show_its_secret(db, monkeypatch, ca
     hook = "api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/SECRETPART"   # «https://» forgotten
     monkeypatch.setattr(integrations, "deploy_hooks", lambda: {"example.com": hook})
     with caplog.at_level(logging.WARNING):
-        line = await actions.trigger_redeploy("https://example.com")
-    assert line.startswith("❌") and "SECRETPART" not in line and "SECRETPART" not in caplog.text
+        res = await actions.trigger_redeploy("https://example.com")
+    assert not res.ok and "SECRETPART" not in res.text and "SECRETPART" not in caplog.text
 
 
 def test_an_address_with_a_token_never_goes_to_check_host():

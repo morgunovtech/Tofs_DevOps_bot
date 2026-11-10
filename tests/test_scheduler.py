@@ -30,6 +30,7 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         await db.update_site_settings(sid, fail_threshold=1)
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
+        await scheduler.drain_alert_worker()
         assert bot.sent and "не открывается" in bot.sent[-1]["text"] and bot.sent[-1]["silent"] is False
         labels = [b.text for row in bot.sent[-1]["reply_markup"].inline_keyboard for b in row]
         assert "ℹ️ Что делать" in labels and "🔧 Я чиню, час тишины" in labels
@@ -37,6 +38,7 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         # Not due again within the interval → no second alert.
         n = len(bot.sent)
         await scheduler.run_availability_checks()
+        await scheduler.drain_alert_worker()
         assert len(bot.sent) == n
     async with await _site_server(200) as server2:
         # Same URL cannot be reused (port changes), so simulate recovery on a new site.
@@ -45,6 +47,7 @@ async def test_availability_job_alerts_and_recovers(bot, db):
         await save_incident(sid2, "availability", "Site down: HTTP 500", "critical")
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
+        await scheduler.drain_alert_worker()
         assert "снова открывается" in bot.sent[-1]["text"]
 
 

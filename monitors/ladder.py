@@ -5,6 +5,7 @@ of mail and security findings."""
 
 from db.database import (
     get_last_alert_threshold,
+    mark_incident_alerted,
     resolve_incident,
     save_incident,
     set_last_alert_threshold,
@@ -34,13 +35,17 @@ async def apply_ladder(result: CheckResult, check_type: str,
             # certificate is valid but expiring — start its own ladder, or
             # 7/3/1 would never be said.
             last = None
-        result.incident_id, _ = await save_incident(result.site_id, check_type, result.error, result.severity)
+        result.incident_id, created = await save_incident(result.site_id, check_type, result.error, result.severity)
         if last is None or (current is not None and current < last):
             # Force "new" even if the incident was already open from a prior
             # threshold, so the scheduler sends the worse-threshold alert.
             result.incident_new = True
             result.threshold_crossed = current
             await set_last_alert_threshold(result.site_id, check_type, current)
+        elif created:
+            # A fresh row for a step already said (the owner closed the previous
+            # one): nothing is owed, or the re-send would call it a lost alert.
+            await mark_incident_alerted(result.incident_id)
         return
     closed = await resolve_incident(result.site_id, check_type)
     if closed:

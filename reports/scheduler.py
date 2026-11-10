@@ -4,9 +4,11 @@ mute / quiet-hours / pause rules."""
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import sqlite3
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 
 from aiogram.types import FSInputFile, InlineKeyboardButton, Message
@@ -18,6 +20,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config import config
 from db.database import (
     backup_db,
+    clear_incident_alerted,
     get_active_host_urls,
     get_active_incidents,
     get_active_page_urls,
@@ -26,7 +29,9 @@ from db.database import (
     get_heartbeats,
     get_last_check,
     get_state,
+    get_unalerted_incidents,
     get_uptime_over_days,
+    mark_incident_alerted,
     resolve_incident,
     rollup_old_checks,
     save_incident,
@@ -184,38 +189,203 @@ async def run_availability_checks():
             due.append(s["url"])
     if not due:
         return
+    # The tick only checks; every message goes to the alert worker, so a
+    # silent Telegram or a slow deploy hook never holds up the next check.
     for r in await check_all(due):
-        with _isolated(f"Availability alert for {site_label(r.url)}"):
-            await _on_availability_result(r, by_url.get(r.url, {}))
+        site = by_url.get(r.url, {})
+        if r.incident_new:
+            _enqueue(_send_availability_alert, r, site, incident_id=r.incident_id)
+        elif r.external_ok is True:
+            _enqueue(_note_local_network_problem, r.url, r.site_id)
+        elif r.recovered:
+            _enqueue(_send_recovery, r)
+        if r.ok:
+            _enqueue(_site_is_up, r, _slow_ms(site))
 
 
-async def _on_availability_result(r, site: dict):
-    """What one site's minute-tick result means: an alert, a recovery, a
-    note about the bot's own network, the slow-answer streak."""
-    if r.incident_new:
-        msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site))
-        if config.auto_redeploy and deploy_hook_for(r.url):
-            msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
-        kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
-        sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
-                                   always_ring=True, announces=r.incident_id)
-        if isinstance(sent, Message):
-            _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
-    elif r.external_ok is True:
-        await _note_local_network_problem(r.url, r.site_id)
-    elif r.recovered:
-        # Rings by default; with «будить только когда сайт лёг» only the fall does.
-        text = format_recovery_alert(r)
-        inc_id = (r.resolved_incident or {}).get("id")
-        if inc_id and await notifier.announced_at(inc_id) and await maintenance.paused_until(r.site_id):
-            # «🔧 Я чиню» promised «напишу, когда поднимется»: the fix ends the silence.
-            # A pause set before an unannounced fall stays — send() drops the ✅ then.
-            await maintenance.pause_site(r.site_id, None)
-            text += "\n\n🔧 Тишину снял — снова пишу обо всём."
-        await notifier.send(text, Priority.CRITICAL, site_id=r.site_id, resolves=inc_id)
-    if r.ok:
-        _ext_ok_noted.discard(r.site_id)
-        await _track_slow(r, _slow_ms(site))
+# ── Alert delivery: at least once ────────────────────────────────────────────
+#
+# A check writes its incident BEFORE the alert goes out. An exception, a
+# stopped job or a killed process in between used to lose the alert for
+# good: the next check sees the incident as old. incidents.alerted_at is set
+# only once the alert went out; deliver_missed_alerts() sends what is owed.
+# A pause or a maintenance window holds the full alert in bot_state (held:…,
+# services.notifier.release_held says it after) — the re-send leaves those alone.
+
+MISSED_ALERT_MIN = 2            # a fresh incident gets this long to be alerted by its own job
+_in_flight: set[int] = set()    # incidents whose alert is queued or being sent right now
+_busy: Counter[str] = Counter()  # check types whose job is running: it alerts on its own incidents
+_sent_unrecorded: set[int] = set()  # alert went out, but the DB refused the mark (no re-send storm)
+_queue: asyncio.Queue | None = None
+_worker: asyncio.Task | None = None
+
+
+def _enqueue(fn, *args, incident_id: int | None = None):
+    """Run fn(*args) in the alert worker: one at a time, in order, never
+    inside the tick."""
+    global _queue, _worker
+    loop = asyncio.get_running_loop()
+    if _worker is None or _worker.done() or _worker.get_loop() is not loop:
+        _queue = asyncio.Queue()
+        _worker = loop.create_task(_work(_queue), name="alert-worker")
+    if incident_id is not None:
+        _in_flight.add(incident_id)
+    _queue.put_nowait((fn, args, incident_id))
+
+
+async def _work(queue: asyncio.Queue):
+    while True:
+        fn, args, incident_id = await queue.get()
+        try:
+            await fn(*args)
+        except Exception:
+            logger.exception("Alert worker: %s failed", fn.__name__)
+        finally:
+            if incident_id is not None:
+                _in_flight.discard(incident_id)
+            queue.task_done()
+
+
+async def drain_alert_worker():
+    """Wait until everything queued for the alert worker is done (tests, shutdown)."""
+    if _queue is not None and _worker is not None and not _worker.done():
+        await _queue.join()
+
+
+def cancel_alert_worker():
+    """Shutdown: the worker waits for work forever — it is not a task to wait for."""
+    if _worker is not None and not _worker.done():
+        _worker.cancel()
+
+
+def _alerts_on(*check_types: str):
+    """For a job that opens incidents and alerts on them itself: while it
+    runs, deliver_missed_alerts() leaves those incidents to it."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def run(*args, **kwargs):
+            _busy.update(check_types)
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                _busy.subtract(check_types)
+        return run
+    return wrap
+
+
+async def _alert_once(incident_id: int | None, site_id: int, text: str, priority: Priority, kb,
+                      *, always_ring: bool = False, to_helpers: bool = False) -> Message | bool | None:
+    """Send an incident's alert and record that it went out. None — the site
+    is paused or inside a maintenance window: the full alert is held by the
+    notifier (held:<id>) and said once the pause is over; the incident stays
+    owed until then."""
+    if incident_id is not None:
+        _in_flight.add(incident_id)
+    try:
+        if incident_id is not None:
+            await _record_alert(incident_id, False)
+        paused = await maintenance.is_paused(site_id)
+        sent = await notifier.send(text, priority, site_id=site_id, reply_markup=kb, always_ring=always_ring,
+                                   to_helpers=to_helpers, announces=incident_id)
+        if paused:
+            return None
+        if incident_id is not None:
+            await _record_alert(incident_id, True)
+        return sent
+    finally:
+        if incident_id is not None:
+            _in_flight.discard(incident_id)
+
+
+async def _record_alert(incident_id: int, alerted: bool):
+    """The mark must never cost the alert itself: a DB that refuses writes
+    is logged, and a sent alert is remembered in memory instead."""
+    try:
+        await (mark_incident_alerted if alerted else clear_incident_alerted)(incident_id)
+        _sent_unrecorded.discard(incident_id)
+    except Exception as e:
+        logger.warning("Could not record the alert of incident %s: %s", incident_id, e)
+        if alerted:
+            _sent_unrecorded.add(incident_id)
+
+
+def _missed_alert_text(inc: dict) -> str:
+    since = parse_sqlite_utc(inc.get("created_at"))
+    when = f" с {to_local(since).strftime('%d.%m %H:%M')}" if since else ""
+    return (f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}\n"
+            f"⏳ Тревога об этом не ушла вовремя — проблема открыта{when}. Проверки продолжаются.")
+
+
+async def deliver_missed_alerts():
+    """Every minute: alerts still owed — their sending failed or was cut
+    off (an exception, a stop, a crash), or the site was paused. A short
+    line per incident, marked as late."""
+    for inc in await get_unalerted_incidents(MISSED_ALERT_MIN):
+        if inc["id"] in _in_flight or inc["id"] in _sent_unrecorded or _busy[inc["check_type"]] > 0:
+            continue
+        if await get_state(f"{notifier.HELD}{inc['id']}"):
+            continue        # the full alert waits for the end of the pause: release_held says it
+        try:
+            if inc["check_type"] == "seo" and inc["severity"] != "critical":
+                await _record_alert(inc["id"], True)   # 🟠 search findings are never alerted (format_seo_alert)
+                continue
+            availability = inc["check_type"] == "availability"
+            kb = (alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
+                                         hosting=await get_state(f"hosting:{inc['site_id']}"),
+                                         api=is_api_check(inc["url"], inc.get("http_method")))
+                  if availability else explain_keyboard(inc["id"]))
+            text = _missed_alert_text(inc)
+            sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
+                                     always_ring=availability, to_helpers=availability)
+            if availability and sent is not None:
+                _after_availability_alert(inc["url"], inc["site_id"], getattr(sent, "message_id", None), text, kb)
+        except Exception:
+            logger.exception("Re-sending the alert of incident %s failed", inc["id"])
+
+
+async def _send_availability_alert(r, site: dict):
+    msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site))
+    kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
+    sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True, to_helpers=True)
+    if sent is not None:
+        _after_availability_alert(r.url, r.site_id, getattr(sent, "message_id", None), msg, kb)
+
+
+async def _send_recovery(r):
+    # Rings by default; with «будить только когда сайт лёг» only the fall does.
+    text = format_recovery_alert(r)
+    inc_id = (r.resolved_incident or {}).get("id")
+    if inc_id and await notifier.announced_at(inc_id) and await maintenance.paused_until(r.site_id):
+        # «🔧 Я чиню» promised «напишу, когда поднимется»: the fix ends the silence.
+        # A pause set before an unannounced fall stays — send() drops the ✅ then.
+        await maintenance.pause_site(r.site_id, None)
+        text += "\n\n🔧 Тишину снял — снова пишу обо всём."
+    await notifier.send(text, Priority.CRITICAL, site_id=r.site_id, resolves=inc_id, to_helpers=True)
+
+
+async def _site_is_up(r, slow_ms: int):
+    _ext_ok_noted.discard(r.site_id)
+    await _track_slow(r, slow_ms)
+
+
+def _after_availability_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
+    """Once the alert is out: the deploy hook (AUTO_REDEPLOY) — it reports
+    into the same message — and the 2- and 5-minute re-checks."""
+    if config.auto_redeploy and deploy_hook_for(url):
+        _enqueue(_redeploy_after_alert, url, site_id, message_id, text, kb)
+    elif message_id is not None:
+        _schedule_followups(url, site_id, message_id, text, kb)
+
+
+async def _redeploy_after_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
+    res = await trigger_redeploy(url)
+    line = f"🤖 Уже сделал сам: 🚀 {res.text}" if res.ok else f"🤖 Пробовал пересобрать сайт — не вышло. {res.text}"
+    if message_id is None:      # the alert sits in the outbox or the quiet queue — say it separately
+        await notifier.send(f"{esc(site_label(url))}: {line}", Priority.NORMAL, site_id=site_id)
+        return
+    text = clip(f"{text}\n\n{line}")
+    await notifier.edit(message_id, text, reply_markup=kb)
+    _schedule_followups(url, site_id, message_id, text, kb)
 
 
 FOLLOWUP_MINUTES = (2, 5)
@@ -288,8 +458,7 @@ async def _track_slow(r, slow_ms: int):
                         f"вместо обычных долей секунды, {SLOW_RESPONSE_STREAK} "
                         f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
                         f"{expl.meaning}")
-                sent = await notifier.send(text, Priority.NORMAL, site_id=r.site_id,
-                                           reply_markup=explain_keyboard(inc_id), announces=inc_id)
+                sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, explain_keyboard(inc_id))
                 if isinstance(sent, Message) and _scheduler is not None:
                     _scheduler.add_job(_followup_slow, "date",
                                        run_date=datetime.now(UTC) + timedelta(minutes=5),
@@ -316,8 +485,9 @@ async def _notify_transitions(results: list[CheckResult], alert, recovery,
                 msg = alert(r)
                 if msg:
                     kb = keyboard(r) if keyboard else explain_keyboard(r.incident_id)
-                    await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb,
-                                        announces=r.incident_id)
+                    await _alert_once(r.incident_id, r.site_id, clip(msg), priority(r), kb)
+                elif r.incident_id:
+                    await _record_alert(r.incident_id, True)   # silent by design: nothing is owed
             elif r.recovered:
                 await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id,
                                     resolves=(r.resolved_incident or {}).get("id"))
@@ -342,6 +512,7 @@ async def close_inapplicable(check_types: tuple[str, ...], urls: list[str]):
             await resolve_incident(inc["site_id"], inc["check_type"])
 
 
+@_alerts_on("ssl")
 async def run_ssl_checks():
     """Expiry ladder alerts only. A certificate that renewed by itself is
     normal operation: no message — the date goes into the snapshot and the
@@ -354,6 +525,7 @@ async def run_ssl_checks():
         priority=_by_level)
 
 
+@_alerts_on("domain")
 async def run_domain_checks():
     urls = await get_active_host_urls()
     await close_inapplicable(("domain",), urls)
@@ -364,6 +536,7 @@ async def run_domain_checks():
         keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None, r.incident_id))
 
 
+@_alerts_on("links")
 async def run_links_checks():
     urls = await get_active_page_urls()
     await close_inapplicable(("links",), urls)
@@ -383,6 +556,7 @@ def _links_recovered(r) -> str:
             f"{'она не откроется' if n == 1 else 'они не откроются'} и тогда.")
 
 
+@_alerts_on("deep")
 async def run_deep_checks():
     urls = await get_active_page_urls()
     await close_inapplicable(("deep",), urls)
@@ -406,6 +580,7 @@ async def _recently_added() -> set[str]:
     return out
 
 
+@_alerts_on("seo")
 async def run_seo_checks():
     """Daily SEO/GEO audit. Only critical findings (noindex, search bots
     blocked) become alerts — the site is disappearing from search right
@@ -485,6 +660,7 @@ async def run_dns_checks():
 MAIL_RECHECK_MIN = 10
 
 
+@_alerts_on(*MAIL_CHECKS)
 async def run_mail_checks():
     """Hourly: mail on the sites' domains (monitors.mail_checker). A domain
     whose mail did not answer once is asked again in ten minutes — a dead
@@ -506,6 +682,7 @@ def _mail_keyboard(r):
     return explain_keyboard(r.incident_id, status, mail)
 
 
+@_alerts_on(*SECURITY_CHECKS)
 async def run_security_checks():
     """Every six hours: service files open to anyone (🔴, rings), plain
     http and protective headers (🟠, quiet) — monitors.security_checker.
@@ -522,6 +699,7 @@ def _security_keyboard(r):
                                                                  callback_data=f"sec:{r.site_id}")])
 
 
+@_alerts_on("visitors")
 async def run_visitor_checks():
     """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
     urls = await get_active_page_urls()
@@ -1236,6 +1414,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
     job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
     job(notifier.release_held, IntervalTrigger(minutes=1), "held_release", misfire_grace_time=60)
+    job(deliver_missed_alerts, IntervalTrigger(minutes=1), "missed_alerts", misfire_grace_time=60)
     job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")
     job(notifier.flush_queue, IntervalTrigger(minutes=10), "quiet_flush")
     if config.on_railway:

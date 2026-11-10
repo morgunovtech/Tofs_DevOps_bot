@@ -72,7 +72,8 @@ async def cb_alert_action(call: CallbackQuery):
             await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
     elif action == "redeploy":
         await ack(call, "Запускаю передеплой…")
-        await call.message.answer(await trigger_redeploy(url))
+        res = await trigger_redeploy(url)
+        await call.message.answer(f"{'🚀' if res.ok else '❌'} {res.text}")
     elif action == "purge":
         await ack(call, "Сбрасываю кэш…")
         await call.message.answer(await purge_cf_cache(url))

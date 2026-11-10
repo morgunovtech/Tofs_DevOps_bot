@@ -6,6 +6,7 @@ the meaningful actions are: re-run the check, trigger a Pages deploy hook
 """
 
 import logging
+from typing import NamedTuple
 
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -107,30 +108,47 @@ def domain_keyboard(registrar: str | None, incident_id: int | None = None) -> In
     return explain_keyboard(incident_id, link_row)
 
 
-async def trigger_redeploy(url: str) -> str:
-    """Fire the Cloudflare Pages deploy hook. Returns a human-readable line."""
+class RedeployResult(NamedTuple):
+    ok: bool
+    text: str    # one sentence, no icon: the caller adds 🚀 / ❌ or «🤖 …»
+
+
+async def trigger_redeploy(url: str) -> RedeployResult:
+    """Fire the Cloudflare Pages deploy hook. The text says what happened and,
+    on a failure, what to do about it. Never the exception text or the hook
+    address: the address is the secret."""
     hook = deploy_hook_for(url)
     if not hook:
-        return "❌ Пересборка не настроена для этого сайта (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
+        return RedeployResult(False, "Пересборка не настроена для этого сайта "
+                                     "(⚙️ Настройки → 🔌 Подключения → ☁️ Cloudflare)")
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(hook) as resp:
-                if resp.status in (200, 201):
-                    return "🚀 Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты"
-                return f"❌ Cloudflare не принял команду пересборки (ошибка {resp.status})"
+                status = resp.status
     except aiohttp.InvalidURL:
-        # Its text IS the hook address — and the address is the secret.
         logger.warning("Deploy hook for %s is not a valid URL", host_of(url))
-        return "❌ Адрес deploy hook испорчен — задай его заново (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
+        return RedeployResult(False, "Адрес deploy hook испорчен — задай его заново "
+                                     "(⚙️ Настройки → 🔌 Подключения → ☁️ Cloudflare)")
     except aiohttp.ClientConnectorError:
         logger.warning("Deploy hook for %s: cannot connect", host_of(url))
-        return "❌ Не удалось связаться с Cloudflare — пересборка не запущена"
+        return RedeployResult(False, "Не удалось связаться с Cloudflare — нажми «🚀 Пересобрать сайт» чуть позже")
     except TimeoutError:
         logger.warning("Deploy hook for %s: timed out", host_of(url))
-        return f"❌ Cloudflare не ответил за {int(_TIMEOUT.total)} с — нажми «🚀» позже"
+        return RedeployResult(False, f"Cloudflare не ответил за {int(_TIMEOUT.total)} с — "
+                                     f"нажми «🚀 Пересобрать сайт» чуть позже")
     except Exception as e:
         logger.warning("Deploy hook for %s failed: %s", host_of(url), type(e).__name__)
-        return "❌ Не удалось запустить пересборку — подробности в логе бота"
+        return RedeployResult(False, "Не удалось запустить пересборку — подробности в логе бота")
+    if status in (200, 201):
+        return RedeployResult(True, "Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты")
+    if status in (404, 410):
+        return RedeployResult(False, f"Cloudflare не знает этот хук пересборки (ошибка {status}) — похоже, его "
+                                     f"удалили. Создай новый в Cloudflare Pages и вставь его: ⚙️ Настройки → "
+                                     f"🔌 Подключения → ☁️ Cloudflare")
+    if status >= 500:
+        return RedeployResult(False, f"Cloudflare сейчас не принимает команды (ошибка {status}) — "
+                                     f"нажми «🚀 Пересобрать сайт» чуть позже")
+    return RedeployResult(False, f"Cloudflare не принял команду пересборки (ошибка {status})")
 
 
 async def purge_cf_cache(url: str) -> str:

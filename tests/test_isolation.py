@@ -43,9 +43,10 @@ async def test_a_failed_alert_does_not_cost_the_next_site_its_alert(bot, db, mon
             await db.update_site_settings(sid, fail_threshold=1)
         with caplog.at_level(logging.ERROR, logger="reports.scheduler"):
             await scheduler.run_availability_checks()       # must not raise
+            await scheduler.drain_alert_worker()
     alerts = [m for m in bot.sent if "не открывается" in m["text"]]
     assert len(calls) == 2 and len(alerts) == 1             # the second site was told about
-    assert "Availability alert for" in caplog.text
+    assert "Alert worker" in caplog.text and "failed" in caplog.text
 
 
 async def test_transitions_loop_survives_one_bad_result(bot, db, caplog):
@@ -100,6 +101,7 @@ async def test_an_absurd_interval_does_not_stop_the_other_sites(bot, db):
         broken = await db.get_or_create_site("tcp://127.0.0.1:9")      # a closed local port, no network
         await db.update_site_settings(broken, check_interval_min=10**10)
         await scheduler.run_availability_checks()            # was: OverflowError on every tick
+        await scheduler.drain_alert_worker()
     assert await get_last_check(healthy, "availability")
 
 

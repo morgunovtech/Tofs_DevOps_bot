@@ -448,6 +448,45 @@ async def resolve_all_incidents() -> int:
     return n
 
 
+async def mark_incident_alerted(incident_id: int):
+    """The incident's alert went out: delivered, queued for quiet hours or
+    kept in the outbox — nothing is owed any more."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("UPDATE incidents SET alerted_at = datetime('now') WHERE id = ?", (incident_id,))
+        await db.commit()
+
+
+async def clear_incident_alerted(incident_id: int):
+    """A new alert is owed for this incident (a reused one got worse, the
+    next step of an expiry ladder): until it goes out, the incident counts
+    as not alerted — a crash in between leaves it for the re-send."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("UPDATE incidents SET alerted_at = NULL WHERE id = ?", (incident_id,))
+        await db.commit()
+
+
+async def incident_alerted_at(incident_id: int) -> str | None:
+    """When the incident's alert went out (SQLite UTC text), None — never."""
+    db = await get_db()
+    cursor = await db.execute("SELECT alerted_at FROM incidents WHERE id = ?", (incident_id,))
+    row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def get_unalerted_incidents(min_age_minutes: int = 2) -> list[dict]:
+    """Open incidents of active sites whose alert never went out, oldest
+    first; fresh ones get min_age_minutes to be alerted by their own job."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT i.*, s.url, s.http_method FROM incidents i JOIN sites s ON i.site_id = s.id
+           WHERE i.resolved = 0 AND i.alerted_at IS NULL AND s.active = 1
+             AND i.created_at <= datetime('now', ?)
+           ORDER BY i.created_at""", (f"-{min_age_minutes} minutes",))
+    return [dict(r) for r in await cursor.fetchall()]
+
+
 async def get_incident(incident_id: int) -> dict | None:
     db = await get_db()
     cursor = await db.execute(
@@ -716,7 +755,7 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
              sum_ms = sum_ms + excluded.sum_ms""", (cutoff,))
     await db.execute("DELETE FROM checks WHERE checked_at < ?", (cutoff,))
     # Escalation/ack markers for long-resolved incidents are dead weight.
-    for prefix in ("escalated:", "ack:", "announced:", "held:"):
+    for prefix in ("escalated:", "ack:", "held:"):
         await db.execute(
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",

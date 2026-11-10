@@ -174,6 +174,10 @@ def _fresh_module_state(monkeypatch):
     notifier._unsent.clear()
     notifier._delivered_rows.clear()
     monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
+    for state in (scheduler._in_flight, scheduler._busy, scheduler._sent_unrecorded):
+        state.clear()
+    monkeypatch.setattr(scheduler, "_queue", None)
+    monkeypatch.setattr(scheduler, "_worker", None)
     health.reset()
     monkeypatch.setattr(scheduler, "_share_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
