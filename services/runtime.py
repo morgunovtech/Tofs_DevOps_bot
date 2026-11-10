@@ -4,9 +4,10 @@ the claim is persisted in bot_state so it survives restarts."""
 
 import logging
 import os
+import time
 
 from config import config
-from db.database import get_state, set_state
+from db.database import count_sites_total, get_state, set_state
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,11 @@ def db_on_persistent_disk() -> bool | None:
         d = os.path.dirname(d)
     return False
 
-_chat_id: str | None = config.admin_chat_id or None
+_chat_id: str | None = config.admin_chat_id or config.admin_user_id or None
 _user_id: str | None = config.admin_user_id or None
+# A /start older than this process was queued by Telegram while the bot was
+# down; it must not take a free seat ahead of the owner (handlers/start.py).
+STARTED_AT = time.time()
 _bot_username: str = ""
 
 
@@ -52,6 +56,15 @@ def bot_username() -> str:
 
 async def load():
     global _chat_id, _user_id
+    if config.admin_chat_id or config.admin_user_id:
+        # Env wins: a stranger's /start, a lost database or a restored copy
+        # cannot hand the bot over.
+        _chat_id = config.admin_chat_id or config.admin_user_id
+        _user_id = config.admin_user_id or None
+        if _chat_id.startswith("-") and not _user_id:
+            logger.error("TELEGRAM_ADMIN_CHAT_ID is a group, but TELEGRAM_ADMIN_USER_ID is empty — "
+                         "nobody can control the bot. Set your numeric user id (@userinfobot).")
+        return
     if _chat_id:
         return
     saved = await get_state("admin_chat_id")
@@ -65,6 +78,21 @@ async def load():
 
 def admin_chat_id() -> str | None:
     return _chat_id
+
+
+def nobody_steers() -> bool:
+    """A group chat from env without TELEGRAM_ADMIN_USER_ID: is_admin() is
+    false for everyone, the owner included."""
+    return bool(_chat_id) and _chat_id.startswith("-") and not _user_id
+
+
+async def warn_if_seat_free():
+    """Every 30 min while nobody holds the seat but sites are watched: the bot
+    has no one to tell, so it says it where the operator looks — the log.
+    Alerts are not redirected: after a claim they would go to the claimer."""
+    if not _chat_id and await count_sites_total():
+        logger.error("Nobody holds the admin seat while sites are watched — alerts are dropped. "
+                     "Send /start to the bot in a private chat or set TELEGRAM_ADMIN_USER_ID.")
 
 
 def has_admin() -> bool:

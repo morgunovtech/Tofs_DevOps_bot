@@ -75,6 +75,7 @@ from services import (
     notifier,
     railway,
     recommend,
+    runtime,
     screenshots,
     settings,
     sitestatus,
@@ -1045,6 +1046,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_container_watch, IntervalTrigger(minutes=10), "container_watch")
     job(run_escalation_watch, IntervalTrigger(minutes=5), "escalation_watch")
     job(run_self_heartbeat, IntervalTrigger(minutes=5), "self_heartbeat")
+    job(runtime.warn_if_seat_free, IntervalTrigger(minutes=30), "seat_free_warning")
     job(run_alive, IntervalTrigger(minutes=1), "alive", misfire_grace_time=60)
     job(notifier.flush_outbox, IntervalTrigger(minutes=1), "outbox_flush", misfire_grace_time=60)
     job(updates.run_deploy_watch, IntervalTrigger(hours=1, start_date=soon), "deploy_watch")

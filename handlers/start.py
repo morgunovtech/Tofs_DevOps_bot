@@ -1,6 +1,8 @@
 """/start (public: claims the admin seat on first run; with a helper
 invite, makes a helper), /stop for helpers, and /help."""
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -8,12 +10,20 @@ from aiogram.types import Message
 
 from config import config
 from db.database import set_state
-from handlers.common import BOTTOM, DENIED, back_button
+from handlers.common import BOTTOM, DENIED, back_button, refusal
+from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from services import helpers, notifier, railway, runtime, settings
 from utils.text import esc
 
+logger = logging.getLogger(__name__)
 router = Router(name="start")
+
+# Telegram's clock and ours may differ by a few seconds.
+CLAIM_CLOCK_SLACK_SEC = 5
+PRIVATE_ONLY = ("Владельцем можно стать только в личном чате со мной: открой его и нажми Start. "
+                "Группа для тревог задаётся переменными TELEGRAM_ADMIN_CHAT_ID и TELEGRAM_ADMIN_USER_ID.")
+TRY_AGAIN = "Я только что запустился — нажми /start ещё раз."
 
 # Set once the owner has the bottom buttons (main.py announces them otherwise).
 BOTTOM_SHOWN = "ui:bottom_keyboard"
@@ -88,18 +98,36 @@ async def cmd_stop(message: Message):
     await notifier.send(f"👥 {esc(gone['name'])} больше не получает тревоги 🔴.")
 
 
+def _claim_refusal(message: Message) -> str | None:
+    """Why this /start may not take the free admin seat, or None."""
+    user = message.from_user
+    if message.chat.type != "private" or message.sender_chat is not None or user.is_bot:
+        return PRIVATE_ONLY
+    age = runtime.STARTED_AT - message.date.timestamp()
+    if age > CLAIM_CLOCK_SLACK_SEC:
+        # Queued while the bot was down: the owner may not even know the seat is free.
+        logger.warning("Ignoring a /start sent %.0f s before this process started — if this "
+                       "repeats, check the server clock", age)
+        return TRY_AGAIN
+    return None
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()  # /start always aborts any pending input flow
     if not runtime.has_admin() and message.from_user:
-        await runtime.claim(message.chat.id, message.from_user.id)
-        await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
-        await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
-                             "и тревоги будут приходить сюда.")
-        if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
-            await message.answer(runtime.NO_VOLUME)
-    if not runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer(DENIED)
+        refusal_text = _claim_refusal(message)
+        if refusal_text:
+            await message.answer(refusal_text)
+            return
+        if await runtime.claim(message.chat.id, message.from_user.id):
+            await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
+            await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
+                                 "и тревоги будут приходить сюда.")
+            if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
+                await message.answer(runtime.NO_VOLUME)
+    if not in_admin_chat(message):
+        await message.answer(refusal(message))
         return
     await message.answer(
         "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
@@ -114,7 +142,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    if not runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer(DENIED)
+    if not in_admin_chat(message):
+        await message.answer(refusal(message))
         return
     await message.answer(HELP, reply_markup=back_button())

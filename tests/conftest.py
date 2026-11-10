@@ -24,6 +24,7 @@ os.environ.update({
     "GITHUB_OWNER": "",
 })
 
+from datetime import UTC, datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 import pytest  # noqa: E402
@@ -68,7 +69,9 @@ class FakeMessage:
         self.documents: list = []    # captions of the files sent
         self.previews: list = []     # the picture drawn above each text, or None
         self.preview_options: list = []   # the LinkPreviewOptions object as sent
-        self.chat = SimpleNamespace(id=1)
+        self.chat = SimpleNamespace(id=1, type="private")
+        self.sender_chat = None
+        self.date = datetime.now(UTC)
         self.reply_markup = None
 
     async def edit_text(self, text, reply_markup=None, **kwargs):
