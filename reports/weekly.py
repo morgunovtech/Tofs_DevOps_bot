@@ -161,7 +161,8 @@ def _day(sqlite_dt: str | None) -> str:
 
 
 def _headline(inc: dict) -> str:
-    return esc(humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"])))
+    return esc(humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]),
+                                          page=is_web_page(inc["url"], inc.get("http_method"))))
 
 
 async def incidents_block() -> list[str]:

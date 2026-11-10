@@ -30,7 +30,7 @@ from services.humanize import (
 )
 from utils.clock import now_local, to_local
 from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
-from utils.urls import host_of, is_http_url, registrable_domain, site_label
+from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
 def _tech(*parts) -> str:
@@ -73,7 +73,11 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
             situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:
             situation += " Проверил дважды подряд."
-    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, когда поднимется."
+    # A phrase verdict is about a site that opens: «поднимется» would send
+    # the owner to the server instead of the page.
+    back = (f"когда {'в ответе' if r.api else 'на странице'} снова будет как надо" if r.keyword_failed
+            else "когда поднимется")
+    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, {back}."
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 
@@ -92,12 +96,18 @@ def incident_duration_line(incident: dict | None) -> str | None:
 
 def format_recovery_alert(r: AvailabilityResult) -> str:
     label = esc(site_label(r.url))
-    verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
-    lines = [f"✅ {label} {verb}"]
+    message = (r.resolved_incident or {}).get("message") or ""
+    content = message.startswith("Bad content: ")    # the site opened all along; its text was wrong
+    if content:
+        lines = [f"✅ На {label} снова всё как надо"]
+    else:
+        verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
+        lines = [f"✅ {label} {verb}"]
     duration = incident_duration_line(r.resolved_incident)
-    cause = describe_error((r.resolved_incident or {}).get("message"))
+    cause = describe_error(message)
     if duration:
-        lines.append(f"Лежал {duration}" + (f", {esc(cause)}." if cause and cause != "неизвестная ошибка" else "."))
+        lines.append(f"{'Было не так' if content else 'Лежал'} {duration}"
+                     + (f", {esc(cause)}." if cause and cause != "неизвестная ошибка" else "."))
     lines.append("Ничего делать не нужно.")
     return "\n".join(lines) + _tech(f"HTTP {r.status_code}" if r.status_code else None,
                                     fmt_seconds(r.response_time_ms) if r.response_time_ms else None)
@@ -379,7 +389,8 @@ def format_compact_status_report(availability: list[AvailabilityResult],
 
 def incident_line(inc: dict) -> str:
     """'example.com не открывается: хостинг отвечает ошибкой 502'."""
-    return humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]))
+    return humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]),
+                                      page=is_web_page(inc["url"], inc.get("http_method")))
 
 
 def format_feedback(site_url: str, page_url: str, message: str,

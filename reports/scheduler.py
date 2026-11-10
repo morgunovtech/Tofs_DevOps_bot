@@ -1143,14 +1143,21 @@ async def run_escalation_watch():
             if announced and (now - announced) < timedelta(minutes=repeat_min):
                 continue        # the held alert was just said — no repeat on its heels
             age_min = (now - created).total_seconds() / 60
+            api = is_api_check(inc["url"], inc.get("http_method"))
+            if (inc.get("message") or "").startswith("Bad content: "):
+                # The site opens; its text is wrong — not «лежит», not «поднимется».
+                so_far = f"Так уже {fmt_duration(age_min)}"
+                back = f"когда {'в ответе' if api else 'на странице'} снова будет как надо"
+            else:
+                so_far, back = f"Лежит уже {fmt_duration(age_min)}", "как только поднимется"
             sent = await notifier.send(
-                f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
-                f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
+                f"🔴 {esc(incident_line(inc))}\n{so_far}. Продолжаю проверять "
+                f"каждую минуту и напишу, {back}.\n\nЕсли ты уже чинишь — нажми "
                 f"«🔧 Я чиню», и я замолчу на {maintenance.fix_length()}.",
                 Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
                 reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                                     hosting=await get_state(f"hosting:{inc['site_id']}"),
-                                                    api=is_api_check(inc["url"], inc.get("http_method"))))
+                                                    api=api))
             if sent:
                 await set_state(f"escalated:{inc['id']}", now.isoformat())
 

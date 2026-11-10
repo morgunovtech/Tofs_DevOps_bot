@@ -8,6 +8,7 @@ monitor should fire.
 """
 
 import asyncio
+import html
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -197,6 +198,29 @@ def decode_body(raw: bytes, header_charset: str | None) -> str:
         except (LookupError, ValueError):
             pass
     return raw.decode("utf-8", errors="replace")
+
+
+# [^<>] and not [^>]: on a body of «<» without «>» the latter rescans to the
+# end from every «<» — quadratic, minutes of a stalled event loop for 1 MB.
+_TAG_RE = re.compile(r"<[^<>]*>")
+_WS_RE = re.compile(r"\s+")          # a str pattern: \s covers U+00A0 (&nbsp;) too
+
+
+def visible_text(text: str) -> str:
+    """What a person reads and types: tags dropped, entities decoded,
+    every run of whitespace (non-breaking included) folded to one space."""
+    return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", text))).strip().casefold()
+
+
+def phrase_found(phrase: str, body: str) -> bool:
+    """The phrase as written in the source OR as a visitor sees it; a raw
+    match (a stop phrase inside <script>) still counts. A phrase that is
+    nothing but markup («<html>», «&nbsp;») has no visible text and is
+    looked for in the source only: «'' in anything» would be a silent yes."""
+    if phrase.casefold() in body.casefold():
+        return True
+    visible = visible_text(phrase)
+    return bool(visible) and visible in visible_text(body)
 
 
 async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:

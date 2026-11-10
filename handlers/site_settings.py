@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import config
 from db.database import get_active_page_urls, get_site, update_site_settings
 from handlers.common import ack, back_button, cancel_kb, cb_args, forget_secret, render, site_by_cb
-from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS
+from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS, phrase_state
 from reports.scheduler import PAGE_CHECKS, close_inapplicable, reset_site_schedule
 from services import public_urls, settings
 from utils.parse import parse_accepted_codes, parse_header_lines
@@ -58,7 +58,10 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
         codes = site.get("accepted_codes")
         lines.append("🔢 Приемлемые коды: " + (esc(codes) if codes else "по умолчанию (любой &lt; 400)"))
         kw = (site.get("keyword") or "").strip()
-        if kw:
+        if kw and _is_head(site):
+            # An import or an old database can hold both: say it where the dials are.
+            lines.append(f"⚠️ Фраза «{esc(kw)}» не проверяется: метод HEAD не скачивает страницу")
+        elif kw:
             mode = ("не должна появляться (стоп-фраза)" if site.get("keyword_mode") == "absent"
                     else f"должна быть {_where(site)}")
             lines.append(f"🔍 Фраза: «{esc(kw)}» — {mode}")
@@ -104,6 +107,11 @@ def _where(site: dict) -> str:
     return "в ответе" if is_api_check(site["url"], site.get("http_method")) else "на странице"
 
 
+def _is_head(site: dict) -> bool:
+    """HEAD never reads a body: the monitor skips the phrase on such a site."""
+    return (site.get("http_method") or "GET").upper() == "HEAD"
+
+
 async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     """Two things a person actually decides: how often to check and
     whether to watch a phrase on the page. Everything else is advanced."""
@@ -115,7 +123,10 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
              f"⏱ Проверяю {how_often}."]
     if http:
         kw = (site.get("keyword") or "").strip()
-        if kw:
+        if kw and _is_head(site):
+            lines.append(f"⚠️ Фраза «{esc(kw)}» не проверяется: метод HEAD не скачивает страницу. "
+                         f"Переключи метод на GET в «🛠 Для продвинутых».")
+        elif kw:
             mode = "не должно появляться" if site.get("keyword_mode") == "absent" else f"должно быть {_where(site)}"
             lines.append(f"🔍 Слежу за фразой «{esc(kw)}» — {mode}.")
         elif api:
@@ -295,6 +306,13 @@ async def cb_site_method(call: CallbackQuery):
     if not site or args[1] not in HTTP_METHODS:
         await ack(call, "Не понял", show_alert=True)
         return
+    phrase = (site.get("keyword") or "").strip()
+    if args[1] == "HEAD" and phrase:
+        # The monitor skips the phrase on HEAD: the card would say «на месте» about nothing.
+        await ack(call, f"HEAD не скачивает страницу, и фраза «{phrase[:60]}» перестанет проверяться. "
+                        f"Сначала убери фразу или оставь GET.", show_alert=True)
+        await _show(call, site["id"], advanced=True)
+        return
     await update_site_settings(site["id"], http_method=None if args[1] == "GET" else args[1])
     # A POST endpoint is not a page any more: its old search/links findings
     # close now rather than at the next audit.
@@ -360,10 +378,58 @@ async def msg_site_keyword(message: Message, state: FSMContext):
         await message.answer("Нужна фраза от 2 до 100 символов. Попробуй ещё раз:",
                              reply_markup=cancel_kb())
         return
+    if _is_head(site):
+        await state.clear()
+        await message.answer("📡 Этот сайт проверяется методом HEAD: страница не скачивается, и фразу "
+                             "проверить нельзя. Переключи метод на GET («🛠 Для продвинутых» → «📡 Метод») "
+                             "и задай фразу снова.",
+                             reply_markup=back_button("← К настройкам", f"ssetx:{site['id']}"))
+        return
     mode = (await state.get_data()).get("kw_mode", "present")
+    status = await message.answer("⏳ Проверяю страницу — это до 15 секунд…")
+    found = await phrase_state(site, kw)
+    if found is not None and found != (mode == "present"):
+        # Saving now would page the owner at the first scheduled checks. The
+        # form stays open: the next phrase is checked again.
+        await state.update_data(kw_pending=kw)
+        await status.edit_text(_mismatch_text(site, kw, mode), reply_markup=_save_anyway_kb(site["id"]))
+        return
     await state.clear()
     await update_site_settings(site["id"], keyword=kw, keyword_mode=mode)
+    await status.edit_text("✅ Проверил: сейчас всё так, как ты описал." if found is not None
+                           else "⚠️ Сейчас проверить не удалось — сохранил, проверю при следующей проверке.")
     await _show(message, site["id"])
+
+
+def _mismatch_text(site: dict, kw: str, mode: str) -> str:
+    if mode == "absent":
+        return (f"🔍 Стоп-фраза «{esc(kw)}» уже есть {_where(site)} — сохрани я её, тревога пришла бы на "
+                f"первых же проверках. Так бывает, если фраза встречается в обычном тексте или в коде "
+                f"страницы. Пришли другую фразу — или сохрани эту, если сайт сейчас действительно сломан.")
+    return (f"🔍 Сейчас {_where(site)} нет фразы «{esc(kw)}» — сохрани я её, тревога пришла бы на первых же "
+            f"проверках. Так бывает, если текст рисует JavaScript, в фразе опечатка или она с другой "
+            f"страницы. Пришли другую фразу — или сохрани эту, если сайт сейчас действительно сломан.")
+
+
+def _save_anyway_kb(sid: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💾 Сохранить всё равно", callback_data=f"sskwf:{sid}")],
+        [InlineKeyboardButton(text="✖️ Отмена", callback_data="fsm_cancel")]])
+
+
+@router.callback_query(F.data.startswith("sskwf:"))
+async def cb_site_keyword_force(call: CallbackQuery, state: FSMContext):
+    """«💾 Сохранить всё равно»: the phrase that did not match the page now."""
+    site = await site_by_cb(call.data.split(":", 1)[1])
+    data = await state.get_data()
+    kw = data.get("kw_pending")
+    if not site or not kw or data.get("sset_site_id") != site["id"]:
+        await ack(call, "Устарело — задай фразу заново", show_alert=True)
+        return
+    await state.clear()
+    await update_site_settings(site["id"], keyword=kw, keyword_mode=data.get("kw_mode", "present"))
+    await ack(call, "Сохранено ✅")
+    await _show(call, site["id"])
 
 
 @router.message(SiteHeadersForm.headers)

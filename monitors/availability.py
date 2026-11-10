@@ -30,7 +30,7 @@ from db.database import (
     set_state,
 )
 from monitors import netcheck, region
-from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
+from monitors.base import AvailabilityResult, decode_body, gather_checks, phrase_found, read_capped
 from monitors.second_opinion import repeatable, second_opinion
 from services import health, hosting, humanize, integrations, settings, sitestatus
 from utils.parse import parse_accepted_codes
@@ -119,7 +119,7 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                     # error text? Catches "HTTP 200 with a white screen"
                     # (and an API answering 200 with an error object).
                     raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
-                    found = keyword.casefold() in decode_body(raw, resp.charset).casefold()
+                    found = phrase_found(keyword, decode_body(raw, resp.charset))
                     mode = site.get("keyword_mode") or "present"
                     where = "в ответе" if r.api else "на странице"
                     if mode == "absent" and found:
@@ -139,6 +139,25 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
     except aiohttp.ClientError as e:
         r.status, r.error = "error", _error_text(e)
         r.response_time_ms = int((time.monotonic() - start) * 1000)
+
+
+async def phrase_state(site: dict, phrase: str) -> bool | None:
+    """Is the phrase on the page right now, as the monitor would see it?
+    None when that cannot be told: HEAD (the monitor never reads a body),
+    a status the site's rules reject, a network error."""
+    method, headers, body = request_options(site)
+    if method == "HEAD":
+        return None
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            async with session.request(method, site["url"], headers=headers, data=body,
+                                       ssl=True, allow_redirects=True) as resp:
+                if not code_accepted(resp.status, parse_accepted_codes(site.get("accepted_codes"))):
+                    return None
+                raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
+                return phrase_found(phrase, decode_body(raw, resp.charset))
+    except Exception:   # a timeout or a refused connection is «cannot tell», not «no phrase»
+        return None
 
 
 def _error_text(e: aiohttp.ClientError) -> str:
@@ -282,7 +301,7 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         r.hosting = await get_state(f"hosting:{r.site_id}")
     if stored:
         await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms,
-                                       error=r.error, code=r.status_code))
+                                       error=r.error, code=r.status_code, kw=r.keyword_failed))
     if not manage or r.transient:
         return r
 
