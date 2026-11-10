@@ -230,24 +230,24 @@ async def count_sites_total() -> int:
 
 
 async def activate_or_create_site(url: str) -> int:
-    """Add a site from the UI (or re-activate a previously removed one)."""
+    """Add a site from the UI (or re-activate a previously removed one). A
+    site that comes back starts from a clean sheet — also one removed by an
+    older version of the bot, which kept everything."""
     site_id = await get_or_create_site(url)
-    db = await get_db()
-    async with _write_lock:
-        await db.execute("UPDATE sites SET active = 1 WHERE id = ?", (site_id,))
-        await db.commit()
+    async with _tx() as db:
+        cursor = await db.execute("UPDATE sites SET active = 1 WHERE id = ? AND active = 0", (site_id,))
+        if cursor.rowcount:
+            await _forget_site_state(db, site_id)
     return site_id
 
 
 async def deactivate_site(site_id: int) -> bool:
-    """Soft-remove: checks/incidents history stays, monitoring stops."""
+    """Soft-remove: checks/incidents history stays, monitoring stops;
+    everything else of the site is forgotten (_forget_site_state)."""
     async with _tx() as db:
         cursor = await db.execute(
             "UPDATE sites SET active = 0 WHERE id = ? AND active = 1", (site_id,))
-        # Close its open incidents so they don't haunt the incidents list.
-        await db.execute(
-            """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
-               WHERE site_id = ? AND resolved = 0""", (site_id,))
+        await _forget_site_state(db, site_id)
     return cursor.rowcount > 0
 
 
@@ -257,6 +257,32 @@ SITE_SETTING_COLS = frozenset({
     "keyword", "keyword_mode", "slow_ms",
     "http_method", "http_headers", "http_body",
 })
+
+# bot_state keys «<prefix>:<site id>» that belong to one site: the pause
+# (services/maintenance.py), the card snapshot (services/sitestatus.py), the
+# hosting and the «up from outside» episode (monitors/availability.py), the
+# certificate serial (monitors/ssl_checker.py), the phrase suggestion
+# (handlers/sites.py, services/recommend.py), the Cloudflare note
+# (handlers/seo.py), the link-crawl window (monitors/links_checker.py).
+# Not here: «ack:»/«escalated:» are by incident id (nightly retention), the
+# heartbeat and container keys are by name.
+_SITE_STATE_PREFIXES = ("paused", "status", "hosting", "ext_ok", "ssl_serial", "kw_suggest", "kw_declined",
+                        "ai_cf_seen", "links_offset", "links_broken", "links_clean", "links_suspect")
+
+
+async def _forget_site_state(db, site_id: int):
+    """Everything of a site but its history (checks, incidents): the per-site
+    settings — the headers may hold a token —, the «🔧 Я чиню» pause, the
+    SSL/domain alert ladders and the stored snapshot. Open incidents are
+    closed. Runs inside the caller's transaction (_tx), before its commit."""
+    resets = ", ".join(f"{col} = NULL" for col in sorted(SITE_SETTING_COLS))   # whitelist, not input
+    await db.execute(f"UPDATE sites SET {resets} WHERE id = ?", (site_id,))
+    await db.execute(
+        """UPDATE incidents SET resolved = 1, resolved_at = datetime('now')
+           WHERE site_id = ? AND resolved = 0""", (site_id,))
+    await db.execute("DELETE FROM alert_state WHERE site_id = ?", (site_id,))
+    await db.executemany("DELETE FROM bot_state WHERE key = ?",
+                         [(f"{prefix}:{site_id}",) for prefix in _SITE_STATE_PREFIXES])
 
 
 async def update_site_settings(site_id: int, **fields):

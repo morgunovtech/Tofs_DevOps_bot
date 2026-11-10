@@ -322,6 +322,12 @@ async def _probe_ping(url: str, r: AvailabilityResult):
         r.status, r.transient = "unknown", True
         r.error = ("ping на сервере бота не может открыть ICMP-сокет (нужен net.ipv4.ping_group_range) "
                    "— используй tcp://host:порт")
+    elif "address family for hostname" in low:
+        # iputils on an IPv6 address from a container without an IPv6 route:
+        # the bot's environment again, not the host.
+        logger.warning("%s: no IPv6 on the bot's server: %s", url, out_text.strip()[:200])
+        r.status, r.transient = "unknown", True
+        r.error = "у сервера бота нет IPv6 — до IPv6-адреса ping отсюда не дойдёт"
     else:
         r.error = "хост не отвечает на ping"
 

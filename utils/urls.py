@@ -4,6 +4,8 @@ the registrable-domain heuristic, the User-Agent and the monitor kinds."""
 import re
 from urllib.parse import urlparse
 
+import idna
+
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 TofsDevOps/2.0"
@@ -23,6 +25,26 @@ _TWO_LEVEL_SUFFIXES = frozenset({
 def is_http_url(url: str) -> bool:
     """True for web monitors; tcp:// and ping:// get availability only."""
     return url.startswith(("http://", "https://"))
+
+
+def ssl_applies(url: str) -> bool:
+    """THE rule for certificates: only an https:// monitor has one to check.
+    On an http:// one port 443 answers with the hosting's default
+    certificate (a false «недействителен»), and http://host:8080 has no TLS
+    at all. The daily check, the card, the main screen, «🔄 Перепроверить»
+    and adding a site all ask this."""
+    return url.lower().startswith("https://")
+
+
+def display_host(host: str) -> str:
+    """xn--e1afmkfd.xn--p1ai → пример.рф for screens and messages; a name
+    that does not decode stays as stored."""
+    if "xn--" not in host:
+        return host
+    try:
+        return idna.decode(host)
+    except UnicodeError:   # idna.IDNAError is a UnicodeError
+        return host
 
 
 # Methods that read a page. Any other one (POST, PUT, …) calls a function.
@@ -93,7 +115,8 @@ def site_label(url: str) -> str:
     """Compact display label: host for web sites (plus the path when the
     monitor watches one — an API endpoint next to its site must not look
     like the same thing; never the query, it may carry a token), host:port
-    for tcp:// monitors, 'ping host' for ping:// ones.
+    for tcp:// monitors ([v6]:port for an IPv6 address), 'ping host' for
+    ping:// ones. International names are shown as people write them.
 
     Never raises: one malformed stored address (a port «5432x», an
     unclosed «[») must not take down every screen, report and alert loop
@@ -107,13 +130,16 @@ def site_label(url: str) -> str:
 
 def _label(url: str) -> str:
     p = urlparse(url)
+    port = p.port
+    host = display_host(p.hostname or "")
     if p.scheme == "tcp":
-        return f"{p.hostname}:{p.port}" if p.port else (p.hostname or url)
+        shown = f"[{host}]" if ":" in host else host
+        return f"{shown}:{port}" if host and port else (shown or url)
     if p.scheme == "ping":
-        return f"ping {p.hostname}" if p.hostname else url
-    if not p.hostname:
+        return f"ping {host}" if host else url
+    if not host:
         return url
-    return p.hostname + (p.path or "").rstrip("/")
+    return host + (p.path or "").rstrip("/")
 
 
 def registrable_domain(host: str) -> str:

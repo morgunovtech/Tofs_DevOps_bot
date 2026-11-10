@@ -8,3 +8,6 @@ beautifulsoup4==4.15.0
 python-dotenv==1.2.4
 cryptography==50.0.2
 dnspython==2.9.2
+# International site names (пример.рф → xn--…): the same IDNA rules aiohttp uses; already
+# installed with aiohttp (yarl), pinned because the bot imports it directly.
+idna==3.20
