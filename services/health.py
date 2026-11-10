@@ -16,6 +16,7 @@ one «✅» once no write has failed for FAILING_FOR_SEC."""
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 
 from aiogram.client.session.middlewares.base import BaseRequestMiddleware
 from aiogram.exceptions import (
@@ -147,12 +148,30 @@ def fatal() -> str | None:
     return None
 
 
-async def watchdog(every: float = 60) -> str:
+CLOCK_STEP = 60                 # seconds of wall-clock jump that count as a step, not drift
+
+
+def _wall() -> float:
+    return time.time()
+
+
+async def watchdog(every: float = 60, on_clock_step: Callable[[float], None] | None = None) -> str:
     """Runs outside APScheduler — a dead scheduler cannot stop it. Returns the
     reason to exit; main() stops polling and exits with code 3, and the
-    container's restart policy brings the bot back."""
+    container's restart policy brings the bot back. Also watches the wall
+    clock against the monotonic one: APScheduler counts on the wall clock,
+    and a step back of an hour would freeze every interval job for that
+    hour. The marks here are monotonic, so a step does not touch them."""
+    wall, mono = _wall(), time.monotonic()
     while True:
         await asyncio.sleep(every)
+        now_wall, now_mono = _wall(), time.monotonic()
+        step = (now_wall - wall) - (now_mono - mono)
+        wall, mono = now_wall, now_mono
+        if abs(step) > CLOCK_STEP:
+            logger.warning("The wall clock stepped by %+.0f s — re-arming the schedule", step)
+            if on_clock_step:
+                on_clock_step(step)
         reason = fatal()
         if reason:
             return reason

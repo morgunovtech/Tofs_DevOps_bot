@@ -82,6 +82,8 @@ The feedback widget, the links for your cron jobs and the status page need the b
 
 Without TLS the widget does not load on https sites (browsers block it) and the heartbeat secret is visible to anyone on the way.
 
+**The server clock.** The bot lives by the system time. On a home server or a NAS Docker may start before the time is synchronised. The bot notices a clock step and re-arms its schedule by itself, but starting Docker after the sync is safer. On systemd with timesyncd: `sudo systemctl enable systemd-time-wait-sync` and `sudo systemctl edit docker` → in `[Unit]` the line `After=time-sync.target` (with chrony use `chrony-wait.service` instead of time-wait-sync — check your distribution's documentation).
+
 ### Easier: Railway in one click — 5 minutes
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)

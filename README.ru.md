@@ -82,6 +82,8 @@ volumes:
 
 Без TLS виджет на https-сайтах не загрузится (браузер его заблокирует), а секрет heartbeat увидит любой на пути.
 
+**Часы сервера.** Бот живёт по системному времени. На домашнем сервере или NAS Docker может стартовать раньше, чем синхронизируется время. Бот сам заметит скачок часов и перестроит расписание, но надёжнее запускать Docker после синхронизации. На systemd с timesyncd: `sudo systemctl enable systemd-time-wait-sync` и `sudo systemctl edit docker` → в блок `[Unit]` строка `After=time-sync.target` (с chrony вместо time-wait-sync нужен `chrony-wait.service` — сверь с документацией своего дистрибутива).
+
 ### Проще: Railway в один клик — 5 минут
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)

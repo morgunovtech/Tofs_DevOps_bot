@@ -63,6 +63,7 @@ from handlers.start import BOTTOM_SHOWN  # noqa: E402
 from reports.scheduler import (  # noqa: E402
     cancel_alert_worker,
     catch_up_after_restart,
+    clock_stepped,
     drain_alert_worker,
     rerun_seo_after_update,
     setup_scheduler,
@@ -262,7 +263,7 @@ async def main():
         polling = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types(),
                                                        close_bot_session=False))
         # Outside APScheduler on purpose: a dead scheduler cannot stop it.
-        guard = asyncio.create_task(health.watchdog())
+        guard = asyncio.create_task(health.watchdog(on_clock_step=clock_stepped))
         done, _ = await asyncio.wait({polling, guard}, return_when=asyncio.FIRST_COMPLETED)
         if guard in done:
             reason = guard.result()

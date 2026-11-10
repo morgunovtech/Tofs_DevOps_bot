@@ -104,7 +104,7 @@ from services.actions import (
     trigger_redeploy,
 )
 from services.notifier import Priority
-from utils.clock import local_tz, now_local, to_local
+from utils.clock import local_tz, to_local
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
 
@@ -262,6 +262,35 @@ def cancel_alert_worker():
     """Shutdown: the worker waits for work forever — it is not a task to wait for."""
     if _worker is not None and not _worker.done():
         _worker.cancel()
+
+
+_running: set[str] = set()
+
+
+def _once(name: str, *, mark: bool = False):
+    """One copy of a job at a time, whichever id started it — the cron run,
+    its «soon» twin, a re-check or a catch-up: APScheduler's max_instances
+    counts per id, and two ids of one check used to run it twice in
+    parallel. mark=True: a daily job — when it last finished goes to
+    bot_state, and the start catches up a run that a restart or a clock step
+    skipped (catch_up_missed). A set, not an asyncio.Lock: a lock binds to
+    one event loop, and the tests start a new loop per test."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def run(*args, **kwargs):
+            if name in _running:
+                logger.info("%s is already running — this start is skipped", name)
+                return None
+            _running.add(name)
+            try:
+                result = await fn(*args, **kwargs)
+            finally:
+                _running.discard(name)
+            if mark:
+                await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+            return result
+        return run
+    return wrap
 
 
 def _alerts_on(*check_types: str):
@@ -518,6 +547,7 @@ async def close_inapplicable(check_types: tuple[str, ...], urls: list[str]):
             await resolve_incident(inc["site_id"], inc["check_type"])
 
 
+@_once("ssl_checks", mark=True)
 @_alerts_on("ssl")
 async def run_ssl_checks():
     """Expiry ladder alerts only. A certificate that renewed by itself is
@@ -531,6 +561,7 @@ async def run_ssl_checks():
         priority=_by_level)
 
 
+@_once("domain_checks", mark=True)
 @_alerts_on("domain")
 async def run_domain_checks():
     urls = await get_active_host_urls()
@@ -586,6 +617,7 @@ async def _recently_added() -> set[str]:
     return out
 
 
+@_once("seo_checks", mark=True)
 @_alerts_on("seo")
 async def run_seo_checks():
     """Daily SEO/GEO audit. Only critical findings (noindex, search bots
@@ -608,6 +640,7 @@ async def run_seo_checks():
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
 
 
+@_once("card_pictures", mark=True)
 async def run_card_pictures():
     """Once a day, after the search audit: a fresh picture of every page
     for its card (services.screenshots). One at a time — the free
@@ -666,6 +699,7 @@ async def run_dns_checks():
 MAIL_RECHECK_MIN = 10
 
 
+@_once("mail_checks")
 @_alerts_on(*MAIL_CHECKS)
 async def run_mail_checks():
     """Hourly: mail on the sites' domains (monitors.mail_checker). A domain
@@ -688,6 +722,7 @@ def _mail_keyboard(r):
     return explain_keyboard(r.incident_id, status, mail)
 
 
+@_once("security_checks")
 @_alerts_on(*SECURITY_CHECKS)
 async def run_security_checks():
     """Every six hours: service files open to anyone (🔴, rings), plain
@@ -705,6 +740,7 @@ def _security_keyboard(r):
                                                                  callback_data=f"sec:{r.site_id}")])
 
 
+@_once("visitor_checks", mark=True)
 @_alerts_on("visitors")
 async def run_visitor_checks():
     """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
@@ -720,6 +756,7 @@ def _visitors_keyboard(r):
                             [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}")])
 
 
+@_once("index_checks", mark=True)
 async def run_index_checks():
     """Daily indexing watch via GSC / Yandex.Webmaster (when tokens are set):
     the answers go into the site snapshot for the «🔎 Поиск и ИИ» screen,
@@ -977,23 +1014,100 @@ async def report_db_health():
         health.mark_db_recovery_said()
 
 
+# Daily jobs worth running late rather than not at all: a restart (an image
+# update, a Dependabot merge — those land at 08:04–08:13 Moscow time) or a
+# clock step across their time used to skip them for the day.
+CATCH_UP = ("retention", "db_backup", "seo_checks", "index_checks", "card_pictures", "ssl_checks",
+            "domain_checks", "visitor_checks", "morning_report", "evening_report", "weekly_report")
+# After a restart these run anyway, from their «soon» twins in setup_scheduler.
+_SOON_AFTER_START = frozenset({"card_pictures", "visitor_checks"})
+CATCH_UP_WITHIN = timedelta(hours=12)
+_catch_up_tasks: set[asyncio.Task] = set()
+
+
+def _last_due(trigger, now: datetime, within: timedelta) -> datetime | None:
+    """The latest time the trigger fired (or should have) in (now - within, now]."""
+    t = trigger.get_next_fire_time(None, now - within)
+    last = None
+    while t is not None and t <= now:
+        last = t
+        t = trigger.get_next_fire_time(t, t + timedelta(seconds=1))
+    return last
+
+
+async def _run_catch_up(job_id: str, fn, due: datetime, **kwargs):
+    """The late run itself — unless the job ran since it was planned (its own
+    cron fired within misfire_grace_time, a «soon» twin): one run, not two."""
+    ran = parse_iso_utc(await get_state(f"last_run:{job_id}"))
+    if ran is not None and ran >= due:
+        logger.info("Catch-up of %s skipped: it ran at %s", job_id, ran)
+        return
+    await fn(**kwargs)
+
+
+async def catch_up_missed(now: datetime, last_alive: datetime | None = None, *,
+                          skip: frozenset[str] = frozenset(), min_late: timedelta = timedelta(0)):
+    """Run late the daily jobs whose time passed without a run — judged by
+    when each one last finished (last_run:<job>), not by how long the bot
+    was away. A job never marked yet (the first start of this version) is
+    judged by when the bot was last alive; the very first start catches up
+    nothing. min_late: a run due less than this ago is APScheduler's own to
+    make up (misfire_grace_time) — not planned twice."""
+    if _scheduler is None:
+        return
+    specs = _cron_specs()
+    for i, job_id in enumerate(CATCH_UP):
+        if job_id in skip:
+            continue
+        fn = getattr(_scheduler.get_job(job_id), "func", None)
+        due = _last_due(_cron(**specs[job_id]), now, CATCH_UP_WITHIN)
+        ran = parse_iso_utc(await get_state(f"last_run:{job_id}")) or last_alive
+        if fn is None or due is None or ran is None or ran >= due or now - due < min_late:
+            continue
+        if job_id == "morning_report" and to_local(now).hour >= LATE_MORNING_UNTIL:
+            continue                                   # a missed morning report still comes, but not at night
+        late = job_id == "morning_report" and now - due > timedelta(minutes=DOWNTIME_NOTE_MIN)
+        logger.info("Catching up %s: due at %s, last ran %s", job_id, due, ran)
+        _scheduler.add_job(_run_catch_up, DateTrigger(run_date=now + timedelta(seconds=60 + 30 * i), timezone=UTC),
+                           args=[job_id, fn, due], kwargs={"late": True} if late else {},
+                           id=f"catchup:{job_id}", replace_existing=True, misfire_grace_time=600)
+
+
+def clock_stepped(seconds: float):
+    """The wall clock stepped (NTP right after a boot, a resumed VM, a hand
+    edit). Interval jobs count their next run on the wall clock: after a step
+    back every one of them would wait out the whole step — move them back by
+    it. After a step forward the daily jobs whose time was jumped over run
+    late; what fell inside misfire_grace_time APScheduler makes up itself."""
+    if _scheduler is None:
+        return
+    now = datetime.now(UTC)
+    if seconds < 0:
+        for job in _scheduler.get_jobs():
+            if isinstance(job.trigger, IntervalTrigger) and job.next_run_time:
+                job.modify(next_run_time=max(now, job.next_run_time + timedelta(seconds=seconds)))
+        _next_avail_check.clear()       # per-site due times are on the wall clock too
+        return
+    task = asyncio.get_running_loop().create_task(
+        catch_up_missed(now, now - timedelta(seconds=seconds), min_late=timedelta(seconds=600)))
+    _catch_up_tasks.add(task)
+    task.add_done_callback(_catch_up_tasks.discard)
+
+
 async def catch_up_after_restart():
     """Once at startup. While the bot was gone its silence did not mean
-    «всё в порядке» — a pause longer than a redeploy is said out loud, and a
-    morning report that fell into it comes late rather than not at all."""
+    «всё в порядке» — a pause longer than a redeploy is said out loud, and
+    the daily jobs that fell into it run late rather than not at all."""
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
     await run_alive()
+    await catch_up_missed(now, last, skip=_SOON_AFTER_START)
     if not last or now - last < timedelta(minutes=DOWNTIME_NOTE_MIN) or _scheduler is None:
         return
-    # After the scheduler's first look at the sites, so the line is fresh.
-    _scheduler.add_job(_report_downtime, DateTrigger(run_date=now + timedelta(seconds=30)),
+    # After the scheduler's first look at the sites (the tick comes at +60 s),
+    # so the line repeats the monitor's verdict instead of guessing.
+    _scheduler.add_job(_report_downtime, DateTrigger(run_date=now + timedelta(seconds=90), timezone=UTC),
                        args=[last, now], id="downtime_note", replace_existing=True)
-    local_now = now_local()
-    morning = local_now.replace(hour=settings.morning_hour(), minute=0, second=0, microsecond=0)
-    if last < morning <= local_now and local_now.hour < LATE_MORNING_UNTIL:
-        _scheduler.add_job(send_morning_report, DateTrigger(run_date=now + timedelta(seconds=60)),
-                           kwargs={"late": True}, id="late_morning_report", replace_existing=True)
 
 
 async def _report_downtime(start: datetime, end: datetime):
@@ -1002,12 +1116,21 @@ async def _report_downtime(start: datetime, end: datetime):
     lines = [f"⏸ Меня не было {fmt_duration(minutes)} ({to_local(start).strftime(fmt)}–"
              f"{to_local(end).strftime(fmt)}): всё это время я не следил за сайтами и не смог бы "
              f"ничего сообщить. Сейчас снова на посту."]
-    urls = await get_active_site_urls()
-    if urls:
-        results = await check_all(urls, manage=False)
-        down = [esc(site_label(r.url)) for r in results if not r.ok]
-        lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}." if down
-                     else f"✅ Сейчас всё работает: {len(results)} из {len(results)}.")
+    sites = await get_all_sites()
+    if sites:
+        # The monitor's own verdict (threshold, second opinion), not one more
+        # probe of a network that may not be up yet after a reboot.
+        down_ids = {i["site_id"] for i in await get_active_incidents() if i["check_type"] == "availability"}
+        down = [esc(site_label(s["url"])) for s in sites if s["id"] in down_ids]
+        unsure = [esc(site_label(s["url"])) for s in sites if s["id"] not in down_ids
+                  and ((await get_last_check(s["id"], "availability")) or {}).get("status") not in (None, "ok")]
+        if down:
+            lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}.")
+        if unsure:
+            lines.append(f"⚠️ С первой попытки не открылись: {', '.join(unsure)} — перепроверяю, "
+                         f"напишу, если не поднимутся.")
+        if not down and not unsure:
+            lines.append(f"✅ Сейчас всё работает: {len(sites)} из {len(sites)}.")
     await notifier.send("\n".join(lines), Priority.NORMAL)
 
 
@@ -1044,6 +1167,7 @@ async def run_self_heartbeat():
         await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
 
 
+@_once("retention", mark=True)
 async def run_retention():
     # No try/except: a failure reaches the job listener (one message to the
     # owner) and the log keeps its traceback.
@@ -1072,6 +1196,7 @@ def backup_info() -> tuple[str, datetime] | None:
     return path, datetime.fromtimestamp(os.path.getmtime(path), UTC)
 
 
+@_once("db_backup", mark=True)
 async def run_db_backup() -> bool:
     """Nightly local DB backup with rotation. True when the copy was written."""
     try:
@@ -1263,6 +1388,7 @@ async def _watch_lines(morning: bool) -> list[tuple[str, bool]]:
     return lines
 
 
+@_once("morning_report", mark=True)
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
     # hour falls inside quiet hours (still deferred by an explicit mute).
@@ -1271,6 +1397,7 @@ async def send_morning_report(late: bool = False):
     await notifier.send(text, Priority.DIGEST, reply_markup=heartbeat_keyboard(silent_jobs))
 
 
+@_once("evening_report", mark=True)
 async def send_evening_report():
     """Evening report — only if there's something to worry about."""
     if settings.evening_hour() is None or not await get_active_incidents():
@@ -1293,6 +1420,7 @@ def pack_blocks(blocks: list[str], limit: int = SAFE_LIMIT) -> list[str]:
     return messages
 
 
+@_once("weekly_report", mark=True)
 async def send_weekly_report():
     """Sunday: dependency check, GitHub hygiene, weekly digest, ASCII
     response-time chart, off-host DB copy. A failed side check never
@@ -1377,20 +1505,34 @@ def _cron(**kwargs) -> CronTrigger:
     return CronTrigger(timezone=local_tz(), **kwargs)
 
 
+def _before_morning(minutes: int) -> dict:
+    """The daily audits run so many minutes before the morning report, so the
+    digest shows today's results whatever hour the owner picked (at 9:00 —
+    the old fixed 07:30–08:10)."""
+    t = (settings.morning_hour() * 60 - minutes) % (24 * 60)
+    return dict(hour=t // 60, minute=t % 60)
+
+
+def audit_time(job_id: str) -> str:
+    """«08:10» — when a daily audit runs today, for the texts that name it."""
+    spec = _cron_specs()[job_id]
+    return f"{spec['hour']:02d}:{spec['minute']:02d}"
+
+
 def _cron_specs() -> dict[str, dict]:
     """Every cron-based job with its local-time schedule, resolved now —
     so a changed report hour or timezone can re-create all triggers."""
     evening = settings.evening_hour()
     return {
-        "ssl_checks": dict(hour=8, minute=0),
-        "domain_checks": dict(hour=8, minute=5),
-        "seo_checks": dict(hour=7, minute=30),
-        "index_checks": dict(hour=7, minute=45),
-        "card_pictures": dict(hour=7, minute=50),
+        "ssl_checks": _before_morning(60),
+        "domain_checks": _before_morning(55),
+        "seo_checks": _before_morning(90),
+        "index_checks": _before_morning(75),
+        "card_pictures": _before_morning(70),
         "dns_checks": dict(minute=20),
         "mail_checks": dict(minute=25),
         "security_checks": dict(hour="*/6", minute=35),
-        "visitor_checks": dict(hour=8, minute=10),
+        "visitor_checks": _before_morning(50),
         "region_checks": dict(minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
