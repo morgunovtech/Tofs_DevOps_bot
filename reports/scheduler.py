@@ -7,6 +7,7 @@ import contextlib
 import functools
 import logging
 import os
+import re
 import sqlite3
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -46,7 +47,13 @@ from monitors.base import CheckResult
 from monitors.deep_checker import check_all_deep
 from monitors.dns_checker import check_all_dns
 from monitors.domain_checker import check_all_domains
-from monitors.host_checker import DISK_CRITICAL_PCT, check_disk, watch_containers
+from monitors.host_checker import (
+    DISK_CRITICAL_PCT,
+    HEALTHY_RESET,
+    RESTART_BUDGET,
+    check_disk,
+    watch_containers,
+)
 from monitors.links_checker import check_all_links
 from monitors.mail_checker import MAIL_CHECKS, carriers, check_all_mail
 from monitors.second_opinion import repeatable
@@ -111,9 +118,6 @@ from utils.urls import is_api_check, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
-# Set when the scheduler starts; grace reference for heartbeat jobs that
-# have never pinged.
-_started_at: datetime | None = None
 _scheduler: AsyncIOScheduler | None = None
 
 SLOW_RESPONSE_STREAK = 3
@@ -208,7 +212,7 @@ async def _availability_tick():
         if r.incident_new:
             _enqueue(_send_availability_alert, r, site, incident_id=r.incident_id)
         elif r.external_ok is True:
-            _enqueue(_note_local_network_problem, r.url, r.site_id)
+            _enqueue(_note_local_network_problem, r.url, r.site_id, r.external_ups, r.external_total)
         elif r.transient and not r.own_outage:
             _enqueue(_note_cannot_check, r.url, r.site_id, r.error)
         elif r.recovered:
@@ -489,7 +493,10 @@ async def _send_recovery(r):
 
 
 async def _site_is_up(r, slow_ms: int):
-    _ext_ok_noted.discard(r.site_id)
+    if r.site_id in _ext_ok_noted:
+        _ext_ok_noted.discard(r.site_id)
+        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается и с моего сервера.",
+                            Priority.NORMAL, site_id=r.site_id)
     await _track_slow(r, slow_ms)
 
 
@@ -556,15 +563,18 @@ async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb,
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
-async def _note_local_network_problem(url: str, site_id: int):
-    """Down from the bot's network but fine externally — a fact about the
-    bot's own network, said once per episode (nothing repeats while the
-    situation has not changed)."""
+async def _note_local_network_problem(url: str, site_id: int, ups: int = 0, total: int = 0):
+    """Down from the bot's server but open from most external nodes — said
+    once per episode, without a ring. Either the bot's network or the bot's
+    region (a block, a provider, a CDN node): the owner knows which."""
     if site_id in _ext_ok_noted:
         return
+    where = f"с {ups} из {total} внешних серверов" if total else "с внешних серверов"
     sent = await notifier.send(
-        f"🤔 {esc(site_label(url))} не открылся с моего сервера, но у всех остальных открывается. "
-        f"Похоже, сеть шалит на моей стороне — тревогу не поднимаю, продолжаю проверять.",
+        f"🟠 {esc(site_label(url))} не открылся с моего сервера, но открывается {where}. Если посетители "
+        f"сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
+        f"(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
+        f"не поднимаю; напишу, когда снова откроется.",
         Priority.NORMAL, site_id=site_id)
     if sent:
         _ext_ok_noted.add(site_id)
@@ -722,14 +732,26 @@ async def run_seo_checks():
     fresh = await _recently_added()
     if fresh:
         await check_all_seo([u for u in urls if u in fresh], manage=False)
+    results = await check_all_seo([u for u in urls if u not in fresh])
     await _notify_transitions(
-        await check_all_seo([u for u in urls if u not in fresh]), format_seo_alert,
+        results, format_seo_alert,
         # The closed incident may have been a 🟠 «нет sitemap», not a closed
         # site — the recovery line must be true for both levels.
         lambda r: f"✅ {esc(site_label(r.url))}: поисковикам больше ничего не мешает. Ничего делать не нужно.",
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
+    # 🔴 → 🟠: the ban is lifted, lesser findings remain. Not a recovery (the
+    # incident is open) and not an alert (nothing new is wrong) — one quiet
+    # line to the owner. The helpers hear it the way they heard the 🔴: the
+    # SEO alert above goes out without a copy to them, so does this.
+    for r in results:
+        if r.downgraded:
+            with _isolated(f"Search ban lifted for {site_label(r.url)}"):
+                await notifier.send(
+                    f"✅ {esc(site_label(r.url))}: запрет для поисковиков снят — сайт снова открыт для поиска. "
+                    "Мелкие помехи остались, они в «🔎 Поиск и ИИ».",
+                    Priority.NORMAL, site_id=r.site_id, to_helpers=False)
 
 
 @_once("card_pictures", mark=True)
@@ -918,13 +940,14 @@ async def run_heartbeat_watch():
     for job, interval_min in jobs.items():
         with _isolated(f"Heartbeat check of {job}"):
             last = parse_sqlite_utc(beats.get(job))
-            overdue, detail = False, ""
+            # From the last mark or the job's addition, less the bot's own downtime
+            # (services.heartbeats): neither a new job nor a redeploy is silence.
+            silence_min = await heartbeats.silent_minutes(job, last, now)
             if last:
-                silence_min = (now - last).total_seconds() / 60
                 overdue = heartbeats.is_late(interval_min, silence_min)
-                detail = f"последний раз на связи {fmt_duration(silence_min)} назад"
-            elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
-                overdue, detail = True, "на связь так и не выходит"
+                detail = f"последний раз на связи {fmt_duration((now - last).total_seconds() / 60)} назад"
+            else:
+                overdue, detail = silence_min > interval_min, "на связь так и не выходит"
             alerted = await get_state(f"hb_alerted:{job}")
             if overdue and not alerted:
                 expl = humanize.EXPLANATIONS["heartbeat"]
@@ -979,7 +1002,9 @@ async def run_host_checks():
             # Percent and gigabytes are both measured after the prune, so they agree.
             sent = await notifier.send(
                 f"{humanize.level_icon(level)} {result['label']} заполнен на {result['pct_after']}% "
-                f"({result['used_gb_after']} из {result['total_gb']} GB).\n{expl.meaning}\n\n"
+                f"({result['used_gb_after']} из {result['total_gb']} GB)."
+                + (" Почистить docker сам не смог: Docker не отвечает." if result.get("cleanup_failed") else "")
+                + f"\n{expl.meaning}\n\n"
                 f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}" + useless,
                 notifier.priority_for(level))
             if sent:
@@ -997,25 +1022,110 @@ async def run_host_checks():
 
 
 async def run_container_watch():
-    """A container that stays broken is said once (🔴 rings through mute):
-    the watch runs every 10 minutes, as often as the restart throttle allows,
-    so without a flag it would page all night about the same thing."""
+    """One message per change, never one per tick (the watch runs every 10
+    minutes): broken — 🔴 once, it rings through mute; back to work — ✅ only
+    after HEALTHY_RESET of health in a row, so a flapping container is not a
+    page every 20 minutes; a missing container and a silent Docker — 🟠 once.
+    A restart whose verdict the run could not wait for is said as that (🟠),
+    and the verdict comes with the next look."""
     for e in await watch_containers():
-        with _isolated(f"Container alert for {e['name']}"):
-            key = f"container_alerted:{e['name']}"
+        with _isolated(f"Container alert for {e.get('name', 'docker')}"):
+            if e.get("api_down"):
+                await _container_note("docker_api_down", True, (
+                    "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
+                    "диска сейчас не работают: сокет Docker принадлежит группе root: нужна "
+                    "<code>ALLOW_ROOT_GROUP_SOCKET=1</code> в .env или отфильтрованный доступ через "
+                    "socket-proxy (docs/SETUP.md).")
+                    if e["mounted"] and config.docker_socket_root_group else (
+                    "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
+                    "диска сейчас не работают. Обычно помогает перезапуск контейнера бота: "
+                    "<code>docker compose up -d</code> (сокет смонтируется заново).")
+                    if e["mounted"] else (
+                    "🟠 AUTORESTART_CONTAINERS задан, но сокет Docker в контейнер бота не смонтирован — "
+                    "автоперезапуск не работает. Как подключить: «🔌 Подключения» → «🐳 Docker на хосте»."))
+                return
+            await _container_note("docker_api_down", False, "✅ Docker на сервере бота снова отвечает.")
+            name = e["name"]
+            label = esc(name)
+            if e.get("missing"):
+                await _container_note(f"container_missing:{name}", True, (
+                    f"🟠 Сервис «{label}» из AUTORESTART_CONTAINERS не найден в Docker: проверь имя "
+                    f"(<code>docker ps -a</code>) — контейнер могли переименовать или удалить."))
+                continue
+            await _container_note(f"container_missing:{name}", False, None)
+            key = f"container_alerted:{name}"
+            unverified_key = f"container_unverified:{name}"
+            if e.get("healthy"):
+                # The verdict the last run could not wait for: the container came up.
+                await _container_note(unverified_key, False,
+                                      f"✅ Сервис «{label}» на сервере бота заработал после перезапуска. "
+                                      f"Ничего делать не нужно.")
+                if e["healthy_for"] >= HEALTHY_RESET:
+                    await set_state(f"container_gave_up:{name}", None)
+                    if await get_state(key):
+                        await set_state(key, None)
+                        await notifier.send(f"✅ Сервис «{label}» на сервере бота снова работает. "
+                                            f"Ничего делать не нужно.")
+                continue
+            if e.get("waiting"):
+                continue
+            if e.get("gave_up"):
+                await _container_note(unverified_key, False, None)
+                if not await get_state(f"container_gave_up:{name}"):
+                    # Rings only if this episode has not rung yet (every restart «helped» for a while).
+                    paged = await get_state(key)
+                    sent = await notifier.send(
+                        f"{'🟠' if paged else '🔴'} Сервис «{label}» на сервере бота {esc(e['problem'])}. "
+                        f"Перезапускал его {RESTART_BUDGET} раза — не помогает, больше сам не трогаю: нужен "
+                        f"человек.\n\n{_container_steps(name)}",
+                        Priority.NORMAL if paged else Priority.CRITICAL)
+                    if sent:
+                        await set_state(f"container_gave_up:{name}", "1")
+                        await set_state(key, "1")
+                continue
+            if e.get("unverified"):
+                # Restarted, but the run's budget ran out while the container was still
+                # starting: not «still broken» — «no verdict yet», the next look tells.
+                await _container_note(unverified_key, True, (
+                    f"🟠 Сервис «{label}» на сервере бота {esc(e['problem'])}. Перезапустил его, но дождаться, "
+                    f"заработал ли он, в этот раз не успел — он ещё запускается. Посмотрю через 10 минут "
+                    f"и скажу, чем кончилось."))
+                continue
+            await _container_note(unverified_key, False, None)
             if e["restarted"] and e["ok_after"]:
                 await set_state(key, None)
-                await notifier.send(f"✅ Сервис «{esc(e['name'])}» на сервере бота был {esc(e['problem'])} — "
-                                    f"перезапустил сам, работает. Ничего делать не нужно.")
+                await notifier.send(f"✅ Сервис «{label}» на сервере бота снова работает — перезапустил его сам "
+                                    f"(было: {esc(e['problem'])}). Ничего делать не нужно.")
             elif not await get_state(key):
                 expl = humanize.EXPLANATIONS["container"]
                 sent = await notifier.send(
-                    f"🔴 Сервис «{esc(e['name'])}» на сервере бота {esc(e['problem'])}. "
+                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. "
                     + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
-                       else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{esc(humanize.steps_block(expl))}",
+                       else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{_container_steps(name)}",
                     Priority.CRITICAL)
                 if sent:
                     await set_state(key, "1")
+
+
+async def _container_note(key: str, on: bool, text: str | None):
+    """A state said once: when it starts (text) — and, if a text is given for
+    the way back, when it ends."""
+    was = await get_state(key)
+    if on and not was:
+        if await notifier.send(text):
+            await set_state(key, "1")
+    elif not on and was:
+        await set_state(key, None)
+        if text:
+            await notifier.send(text)
+
+
+def _container_steps(name: str) -> str:
+    """«Что делать» with commands ready to copy: the real name instead of «<имя>»."""
+    steps = (re.sub(r"docker (\w+) &lt;имя&gt;",
+                    lambda m: f"<code>docker {m.group(1)} {esc(name)}</code>", esc(s))
+             for s in humanize.EXPLANATIONS["container"].steps)
+    return "Что делать:\n" + "\n".join(f"• {s}" for s in steps)
 
 
 # ── Escalation ───────────────────────────────────────────────────────────────
@@ -1050,14 +1160,21 @@ async def run_escalation_watch():
             if announced and (now - announced) < timedelta(minutes=repeat_min):
                 continue        # the held alert was just said — no repeat on its heels
             age_min = (now - created).total_seconds() / 60
+            api = is_api_check(inc["url"], inc.get("http_method"))
+            if (inc.get("message") or "").startswith("Bad content: "):
+                # The site opens; its text is wrong — not «лежит», not «поднимется».
+                so_far = f"Так уже {fmt_duration(age_min)}"
+                back = f"когда {'в ответе' if api else 'на странице'} снова будет как надо"
+            else:
+                so_far, back = f"Лежит уже {fmt_duration(age_min)}", "как только поднимется"
             sent = await notifier.send(
-                f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
-                f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
+                f"🔴 {esc(incident_line(inc))}\n{so_far}. Продолжаю проверять "
+                f"каждую минуту и напишу, {back}.\n\nЕсли ты уже чинишь — нажми "
                 f"«🔧 Я чиню», и я замолчу на {maintenance.fix_length()}.",
                 Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
                 reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                                     hosting=await get_state(f"hosting:{inc['site_id']}"),
-                                                    api=is_api_check(inc["url"], inc.get("http_method"))))
+                                                    api=api))
             if sent:
                 await set_state(f"escalated:{inc['id']}", now.isoformat())
 
@@ -1197,6 +1314,8 @@ async def catch_up_after_restart():
                             "Остальное работает. Подробности — в логе бота.")
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
+    # The gap is taken out of the tasks' silence: the bot heard nothing in it.
+    await heartbeats.note_downtime(last, now)
     await run_alive()
     await catch_up_missed(now, last, skip=_SOON_AFTER_START)
     if not last or now - last < timedelta(minutes=DOWNTIME_NOTE_MIN) or _scheduler is None:
@@ -1684,8 +1803,7 @@ def reschedule_all() -> list[str]:
 
 
 def setup_scheduler() -> AsyncIOScheduler:
-    global _started_at, _scheduler
-    _started_at = datetime.now(UTC)
+    global _scheduler
     # APScheduler's default grace is 1 s: an event loop busy parsing a page at
     # 09:00:00 would silently skip that day's morning report.
     scheduler = AsyncIOScheduler(timezone=local_tz(), job_defaults={"misfire_grace_time": 600})

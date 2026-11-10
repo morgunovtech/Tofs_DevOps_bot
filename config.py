@@ -267,6 +267,10 @@ class Config:
 
     # ── Bot-host monitoring / remediation ────────────────────────────────────
     docker_socket: str = os.getenv("DOCKER_SOCKET", "").strip() or "/var/run/docker.sock"
+    # Set by entrypoint.sh, not by the owner: the mounted socket belongs to
+    # group root and ALLOW_ROOT_GROUP_SOCKET=1 is not in .env, so the bot has
+    # no access to it — «🔌 Подключения» and the 🟠 note name that fix.
+    docker_socket_root_group: bool = _bool("DOCKER_SOCKET_ROOT_GROUP", "0")
     autorestart_containers: tuple[str, ...] = field(
         default_factory=lambda: tuple(_csv("AUTORESTART_CONTAINERS")))
     disk_alert_pct: int = _int("DISK_ALERT_PCT", 85, 50, 99)   # below 50 prune would fire on a near-empty disk

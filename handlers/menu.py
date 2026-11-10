@@ -27,7 +27,7 @@ from services import heartbeats, humanize, maintenance, notifier, sitestatus, up
 from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
 from utils.text import esc, plural
-from utils.urls import is_api_check, site_label
+from utils.urls import is_api_check, is_web_page, site_label
 
 router = Router(name="menu")
 
@@ -108,7 +108,8 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
     said, label = {kind for kind, *_ in notes}, site_label(site["url"])
     for inc in incidents:
         if inc["site_id"] == site["id"] and inc["check_type"] not in (*said, *MAIL_CHECKS):
-            words = humanize.incident_headline(inc["check_type"], inc.get("message"), label)
+            words = humanize.incident_headline(inc["check_type"], inc.get("message"), label,
+                                               page=is_web_page(site["url"], site.get("http_method")))
             notes.append((inc["check_type"], inc["severity"], _without_label(words, label)))
     paused = "чинится, " if await maintenance.is_paused(site["id"]) else ""
     if notes:

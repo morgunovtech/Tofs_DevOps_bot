@@ -8,6 +8,7 @@ monitor should fire.
 """
 
 import asyncio
+import html
 import logging
 import re
 from dataclasses import asdict, dataclass, field
@@ -48,11 +49,20 @@ class CheckResult:
 class AvailabilityResult(CheckResult):
     status_code: int | None = None
     response_time_ms: int | None = None
-    # Second-opinion verdict: True = up externally, False = confirmed down,
-    # None = not checked / verdict service unreachable.
+    # Second-opinion verdict: True = up from most external nodes, False =
+    # confirmed down, None = not checked / no verdict (service unreachable,
+    # the nodes split, or the audience's node could not open it).
     external_ok: bool | None = None
+    external_ups: int = 0        # external nodes that opened it
+    external_total: int = 0      # external nodes asked
+    # The node in the audience's country (check-host country code) could not
+    # open the site while others did: the visitors see the same.
+    external_region: str | None = None
     # HTTP succeeded but the keyword/stop-phrase check failed.
     keyword_failed: bool = False
+    # The server answered with a certificate a browser will not accept: every
+    # visitor sees the warning page — no second opinion, no network check.
+    cert_failed: bool = False
     # Hosting guessed from response headers (services.hosting key).
     hosting: str | None = None
     # An API check (utils.urls.is_api_check): «отвечает», not «открывается».
@@ -150,6 +160,9 @@ class SeoResult(CheckResult):
     problems: list[SeoProblem] = field(default_factory=list)
     pages_checked: int = 0
     no_js_chars: int | None = None
+    # The open 🔴 became a 🟠 in this audit: the ban is lifted, lesser
+    # findings remain — the owner hears «запрет снят», not «всё хорошо».
+    downgraded: bool = False
 
     @property
     def has_critical(self) -> bool:
@@ -188,6 +201,29 @@ def decode_body(raw: bytes, header_charset: str | None) -> str:
         except (LookupError, ValueError):
             pass
     return raw.decode("utf-8", errors="replace")
+
+
+# [^<>] and not [^>]: on a body of «<» without «>» the latter rescans to the
+# end from every «<» — quadratic, minutes of a stalled event loop for 1 MB.
+_TAG_RE = re.compile(r"<[^<>]*>")
+_WS_RE = re.compile(r"\s+")          # a str pattern: \s covers U+00A0 (&nbsp;) too
+
+
+def visible_text(text: str) -> str:
+    """What a person reads and types: tags dropped, entities decoded,
+    every run of whitespace (non-breaking included) folded to one space."""
+    return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", text))).strip().casefold()
+
+
+def phrase_found(phrase: str, body: str) -> bool:
+    """The phrase as written in the source OR as a visitor sees it; a raw
+    match (a stop phrase inside <script>) still counts. A phrase that is
+    nothing but markup («<html>», «&nbsp;») has no visible text and is
+    looked for in the source only: «'' in anything» would be a silent yes."""
+    if phrase.casefold() in body.casefold():
+        return True
+    visible = visible_text(phrase)
+    return bool(visible) and visible in visible_text(body)
 
 
 async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:

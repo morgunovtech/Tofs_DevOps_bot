@@ -1,14 +1,25 @@
 .env
+.env.*
+!.env.example
 data/
 __pycache__/
 *.pyc
 *.pyo
 .DS_Store
 *.db
+*.db-wal
+*.db-shm
+*.db.bak
+*.db.restore
 *.sqlite3
 .venv/
 venv/
 gsc-key.json
 *.json.key
+# service-account keys downloaded from Google Cloud keep their default name
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/

@@ -1,3 +1,6 @@
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
 from handlers import sites
 from monitors import region
 from reports import scheduler
@@ -21,9 +24,22 @@ def test_parse_ms_and_node_name():
     assert region.node_name("xx9.node.check-host.net") == "снаружи"
 
 
-async def test_measure_never_sends_private_hosts_outside():
-    assert await region.measure("http://192.168.1.1/", "ru") is None
-    assert await region.measure("http://intranet/", "ru") is None
+async def test_measure_never_sends_private_hosts_outside(monkeypatch):
+    seen = []
+
+    async def any_request(request):
+        seen.append(request.path_qs)
+        return web.json_response({"request_id": "r1"})        # no nodes → measure() gives up at once
+
+    app = web.Application()
+    app.router.add_get("/{tail:.*}", any_request)
+    async with TestServer(app) as server:
+        monkeypatch.setattr(region, "API", str(server.make_url("")).rstrip("/"))
+        assert await region.measure("http://192.168.1.1/", "ru") is None
+        assert await region.measure("http://intranet/", "ru") is None
+        assert seen == []                                     # not a single request left the bot
+        await region.measure("https://example.com/", "ru")    # a public host does reach the service
+        assert seen
 
 
 async def test_region_job_writes_the_snapshot_and_the_card_shows_it(bot, db, monkeypatch):

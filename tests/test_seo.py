@@ -4,6 +4,7 @@ from aiohttp.test_utils import TestServer
 from monitors import seo_checker
 from monitors.base import SeoProblem
 from monitors.seo_checker import analyze_page, analyze_robots, incident_message
+from monitors.sitemap import SitemapScan
 
 ROBOTS = """User-agent: *
 Allow: /
@@ -95,7 +96,7 @@ async def test_ai_probe_reports_a_signature_refusal_in_its_own_words(db, cfg, mo
     app.router.add_get("/", home)
     server = TestServer(app)
     await server.start_server()
-    monkeypatch.setattr(seo_checker, "sitemap_urls", lambda session, base: _none())
+    monkeypatch.setattr(seo_checker, "scan_sitemap", lambda session, base: _unread())
     cfg(seo_pages_sample=1)
     try:
         r = await seo_checker.check_seo(f"http://127.0.0.1:{server.port}", manage=False)
@@ -107,5 +108,5 @@ async def test_ai_probe_reports_a_signature_refusal_in_its_own_words(db, cfg, mo
     assert "PerplexityBot" not in found["ai_blocked"]
 
 
-async def _none():
-    return None
+async def _unread():
+    return SitemapScan()

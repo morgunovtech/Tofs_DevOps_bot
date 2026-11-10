@@ -234,8 +234,19 @@ async def build_items() -> list[Item]:
                           ("🐙 Подключить GitHub", "setup:gh")))
 
     if not config.on_railway:
-        if docker_api.docker_available():
+        # A live probe, not the file's existence: a socket nobody listens on is a mounted file too.
+        if docker_api.docker_available() and await docker_api.ping():
             items.append(Item("docker", "ok", "docker socket"))
+        elif docker_api.docker_available() and config.docker_socket_root_group:
+            items.append(Item("docker", "warn", "docker socket",
+                              "сокет Docker принадлежит группе root: нужна ALLOW_ROOT_GROUP_SOCKET=1 в .env "
+                              "или отфильтрованный доступ через socket-proxy (docs/SETUP.md)",
+                              ("🐳 Как подключить", "setup:docker")))
+        elif docker_api.docker_available():
+            items.append(Item("docker", "warn", "docker socket",
+                              "сокет смонтирован, но Docker не отвечает — автоперезапуск и очистка не работают; "
+                              "обычно помогает docker compose up -d",
+                              ("🐳 Как подключить", "setup:docker")))
         else:
             items.append(Item("docker", "off", "🐳 Docker на хосте",
                               "автоперезапуск контейнеров; очистка диска — по желанию, AUTO_CLEANUP=1",
@@ -432,14 +443,15 @@ async def cb_second_opinion(call: CallbackQuery):
 
 @router.callback_query(F.data == "setup:hb_regen")
 async def cb_regen_heartbeat_ask(call: CallbackQuery):
-    """Rotation is always one tap away — and never one tap long: every task
-    and bot that marks in with the old address goes silent until updated."""
+    """Rotation is always one tap away — and never one tap long: every job's
+    address derives from the one secret (services.secrets), so every task
+    and bot that marks in with its old address goes silent until updated."""
     await ack(call)
     n = len(settings.heartbeat_jobs())
-    await render(call, "🔑 Сменить адрес, по которому задачи и боты выходят на связь?\n\n"
-                       f"Старый адрес перестанет работать сразу у всех ({n}): пока не впишешь им новый, "
-                       "они будут считаться замолчавшими. Делай это, если адрес мог попасть в чужие руки — "
-                       "например, лежал в файле репозитория.",
+    await render(call, "🔑 Сменить адреса, по которым задачи и боты выходят на связь?\n\n"
+                       f"У каждой задачи адрес свой, но сменятся они все сразу ({n}): пока не впишешь каждой "
+                       "новый, они будут считаться замолчавшими. Делай это, если адрес мог попасть в чужие "
+                       "руки — например, лежал в файле репозитория.",
                  InlineKeyboardMarkup(inline_keyboard=[
                      [InlineKeyboardButton(text="🔑 Да, сменить", callback_data="setup:hb_regen_ok")],
                      [InlineKeyboardButton(text="✖️ Не менять", callback_data="setup:check")]]))
@@ -453,8 +465,9 @@ async def cb_regen_heartbeat(call: CallbackQuery):
     example = jobs[0] if jobs else "backup"
     note = ("\n\nHEARTBEAT_SECRET в окружении больше не используется — удали переменную."
             if config.heartbeat_secret_env else "")
-    await render(call, f"🔑 Новый адрес для связи сохранён. Обнови его у каждой задачи и бота, "
-                       f"например:\n<code>curl -fsS {esc(public_urls.heartbeat_url(example))}</code>\n\n"
+    await render(call, f"🔑 Новые адреса для связи сохранены. Обнови адрес у каждой задачи и бота — "
+                       f"свой у каждой, он в карточке задачи, «🔗 Как подключена». Например, для «{esc(example)}»:"
+                       f"\n<code>curl -fsS {esc(public_urls.heartbeat_url(example))}</code>\n\n"
                        f"{HEARTBEAT_SECRET_NOTE}{note}",
                  back_button("← К подключениям", "setup:check"))
 
@@ -499,10 +512,12 @@ async def cb_guide_docker(call: CallbackQuery):
                         "1. В docker-compose.yml раскомментируй строку\n"
                         "<code>- /var/run/docker.sock:/var/run/docker.sock</code>\n"
                         "2. В .env перечисли контейнеры: "
-                        "<code>AUTORESTART_CONTAINERS=app,db</code>\n"
+                        "<code>AUTORESTART_CONTAINERS=app,db</code> — кроме контейнера самого бота: "
+                        "его я не перезапускаю\n"
                         "3. <code>docker compose up -d</code> и «🔁 Проверить снова».\n\n"
                         "Сокет даёт root-доступ к хосту: через него можно сделать с сервером что угодно. "
-                        "Включай только на сервере, который полностью твой."), _guide_kb())
+                        "Включай только на сервере, который полностью твой. Безопаснее — отфильтрованный "
+                        "доступ через socket-proxy: docs/SETUP.md, «Свой сервер: доступ к Docker»."), _guide_kb())
 
 
 def _watchdog_kb() -> InlineKeyboardMarkup:

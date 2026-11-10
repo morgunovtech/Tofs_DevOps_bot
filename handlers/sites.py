@@ -261,7 +261,7 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
     for inc in await get_active_incidents():
         if inc["site_id"] == site["id"] and inc["check_type"] not in _SHOWN_ON_A_LINE:
             problems.append([f"{humanize.level_icon(inc['severity'])} "
-                             f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), 'Сайт'))}"])
+                             f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), 'Сайт', page=page))}"])
     return problems, blocks
 
 
@@ -286,6 +286,10 @@ async def _avail_line(site: dict, st: dict, page: bool) -> str:
         return "⏳ Ещё не проверял — первая проверка в течение минуты"
     if avail.get("status") == "unknown":
         return f"{humanize.UNCHECKED} Не могу проверить: {esc(humanize.describe_error(avail.get('error')))}"
+    if avail.get("status") != "ok" and avail.get("kw"):
+        # The page loaded; the phrase verdict is what failed — not an outage.
+        return (f"🔴 {'Открывается' if page else 'Отвечает'}, но показывает не то: "
+                f"{esc(humanize.describe_error(avail.get('error')))}")
     if avail.get("status") != "ok":
         return f"🔴 {'Не открывается' if page else 'Не отвечает'}: {esc(humanize.describe_error(avail.get('error')))}"
     ms, region = best_ms(st)
@@ -327,6 +331,8 @@ async def _last_outage(site: dict) -> str:
 def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
     """The phrase the owner asked to watch — said when it is fine too."""
     phrase = site.get("keyword")
+    if phrase and (site.get("http_method") or "").upper() == "HEAD":
+        return [f"⚠️ Фраза «{esc(phrase)}» не проверяется: метод HEAD"]
     if not phrase or not avail or avail.get("status") != "ok":
         return []
     if site.get("keyword_mode") == "absent":
@@ -385,12 +391,16 @@ def _pages_lines(deep: dict | None) -> list[str]:
         return []
     n, bad = deep["sampled"], deep.get("errors") or 0
     pages = deep.get("pages") or []
+    # code None — answered fine; 0 — did not answer at all; else a 5xx.
+    silent = any(code == 0 for _, code in pages)
     if bad:
-        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера")
+        head = (f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера"
+                + (" или не отвечают" if silent else ""))
     else:
         head = "✅ Страницы из карты сайта" + ("" if pages else f": {n} из {n} отвечают")
     lines = [head]
-    lines += [f"    {'🔴' if code else '✅'} {esc(path)}{f' — ошибка {code}' if code else ''}"
+    lines += [f"    ✅ {esc(path)}" if code is None
+              else f"    🔴 {esc(path)} — {'не ответила' if code == 0 else f'ошибка {code}'}"
               for path, code in pages[:10]]
     if len(pages) > 10:
         lines.append(f"    … и ещё {len(pages) - 10}")
@@ -647,6 +657,9 @@ async def msg_site_add(message: Message, state: FSMContext):
         lines.append(f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(r.response_time_ms)}")
     elif r.transient:
         lines.append(f"{humanize.UNCHECKED} Проверить не могу: {esc(humanize.describe_error(r.error))}.")
+    elif r.keyword_failed:
+        lines.append(f"🔴 Сейчас {'открывается' if page else 'отвечает'}, но показывает не то: "
+                     f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда станет как надо.")
     else:
         lines.append(f"🔴 Сейчас {'не открывается' if page else 'не отвечает'}: "
                      f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда поднимется.")
@@ -677,7 +690,7 @@ async def msg_site_add(message: Message, state: FSMContext):
     if page and r.ok:
         note = await alt_host_note(url)
         if note:
-            lines.append("\n" + note)
+            lines.append("\n" + esc(note))
         phrase = await suggest_keyword(url)
         if phrase:
             await set_state(f"kw_suggest:{site_id}", phrase)

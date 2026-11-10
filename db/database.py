@@ -504,7 +504,7 @@ async def get_unalerted_incidents(min_age_minutes: int = 2) -> list[dict]:
 async def get_incident(incident_id: int) -> dict | None:
     db = await get_db()
     cursor = await db.execute(
-        """SELECT i.*, s.url FROM incidents i JOIN sites s ON i.site_id = s.id
+        """SELECT i.*, s.url, s.http_method FROM incidents i JOIN sites s ON i.site_id = s.id
            WHERE i.id = ?""", (incident_id,))
     row = await cursor.fetchone()
     return dict(row) if row else None
@@ -524,7 +524,7 @@ async def get_incidents_since(days: int = 7) -> list[dict]:
     belongs to «решено за неделю»."""
     db = await get_db()
     cursor = await db.execute(
-        """SELECT i.*, s.url FROM incidents i JOIN sites s ON i.site_id = s.id
+        """SELECT i.*, s.url, s.http_method FROM incidents i JOIN sites s ON i.site_id = s.id
            WHERE i.created_at >= datetime('now', ?) OR i.resolved = 0
               OR i.resolved_at >= datetime('now', ?)
            ORDER BY i.created_at""",
@@ -601,6 +601,14 @@ async def heartbeat_ping(job: str):
         await db.commit()
 
 
+async def delete_heartbeat(job: str):
+    """Forget a job's last mark: a job added again under the same name starts clean."""
+    db = await get_db()
+    async with _write_lock:
+        await db.execute("DELETE FROM heartbeats WHERE job = ?", (job,))
+        await db.commit()
+
+
 async def get_heartbeats() -> dict[str, str | None]:
     """{job: last_ping (sqlite UTC string)}."""
     db = await get_db()
@@ -625,6 +633,16 @@ async def get_dns_record(host: str, rtype: str) -> tuple[str, str] | None:
         "SELECT value, updated_at FROM dns_state WHERE host = ? AND rtype = ?", (host, rtype))
     row = await cursor.fetchone()
     return (row[0], row[1]) if row else None
+
+
+async def get_open_incident(site_id: int, check_type: str) -> dict | None:
+    """The incident of this site and type that is open right now, or None."""
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT * FROM incidents WHERE site_id = ? AND check_type = ? AND resolved = 0""",
+        (site_id, check_type))
+    row = await cursor.fetchone()
+    return dict(row) if row else None
 
 
 async def get_last_incident(site_id: int, check_type: str) -> dict | None:

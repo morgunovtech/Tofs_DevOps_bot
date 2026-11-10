@@ -14,7 +14,8 @@ services:
       # and, only with AUTO_CLEANUP=1 in .env, remove dangling images and old
       # build cache when the disk is full.
       # NOTE: the docker socket is root-equivalent access to the host —
-      # enable only on a single-purpose server you fully control.
+      # enable only on a single-purpose server you fully control, or give the
+      # bot a filtered socket instead: docs/SETUP.md, «Свой сервер: доступ к Docker».
       # - /var/run/docker.sock:/var/run/docker.sock
       # Google Search Console service-account key (see .env.example):
       # - ./gsc-key.json:/app/gsc-key.json:ro
@@ -28,6 +29,13 @@ services:
       - "127.0.0.1:${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}"
     environment:
       - DB_PATH=/app/data/bot.db
+    # Docker keeps json-file logs without a limit by default; the bot writes
+    # ≈3 MB a day, which is ≈1 GB a year on a Raspberry Pi's or NAS's flash.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # ping:// monitors: lets the bot's group (GID 10001, see Dockerfile) open
     # ICMP sockets. Not accepted with network_mode: host — set it on the host.
     sysctls:

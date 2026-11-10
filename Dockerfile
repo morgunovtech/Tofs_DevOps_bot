@@ -20,7 +20,12 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN mkdir -p /app/data && chown -R bot:bot /app && chmod +x /app/entrypoint.sh
+# The code stays root's: the bot (uid 10001) must not be able to rewrite what
+# root runs at the next start (entrypoint.sh, main.py). It owns only its data
+# directory. Bytecode is compiled now: the bot cannot write __pycache__ here.
+RUN python -m compileall -q /app \
+    && mkdir -p /app/data && chown bot:bot /app/data \
+    && chmod 0755 /app/entrypoint.sh
 
 # Git commit shown in 🩺 Диагностика and "🔄 Бот обновился" (Railway sets
 # RAILWAY_GIT_COMMIT_SHA on its own; docker builds can pass --build-arg).

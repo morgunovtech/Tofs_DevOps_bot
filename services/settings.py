@@ -4,10 +4,11 @@ quiet-hours checks never touch the DB."""
 
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
-from db.database import get_state, set_state
+from db.database import delete_heartbeat, get_state, set_state
 from utils import clock, validate
 from utils.parse import parse_hour_range
 
@@ -208,6 +209,9 @@ async def add_heartbeat_job(name: str, interval_min: int) -> bool:
     if (not valid_job_name(name) or interval_min <= 0
             or (name not in _o.hb_jobs and len(_o.hb_jobs) >= MAX_HB_JOBS)):
         return False
+    if name not in heartbeat_jobs():
+        # Its silence is counted from here (services.heartbeats), not from the bot's start.
+        await set_state(f"hb_added:{name}", datetime.now(UTC).isoformat(timespec="seconds"))
     _o.hb_jobs[name] = interval_min
     await set_state("cfg:hb_jobs", json.dumps(_o.hb_jobs))
     if name in _o.hb_hidden:   # added again on purpose
@@ -228,6 +232,9 @@ async def remove_heartbeat_job(name: str) -> bool:
     if name in config.heartbeat_jobs:   # else the server's copy would come back
         _o.hb_hidden.add(name)
         await set_state("cfg:hb_hidden", json.dumps(sorted(_o.hb_hidden)))
-    # Clear the "went silent" flag so a re-added job starts clean.
-    await set_state(f"hb_alerted:{name}", None)
+    # Everything the job left behind: a job added again under the same name
+    # starts clean — no inherited mark, «went silent» flag or status lines.
+    await delete_heartbeat(name)
+    for key in ("hb_alerted", "hb_status", "hb_added", "hb_legacy", "hb_legacy_noted"):
+        await set_state(f"{key}:{name}", None)
     return True

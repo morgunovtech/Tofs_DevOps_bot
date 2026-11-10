@@ -14,6 +14,7 @@ from monitors.base import (
     SslResult,
 )
 from monitors.mail_checker import MailResult
+from monitors.region import region_words
 from monitors.security_checker import SecurityResult
 from monitors.visitor_checker import VisitorsResult
 from services import crux, humanize, seo_fixes
@@ -29,7 +30,7 @@ from services.humanize import (
 )
 from utils.clock import now_local, to_local
 from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
-from utils.urls import host_of, is_http_url, registrable_domain, site_label
+from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
 def _tech(*parts) -> str:
@@ -53,13 +54,30 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
         noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
         header = f"🔴 {label} {noun}: {esc(describe_error(r.error))}"
         situation = expl.meaning
-        if r.external_ok is False:
+        if r.cert_failed:
+            situation += (" Проверил дважды подряд: сервер отвечает, но его сертификат не принимается — "
+                          "так его видят и посетители.")
+        elif r.external_ok is False:
             situation += " Проверил дважды подряд и с внешних серверов: не открывается ни у кого."
+        elif r.external_region and r.external_ups:
+            situation += (f" Проверил дважды подряд; снаружи открывается (с {r.external_ups} из "
+                          f"{r.external_total} серверов), но не {region_words(r.external_region)} — "
+                          f"посетители оттуда его тоже не видят.")
+        elif r.external_region:
+            situation += (f" Проверил дважды подряд; {region_words(r.external_region)} тоже не открывается, "
+                          f"остальные внешние серверы не успели ответить.")
+        elif r.external_ups and r.external_total >= 2:
+            situation += (f" Проверил дважды подряд; снаружи открывается только с {r.external_ups} из "
+                          f"{r.external_total} серверов — похоже, сайт лежит не везде.")
         elif second_opinion:
             situation += " Проверил дважды подряд; снаружи проверить не удалось — возможно, проблема на моей стороне."
         else:
             situation += " Проверил дважды подряд."
-    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, когда поднимется."
+    # A phrase verdict is about a site that opens: «поднимется» would send
+    # the owner to the server instead of the page.
+    back = (f"когда {'в ответе' if r.api else 'на странице'} снова будет как надо" if r.keyword_failed
+            else "когда поднимется")
+    return (f"{header}\n{situation}\nПродолжаю проверять каждую минуту и напишу, {back}."
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 
@@ -78,12 +96,18 @@ def incident_duration_line(incident: dict | None) -> str | None:
 
 def format_recovery_alert(r: AvailabilityResult) -> str:
     label = esc(site_label(r.url))
-    verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
-    lines = [f"✅ {label} {verb}"]
+    message = (r.resolved_incident or {}).get("message") or ""
+    content = message.startswith("Bad content: ")    # the site opened all along; its text was wrong
+    if content:
+        lines = [f"✅ На {label} снова всё как надо"]
+    else:
+        verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
+        lines = [f"✅ {label} {verb}"]
     duration = incident_duration_line(r.resolved_incident)
-    cause = describe_error((r.resolved_incident or {}).get("message"))
+    cause = describe_error(message)
     if duration:
-        lines.append(f"Лежал {duration}" + (f", {esc(cause)}." if cause and cause != "неизвестная ошибка" else "."))
+        lines.append(f"{'Было не так' if content else 'Лежал'} {duration}"
+                     + (f", {esc(cause)}." if cause and cause != "неизвестная ошибка" else "."))
     lines.append("Ничего делать не нужно.")
     return "\n".join(lines) + _tech(f"HTTP {r.status_code}" if r.status_code else None,
                                     fmt_seconds(r.response_time_ms) if r.response_time_ms else None)
@@ -148,9 +172,14 @@ def pending_note(pending: list) -> str:
             f"если так и останется.")
 
 
+def _deep_page_error(code: int) -> str:
+    """A 5xx by its words; code 0 is a page that did not answer at all."""
+    return describe_error(f"HTTP {code}") if code else "не ответила за 15 секунд"
+
+
 def format_deep_alert(r) -> str:
     expl = explain("deep", r.error)
-    errors = "\n".join(f"  • {esc(u)} — {esc(describe_error(f'HTTP {code}'))}" for u, code in r.errors[:5])
+    errors = "\n".join(f"  • {esc(u)} — {esc(_deep_page_error(code))}" for u, code in r.errors[:5])
     return f"🟠 {esc(site_label(r.url))}: {esc(describe_error(r.error))}\n{expl.meaning}\n{errors}"
 
 
@@ -365,7 +394,8 @@ def format_compact_status_report(availability: list[AvailabilityResult],
 
 def incident_line(inc: dict) -> str:
     """'example.com не открывается: хостинг отвечает ошибкой 502'."""
-    return humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]))
+    return humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]),
+                                      page=is_web_page(inc["url"], inc.get("http_method")))
 
 
 def format_feedback(site_url: str, page_url: str, message: str,

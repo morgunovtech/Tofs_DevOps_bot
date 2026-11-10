@@ -61,6 +61,12 @@ def node_name(node_key: str) -> str:
     return NODE_NAMES.get(node_key[:2].lower(), "снаружи")
 
 
+def region_words(country: str) -> str:
+    """«из России» for a check-host country code; a country without words
+    of its own is named by its code."""
+    return NODE_NAMES.get(country[:2].lower(), f"из страны {country[:2].upper()}")
+
+
 def parse_ms(node_result) -> int | None:
     """check-http node result → milliseconds; None when that node failed:
     [[1, 0.123, "OK", "200", "1.2.3.4"]]"""

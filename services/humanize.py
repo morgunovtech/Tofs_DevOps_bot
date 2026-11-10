@@ -70,6 +70,10 @@ def _http(code: int) -> str:
 
 
 _RULES: list[tuple[re.Pattern, object]] = [
+    # A keyword verdict carries the site's own text («Connection refused» on a
+    # PHP error page): with or without «Bad content: » it is never re-read.
+    (re.compile(r"^(?:Bad content: )?((?:на странице|в ответе) (?:стоп-фраза|нет фразы) «.*»)$", re.S),
+     lambda m: m.group(1)),
     (re.compile(r"^Site down$"), lambda m: "не открывается"),
     (re.compile(r"^(?:Site down: )?HTTP (\d{3})$"), lambda m: _http(int(m.group(1)))),
     (re.compile(r"^(?:Site down: )?Timeout \((\d+)s\)$"), lambda m: f"не ответил за {m.group(1)} секунд"),
@@ -88,8 +92,9 @@ _RULES: list[tuple[re.Pattern, object]] = [
     (re.compile(r"^Slow responses: ~(\d+)ms$"), lambda m: f"открывается за {fmt_seconds(int(m.group(1)))}"),
     (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"),
      lambda m: f"{m.group(1)} {plural(int(m.group(1)), 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"),
-    (re.compile(r"^5xx на (\d+) из (\d+) проверенных страниц$"),
-     lambda m: f"{m.group(1)} из {m.group(2)} проверенных страниц отдают ошибку"),
+    (re.compile(r"^5xx( или нет ответа)? на (\d+) из (\d+) проверенных страниц$"),
+     lambda m: f"{m.group(2)} из {m.group(3)} проверенных страниц отдают ошибку"
+     + (" или не отвечают" if m.group(1) else "")),
     (re.compile(r"^Could not fetch page$"), lambda m: "страница не загрузилась"),
     (re.compile(r"name or service not known|nodename nor servname|does not resolve|"
                 r"name resolution|хост не резолвится|Temporary failure in name", re.I),
@@ -391,11 +396,17 @@ def downtime(total: int, ok: int, interval_min: float) -> str:
     return f"недоступен ≈{fmt_duration(max(1, failed * interval_min))}"
 
 
-def incident_headline(check_type: str, message: str | None, label: str) -> str:
-    """'example.com не открывается: хостинг отвечает ошибкой 502'."""
+def incident_headline(check_type: str, message: str | None, label: str, page: bool = True) -> str:
+    """'example.com не открывается: хостинг отвечает ошибкой 502'. page=False
+    (an API check, tcp://, ping://) says «не отвечает»; a phrase verdict says
+    «показывает не то» — the site opened the whole time."""
     what = describe_error(message)
     if check_type == "availability":
-        return f"{label} не открывается: {what}" if not what.startswith("сертификат") else f"{label}: {what}"
+        if (message or "").startswith("Bad content: "):
+            return f"{label} показывает не то: {what}"
+        if what.startswith("сертификат"):
+            return f"{label}: {what}"
+        return f"{label} {'не открывается' if page else 'не отвечает'}: {what}"
     if check_type == "performance":
         return f"{label} {what}" if what.startswith("открывается") else f"{label} медленно отвечает"
     if check_type in ("ssl", "domain"):

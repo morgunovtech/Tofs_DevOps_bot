@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from collections import defaultdict, deque
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiohttp import web
@@ -125,17 +126,35 @@ async def handle_feedback(request: web.Request) -> web.Response:
 
 
 async def handle_heartbeat(request: web.Request) -> web.Response:
-    """Dead-man switch ping: GET/POST /api/heartbeat/<secret>/<job>.
+    """Dead-man switch ping: GET/POST /api/heartbeat/<job's token>/<job>.
     The token lives in the path, healthchecks.io-style, so a plain
-    `curl <url>` at the end of a cron line is the whole integration.
-    Only the heartbeat secret: the webhook secret sits in every site's widget
-    code, and accepting it would let any visitor keep a dead job «alive»."""
+    `curl <url>` at the end of a cron line is the whole integration. Each
+    job has its own token (services.secrets): a leaked line exposes one job.
+    The old address with the shared secret still works — the owner is told
+    once per job to move it. Never the webhook secret: it sits in every
+    site's widget code, and accepting it would let any visitor keep a dead
+    job «alive». A job the bot does not wait for is 404: a typo in the cron
+    line fails there, not as a false «молчит» weeks later."""
     token = request.match_info.get("token", "")
     job = request.match_info.get("job", "")[:64]
-    if not _secret_ok(token, secrets.heartbeat_secret()):
-        return web.Response(status=403, text="Forbidden")
     if not job:
         return web.Response(status=400, text="job name required")
+    own = _secret_ok(token, secrets.heartbeat_token(job))
+    shared = not own and _secret_ok(token, secrets.heartbeat_secret())
+    if not (own or shared):
+        return web.Response(status=403, text="Forbidden")
+    if job not in settings.heartbeat_jobs():
+        return web.Response(status=404, text="unknown job: add it in the bot first")
+    if shared:
+        await set_state(f"hb_legacy:{job}", datetime.now(UTC).isoformat(timespec="seconds"))
+        if not await get_state(f"hb_legacy_noted:{job}"):
+            await set_state(f"hb_legacy_noted:{job}", "1")
+            await notifier.send(
+                f"⚠️ «{esc(job)}» выходит на связь по старому адресу — общему для всех задач. Он продолжает "
+                f"работать, но лучше заменить его на собственный адрес задачи: тогда утечка одной строки не "
+                f"откроет остальные. Адрес — в карточке задачи, «🔗 Как подключена».", Priority.NORMAL)
+    elif await get_state(f"hb_legacy:{job}"):
+        await set_state(f"hb_legacy:{job}", None)      # moved to its own address
     mark = True
     if request.method == "POST" and request.content_type == "application/json":
         # A bot may send what it sees along with the mark (services.heartbeats).
@@ -145,8 +164,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         except (ValueError, heartbeats.StatusError) as e:
             return web.Response(status=400, text=f"bad status: {e}")
         mark = data.get("heartbeat", True) is not False
-        if job in settings.heartbeat_jobs():
-            await heartbeats.save_status(job, status)
+        await heartbeats.save_status(job, status)
     if mark:
         await heartbeat_ping(job)
         if await get_state(f"hb_alerted:{job}"):
@@ -243,7 +261,8 @@ def create_app() -> web.Application:
     app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_post("/api/feedback", handle_feedback)
     app.router.add_options("/api/feedback", handle_feedback_options)
-    app.router.add_get("/api/heartbeat/{token}/{job}", handle_heartbeat)
+    # No HEAD: link checkers and chat previews send it — a look is not a run.
+    app.router.add_get("/api/heartbeat/{token}/{job}", handle_heartbeat, allow_head=False)
     app.router.add_post("/api/heartbeat/{token}/{job}", handle_heartbeat)
     app.router.add_get("/feedback-widget.js", handle_widget)
     app.router.add_get("/health", handle_health)

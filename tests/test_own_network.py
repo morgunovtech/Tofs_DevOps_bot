@@ -12,7 +12,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from db.database import get_active_incidents, get_uptime_stats, set_state
-from monitors import availability, netcheck
+from monitors import availability, netcheck, second_opinion
 from monitors.availability import check_availability
 from monitors.base import AvailabilityResult
 from reports import scheduler
@@ -217,10 +217,10 @@ async def test_rejected_request_settings_are_not_an_outage(bot, db, caplog):
 
 
 async def test_down_from_here_but_up_outside_is_not_downtime(db, monkeypatch):
-    async def up_outside(url):
-        return True
+    async def up_outside(url, region=None):
+        return second_opinion.Verdict(True, 3, 3)
 
-    monkeypatch.setattr(availability, "second_opinion_up", up_outside)
+    monkeypatch.setattr(availability, "second_opinion", up_outside)
     monkeypatch.setattr(availability.integrations, "second_opinion_enabled", lambda: True)
     sid = await db.activate_or_create_site("http://127.0.0.1:1/")       # nothing listens on :1
     await db.update_site_settings(sid, fail_threshold=1)
