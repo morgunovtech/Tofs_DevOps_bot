@@ -1,6 +1,8 @@
 """What the build promises: a start does not load cryptography (GSC is
-optional), and the pytest warning filters do what they say."""
+optional), the pytest warning filters do what they say, and the lock is
+what requirements.in asks for."""
 
+import re
 import subprocess
 import sys
 import warnings
@@ -25,3 +27,21 @@ def test_a_deprecation_in_aiogram_fails_the_tests():
     with pytest.raises(DeprecationWarning):
         warnings.warn_explicit("old API", DeprecationWarning, "aiogram/client/bot.py", 1,
                                module="aiogram.client.bot")
+
+
+def _pins(path: Path) -> dict[str, str]:
+    return {re.sub(r"[-_.]+", "-", name).lower(): version
+            for name, version in re.findall(r"(?m)^([A-Za-z0-9._-]+)==([^\s;\\]+)", path.read_text())}
+
+
+def test_the_lock_is_compiled_from_requirements_in():
+    """requirements.in names what the bot needs; requirements.txt is generated
+    from it with every transitive package pinned and hashed."""
+    direct, lock = _pins(ROOT / "requirements.in"), _pins(ROOT / "requirements.txt")
+    assert direct and {name: lock.get(name) for name in direct} == direct
+    assert len(lock) > len(direct) and "--hash=sha256:" in (ROOT / "requirements.txt").read_text()
+
+
+def test_the_dev_tools_are_pinned():
+    lines = [line.split("#")[0].strip() for line in (ROOT / "requirements-dev.txt").read_text().splitlines()]
+    assert all("==" in line for line in lines if line), lines

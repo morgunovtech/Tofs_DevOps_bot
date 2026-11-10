@@ -20,7 +20,7 @@ GROUP_BODY = ("Bumps the python-deps group with 2 updates: [aiogram](https://git
 
 
 def test_the_named_packages_are_the_requirements():
-    req = Path(__file__).resolve().parent.parent / "requirements.txt"
+    req = Path(__file__).resolve().parent.parent / "requirements.in"   # the lock has every package
     direct = {updates._canonical(line.split("==")[0].strip())
               for line in req.read_text().splitlines() if line.strip() and not line.startswith(("#", " ", "-"))}
     assert set(updates.PACKAGES) == direct

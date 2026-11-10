@@ -111,10 +111,36 @@ main.py                 точка входа: БД → сервисы → ве�
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
+pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements.txt   # ровно то, что в образе
 ruff check .          # линтер + порядок импортов
 pytest -q             # ~150 тестов, без сети и без Telegram
 pip-audit -r requirements.txt --strict
 ```
+
+### Зависимости
+
+Прямые версии живут в `requirements.in` (9 пинов `==`). `requirements.txt` —
+сгенерированный lock: все 30 пакетов, включая транзитивные, с хешами, собранный
+под Python 3.12 (младшая версия матрицы CI). Образ и CI ставят ровно его
+(`pip install --require-hashes --no-deps`); тест `test_the_lock_is_compiled_from_requirements_in`
+следит, чтобы lock не отстал от `requirements.in`. Поменял пин в `requirements.in` —
+пересобери lock:
+
+```bash
+python3.12 -m venv /tmp/piptools && /tmp/piptools/bin/pip install pip-tools
+/tmp/piptools/bin/pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
+```
+
+Еженедельный PR Dependabot делает это сам; если он обновил только `requirements.in`,
+CI покраснеет и PR подождёт человека — перегенерируй lock в его ветке той же командой.
+
+Аварийный путь: на aiohttp или pydantic вышла уязвимость, а свежую версию не
+пускает верхняя граница aiogram. Поставь нужную версию поверх границы —
+`uv pip compile requirements.in --generate-hashes --universal --python-version 3.12 --override overrides.txt -o requirements.txt`
+(с `--no-deps` pip поставит её, не проверяя границу), прогони полный pytest на
+3.12–3.14 и собери образ. Пока ждёшь aiogram, держи в CI
+`pip-audit … --ignore-vuln <ID>` с датой пересмотра в комментарии. Цена —
+комбинация, которую aiogram не тестировал.
 
 CI (ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict`, сборка образа на ноге 3.13) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.

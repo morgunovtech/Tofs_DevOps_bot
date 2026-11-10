@@ -37,7 +37,7 @@ from utils.text import err_text, esc, fmt_date, plural
 
 logger = logging.getLogger(__name__)
 
-# The direct dependencies (requirements.txt): named one by one in «🔄 Бот
+# The direct dependencies (requirements.in): named one by one in «🔄 Бот
 # обновился». Everything installed is compared and asked about in OSV —
 # yarl, multidict, certifi… carry every request too. A test keeps this
 # list equal to the requirements file (idna is pinned there: the bot imports

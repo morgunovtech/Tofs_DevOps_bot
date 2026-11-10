@@ -21,7 +21,13 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -r requirements.txt -r requirements-dev.txt
+      # The dev tools first, then exactly what the image gets (hashes checked,
+      # nothing else resolved): the tests run on the image's versions, and
+      # pip check says if a dev tool disagrees with them.
+      - run: |
+          pip install -r requirements-dev.txt
+          pip install --require-hashes --no-deps -r requirements.txt
+          pip check
       - run: ruff check .
       - run: pytest -q
       # Known vulnerabilities in the pinned dependencies fail the build —
