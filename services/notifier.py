@@ -50,6 +50,8 @@ from aiogram.types import InlineKeyboardMarkup, Message
 
 from db.database import (
     OUTBOX_MAX,
+    PENDING_DROPPED,
+    PENDING_MAX,
     delete_notifications,
     get_active_incidents,
     get_state,
@@ -65,7 +67,7 @@ from db.database import (
 )
 from services import health, helpers, maintenance, runtime, settings
 from utils.clock import now_local, to_local
-from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc
+from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc, plural
 
 logger = logging.getLogger(__name__)
 
@@ -544,6 +546,10 @@ async def flush_queue():
     if not rows:
         return
     header = "🌙 Накопилось, пока было тихо:\n\n"
+    dropped = int(await get_state(PENDING_DROPPED) or 0)
+    if dropped > 0:
+        header += (f"(ещё {dropped} {plural(dropped, 'старое сообщение', 'старых сообщения', 'старых сообщений')} "
+                   f"не сохранил — очередь держит последние {PENDING_MAX})\n\n")
     batch: list[dict] = []
     text = header
     for row in rows:
@@ -565,8 +571,10 @@ async def flush_queue():
             text, batch = "🌙 (продолжение)\n\n", []
         text += item
         batch.append(row)
-    if batch:
-        await _deliver_batch(text, batch)
+    if batch and not await _deliver_batch(text, batch):
+        return
+    if dropped:
+        await set_state(PENDING_DROPPED, None)      # said once — and only when the digest got through
 
 
 def _markup(raw: str | None) -> InlineKeyboardMarkup | None:

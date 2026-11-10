@@ -20,7 +20,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
-from db.database import get_state, set_state
+from db.database import get_state, record_check, set_state
 
 
 def _now() -> str:
@@ -53,6 +53,23 @@ async def update(site_id: int, section: str, **fields):
         data = await get(site_id)
         data[section] = {**fields, "at": _now()}
         await set_state(f"status:{site_id}", json.dumps(data, ensure_ascii=False))
+
+
+async def update_with_check(site_id: int, section: str, fields: dict, check: dict,
+                            hosting: str | None = None):
+    """update() plus the check's history row (and a changed hosting) in
+    one transaction — one fsync per check. `check` holds record_check()'s
+    arguments: check_type, status, response_time_ms, status_code, details,
+    scheduled. Lock order as everywhere: this _lock, then the DB write lock."""
+    async with _lock:
+        data = await get(site_id)
+        data[section] = {**fields, "at": _now()}
+        state: dict[str, str | None] = {}
+        if hosting is not None:
+            data["hosting"] = hosting
+            state[f"hosting:{site_id}"] = hosting
+        state[f"status:{site_id}"] = json.dumps(data, ensure_ascii=False)
+        await record_check(site_id, **check, state=state)
 
 
 async def set_field(site_id: int, key: str, value):

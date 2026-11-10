@@ -38,6 +38,7 @@ from db.database import (
     get_unalerted_incidents,
     get_uptime_over_days,
     mark_incident_alerted,
+    purge_old_rows,
     resolve_incident,
     rollup_old_checks,
     save_incident,
@@ -235,7 +236,7 @@ async def _availability_tick():
         if due_cutoff >= _next_avail_check.get(s["id"], now):
             _next_avail_check[s["id"]] = now + timedelta(minutes=_interval_min(s))
             due.append(s["url"])
-    results = await check_all(due) if due else []
+    results = await check_all(due, sites=by_url) if due else []
     # The tick only checks; every message goes to the alert worker, so a
     # silent Telegram or a slow deploy hook never holds up the next check.
     for r in results:
@@ -868,7 +869,10 @@ async def run_card_pictures():
     for its card (services.screenshots). One at a time — the free
     screenshot service has a small daily quota, so only pages whose card
     can show the picture, and never an internal address (is_due)."""
-    for site in await get_all_sites():
+    sites = await get_all_sites()
+    with _isolated("Pruning pictures of removed sites"):
+        screenshots.prune({s["id"] for s in sites})     # left by versions before forget() existed
+    for site in sites:
         with _isolated(f"Card picture of {site_label(site['url'])}"):
             if is_web_page(site["url"], site.get("http_method")) \
                     and await screenshots.is_due(site["id"], site["url"]):
@@ -1636,6 +1640,11 @@ async def run_retention():
     n = await rollup_old_checks(config.retention_days)
     if n:
         logger.info("Retention: rolled up %d old check rows", n)
+    # Separate from the rollup, which returns early when there are no old
+    # checks: visitors' messages, resolved incidents and old rollups go too.
+    purged = {table: count for table, count in (await purge_old_rows()).items() if count}
+    if purged:
+        logger.info("Retention: deleted %s", ", ".join(f"{count} {table}" for table, count in purged.items()))
 
 
 def _backups_dir() -> str:

@@ -63,6 +63,12 @@ async def get_db() -> aiosqlite.Connection:
                     mode = (await cursor.fetchone())[0]
                     if str(mode).lower() != "wal":
                         logger.warning("SQLite journal_mode=%s: WAL is not available on this volume", mode)
+                    # After a big nightly retention the -wal file shrinks back
+                    # to 16 MiB at the next checkpoint instead of keeping its
+                    # peak size until a restart. (synchronous stays FULL: NORMAL
+                    # would lose the last seconds of history at a power cut —
+                    # the owner's call, not this one.)
+                    await conn.execute("PRAGMA journal_size_limit=16777216")
                     await conn.execute("PRAGMA busy_timeout=5000")
                     await conn.execute("PRAGMA foreign_keys=ON")
                     # A token removed with «🗑 Отключить» must not stay as bytes
@@ -154,6 +160,12 @@ async def _tx():
 
 async def get_or_create_site(url: str) -> int:
     db = await get_db()
+    # Read first: every check of a known site used to run a write (and an
+    # fsync) here, and AUTOINCREMENT burned an id each time.
+    cursor = await db.execute("SELECT id FROM sites WHERE url = ?", (url,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
     async with _write_lock:
         # Upsert-style insert: two concurrent callers can't race into an
         # IntegrityError on the UNIQUE url.
@@ -311,14 +323,32 @@ async def save_check(site_id: int, check_type: str, status: str,
                      scheduled: bool = True):
     """scheduled=False: a row written outside the schedule (a «🔄 Проверить»,
     a follow-up, a snapshot) — it feeds uptime, not the failure threshold."""
-    db = await get_db()
-    async with _write_lock:
-        await db.execute(
-            """INSERT INTO checks (site_id, check_type, status,
-                                   response_time_ms, status_code, details, scheduled)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (site_id, check_type, status, response_time_ms, status_code, details, int(scheduled)))
-        await db.commit()
+    async with _tx() as db:
+        await _insert_check(db, site_id, check_type, status, response_time_ms, status_code, details, scheduled)
+
+
+async def _insert_check(db, site_id: int, check_type: str, status: str, response_time_ms: int | None,
+                        status_code: int | None, details: str | None, scheduled: bool):
+    """The history row, inside the caller's transaction."""
+    await db.execute(
+        """INSERT INTO checks (site_id, check_type, status,
+                               response_time_ms, status_code, details, scheduled)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (site_id, check_type, status, response_time_ms, status_code, details, int(scheduled)))
+
+
+async def record_check(site_id: int, check_type: str, status: str, *,
+                       response_time_ms: int | None = None, status_code: int | None = None,
+                       details: str | None = None, scheduled: bool = True,
+                       state: dict[str, str | None] | None = None):
+    """save_check() and the bot_state keys of the same check (the site's
+    snapshot, its hosting) in ONE transaction: one fsync per check instead
+    of three — on an SD card or a NAS each one costs. A None value in
+    `state` deletes the key, as set_state does."""
+    async with _tx() as db:
+        await _insert_check(db, site_id, check_type, status, response_time_ms, status_code, details, scheduled)
+        for key, value in (state or {}).items():
+            await _put_state(db, key, value)
 
 
 async def get_last_check(site_id: int, check_type: str) -> dict | None:
@@ -758,18 +788,21 @@ async def get_states_like(prefix: str) -> dict[str, str]:
 
 
 async def set_state(key: str, value: str | None):
-    db = await get_db()
-    async with _write_lock:
-        if value is None:
-            await db.execute("DELETE FROM bot_state WHERE key = ?", (key,))
-        else:
-            await db.execute(
-                """INSERT INTO bot_state (key, value, updated_at)
-                   VALUES (?, ?, datetime('now'))
-                   ON CONFLICT(key) DO UPDATE SET
-                     value = excluded.value, updated_at = datetime('now')""",
-                (key, value))
-        await db.commit()
+    async with _tx() as db:
+        await _put_state(db, key, value)
+
+
+async def _put_state(db, key: str, value: str | None):
+    """One key, inside the caller's transaction; None deletes it."""
+    if value is None:
+        await db.execute("DELETE FROM bot_state WHERE key = ?", (key,))
+    else:
+        await db.execute(
+            """INSERT INTO bot_state (key, value, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(key) DO UPDATE SET
+                 value = excluded.value, updated_at = datetime('now')""",
+            (key, value))
 
 
 
@@ -852,20 +885,35 @@ async def set_dns_state(host: str, rtype: str, value: str):
 
 # ── Deferred notifications (quiet hours / mute) ──────────────────────────────
 
+PENDING_MAX = 200
+PENDING_DROPPED = "pending_dropped"   # bot_state: how many old ones did not fit
+
+
 async def queue_notification(text: str, reply_markup: str | None = None):
-    """reply_markup: the keyboard as JSON, delivered with the text later."""
-    db = await get_db()
-    async with _write_lock:
+    """reply_markup: the keyboard as JSON, delivered with the text later.
+    Only the newest PENDING_MAX wait (CRITICAL is never queued): a week of
+    mute under a stream of widget messages must not fill memory and disk.
+    The older ones are dropped and counted — the digest says how many."""
+    async with _tx() as db:
         await db.execute("INSERT INTO pending_notifications (text, reply_markup) VALUES (?, ?)",
                          (text, reply_markup))
-        await db.commit()
+        cursor = await db.execute(
+            "DELETE FROM pending_notifications WHERE id NOT IN "
+            "(SELECT id FROM pending_notifications ORDER BY id DESC LIMIT ?)", (PENDING_MAX,))
+        if cursor.rowcount > 0:
+            await db.execute(
+                """INSERT INTO bot_state (key, value, updated_at) VALUES (?, ?, datetime('now'))
+                   ON CONFLICT(key) DO UPDATE SET
+                     value = CAST(value AS INTEGER) + excluded.value, updated_at = datetime('now')""",
+                (PENDING_DROPPED, cursor.rowcount))
 
 
-async def peek_notifications() -> list[dict]:
+async def peek_notifications(limit: int = PENDING_MAX) -> list[dict]:
     """Queued notifications (oldest first) WITHOUT removing them — delete
     explicitly after a successful send, or a failed send loses the digest."""
     db = await get_db()
-    cursor = await db.execute("SELECT id, text, reply_markup FROM pending_notifications ORDER BY id")
+    cursor = await db.execute(
+        "SELECT id, text, reply_markup FROM pending_notifications ORDER BY id LIMIT ?", (limit,))
     return [dict(r) for r in await cursor.fetchall()]
 
 
@@ -1000,6 +1048,30 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
             """DELETE FROM bot_state WHERE key LIKE ? AND key NOT IN (
                    SELECT ? || id FROM incidents WHERE resolved = 0)""",
             (prefix + "%", prefix))
+
+
+FEEDBACK_KEEP_DAYS = 90      # visitors' text, IP and User-Agent
+INCIDENTS_KEEP_DAYS = 365    # resolved ones; «решено за неделю» and the status page read 7–14 days
+DAILY_KEEP_DAYS = 400        # the longest window read from checks_daily is 90 days
+
+
+async def purge_old_rows() -> dict[str, int]:
+    """Nightly, next to the rollup: rows nothing reads any more. Before this
+    only raw checks were ever deleted — widget messages with visitors' IP
+    and User-Agent, resolved incidents and old rollups stayed forever.
+    Rows deleted per table."""
+    steps = (
+        ("feedback", "DELETE FROM feedback WHERE created_at < datetime('now', ?)", FEEDBACK_KEEP_DAYS),
+        ("incidents", "DELETE FROM incidents WHERE resolved = 1 AND resolved_at < datetime('now', ?)",
+         INCIDENTS_KEEP_DAYS),
+        ("checks_daily", "DELETE FROM checks_daily WHERE day < date('now', ?)", DAILY_KEEP_DAYS),
+    )
+    deleted: dict[str, int] = {}
+    async with _tx() as db:
+        for table, sql, days in steps:
+            cursor = await db.execute(sql, (f"-{days} days",))
+            deleted[table] = cursor.rowcount
+    return deleted
 
 
 def _remove_quietly(*paths: str):

@@ -28,7 +28,6 @@ from db.database import (
     relabel_recent_failures,
     reopen_incident,
     resolve_incident,
-    save_check,
     save_incident,
     set_state,
     span_cap_sec,
@@ -383,8 +382,10 @@ async def _probe_ping(url: str, r: AvailabilityResult):
         r.error = "хост не отвечает на ping"
 
 
-async def check_availability(url: str, manage: bool = True) -> AvailabilityResult:
-    site = await get_site_by_url(url)
+async def check_availability(url: str, manage: bool = True, site: dict | None = None) -> AvailabilityResult:
+    """site — the row the tick already holds (check_all passes it); a manual
+    check from the chat looks it up as before."""
+    site = site or await get_site_by_url(url)
     r = AvailabilityResult(url=url, site_id=site["id"], api=is_api_check(url, site.get("http_method")))
     scheme = urlparse(url).scheme
     try:
@@ -424,20 +425,20 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
     # holds the only DB thread for busy_timeout (5 s). run_alive probes it.
     # Only the tick's check is planned: a «🔄 Проверить», a follow-up or a
     # snapshot writes its row for uptime, but must not count toward the threshold.
-    stored = not health.db_failing() and await _write(save_check(
-        r.site_id, "availability", r.status, response_time_ms=r.response_time_ms,
-        status_code=r.status_code, details=r.error, scheduled=manage))
     # Remember the hosting so alerts can link to its panel even when the
     # failing response carries no headers at all.
-    if r.hosting:
-        if stored and await get_state(f"hosting:{r.site_id}") != r.hosting:
-            await _write(set_state(f"hosting:{r.site_id}", r.hosting))
-            await _write(sitestatus.set_field(r.site_id, "hosting", r.hosting))
-    else:
-        r.hosting = await get_state(f"hosting:{r.site_id}")
-    if stored:
-        await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms,
-                                       error=r.error, code=r.status_code, kw=r.keyword_failed))
+    known_hosting = await get_state(f"hosting:{r.site_id}")
+    new_hosting = r.hosting if r.hosting and r.hosting != known_hosting else None
+    r.hosting = r.hosting or known_hosting
+    # The history row, the snapshot and a changed hosting: one transaction
+    # (one fsync per check), and one failure path for all three.
+    stored = not health.db_failing() and await _write(sitestatus.update_with_check(
+        r.site_id, "avail",
+        fields={"status": r.status, "ms": r.response_time_ms, "error": r.error, "code": r.status_code,
+                "kw": r.keyword_failed},
+        check={"check_type": "availability", "status": r.status, "response_time_ms": r.response_time_ms,
+               "status_code": r.status_code, "details": r.error, "scheduled": manage},
+        hosting=new_hosting))
     if not manage or r.transient:
         return r
 
@@ -572,14 +573,21 @@ async def _write(coro) -> bool:
     return True
 
 
-async def check_all(urls: list[str], manage: bool = True) -> list[AvailabilityResult]:
-    results = await gather_checks(urls, check_availability, "availability", manage=manage)
+async def check_all(urls: list[str], manage: bool = True,
+                    sites: dict[str, dict] | None = None) -> list[AvailabilityResult]:
+    """sites — {url: row} the tick already read: no second lookup per site."""
+    known = sites or {}
+
+    async def check(url: str, **kwargs) -> AvailabilityResult:
+        return await check_availability(url, site=known.get(url), **kwargs)
+
+    results = await gather_checks(urls, check, "availability", manage=manage)
     if any(r.own_outage for r in results) and netcheck.recently_answered():
         # The checks ran side by side: a site answered in this very tick, so
         # the network is up and the «no network» verdicts were premature —
         # those sites are asked again, now with the answer on record.
         await netcheck.end_outage()
         redo = [r.url for r in results if r.own_outage]
-        fixed = {r.url: r for r in await gather_checks(redo, check_availability, "availability", manage=manage)}
+        fixed = {r.url: r for r in await gather_checks(redo, check, "availability", manage=manage)}
         results = [fixed.get(r.url, r) for r in results]
     return results
