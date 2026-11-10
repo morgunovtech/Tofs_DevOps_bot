@@ -81,7 +81,7 @@ async def report_startup_changes() -> bool:
     the direct dependencies by name, the rest as one «и ещё N» line. A new
     build with the same versions (a commit that touched only the code or
     requirements-dev.txt) is a log line — the build number stays visible in
-    «🩺 Диагностика». True when anything changed, build included: main.py
+    «🔌 Подключения». True when anything changed, build included: main.py
     re-runs the SEO audit on that."""
     current = {
         "commit": config.app_commit,
