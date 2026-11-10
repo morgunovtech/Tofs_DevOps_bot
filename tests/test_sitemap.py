@@ -15,6 +15,13 @@ from reports.scheduler import _links_recovered
 from services import sitestatus
 
 
+def _answer(**response):
+    """An aiohttp handler that always gives this answer (aiohttp wants async handlers)."""
+    async def handler(_request):
+        return web.Response(**response)
+    return handler
+
+
 def test_pick_sample():
     assert pick_sample(list(range(10)), 3) == [0, 3, 6]
     assert pick_sample([1, 2], 5) == [1, 2]
@@ -60,8 +67,15 @@ async def test_a_body_that_arrives_in_pieces_is_read_whole():
     urls = "".join(f"<url><loc>{{base}}/p{i}</loc></url>" for i in range(5))
     page = "<html><body>" + "<p>текст</p>" * 30 + "<h1>Заголовок</h1></body></html>"
     app = web.Application()
-    app.router.add_get("/sitemap.xml", lambda r: slow(r, f"<urlset>{urls}</urlset>".replace("{base}", base)))
-    app.router.add_get("/", lambda r: slow(r, page))
+
+    async def sitemap(r):
+        return await slow(r, f"<urlset>{urls}</urlset>".replace("{base}", base))
+
+    async def home(r):
+        return await slow(r, page)
+
+    app.router.add_get("/sitemap.xml", sitemap)
+    app.router.add_get("/", home)
     async with TestServer(app) as server:
         base = str(server.make_url("")).rstrip("/")
         async with aiohttp.ClientSession() as session:
@@ -79,9 +93,9 @@ async def test_sitemap_is_missing_only_when_the_site_says_so(db):
         return web.Response(status=answer["status"])
 
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="<html><head><title>Главная страница</title></head>"
-                                                        "<body><h1>Привет</h1></body></html>",
-                                                   content_type="text/html"))
+    app.router.add_get("/", _answer(text="<html><head><title>Главная страница</title></head>"
+                                           "<body><h1>Привет</h1></body></html>",
+                                      content_type="text/html"))
     app.router.add_get("/sitemap.xml", sitemap)
     async with TestServer(app) as server:
         base = str(server.make_url("")).rstrip("/")
@@ -97,15 +111,15 @@ async def test_links_are_judged_by_how_sure_the_answer_is(db):
     fails three hours after the first time — a restart minutes later is not
     «later»; a bot block (403) never."""
     other = web.Application()
-    other.router.add_get("/gone", lambda r: web.Response(status=404))
-    other.router.add_get("/flaky", lambda r: web.Response(status=502))
-    other.router.add_get("/blocked", lambda r: web.Response(status=403))
+    other.router.add_get("/gone", _answer(status=404))
+    other.router.add_get("/flaky", _answer(status=502))
+    other.router.add_get("/blocked", _answer(status=403))
     async with TestServer(other) as ext:
         ext_base = str(ext.make_url("")).rstrip("/").replace("127.0.0.1", "localhost")
         page = (f'<html><body><a href="{ext_base}/gone">a</a><a href="{ext_base}/flaky">b</a>'
                 f'<a href="{ext_base}/blocked">c</a><link rel="preconnect" href="{ext_base}/"></body></html>')
         site = web.Application()
-        site.router.add_get("/", lambda r: web.Response(text=page, content_type="text/html"))
+        site.router.add_get("/", _answer(text=page, content_type="text/html"))
         async with TestServer(site) as own:
             base = str(own.make_url("")).rstrip("/")
             gone, flaky = f"{ext_base}/gone", f"{ext_base}/flaky"

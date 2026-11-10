@@ -184,8 +184,12 @@ async def test_a_certificate_error_alerts_without_asking_outside(db, monkeypatch
 
     monkeypatch.setattr(availability, "second_opinion", outside)
     monkeypatch.setattr(availability.integrations, "second_opinion_enabled", lambda: True)
+
+    async def hello(_request):
+        return web.Response(text="hello")
+
     app = web.Application()
-    app.router.add_get("/", lambda request: web.Response(text="hello"))
+    app.router.add_get("/", hello)
     server = TestServer(app)
     await server.start_server(ssl=_self_signed(tmp_path))
     try:

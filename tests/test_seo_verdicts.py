@@ -26,6 +26,14 @@ from reports.formatter import format_deep_alert
 from services import seo_fixes, sitestatus
 from services.humanize import describe_error
 
+
+def _answer(**response):
+    """An aiohttp handler that always gives this answer (aiohttp wants async handlers)."""
+    async def handler(_request):
+        return web.Response(**response)
+    return handler
+
+
 GOOD = ("<html lang='ru'><head><title>Магазин кофе в Ташкенте</title>"
         "<meta name='description' content='Свежая обжарка каждый день, доставка по городу за час.'>"
         "</head><body><h1>Кофе</h1>" + "<p>текст страницы</p>" * 60 + "</body></html>")
@@ -172,7 +180,7 @@ async def _audit_site(state: dict):
     app = web.Application()
     app.router.add_get("/", home)
     app.router.add_get("/en/", en)
-    app.router.add_get("/about", lambda r: web.Response(text=GOOD, content_type="text/html"))
+    app.router.add_get("/about", _answer(text=GOOD, content_type="text/html"))
     app.router.add_get("/robots.txt", robots)
     app.router.add_get("/sitemap.xml", sitemap)
     return TestServer(app)
@@ -283,7 +291,7 @@ async def test_a_sitemap_of_the_old_domain_is_a_finding(db, cfg, monkeypatch):
                             content_type="text/xml")
 
     app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text=GOOD, content_type="text/html"))
+    app.router.add_get("/", _answer(text=GOOD, content_type="text/html"))
     app.router.add_get("/sitemap.xml", sitemap)
     async with TestServer(app) as server:
         r = await seo_checker.check_seo(str(server.make_url("")).rstrip("/"), manage=False)
@@ -375,7 +383,7 @@ async def test_an_application_in_the_browser_gets_the_spa_steps(db, cfg, monkeyp
     monkeypatch.setattr(seo_checker, "plain_http_opens", _no)
     shell = "<html><head><title>App</title></head><body><div id='root'></div></body></html>"
     app = web.Application()
-    app.router.add_get("/{tail:.*}", lambda r: web.Response(text=shell, content_type="text/html"))
+    app.router.add_get("/{tail:.*}", _answer(text=shell, content_type="text/html"))
     async with TestServer(app) as server:
         r = await seo_checker.check_seo(str(server.make_url("")).rstrip("/"), manage=False)
     codes = {p.code for p in r.problems}

@@ -16,14 +16,13 @@ Everything degrades to None when unconfigured — callers just skip sections.
 
 import base64
 import hashlib
+import importlib
 import json
 import logging
 import time
 from urllib.parse import quote
 
 import aiohttp
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
 
 from services import integrations
 from utils.text import err_text
@@ -84,6 +83,11 @@ def make_assertion(creds: dict, now: float | None = None) -> str:
         + "."
         + _b64url(json.dumps(claims, separators=(",", ":")).encode())
     )
+    # GSC is optional: cryptography (cffi + its own OpenSSL, +7–10 MiB RSS)
+    # loads on the first signature, not on every start of every bot.
+    serialization = importlib.import_module("cryptography.hazmat.primitives.serialization")
+    hashes = importlib.import_module("cryptography.hazmat.primitives.hashes")
+    padding = importlib.import_module("cryptography.hazmat.primitives.asymmetric.padding")
     key = serialization.load_pem_private_key(
         creds["private_key"].encode(), password=None)
     signature = key.sign(

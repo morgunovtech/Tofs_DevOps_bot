@@ -72,8 +72,11 @@ async def test_alert_followups_edit_the_same_message(bot, db, monkeypatch):
         assert edits and "всё ещё не открывается" in edits[-1][1] and "ошибкой 503" in edits[-1][1]
     async with TestServer(app) as server:
         pass
+
+    async def ok(_):
+        return web.Response(text="ok")
     app2 = web.Application()
-    app2.router.add_get("/", lambda _: web.Response(text="ok"))
+    app2.router.add_get("/", ok)
     async with TestServer(app2) as server:
         url2 = str(server.make_url("")).rstrip("/")
         sid2 = await db.get_or_create_site(url2)
