@@ -80,7 +80,10 @@ async def _check_link(session: aiohttp.ClientSession, url: str, base_url: str) -
     cert on our own domain IS a problem); external hosts only need to be
     reachable."""
     host = host_of(url)
-    path = urlparse(url).path or ""
+    try:
+        path = urlparse(url).path or ""
+    except ValueError:
+        return LinkCheck(url=url, status_code=None, ok=False, error=MALFORMED)
     if (host in SKIP_HOSTS or host in ALWAYS_OK_HOSTS
             or any(path.startswith(p) for p in SKIP_PATH_PREFIXES)):
         return LinkCheck(url=url, status_code=None, ok=True)
@@ -107,6 +110,9 @@ async def _check_link(session: aiohttp.ClientSession, url: str, base_url: str) -
     return result
 
 
+MALFORMED = "адрес записан с ошибкой"
+
+
 def extract_links(html: str, base_url: str) -> list[str]:
     """Anchor and resource links (a/link/script/img) resolved to absolute URLs."""
     soup = BeautifulSoup(html, "html.parser")
@@ -119,8 +125,13 @@ def extract_links(html: str, base_url: str) -> list[str]:
         href = tag.get("href") or tag.get("src")
         if not href or href.startswith(("mailto:", "tel:", "javascript:", "#", "data:")):
             continue
-        full = urljoin(base_url, href)
-        if urlparse(full).scheme in ("http", "https"):
+        try:
+            full = urljoin(base_url, href)
+            scheme = urlparse(full).scheme
+        except ValueError:
+            links.add(href[:300])          # «https://example.com]/post»: a dead end for a visitor too
+            continue
+        if scheme in ("http", "https"):
             links.add(full)
     return sorted(links)
 
@@ -134,6 +145,8 @@ def is_definite(c: LinkCheck) -> bool:
     its certificate is bad. Timeouts and 5xx may pass by themselves."""
     if c.status_code is not None:
         return 400 <= c.status_code < 500
+    if c.error == MALFORMED:
+        return True
     err = (c.error or "").lower()
     return "certificate" in err or any(s in err for s in _DNS_GONE)
 

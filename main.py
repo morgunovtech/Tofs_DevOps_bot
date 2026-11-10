@@ -15,17 +15,39 @@ from aiogram.types import MenuButtonDefault
 from config import config
 from db.database import close_db, count_sites_total, get_or_create_site, get_state, init_db, set_state
 from handlers import router
-from handlers.common import BOTTOM
+from handlers.common import BOTTOM, MAX_SITES
+from handlers.sites import parse_site_input
 from handlers.start import BOTTOM_SHOWN
 from reports.scheduler import catch_up_after_restart, rerun_seo_after_update, setup_scheduler
 from services import integrations, maintenance, notifier, runtime, secrets, settings, updates
-from utils.urls import proxy_label, proxy_problem
+from utils.urls import proxy_label, proxy_problem, site_label
 from web.webhook import start_web_server
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+
+
+async def seed_sites(raw_urls: list[str]) -> list[str]:
+    """env SITES → the empty database, through the same check and the same
+    limit as a site added from the chat: one typo («tcp://db:5432x») must
+    not reach the DB, where it would break every screen that lists sites."""
+    added: list[str] = []
+    for raw in raw_urls:
+        url, problem = parse_site_input(raw)
+        if problem or not url:
+            logger.warning("SITES: skipping %s — %s", site_label(raw), problem)
+            continue
+        if url in added:
+            continue
+        if len(added) >= MAX_SITES:
+            logger.warning("SITES: more than %d sites — skipping %s", MAX_SITES, site_label(url))
+            continue
+        await get_or_create_site(url)
+        added.append(url)
+        logger.info("  Registered: %s", site_label(url))
+    return added
 
 
 async def on_startup(bot: Bot):
@@ -102,9 +124,7 @@ async def main():
     # empty database on the very first run.
     if await count_sites_total() == 0 and config.seed_site_urls():
         logger.info("First run: seeding sites from .env...")
-        for url in config.seed_site_urls():
-            await get_or_create_site(url)
-            logger.info("  Registered: %s", url)
+        await seed_sites(config.seed_site_urls())
 
     web_runner = await start_web_server()
     scheduler = setup_scheduler()

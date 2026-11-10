@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT = aiohttp.ClientTimeout(total=15, connect=8)
 MAX_SITEMAP_BYTES = 5 * 1024 * 1024
-_LOC_RE = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.IGNORECASE | re.DOTALL)
+# Linear on purpose: one branch per <loc>, no two quantifiers over the same
+# characters — a 10 KB sitemap with an unclosed <loc> used to hold the event
+# loop for minutes (catastrophic backtracking; re keeps the GIL throughout).
+_LOC_RE = re.compile(r"<loc>(?:\s*<!\[CDATA\[([^\]<]*)\]\]>\s*|([^<]*))</loc>", re.IGNORECASE)
 
 
 def pick_sample(urls: list[str], n: int) -> list[str]:
@@ -41,8 +44,14 @@ async def fetch_text(session: aiohttp.ClientSession, url: str,
 
 
 def _locs(xml: str) -> list[str]:
-    # <loc> values are XML-escaped: &amp; must become & before probing.
-    return [html.unescape(loc) for loc in _LOC_RE.findall(xml)]
+    """<loc> values in document order. Plain values are XML-escaped (&amp;
+    must become & before probing); CDATA is taken as is."""
+    out = []
+    for cdata, plain in _LOC_RE.findall(xml):
+        loc = cdata.strip() if cdata else html.unescape(plain.strip())
+        if loc:
+            out.append(loc)
+    return out
 
 
 def _bare(host: str) -> str:

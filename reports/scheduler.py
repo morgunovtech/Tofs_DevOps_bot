@@ -3,6 +3,7 @@ Every outgoing message goes through services.notifier, which owns the
 mute / quiet-hours / pause rules."""
 
 import asyncio
+import contextlib
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -124,6 +125,42 @@ def reset_site_schedule(site_id: int):
     _next_avail_check.pop(site_id, None)
 
 
+@contextlib.contextmanager
+def _isolated(what: str):
+    """One site's failure — a malformed stored address, a database error
+    inside notifier.send, a keyboard that cannot be built — is logged with
+    its traceback and does not cost the sites after it their alerts.
+    Cancellation (a BaseException, not an Exception) still goes through."""
+    try:
+        yield
+    except Exception:
+        logger.exception("%s failed", what)
+
+
+MAX_INTERVAL_MIN = 24 * 60
+DEFAULT_SLOW_MS = 3000
+
+
+def _interval_min(site: dict) -> int:
+    """Minutes between checks of one site, always 1..1440: a 0, a negative
+    or an absurd value from an import must not break the tick for every
+    site (OverflowError in the date arithmetic)."""
+    try:
+        minutes = int(site.get("check_interval_min") or config.check_interval_minutes)
+    except (TypeError, ValueError, OverflowError):
+        minutes = 5
+    return min(max(minutes, 1), MAX_INTERVAL_MIN)
+
+
+def _slow_ms(site: dict) -> int:
+    """«Slow» threshold of one site; 0 or negative would call every answer slow."""
+    try:
+        ms = int(site.get("slow_ms") or config.slow_response_ms)
+    except (TypeError, ValueError, OverflowError):
+        ms = 0
+    return ms if ms > 0 else DEFAULT_SLOW_MS
+
+
 # ── Availability ─────────────────────────────────────────────────────────────
 
 async def run_availability_checks():
@@ -138,30 +175,35 @@ async def run_availability_checks():
     due = []
     for s in sites:
         if due_cutoff >= _next_avail_check.get(s["id"], now):
-            interval = s.get("check_interval_min") or config.check_interval_minutes
-            _next_avail_check[s["id"]] = now + timedelta(minutes=interval)
+            _next_avail_check[s["id"]] = now + timedelta(minutes=_interval_min(s))
             due.append(s["url"])
     if not due:
         return
     for r in await check_all(due):
-        site = by_url.get(r.url, {})
-        if r.incident_new:
-            msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site))
-            if config.auto_redeploy and deploy_hook_for(r.url):
-                msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
-            kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
-            sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
-                                       always_ring=True)
-            if isinstance(sent, Message):
-                _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
-        elif r.external_ok is True:
-            await _note_local_network_problem(r.url, r.site_id)
-        elif r.recovered:
-            # Rings by default; with «будить только когда сайт лёг» only the fall does.
-            await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
-        if r.ok:
-            _ext_ok_noted.discard(r.site_id)
-            await _track_slow(r, site.get("slow_ms") or config.slow_response_ms)
+        with _isolated(f"Availability alert for {site_label(r.url)}"):
+            await _on_availability_result(r, by_url.get(r.url, {}))
+
+
+async def _on_availability_result(r, site: dict):
+    """What one site's minute-tick result means: an alert, a recovery, a
+    note about the bot's own network, the slow-answer streak."""
+    if r.incident_new:
+        msg = format_availability_alert(r, integrations.second_opinion_enabled() and repeatable(site))
+        if config.auto_redeploy and deploy_hook_for(r.url):
+            msg += f"\n\n🤖 Уже сделал сам: {await trigger_redeploy(r.url)}"
+        kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
+        sent = await notifier.send(msg, Priority.CRITICAL, site_id=r.site_id, reply_markup=kb,
+                                   always_ring=True)
+        if isinstance(sent, Message):
+            _schedule_followups(r.url, r.site_id, sent.message_id, msg, kb)
+    elif r.external_ok is True:
+        await _note_local_network_problem(r.url, r.site_id)
+    elif r.recovered:
+        # Rings by default; with «будить только когда сайт лёг» only the fall does.
+        await notifier.send(format_recovery_alert(r), Priority.CRITICAL, site_id=r.site_id)
+    if r.ok:
+        _ext_ok_noted.discard(r.site_id)
+        await _track_slow(r, _slow_ms(site))
 
 
 FOLLOWUP_MINUTES = (2, 5)
@@ -255,13 +297,14 @@ async def _notify_transitions(results: list[CheckResult], alert, recovery,
     """Alert on incident_new (with «ℹ️ Что делать» for the incident),
     a one-liner on recovery."""
     for r in results:
-        if r.incident_new:
-            msg = alert(r)
-            if msg:
-                kb = keyboard(r) if keyboard else explain_keyboard(r.incident_id)
-                await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb)
-        elif r.recovered:
-            await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id)
+        with _isolated(f"Alert for {site_label(r.url)} ({type(r).__name__})"):
+            if r.incident_new:
+                msg = alert(r)
+                if msg:
+                    kb = keyboard(r) if keyboard else explain_keyboard(r.incident_id)
+                    await notifier.send(clip(msg), priority(r), site_id=r.site_id, reply_markup=kb)
+            elif r.recovered:
+                await notifier.send(recovery(r), Priority.NORMAL, site_id=r.site_id)
 
 
 def _by_level(r: CheckResult) -> Priority:
@@ -373,9 +416,10 @@ async def run_card_pictures():
     for its card (services.screenshots). One at a time — the free
     screenshot service allows about fifty a day."""
     for site in await get_all_sites():
-        if is_web_page(site["url"], site.get("http_method")) \
-                and await screenshots.is_due(site["id"]):
-            await screenshots.refresh(site["id"], site["url"])
+        with _isolated(f"Card picture of {site_label(site['url'])}"):
+            if is_web_page(site["url"], site.get("http_method")) \
+                    and await screenshots.is_due(site["id"]):
+                await screenshots.refresh(site["id"], site["url"])
 
 
 def rerun_seo_after_update(minutes: int = 3):
@@ -399,25 +443,27 @@ async def run_region_checks():
         return
     country = region.country_for_timezone(settings.timezone())
     for site in await get_all_sites():
-        if not is_web_page(site["url"], site.get("http_method")):
-            continue
-        snap = await sitestatus.get(site["id"])
-        if (snap.get("avail") or {}).get("status") not in (None, "ok"):
-            continue
-        measured = await region.measure(site["url"], country)
-        if measured:
-            await sitestatus.update(site["id"], "region", ms=measured[0], name=measured[1])
-        await asyncio.sleep(REGION_PAUSE)
+        with _isolated(f"Region timing of {site_label(site['url'])}"):
+            if not is_web_page(site["url"], site.get("http_method")):
+                continue
+            snap = await sitestatus.get(site["id"])
+            if (snap.get("avail") or {}).get("status") not in (None, "ok"):
+                continue
+            measured = await region.measure(site["url"], country)
+            if measured:
+                await sitestatus.update(site["id"], "region", ms=measured[0], name=measured[1])
+            await asyncio.sleep(REGION_PAUSE)
 
 
 async def run_dns_checks():
     """The new baseline is committed only after the alert is delivered or
     queued — otherwise a failed send would swallow the change forever."""
     for change in await check_all_dns(await get_active_host_urls()):
-        sent = await notifier.send(format_dns_change(change),
-                                   Priority.CRITICAL if change["critical"] else Priority.NORMAL)
-        if sent:
-            await set_dns_state(change["host"], change["rtype"], change["new"])
+        with _isolated(f"DNS alert for {change['host']} {change['rtype']}"):
+            sent = await notifier.send(format_dns_change(change),
+                                       Priority.CRITICAL if change["critical"] else Priority.NORMAL)
+            if sent:
+                await set_dns_state(change["host"], change["rtype"], change["new"])
 
 
 MAIL_RECHECK_MIN = 10
@@ -482,53 +528,54 @@ async def run_index_checks():
         return
     yx = await yandex_webmaster.get_summaries() if yandex_webmaster.available() else None
     for site in await get_all_sites():
-        url = site["url"]
-        if not is_web_page(url, site.get("http_method")):
-            continue
-        google, yandex = await index_status.refresh(site["id"], url, yx)
-        if google:
-            key = f"gsc_idx:{short_host(url)}"
-            prev = await get_state(key)
-            current = f"{google['verdict']}|{google['coverage']}"
-            if prev != current:
-                prev_verdict = (prev or "").split("|", 1)[0]
-                sent = True
-                if google["verdict"] == "PASS":
-                    if prev and prev_verdict != "PASS":
+        with _isolated(f"Index check of {site_label(site['url'])}"):
+            url = site["url"]
+            if not is_web_page(url, site.get("http_method")):
+                continue
+            google, yandex = await index_status.refresh(site["id"], url, yx)
+            if google:
+                key = f"gsc_idx:{short_host(url)}"
+                prev = await get_state(key)
+                current = f"{google['verdict']}|{google['coverage']}"
+                if prev != current:
+                    prev_verdict = (prev or "").split("|", 1)[0]
+                    sent = True
+                    if google["verdict"] == "PASS":
+                        if prev and prev_verdict != "PASS":
+                            sent = await notifier.send(
+                                f"✅ Google снова показывает {esc(site_label(url))} в поиске. Ничего делать не нужно."
+                                + _tech_line(google["coverage"]), site_id=site["id"])
+                    elif prev_verdict != google["verdict"]:
                         sent = await notifier.send(
-                            f"✅ Google снова показывает {esc(site_label(url))} в поиске. Ничего делать не нужно."
-                            + _tech_line(google["coverage"]), site_id=site["id"])
-                elif prev_verdict != google["verdict"]:
+                            f"🔴 Google убрал {esc(site_label(url))} из поиска\n"
+                            f"Люди больше не найдут сайт через Google.\n\n"
+                            f"Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
+                            f"написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
+                            f"проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]), Priority.CRITICAL,
+                            site_id=site["id"])
+                    if sent:
+                        await set_state(key, current)
+            if yandex:
+                host = short_host(url)
+                key = f"yx_problems:{host}"
+                prev = await get_state(key) or ""
+                problems = yandex["alert_problems"]
+                current = ",".join(sorted(problems))
+                if current == prev:
+                    continue
+                sent = True
+                if current:
+                    level = index_status.yandex_problem_level(problems)
+                    plist = "\n".join(f"  • {esc(k)}: {esc(v)}" for k, v in problems.items())
                     sent = await notifier.send(
-                        f"🔴 Google убрал {esc(site_label(url))} из поиска\n"
-                        f"Люди больше не найдут сайт через Google.\n\n"
-                        f"Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
-                        f"написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
-                        f"проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]), Priority.CRITICAL,
-                        site_id=site["id"])
+                        f"{humanize.level_icon(level)} Яндекс видит проблемы на {esc(host)}:\n{plist}\n\n"
+                        f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
+                        f"с инструкцией.", notifier.priority_for(level), site_id=site["id"])
+                elif prev:
+                    sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.",
+                                               site_id=site["id"])
                 if sent:
                     await set_state(key, current)
-        if yandex:
-            host = short_host(url)
-            key = f"yx_problems:{host}"
-            prev = await get_state(key) or ""
-            problems = yandex["alert_problems"]
-            current = ",".join(sorted(problems))
-            if current == prev:
-                continue
-            sent = True
-            if current:
-                level = index_status.yandex_problem_level(problems)
-                plist = "\n".join(f"  • {esc(k)}: {esc(v)}" for k, v in problems.items())
-                sent = await notifier.send(
-                    f"{humanize.level_icon(level)} Яндекс видит проблемы на {esc(host)}:\n{plist}\n\n"
-                    f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
-                    f"с инструкцией.", notifier.priority_for(level), site_id=site["id"])
-            elif prev:
-                sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.",
-                                           site_id=site["id"])
-            if sent:
-                await set_state(key, current)
 
 
 # ── Dead-man switch ──────────────────────────────────────────────────────────
@@ -540,34 +587,35 @@ async def run_heartbeat_watch():
     beats = await get_heartbeats()
     now = datetime.now(UTC)
     for job, interval_min in jobs.items():
-        last = parse_sqlite_utc(beats.get(job))
-        overdue, detail = False, ""
-        if last:
-            silence_min = (now - last).total_seconds() / 60
-            overdue = heartbeats.is_late(interval_min, silence_min)
-            detail = f"последний раз на связи {fmt_duration(silence_min)} назад"
-        elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
-            overdue, detail = True, "на связь так и не выходит"
-        alerted = await get_state(f"hb_alerted:{job}")
-        if overdue and not alerted:
-            expl = humanize.EXPLANATIONS["heartbeat"]
+        with _isolated(f"Heartbeat check of {job}"):
+            last = parse_sqlite_utc(beats.get(job))
+            overdue, detail = False, ""
             if last:
-                text = (f"🟠 «{esc(job)}» молчит: {detail}, а выходит на связь "
-                        f"{heartbeats.every(interval_min)}.\n{expl.meaning}\n\n"
-                        f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
-            else:
-                # Never marked at all: the task was added but not connected —
-                # nothing failed, so no «крон упал»; the fix is one tap.
-                text = (f"⚠️ «{esc(job)}» так и не выходит на связь — похоже, не подключили.\n"
-                        f"Жду связи {heartbeats.every(interval_min)}, но её ещё не было, и я не могу сказать, "
-                        f"работает ли «{esc(job)}».\n\n"
-                        f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
-                        f"Нет — «Удалить».")
-            sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
-            if sent:
-                await set_state(f"hb_alerted:{job}", now.isoformat())
-        elif not overdue and alerted:
-            await set_state(f"hb_alerted:{job}", None)  # clear a stale flag
+                silence_min = (now - last).total_seconds() / 60
+                overdue = heartbeats.is_late(interval_min, silence_min)
+                detail = f"последний раз на связи {fmt_duration(silence_min)} назад"
+            elif _started_at and (now - _started_at).total_seconds() / 60 > interval_min:
+                overdue, detail = True, "на связь так и не выходит"
+            alerted = await get_state(f"hb_alerted:{job}")
+            if overdue and not alerted:
+                expl = humanize.EXPLANATIONS["heartbeat"]
+                if last:
+                    text = (f"🟠 «{esc(job)}» молчит: {detail}, а выходит на связь "
+                            f"{heartbeats.every(interval_min)}.\n{expl.meaning}\n\n"
+                            f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
+                else:
+                    # Never marked at all: the task was added but not connected —
+                    # nothing failed, so no «крон упал»; the fix is one tap.
+                    text = (f"⚠️ «{esc(job)}» так и не выходит на связь — похоже, не подключили.\n"
+                            f"Жду связи {heartbeats.every(interval_min)}, но её ещё не было, и я не могу сказать, "
+                            f"работает ли «{esc(job)}».\n\n"
+                            f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
+                            f"Нет — «Удалить».")
+                sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job]))
+                if sent:
+                    await set_state(f"hb_alerted:{job}", now.isoformat())
+            elif not overdue and alerted:
+                await set_state(f"hb_alerted:{job}", None)  # clear a stale flag
 
 
 # ── Bot-host monitoring ──────────────────────────────────────────────────────
@@ -610,20 +658,21 @@ async def run_container_watch():
     the watch runs every 10 minutes, as often as the restart throttle allows,
     so without a flag it would page all night about the same thing."""
     for e in await watch_containers():
-        key = f"container_alerted:{e['name']}"
-        if e["restarted"] and e["ok_after"]:
-            await set_state(key, None)
-            await notifier.send(f"✅ Сервис «{esc(e['name'])}» на сервере бота был {esc(e['problem'])} — "
-                                f"перезапустил сам, работает. Ничего делать не нужно.")
-        elif not await get_state(key):
-            expl = humanize.EXPLANATIONS["container"]
-            sent = await notifier.send(
-                f"🔴 Сервис «{esc(e['name'])}» на сервере бота {esc(e['problem'])}. "
-                + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
-                   else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{esc(humanize.steps_block(expl))}",
-                Priority.CRITICAL)
-            if sent:
-                await set_state(key, "1")
+        with _isolated(f"Container alert for {e['name']}"):
+            key = f"container_alerted:{e['name']}"
+            if e["restarted"] and e["ok_after"]:
+                await set_state(key, None)
+                await notifier.send(f"✅ Сервис «{esc(e['name'])}» на сервере бота был {esc(e['problem'])} — "
+                                    f"перезапустил сам, работает. Ничего делать не нужно.")
+            elif not await get_state(key):
+                expl = humanize.EXPLANATIONS["container"]
+                sent = await notifier.send(
+                    f"🔴 Сервис «{esc(e['name'])}» на сервере бота {esc(e['problem'])}. "
+                    + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
+                       else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{esc(humanize.steps_block(expl))}",
+                    Priority.CRITICAL)
+                if sent:
+                    await set_state(key, "1")
 
 
 # ── Escalation ───────────────────────────────────────────────────────────────
@@ -638,28 +687,29 @@ async def run_escalation_watch():
         return
     now = datetime.now(UTC)
     for inc in await get_active_incidents():
-        if inc["severity"] != "critical" or inc["check_type"] != "availability":
-            continue
-        created = parse_sqlite_utc(inc["created_at"])
-        if not created or (now - created) < timedelta(minutes=repeat_min):
-            continue
-        ack = parse_iso_utc(await get_state(f"ack:{inc['id']}"))
-        if ack and ack > now:
-            continue
-        last = parse_iso_utc(await get_state(f"escalated:{inc['id']}"))
-        if last and (now - last) < timedelta(minutes=repeat_min):
-            continue
-        age_min = (now - created).total_seconds() / 60
-        sent = await notifier.send(
-            f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
-            f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
-            f"«🔧 Я чиню», и я замолчу на два часа.",
-            Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
-            reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
-                                                hosting=await get_state(f"hosting:{inc['site_id']}"),
-                                                api=is_api_check(inc["url"], inc.get("http_method"))))
-        if sent:
-            await set_state(f"escalated:{inc['id']}", now.isoformat())
+        with _isolated(f"Escalation of incident #{inc['id']}"):
+            if inc["severity"] != "critical" or inc["check_type"] != "availability":
+                continue
+            created = parse_sqlite_utc(inc["created_at"])
+            if not created or (now - created) < timedelta(minutes=repeat_min):
+                continue
+            ack = parse_iso_utc(await get_state(f"ack:{inc['id']}"))
+            if ack and ack > now:
+                continue
+            last = parse_iso_utc(await get_state(f"escalated:{inc['id']}"))
+            if last and (now - last) < timedelta(minutes=repeat_min):
+                continue
+            age_min = (now - created).total_seconds() / 60
+            sent = await notifier.send(
+                f"🔴 {esc(incident_line(inc))}\nЛежит уже {fmt_duration(age_min)}. Продолжаю проверять "
+                f"каждую минуту и напишу, как только поднимется.\n\nЕсли ты уже чинишь — нажми "
+                f"«🔧 Я чиню», и я замолчу на два часа.",
+                Priority.CRITICAL, site_id=inc["site_id"], always_ring=True,
+                reply_markup=alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
+                                                    hosting=await get_state(f"hosting:{inc['site_id']}"),
+                                                    api=is_api_check(inc["url"], inc.get("http_method"))))
+            if sent:
+                await set_state(f"escalated:{inc['id']}", now.isoformat())
 
 
 # ── The bot's own downtime ───────────────────────────────────────────────────

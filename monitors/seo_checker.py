@@ -129,11 +129,16 @@ def analyze_page(html: str, page_url: str,
     canonical = soup.find("link", attrs={"rel": "canonical"})
     if canonical:
         href = (canonical.get("href") or "").strip()
-        if not href.startswith("https://"):
-            problems.append(_p("canonical_bad", "warning", f"{page}: canonical ведёт не на https ({href[:60]})"))
-        elif urlparse(href).hostname != urlparse(page_url).hostname:
-            problems.append(_p("canonical_bad", "warning",
-                               f"{page}: canonical ведёт на другой сайт ({urlparse(href).hostname})"))
+        try:
+            canon_host = urlparse(href).hostname
+        except ValueError:                  # «https://example.com]/» — a typo in the address
+            problems.append(_p("canonical_bad", "warning", f"{page}: canonical записан с ошибкой ({href[:60]})"))
+        else:
+            if not href.startswith("https://"):
+                problems.append(_p("canonical_bad", "warning", f"{page}: canonical ведёт не на https ({href[:60]})"))
+            elif canon_host != urlparse(page_url).hostname:
+                problems.append(_p("canonical_bad", "warning",
+                                   f"{page}: canonical ведёт на другой сайт ({canon_host})"))
 
     if not soup.find("h1"):
         problems.append(_p("no_h1", "warning", f"{page}: нет главного заголовка h1"))
@@ -150,7 +155,7 @@ def analyze_page(html: str, page_url: str,
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
             json.loads(script.string or "")
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             problems.append(_p("jsonld_invalid", "warning", f"{page}: разметка JSON-LD с ошибкой"))
             break
 
@@ -202,9 +207,16 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         # 5xx or a 429 stalls its crawl.
         status, robots_text, _, _ = await _fetch(session, f"{base}/robots.txt")
         declared: list[str] = []
+        # An audit that could not read a part of the site may open or raise
+        # an incident on what it did see, but must not lower or close one.
+        complete = True
         if status == 200:
-            robot_problems, declared = analyze_robots(robots_text, base)
-            problems.extend(robot_problems)
+            try:
+                robot_problems, declared = analyze_robots(robots_text, base)
+                problems.extend(robot_problems)
+            except Exception:
+                logger.warning("seo: robots.txt of %s could not be parsed", base, exc_info=True)
+                complete = False
         elif status is not None and (status >= 500 or status == 429):
             problems.append(_p("robots_http_error", "warning", f"robots.txt отвечает ошибкой HTTP {status}"))
 
@@ -220,8 +232,14 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             ctype = {k.lower(): v for k, v in headers.items()}.get("content-type", "")
             if status != 200 or not html or (ctype and "html" not in ctype):
                 continue   # an XML or a PDF in the sitemap is not a page to audit
+            try:
+                p, text_len = analyze_page(html, final, headers)
+            except Exception:
+                logger.warning("seo: page %s could not be analysed", page, exc_info=True)
+                if page == sample[0]:
+                    complete = False
+                continue
             r.pages_checked += 1
-            p, text_len = analyze_page(html, final, headers)
             problems.extend(p)
             if page == sample[0]:
                 r.no_js_chars = text_len
@@ -276,10 +294,10 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                             pages=r.pages_checked, no_js_chars=r.no_js_chars)
     if not manage:
         return r
-    if problems:
+    if problems and (complete or r.has_critical):
         r.error = incident_message(problems)
         r.incident_id, r.incident_new = await save_incident(site_id, "seo", r.error, severity=r.severity)
-    elif await resolve_incident(site_id, "seo"):
+    elif complete and not problems and await resolve_incident(site_id, "seo"):
         r.recovered = True
     return r
 

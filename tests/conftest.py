@@ -24,6 +24,7 @@ os.environ.update({
     "GITHUB_OWNER": "",
 })
 
+import asyncio  # noqa: E402
 from datetime import UTC, datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
@@ -31,7 +32,9 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from services import integrations, maintenance, notifier, runtime, secrets, settings  # noqa: E402
+from reports import scheduler  # noqa: E402
+from services import integrations, maintenance, notifier, runtime, secrets, settings, sitestatus  # noqa: E402
+from web import status_page, webhook  # noqa: E402
 
 
 class FakeBot:
@@ -135,6 +138,23 @@ class FakeState:
 def buttons(kb) -> list[str]:
     """Flat list of button labels of an inline keyboard."""
     return [b.text for row in kb.inline_keyboard for b in row]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_module_state(monkeypatch):
+    """Module-level caches, rate limits, schedules and asyncio locks start
+    clean in every test: results must not depend on the order of the tests."""
+    monkeypatch.setattr(status_page, "_cache", None)
+    status_page._badge_cache.clear()
+    webhook._ip_hits.clear()
+    webhook._global_hits.clear()
+    monkeypatch.setattr(runtime, "_bot_username", "")
+    scheduler._next_avail_check.clear()
+    scheduler._slow_streak.clear()
+    scheduler._ext_ok_noted.clear()
+    monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
+    monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
+    monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
 
 
 @pytest.fixture

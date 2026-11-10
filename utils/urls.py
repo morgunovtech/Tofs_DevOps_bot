@@ -1,6 +1,7 @@
 """URL helpers used by every monitor, formatter and handler. One place for
 the registrable-domain heuristic, the User-Agent and the monitor kinds."""
 
+import re
 from urllib.parse import urlparse
 
 USER_AGENT = (
@@ -80,11 +81,26 @@ def short_host(url: str) -> str:
     return host_of(url) or url
 
 
+_USERINFO_RE = re.compile(r"//[^/?#@]*@")
+
+
 def site_label(url: str) -> str:
     """Compact display label: host for web sites (plus the path when the
     monitor watches one — an API endpoint next to its site must not look
     like the same thing; never the query, it may carry a token), host:port
-    for tcp:// monitors, 'ping host' for ping:// ones."""
+    for tcp:// monitors, 'ping host' for ping:// ones.
+
+    Never raises: one malformed stored address (a port «5432x», an
+    unclosed «[») must not take down every screen, report and alert loop
+    that lists sites. It is shown as stored — without the query and the
+    login, which may carry secrets."""
+    try:
+        return _label(url)
+    except ValueError:
+        return _USERINFO_RE.sub("//", url.split("?", 1)[0].split("#", 1)[0])
+
+
+def _label(url: str) -> str:
     p = urlparse(url)
     if p.scheme == "tcp":
         return f"{p.hostname}:{p.port}" if p.port else (p.hostname or url)
@@ -120,7 +136,10 @@ PROXY_SCHEMES = ("socks5", "socks4", "http")
 def proxy_problem(url: str) -> str | None:
     """None when TELEGRAM_PROXY can be used, otherwise what is wrong — said
     at start instead of a traceback from the proxy library."""
-    p = urlparse(url)
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return "адрес записан с ошибкой (лишняя или незакрытая «[») — нужен вид socks5://host:1080"
     if p.scheme not in PROXY_SCHEMES:
         return (f"схема «{p.scheme or 'нет'}» не подходит — нужен адрес вида socks5://host:1080, "
                 f"socks4://host:1080 или http://host:3128")
