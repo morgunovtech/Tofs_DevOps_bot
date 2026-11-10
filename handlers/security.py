@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers.common import ack, back_button, render, site_by_cb
-from monitors.security_checker import HEADERS, check_security, is_https
+from monitors.security_checker import HEADERS, check_security
 from reports.formatter import finding_block
 from services import sitestatus
 from services.humanize import lower_first
@@ -27,7 +27,7 @@ def security_lines(sec: dict | None) -> list[str]:
     findings = sec.get("findings") or []
     if not findings:
         parts = ["только https"] if sec.get("plain_http") is False else []
-        if sec.get("hosting") != "github":
+        if sec.get("missing") is not None and sec.get("hosting") != "github":
             parts.append("защитные заголовки")
         parts.append("служебные файлы снаружи не видны")
         return [f"✅ Защита: {', '.join(parts)}"]
@@ -45,6 +45,10 @@ def _check_lines(sec: dict) -> list[str]:
     lines = []
     exposed = [f for c, f in codes.items() if c.startswith("exposed_")]
     lines += [f"🔴 {esc(f['title'])}" for f in exposed] or ["✅ .git и .env снаружи не видны"]
+    if sec.get("missing") is None:   # an http:// site: the service files are all that is asked
+        lines.append("ℹ️ Сайт работает по http:// — переход на https и защитные заголовки проверяю только у "
+                     "https-сайтов.")
+        return lines
     if "https_missing" in codes:
         lines.append(f"🟠 {esc(codes['https_missing']['title'])}")
     elif sec.get("plain_http") is False:
@@ -89,8 +93,7 @@ async def security_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
 
 async def _checked_site(arg: str | None) -> dict | None:
     site = await site_by_cb(arg)
-    ok = site and is_https(site["url"]) and is_web_page(site["url"], site.get("http_method"))
-    return site if ok else None
+    return site if site and is_web_page(site["url"], site.get("http_method")) else None
 
 
 @router.callback_query(F.data.startswith("sec:"))
@@ -107,9 +110,13 @@ async def cb_security(call: CallbackQuery):
 async def cb_security_check(call: CallbackQuery):
     site = await _checked_site(call.data.split(":", 1)[1])
     if not site:
+        await ack(call)
         await render(call, "Безопасность этого адреса я не проверяю.", back_button())
         return
     await ack(call, "Проверяю…")
     await render(call, f"▰▱▱ Смотрю {esc(site_label(site['url']))} снаружи…")
-    await check_security(site["url"], manage=False)
-    await render(call, *await security_page(site))
+    checked = await check_security(site["url"], manage=False)
+    text, kb = await security_page(site)
+    if not checked:   # the site did not answer: the screen shows the last check, and says so
+        text = "⚠️ Сайт сейчас не ответил — показываю прошлую проверку. Попробуй через пару минут.\n\n" + text
+    await render(call, text, kb)

@@ -67,8 +67,10 @@ async def test_http_that_ends_on_https_is_fine(monkeypatch):
     assert await sc.plain_http_opens(None, "https://ex.test") is False
     web.pages["http://www.ex.test/"] = (200, {}, "<html>")
     assert await sc.plain_http_opens(None, "https://ex.test") is True
-    del web.pages["http://ex.test/"]                                # port 80 closed: nothing to intercept
+    web.pages["http://ex.test/"] = sc.REFUSED                       # port 80 closed: nothing to intercept
     assert await sc.plain_http_opens(None, "https://ex.test") is False
+    del web.pages["http://ex.test/"]                                # port 80 silent: no verdict
+    assert await sc.plain_http_opens(None, "https://ex.test") is None
 
 
 async def test_security_job_end_to_end(bot, db, monkeypatch):

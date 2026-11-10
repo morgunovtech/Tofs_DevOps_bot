@@ -916,7 +916,15 @@ async def run_mail_checks():
     results = await check_all_mail(urls)
     await _notify_transitions(results, format_mail_alert, format_mail_recovery, priority=_by_level,
                               keyboard=_mail_keyboard)
-    if _scheduler is not None and any(r.kind == "mail" and r.ok and r.delivery.ok is False for r in results):
+    if any(r.kind == "mail" and r.ok and r.delivery.ok is False for r in results):
+        schedule_mail_recheck()
+
+
+def schedule_mail_recheck():
+    """The recheck the «⏳ … перепроверю через 10 минут» line promises —
+    from the hourly job and from the ✉️ screen alike: a dead mailbox is
+    said within the quarter hour."""
+    if _scheduler is not None:
         _scheduler.add_job(run_mail_checks, DateTrigger(run_date=datetime.now(UTC) + timedelta(minutes=MAIL_RECHECK_MIN), timezone=UTC),
                            id="mail_recheck", replace_existing=True, misfire_grace_time=300)
 

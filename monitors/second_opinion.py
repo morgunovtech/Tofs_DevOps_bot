@@ -146,7 +146,7 @@ def region_node(country: str | None) -> str | None:
 
 async def _target(url: str) -> tuple[str, str] | None:
     """What goes to check-host for this address, None when nothing may: the
-    one gate of every entry (second_opinion, second_opinion_up). A
+    one gate of every entry (second_opinion, second_opinion_up, tcp_by_node). A
     public-looking name that resolves to a LAN address here (nas.home.example.com
     → 192.168.1.10) stays home too: the nodes would judge their own network
     (a false «up») and learn the name. One DNS query, and only once the
@@ -254,5 +254,41 @@ async def _ask_region_node(session: aiohttp.ClientSession, endpoint: str, host_p
 
 
 async def second_opinion_up(url: str) -> bool | None:
-    """Only the verdict — for checks that need no node counts (mail)."""
+    """Only the verdict — for checks that need no node counts."""
     return (await second_opinion(url)).up
+
+
+async def tcp_by_node(target: str, nodes: list[str] | None = None) -> dict[str, bool | None]:
+    """check-tcp node by node: {node: True — opened, False — did not, None —
+    no report}. target is host:port. nodes: ask exactly these (check-host's
+    «node» parameter) — to compare two targets on the same nodes; else
+    RANDOM_NODES nodes of the service's choosing. {} — the service itself
+    did not answer, or the target may not leave the bot (_target)."""
+    if not await _target(f"tcp://{target}"):
+        return {}
+    params = [("host", target)] + ([("node", n) for n in nodes] if nodes else [("max_nodes", str(RANDOM_NODES))])
+    out: dict[str, bool | None] = dict.fromkeys(nodes or [], None)
+    try:
+        async with asyncio.timeout(BUDGET_SEC), aiohttp.ClientSession(
+                timeout=TIMEOUT, headers={"Accept": "application/json"}) as session:
+            async with session.get(f"{API}/check-tcp", params=params) as resp:
+                if resp.status != 200:
+                    return {}
+                data = await resp.json()
+            if not isinstance(data, dict) or not data.get("request_id"):
+                return {}
+            request_id = data["request_id"]
+            out.update(dict.fromkeys(data.get("nodes") or {}, None))
+            for pause in POLL_PAUSES:   # nodes report asynchronously
+                await asyncio.sleep(pause)
+                async with session.get(f"{API}/check-result/{request_id}") as resp:
+                    if resp.status != 200:
+                        continue
+                    results = await resp.json()
+                for node, node_result in (results or {}).items() if isinstance(results, dict) else ():
+                    out[node] = None if node_result is None else node_up("check-tcp", node_result)
+                if out and None not in out.values():
+                    break
+    except Exception as e:   # the budget's TimeoutError too: what is known so far stands
+        logger.warning("check-tcp %s: %s", target, e)
+    return out

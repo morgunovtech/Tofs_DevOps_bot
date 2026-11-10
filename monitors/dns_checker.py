@@ -65,13 +65,20 @@ def _resolver() -> dns.asyncresolver.Resolver:
     return resolver
 
 
-async def query(name: str, rtype: str):
+async def query(name: str, rtype: str, nxdomain_none: bool = False):
     """The dnspython answer; [] = NXDOMAIN/no answer; None = lookup failed
-    (network/timeout — not evidence of change)."""
+    (network/timeout — not evidence of change). nxdomain_none: a name that
+    does not exist at all answers None too — for a caller to whom «the
+    domain is gone» is no verdict about its records (the mail check)."""
     async with _dns_slots():
         try:
             return await _resolver().resolve(name, rtype)
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        except dns.resolver.NoAnswer:
+            return []
+        except dns.resolver.NXDOMAIN:
+            if nxdomain_none:
+                logger.info("DNS %s %s: the domain does not exist (NXDOMAIN)", rtype, name)
+                return None
             return []
         except dns.exception.DNSException as e:
             logger.debug("DNS %s %s failed: %s", rtype, name, e)

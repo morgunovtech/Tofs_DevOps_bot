@@ -1,7 +1,9 @@
 """Incident bookkeeping shared by monitors: the alert ladder of SSL and
 domain expiry (notify once per threshold crossing, 14 → 7 → 3 → 1 → 0
 days, never daily about the same band) and the plain open / keep / close
-of mail and security findings."""
+of mail and security findings — where a finding the owner has not heard
+of yet, inside an incident already open, is said again (told_before,
+told_after, apply_findings)."""
 
 from db.database import (
     get_last_alert_threshold,
@@ -69,3 +71,28 @@ async def apply_incident(r: CheckResult, check_type: str, settled: bool = True, 
     elif settled:
         closed = await resolve_incident(r.site_id, check_type)
         r.recovered, r.resolved_incident = closed is not None, closed
+
+
+def told_before(previous: dict) -> set[str]:
+    """Finding codes the scheduled check has already alerted. A snapshot
+    written before «told» existed counts its findings as said: an upgrade
+    must not repeat every open alert."""
+    if "told" in previous:
+        return set(previous.get("told") or [])
+    return {f["code"] for f in previous.get("findings") or []}
+
+
+def told_after(told: set[str], codes: set[str], manage: bool) -> list[str]:
+    """What to remember as said. A check from a screen adds nothing: the
+    scheduled check must still alert what the screen saw first."""
+    return sorted(codes if manage else told & codes)
+
+
+async def apply_findings(r: CheckResult, check_type: str, codes: set[str], told: set[str],
+                         settled: bool = True, open_new: bool = True):
+    """apply_incident for an incident that holds several findings: a finding
+    the scheduled check has not alerted yet sends the incident's alert again
+    (it lists all of them, the new one among them)."""
+    await apply_incident(r, check_type, settled=settled, open_new=open_new)
+    if open_new and r.incident_id and codes - told:
+        r.incident_new = True

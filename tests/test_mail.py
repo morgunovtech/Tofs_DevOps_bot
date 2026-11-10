@@ -117,13 +117,13 @@ class FakeNet:
         monkeypatch.setattr(mail_checker, "_mx", mx)
         monkeypatch.setattr(mail_checker, "_txt", txt)
         monkeypatch.setattr(mail_checker, "resolve", resolve)
-        monkeypatch.setattr(mail_checker, "second_opinion_up", self.up)
+        monkeypatch.setattr(mail_checker, "tcp_by_node", self.by_node)
         monkeypatch.setattr(integrations, "second_opinion_enabled", lambda: True)
 
-    async def up(self, url: str):
-        host = url.split("//")[1].split(":")[0]
+    async def by_node(self, target: str, nodes=None):
+        host = target.split(":")[0]
         self.asked.append(host)
-        return host not in self.down
+        return {n: host not in self.down for n in (nodes or ["n1", "n2", "n3"])}
 
 
 async def test_mail_job_end_to_end(bot, db, monkeypatch):

@@ -2,12 +2,15 @@
 everything — who receives the mail, whether it accepts letters, SPF /
 DKIM / DMARC, and for each problem the exact record to paste."""
 
+import asyncio
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers.common import ack, back_button, render, site_by_cb
-from monitors.mail_checker import carrier_of, check_mail
+from monitors.mail_checker import DOMAIN_BUDGET_SEC, FAILS_TO_ALERT, carrier_of, check_mail
 from reports.formatter import finding_block
+from reports.scheduler import MAIL_RECHECK_MIN, schedule_mail_recheck
 from services import integrations, sitestatus
 from services.humanize import lower_first
 from utils.text import esc, fmt_duration, plural
@@ -30,11 +33,11 @@ def _receives_line(mail: dict) -> str:
     whole, so it reads the same at the top of the card among the problems."""
     who, domain = esc(_who(mail)), esc(mail.get("domain") or "")
     if mail.get("accepts") is False:
-        if (mail.get("fails") or 0) >= 2:
+        if (mail.get("fails") or 0) >= FAILS_TO_ALERT:
             why = ("записи MX ведут на сервер, которого нет" if mail.get("reason") == "nowhere"
                    else f"{who} не отвечает")
             return f"🔴 Почта {domain} не принимает письма — {why}"
-        return f"⏳ Почта: {who} не ответил — перепроверю через 10 минут"
+        return f"⏳ Почта: {who} не ответил — перепроверю через {MAIL_RECHECK_MIN} минут"
     if mail.get("accepts"):
         backup = " (основной сервер молчит, принимает запасной)" if mail.get("backup_only") else ""
         return f"✅ Почта принимает письма · {who}{backup}"
@@ -49,7 +52,7 @@ def mail_brief(mail: dict | None) -> tuple[str, str]:
         return "⏳", "ещё не проверял"
     if not mail.get("mx") and not mail.get("sends_only"):
         return "✅", "почты нет"
-    if mail.get("accepts") is False and (mail.get("fails") or 0) >= 2:
+    if mail.get("accepts") is False and (mail.get("fails") or 0) >= FAILS_TO_ALERT:
         return "🔴", "не принимает письма"
     findings = mail.get("findings") or []
     if findings:
@@ -167,10 +170,25 @@ async def cb_mail(call: CallbackQuery):
 async def cb_mail_check(call: CallbackQuery):
     site = await _carrier_site(call.data.split(":", 1)[1])
     if not site:
+        await ack(call)
         await render(call, "Почту этого домена я больше не проверяю.", back_button())
         return
     await ack(call, "Проверяю почту…")
     domain = registrable_domain(host_of(site["url"]))
-    await render(call, f"▰▱▱ Проверяю почту {esc(domain)} — около 20 секунд…")
-    await check_mail(domain, site["url"], manage=False)
-    await render(call, *await mail_page(site))
+    await render(call, f"▰▱▱ Проверяю почту {esc(domain)} — это может занять до пары минут…")
+    try:
+        async with asyncio.timeout(DOMAIN_BUDGET_SEC):
+            checked = await check_mail(domain, site["url"], manage=False)
+    except TimeoutError:
+        checked = []
+    text, kb = await mail_page(site)
+    if checked:
+        # The screen promised a recheck: it is the hourly job's to alert, so
+        # the hourly job is asked to come back in ten minutes.
+        mail = (await sitestatus.get(site["id"])).get("mail") or {}
+        if mail.get("accepts") is False and (mail.get("fails") or 0) < FAILS_TO_ALERT:
+            schedule_mail_recheck()
+    else:
+        text = ("⚠️ Сейчас проверить не получилось: DNS или внешняя проверка не ответили — показываю прошлую "
+                "проверку.\n\n" + text)
+    await render(call, text, kb)

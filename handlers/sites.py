@@ -70,7 +70,7 @@ from monitors.domain_checker import check_domain
 from monitors.links_checker import check_links
 from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
-from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
+from monitors.security_checker import SECURITY_CHECKS, check_security
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
 from services import (
@@ -298,7 +298,7 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
         domain += await _dns_lines(site)
         if await carrier_of(site["url"]) == site["url"]:
             mail += mail_lines(st.get("mail"))
-        if page and is_https(site["url"]):
+        if page:
             protection += security_lines(st.get("security"))
         # Page findings only: an API check is never crawled or audited, and a
         # snapshot left from when it was a page must not speak for it.
@@ -647,7 +647,7 @@ async def cb_check_site_live(call: CallbackQuery):
         await check_domain(url, manage=False)
         if mail_domain:
             await check_mail(mail_domain, url, manage=False)
-        if is_https(url) and is_web_page(url, site.get("http_method")):
+        if is_web_page(url, site.get("http_method")):
             await check_security(url, manage=False)
     if is_web_page(url, site.get("http_method")):
         base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
