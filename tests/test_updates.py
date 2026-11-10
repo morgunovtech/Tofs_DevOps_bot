@@ -64,9 +64,11 @@ async def test_waiting_prs_are_majors_and_stuck_minors(monkeypatch):
              "user": {"login": "dependabot[bot]"}},
             {"number": 2, "title": "Bump aiohttp from 3.14.2 to 3.14.3", "html_url": "u2", "created_at": fresh,
              "user": {"login": "dependabot[bot]"}},
-            {"number": 4, "title": "Bump python from 3.14-slim to 3.15-slim", "html_url": "u4", "created_at": old,
-             "user": {"login": "dependabot[bot]"}},
+            {"number": 4, "title": "Bump python from 3.14-slim to 3.15-slim", "html_url": "u4", "created_at": fresh,
+             "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/docker/python-3.15-slim"}},
             {"number": 3, "title": "Bump y from 1.0 to 2.0", "html_url": "u3", "created_at": old, "user": {"login": "human"}},
+            {"number": 5, "title": "Bump the python-deps group with 2 updates", "html_url": "u5", "created_at": old,
+             "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/python-deps-1a2b3c"}},
         ])
     app = web.Application()
     app.router.add_get("/repos/me/bot/pulls", pulls)
@@ -75,8 +77,9 @@ async def test_waiting_prs_are_majors_and_stuck_minors(monkeypatch):
         monkeypatch.setattr(updates, "GITHUB_PULLS", f"http://127.0.0.1:{server.port}/repos/{{slug}}/pulls")
         async with aiohttp.ClientSession() as session:
             prs = await updates.waiting_prs(session)
-    # 2 is fresh and will auto-merge; 4 has been open for years: its CI is red.
-    assert [(p["number"], p["major"]) for p in prs] == [(1, True), (4, False)] and prs[0]["url"] == "u1"
+    # 2 is fresh and will auto-merge; 4 is the base image — a human merges it
+    # even when fresh; 5 has been open for years: its CI is red.
+    assert [(p["number"], p["major"]) for p in prs] == [(1, True), (4, True), (5, False)] and prs[0]["url"] == "u1"
     monkeypatch.delenv("GITHUB_REPOSITORY")
     async with aiohttp.ClientSession() as session:
         assert await updates.waiting_prs(session) == []

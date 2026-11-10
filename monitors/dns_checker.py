@@ -69,7 +69,12 @@ async def check_all_dns(urls: list[str]) -> list[dict]:
     # A set: http:// and https:// of one host must not report a change twice.
     hosts = sorted({h for h in (host_of(u) for u in urls) if h})
     domains = {registrable_domain(h) for h in hosts}
-    rtypes = await asyncio.gather(*(_host_rtypes(h) for h in hosts))
+    rtypes = await asyncio.gather(*(_host_rtypes(h) for h in hosts), return_exceptions=True)
+    for h, t in zip(hosts, rtypes, strict=True):
+        if isinstance(t, BaseException):
+            logger.error("DNS CNAME lookup for %s failed: %r", h, t)
+    # One host's unexpected error must not cost every other host its DNS check.
+    rtypes = [HOST_RTYPES if isinstance(t, BaseException) else t for t in rtypes]
     tasks = [_check_record(h, t) for h, types in zip(hosts, rtypes, strict=True) for t in types]
     tasks += [_check_record(d, t) for d in sorted(domains) for t in DOMAIN_RTYPES]
     results = await asyncio.gather(*tasks, return_exceptions=True)

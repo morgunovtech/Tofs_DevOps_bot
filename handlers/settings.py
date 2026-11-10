@@ -157,6 +157,9 @@ def _reports_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"🌙 {h}:00", callback_data=f"set_e:{h}") for h in (20, 21, 22)]
         + [InlineKeyboardButton(text="🌙 выкл", callback_data="set_e:off")],
         [InlineKeyboardButton(text=f"📊 вс {h}:00", callback_data=f"set_w:{h}") for h in (10, 11, 12, 18)],
+        [InlineKeyboardButton(text="🗄 Копия базы по воскресеньям: вкл" if settings.weekly_backup()
+                              else "🗄 Копия базы по воскресеньям: выкл",
+                              callback_data=f"set_wb:{'off' if settings.weekly_backup() else 'on'}")],
         [InlineKeyboardButton(text="🔕 23–8", callback_data="set_q:23-8"),
          InlineKeyboardButton(text="🔕 0–7", callback_data="set_q:0-7"),
          InlineKeyboardButton(text="🔕 выкл", callback_data="set_q:off")],
@@ -176,6 +179,7 @@ def _reports_text() -> str:
             f"🌙 Вечерняя: {'выключена' if evening is None else f'{evening}:00, только если есть проблемы'}.\n"
             f"📊 Недельная: воскресенье {settings.weekly_hour()}:00 — простой за неделю и месяц, "
             f"график, одна идея.\n"
+            f"🗄 Копия базы: {'по воскресеньям тебе в личку, без ключей подключений' if settings.weekly_backup() else 'не присылаю'}.\n"
             f"🔕 Тихие часы: {'выключены' if not quiet else f'{quiet[0]}–{quiet[1]}'} — некритичное "
             f"ждёт до утра, «сайт лежит» приходит всегда.\n"
             f"🔔 Будить: {'только когда сайт лёг — остальное, даже критичное, ждёт тихие часы' if settings.ring_only_down() else 'всё критичное: сайт лёг, смена NS-серверов, сайт закрыт от поиска'}.\n\n"
@@ -203,6 +207,8 @@ async def cb_settings_pick(call: CallbackQuery):
         await settings.set_status_page(value == "on")
     elif kind == "set_ring" and value in ("on", "off"):
         await settings.set_ring_only_down(value == "on")
+    elif kind == "set_wb" and value in ("on", "off"):
+        await settings.set_weekly_backup(value == "on")
     elif kind == "set_tz" and value.isdigit() and int(value) < len(TIMEZONES):
         await settings.set_timezone(TIMEZONES[int(value)][1])
     elif kind == "set_tz" and value == "env":

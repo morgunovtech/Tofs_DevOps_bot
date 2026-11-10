@@ -15,6 +15,8 @@ from typing import TypedDict
 
 import aiohttp
 
+from utils.urls import site_label
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,14 +202,18 @@ async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:
     return b"".join(chunks)
 
 
-async def gather_checks(coros, label: str) -> list:
-    """Run checks concurrently; one site's unexpected exception is logged
-    and dropped instead of killing the whole batch."""
-    results = await asyncio.gather(*coros, return_exceptions=True)
+async def gather_checks(urls, check, label: str, **kwargs) -> list:
+    """Run `check(url, **kwargs)` for every url concurrently. One site's
+    unexpected exception is logged with the site and the traceback and
+    dropped instead of killing the whole batch; a shutdown is not swallowed."""
+    urls = list(urls)
+    results = await asyncio.gather(*(check(u, **kwargs) for u in urls), return_exceptions=True)
     out = []
-    for r in results:
+    for url, r in zip(urls, results, strict=True):
+        if isinstance(r, asyncio.CancelledError):
+            raise r
         if isinstance(r, BaseException):
-            logger.error("%s check failed: %r", label, r)
+            logger.error("%s check of %s crashed", label, site_label(url), exc_info=r)
         else:
             out.append(r)
     return out

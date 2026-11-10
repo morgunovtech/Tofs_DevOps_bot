@@ -263,3 +263,15 @@ async def test_first_site_offers_the_last_two_steps(bot, db, monkeypatch):
     await integrations.set_value("self_heartbeat_url", "https://hc-ping.com/abc")
     assert await setup.last_steps() is None
     await integrations.set_value("self_heartbeat_url", None)
+
+
+async def test_public_url_without_tls_is_a_warning(bot, db, cfg, monkeypatch):
+    cfg(on_railway=False, railway_public_domain="", public_base_url="http://203.0.113.5:8080")
+    items = _by_key(await _items(monkeypatch))
+    assert items["url"].status == "warn" and "без TLS" in items["url"].title
+    cfg(public_base_url="https://bot.example.com")
+    assert _by_key(await _items(monkeypatch))["url"].status == "ok"
+    call = FakeCall("setup:url")
+    await setup.cb_guide_url(call)
+    text = call.message.texts[-1]
+    assert "проброс порта не подходит" in text and "TRUST_PROXY=1" in text

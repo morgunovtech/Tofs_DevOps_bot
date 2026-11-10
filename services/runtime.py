@@ -4,9 +4,10 @@ the claim is persisted in bot_state so it survives restarts."""
 
 import logging
 import os
+import time
 
 from config import config
-from db.database import get_state, set_state
+from db.database import count_sites_total, get_state, set_state
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,11 @@ def db_on_persistent_disk() -> bool | None:
         d = os.path.dirname(d)
     return False
 
-_chat_id: str | None = config.admin_chat_id or None
+_chat_id: str | None = config.admin_chat_id or config.admin_user_id or None
 _user_id: str | None = config.admin_user_id or None
+# A /start older than this process was queued by Telegram while the bot was
+# down; it must not take a free seat ahead of the owner (handlers/start.py).
+STARTED_AT = time.time()
 _bot_username: str = ""
 
 
@@ -50,8 +54,55 @@ def bot_username() -> str:
     return _bot_username
 
 
+# "<old id>:<new id>": Telegram turned the admin group into a supergroup.
+MOVED_KEY = "admin_chat_moved"
+
+
 async def load():
+    await _load_seat()
+    await follow_moved_chat()
+
+
+async def follow_moved_chat():
+    """The admin group became a supergroup earlier: use the new id even while
+    the old one is still in TELEGRAM_ADMIN_CHAT_ID (one hop is all there is)."""
+    global _chat_id
+    old, _, new = (await get_state(MOVED_KEY) or "").partition(":")
+    if _chat_id and new and old == _chat_id:
+        logger.warning("The admin group %s is supergroup %s now — update TELEGRAM_ADMIN_CHAT_ID", old, new)
+        _chat_id = new
+
+
+async def move_admin_chat(new_id: int | str) -> bool:
+    """Follow the admin group into its supergroup. True when the seat moved."""
+    global _chat_id
+    old, new = _chat_id, str(new_id)
+    if not old or new == old:
+        return False
+    _chat_id = new
+    await set_state(MOVED_KEY, f"{old}:{new}")
+    if await get_state("admin_chat_id") == old:
+        await set_state("admin_chat_id", new)
+    logger.warning("The admin group %s became supergroup %s — following it", old, new)
+    return True
+
+
+def env_chat_outdated() -> bool:
+    """TELEGRAM_ADMIN_CHAT_ID still names the group we have moved away from."""
+    return bool(config.admin_chat_id) and config.admin_chat_id != _chat_id
+
+
+async def _load_seat():
     global _chat_id, _user_id
+    if config.admin_chat_id or config.admin_user_id:
+        # Env wins: a stranger's /start, a lost database or a restored copy
+        # cannot hand the bot over.
+        _chat_id = config.admin_chat_id or config.admin_user_id
+        _user_id = config.admin_user_id or None
+        if _chat_id.startswith("-") and not _user_id:
+            logger.error("TELEGRAM_ADMIN_CHAT_ID is a group, but TELEGRAM_ADMIN_USER_ID is empty — "
+                         "nobody can control the bot. Set your numeric user id (@userinfobot).")
+        return
     if _chat_id:
         return
     saved = await get_state("admin_chat_id")
@@ -65,6 +116,29 @@ async def load():
 
 def admin_chat_id() -> str | None:
     return _chat_id
+
+
+def owner_private_chat() -> str | None:
+    """The owner's private chat with the bot — in Telegram its id is the
+    owner's user id. None when only a group is known (TELEGRAM_ADMIN_CHAT_ID
+    without TELEGRAM_ADMIN_USER_ID): group ids are negative."""
+    owner = _user_id or _chat_id
+    return owner if owner and not owner.startswith("-") else None
+
+
+def nobody_steers() -> bool:
+    """A group chat from env without TELEGRAM_ADMIN_USER_ID: is_admin() is
+    false for everyone, the owner included."""
+    return bool(_chat_id) and _chat_id.startswith("-") and not _user_id
+
+
+async def warn_if_seat_free():
+    """Every 30 min while nobody holds the seat but sites are watched: the bot
+    has no one to tell, so it says it where the operator looks — the log.
+    Alerts are not redirected: after a claim they would go to the claimer."""
+    if not _chat_id and await count_sites_total():
+        logger.error("Nobody holds the admin seat while sites are watched — alerts are dropped. "
+                     "Send /start to the bot in a private chat or set TELEGRAM_ADMIN_USER_ID.")
 
 
 def has_admin() -> bool:

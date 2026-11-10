@@ -44,14 +44,15 @@ async def cb_alert_action(call: CallbackQuery):
             text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
         await call.message.answer(text)
     elif action == "fix":
-        await maintenance.pause_site(site["id"], 60)
-        now = datetime.now(UTC)
+        await maintenance.pause_site(site["id"], maintenance.FIX_MINUTES)
+        until = datetime.now(UTC) + timedelta(minutes=maintenance.FIX_MINUTES)
         for inc in await get_active_incidents():
             if inc["site_id"] == site["id"]:
-                await set_state(f"ack:{inc['id']}", (now + timedelta(hours=2)).isoformat())
-        await ack(call, "Понял, молчу час")
-        await call.message.answer(f"🔧 Понял, ты чинишь {label}. Час не пишу про него, проверки "
-                                  f"продолжаются, напишу, когда поднимется.")
+                await set_state(f"ack:{inc['id']}", until.isoformat())
+        length = maintenance.fix_length()
+        await ack(call, f"Понял, молчу {length}")
+        await call.message.answer(f"🔧 Понял, ты чинишь {label}. {length.capitalize()} не пишу про него, проверки "
+                                  f"продолжаются. Поднимется раньше — сразу напишу и сниму тишину.")
     elif action == "shot":
         if not is_web_page(url, site.get("http_method")):
             await ack(call, "Здесь нет страницы, которую можно сфотографировать: это API или порт",
@@ -71,7 +72,8 @@ async def cb_alert_action(call: CallbackQuery):
             await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
     elif action == "redeploy":
         await ack(call, "Запускаю передеплой…")
-        await call.message.answer(await trigger_redeploy(url))
+        res = await trigger_redeploy(url)
+        await call.message.answer(f"{'🚀' if res.ok else '❌'} {res.text}")
     elif action == "purge":
         await ack(call, "Сбрасываю кэш…")
         await call.message.answer(await purge_cf_cache(url))

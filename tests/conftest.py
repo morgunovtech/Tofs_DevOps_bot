@@ -24,13 +24,27 @@ os.environ.update({
     "GITHUB_OWNER": "",
 })
 
+import asyncio  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from services import integrations, maintenance, notifier, runtime, secrets, settings  # noqa: E402
+from monitors import availability  # noqa: E402
+from reports import scheduler  # noqa: E402
+from services import (  # noqa: E402
+    health,
+    integrations,
+    maintenance,
+    notifier,
+    runtime,
+    secrets,
+    settings,
+    sitestatus,
+)
+from web import status_page, webhook  # noqa: E402
 
 
 class FakeBot:
@@ -41,12 +55,16 @@ class FakeBot:
         self.sent: list[dict] = []
         self.edited: list[dict] = []
         self.fail = False
+        self.fail_with: list[Exception] = []    # raised one per call, in order, before `fail`
 
-    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False, parse_mode=None):
+    async def send_message(self, chat_id, text, reply_markup=None, disable_notification=False,
+                           parse_mode="HTML", request_timeout=None):
+        if self.fail_with:
+            raise self.fail_with.pop(0)
         if self.fail:
             raise RuntimeError("telegram down")
         self.sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup,
-                          "silent": disable_notification})
+                          "silent": disable_notification, "parse_mode": parse_mode})
         return SimpleNamespace(message_id=len(self.sent), text=text)
 
     async def edit_message_text(self, text, chat_id=None, message_id=None, reply_markup=None):
@@ -68,7 +86,11 @@ class FakeMessage:
         self.documents: list = []    # captions of the files sent
         self.previews: list = []     # the picture drawn above each text, or None
         self.preview_options: list = []   # the LinkPreviewOptions object as sent
-        self.chat = SimpleNamespace(id=1)
+        self.chat = SimpleNamespace(id=1, type="private")
+        self.message_id = 1
+        self.deleted = False
+        self.sender_chat = None
+        self.date = datetime.now(UTC)
         self.reply_markup = None
 
     async def edit_text(self, text, reply_markup=None, **kwargs):
@@ -90,6 +112,10 @@ class FakeMessage:
 
     async def edit_reply_markup(self, reply_markup=None):
         self.reply_markup = reply_markup
+
+    async def delete(self):
+        self.deleted = True
+        return True
 
     async def answer_document(self, document, caption=None):
         self.documents.append(caption)
@@ -128,6 +154,35 @@ class FakeState:
 def buttons(kb) -> list[str]:
     """Flat list of button labels of an inline keyboard."""
     return [b.text for row in kb.inline_keyboard for b in row]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_module_state(monkeypatch):
+    """Module-level caches, rate limits, schedules and asyncio locks start
+    clean in every test: results must not depend on the order of the tests."""
+    monkeypatch.setattr(status_page, "_cache", None)
+    status_page._badge_cache.clear()
+    webhook._ip_hits.clear()
+    webhook._global_hits.clear()
+    monkeypatch.setattr(runtime, "_bot_username", "")
+    scheduler._next_avail_check.clear()
+    scheduler._slow_streak.clear()
+    scheduler._ext_ok_noted.clear()
+    notifier._released.clear()
+    availability._recent.clear()
+    availability._down_without_db.clear()
+    notifier._unsent.clear()
+    notifier._delivered_rows.clear()
+    monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
+    for state in (scheduler._in_flight, scheduler._busy, scheduler._sent_unrecorded):
+        state.clear()
+    monkeypatch.setattr(scheduler, "_queue", None)
+    monkeypatch.setattr(scheduler, "_worker", None)
+    health.reset()
+    monkeypatch.setattr(scheduler, "_share_lock", asyncio.Lock())
+    monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
+    monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
+    monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
 
 
 @pytest.fixture

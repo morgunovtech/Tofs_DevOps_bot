@@ -132,7 +132,7 @@ async def test_a_message_telegram_did_not_take_comes_later(bot, monkeypatch):
     bot.fail = False
     monkeypatch.setattr(notifier, "in_quiet_hours", lambda hour=None: True)
     await notifier.flush_outbox()
-    assert bot.sent[-1]["text"].startswith("⏳ Не дошло в ") and "a.test не открывается" in bot.sent[-1]["text"]
+    assert bot.sent[-1]["text"].startswith("⏳ Задержалось с ") and "a.test не открывается" in bot.sent[-1]["text"]
     assert bot.sent[-1]["silent"] is False                          # 🔴 still rings
     assert len(bot.sent) == 1 and await outbox_peek() == []
     assert "b.test медленно" in (await peek_notifications())[-1]["text"]   # 🟠 waits for the morning

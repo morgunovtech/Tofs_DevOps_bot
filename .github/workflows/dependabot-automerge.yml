@@ -1,10 +1,18 @@
-# Auto-merge Dependabot PRs for minor/patch updates once CI passes.
+# Auto-merge Dependabot PRs — only patch and minor bumps of the Python
+# libraries (pip), and only the exact commit the tests checked.
 #
 # The job waits for the «lint · test · audit» jobs itself and merges only
 # when every one of them is green. It used to call `gh pr merge --auto`,
 # which waits for tests only when a branch rule requires them — in a fresh
 # fork without that rule the PR merged before the tests ran, and Railway
 # deployed it. Nothing has to be configured in the repository settings now.
+#
+# What stays open for a human: the base image (a new Python — CI builds the
+# image but does not run the tests inside it, so 3.14 → 3.15 once shipped
+# untested and did not start on Railway), the Actions, major bumps and a PR
+# whose update type Dependabot could not tell. Minor bumps are merged
+# because minor releases of direct dependencies are frequent and each one
+# passes CI after the 7-day cooldown in .github/dependabot.yml.
 name: Dependabot auto-merge
 
 on: pull_request
@@ -17,16 +25,27 @@ permissions:
 
 jobs:
   automerge:
-    if: github.actor == 'dependabot[bot]'
+    # The PR's author, not the last actor: a human pushing to a Dependabot
+    # branch, or Dependabot touching a human's PR, must not switch this on.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # A new commit in the PR cancels the wait for the old one.
+    concurrency:
+      group: automerge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Merge once the tests are green
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        # An allow-list, not «everything but major»: a docker or Actions PR,
+        # a major bump and an empty update-type all stay open for a human.
+        if: >-
+          steps.meta.outputs.package-ecosystem == 'pip' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: |
           for _ in $(seq 1 60); do
             runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
@@ -39,7 +58,9 @@ jobs:
               exit 0
             fi
             if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ]; then
-              gh pr merge --squash "$PR_URL"
+              # Exactly the commit the tests checked: if the PR head moved
+              # since, gh refuses and the run for the new commit decides.
+              gh pr merge --squash --match-head-commit "$SHA" "$PR_URL"
               # A push made with GITHUB_TOKEN starts no workflow, so main would
               # get no CI run and no new image on ghcr.io. A dispatch does start
               # one. (Railway deploys from its own GitHub hook — unaffected.)

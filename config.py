@@ -3,6 +3,7 @@ generated secrets, UI overrides) lives in the services layer, not here."""
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -58,6 +59,17 @@ def _jobs(name: str) -> dict[str, int]:
     return out
 
 
+def _tg_id(name: str) -> str:
+    """A Telegram user or chat id: digits with an optional minus. Anything else
+    (a typo, @name, a stray space) is ignored with an error in the log — kept,
+    it would silently make nobody the admin."""
+    raw = os.getenv(name, "").strip()
+    if raw and not re.fullmatch(r"-?[0-9]{1,20}", raw):
+        logger.error("Ignoring %s=%r: it must be a numeric Telegram id (@userinfobot shows yours)", name, raw)
+        return ""
+    return raw
+
+
 def _timezone(name: str, default: str = "Europe/Moscow") -> str:
     raw = os.getenv(name, "").strip() or default
     try:
@@ -73,8 +85,8 @@ class Config:
     bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     # Optional: without these the first user to /start becomes admin
     # (persisted in the DB, see services.runtime).
-    admin_chat_id: str = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
-    admin_user_id: str = os.getenv("TELEGRAM_ADMIN_USER_ID", "").strip()
+    admin_chat_id: str = _tg_id("TELEGRAM_ADMIN_CHAT_ID")
+    admin_user_id: str = _tg_id("TELEGRAM_ADMIN_USER_ID")
     # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
     trust_proxy: bool = _bool("TRUST_PROXY")
     # Optional: every call to Telegram goes through this proxy
@@ -145,7 +157,9 @@ class Config:
     autorestart_containers: tuple[str, ...] = field(
         default_factory=lambda: tuple(_csv("AUTORESTART_CONTAINERS")))
     disk_alert_pct: int = _int("DISK_ALERT_PCT", 85)
-    auto_cleanup: bool = _bool("AUTO_CLEANUP", "1")
+    # Off by default: removes dangling docker images and old build cache on the
+    # whole host when the disk is full (services.docker_api.prune).
+    auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
 
     # ── SSL renewal watch ────────────────────────────────────────────────────
     ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10)

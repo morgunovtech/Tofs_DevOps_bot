@@ -2,9 +2,13 @@
 export/import."""
 
 import asyncio
+import contextlib
 import json
+import os
 import re
+import sqlite3
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import urlparse
 
 from aiogram import F, Router
@@ -22,6 +26,8 @@ from config import config
 from db.database import (
     SITE_SETTING_COLS,
     activate_or_create_site,
+    count_sites_total,
+    db_dir,
     deactivate_site,
     get_active_host_urls,
     get_active_incidents,
@@ -32,7 +38,8 @@ from db.database import (
     get_site,
     get_state,
     get_uptime_over_days,
-    restore_from_bytes,
+    probe_copy,
+    restore_from_file,
     set_state,
     update_site_settings,
 )
@@ -43,6 +50,7 @@ from handlers.common import (
     back_button,
     cancel_kb,
     cb_args,
+    forget_secret,
     render,
     site_by_cb,
     with_running_bar,
@@ -60,7 +68,7 @@ from monitors.mail_checker import MAIL_CHECKS, carrier_of, check_mail
 from monitors.pagemeta import alt_host_note, suggest_keyword
 from monitors.security_checker import SECURITY_CHECKS, check_security, is_https
 from monitors.ssl_checker import check_ssl
-from reports.scheduler import reschedule_all, reset_site_schedule
+from reports.scheduler import pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
 from services import (
     gsc,
     humanize,
@@ -436,7 +444,8 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
         notes.append("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут.")
         row = [InlineKeyboardButton(text="✅ Починил, пиши снова", callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text="🔧 Я чиню: час тишины", callback_data=f"pause:{sid}:60")]
+        row = [InlineKeyboardButton(text=f"🔧 Я чиню: {maintenance.fix_length()} тишины",
+                                    callback_data=f"pause:{sid}:{maintenance.FIX_MINUTES}")]
     if maintenance.maintenance_now(sid):
         notes.append("Сейчас плановые работы — про этот сайт не пишу.")
     return row, notes
@@ -616,6 +625,9 @@ async def msg_site_add(message: Message, state: FSMContext):
         await message.answer(error, reply_markup=_add_kb())
         return
     await state.clear()
+    raw = urlparse((message.text or "").strip())
+    if urlparse(url).query or raw.password or "@" in raw.netloc:
+        await forget_secret(message)        # an API address with ?token=… or user:pass@ in it
     first_site = not await get_all_sites()
     site_id = await activate_or_create_site(url)
     label = site_label(url)
@@ -745,7 +757,7 @@ async def cb_pause(call: CallbackQuery):
         await ack(call, "Пауза снята")
         await call.message.answer(f"✅ {esc(host)}: снова пишу обо всём.")
         return
-    minutes = int(arg) if arg.isdigit() else 60
+    minutes = int(arg) if arg.isdigit() else maintenance.FIX_MINUTES
     await maintenance.pause_site(sid, minutes)
     await ack(call, "Пауза включена")
     await call.message.answer(f"🔧 Понял, {esc(host)} чинится: {fmt_duration(minutes)} про него не пишу, "
@@ -853,15 +865,8 @@ _MAX_FILE = 20 * 1024 * 1024   # what the cloud Bot API lets a bot download
 
 
 async def _restore_bytes(raw: bytes) -> str:
-    """Apply a database copy or an old JSON export; the answer in words."""
-    if raw.startswith(b"SQLite format 3"):
-        try:
-            n = await restore_from_bytes(raw)
-        except ValueError as e:
-            return f"❌ Это не похоже на копию базы бота: {esc(e)}."
-        await reload_services()
-        return (f"✅ Восстановил из копии: активных сайтов {n}. Прежняя база лежит рядом как .bak. "
-                f"Проверки продолжаются.")
+    """Apply an old JSON export; the answer in words. A database copy goes
+    through _restore_db."""
     try:
         doc = json.loads(raw.decode("utf-8", errors="replace"))
         items = doc["sites"] if isinstance(doc, dict) else doc
@@ -882,41 +887,142 @@ async def _restore_bytes(raw: bytes) -> str:
     return text
 
 
+async def _restore_db(path: str) -> str:
+    """Swap the database for the uploaded copy; the answer in words."""
+    pause_jobs()
+    try:
+        n, bak = await restore_from_file(path)
+    except (ValueError, sqlite3.Error) as e:
+        return f"❌ Не восстановил: {esc(e)}. Текущая база не тронута."
+    finally:
+        await reload_services()     # the previous or the new file — re-read either way
+        resume_jobs()
+    return (f"✅ Восстановил из копии: активных сайтов {n}. Прежняя база сохранена рядом: "
+            f"{esc(os.path.basename(bak))}. Проверки продолжаются.")
+
+
+def _drop_upload(pending: dict | None):
+    if pending and pending.get("path"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(pending["path"])
+
+
+def _clear_uploads():
+    """One pending file at a time: a new one replaces the rest — leftovers of
+    a restart (the question lives in memory only) included."""
+    for old in Path(db_dir()).glob("upload-*.tmp"):
+        old.unlink(missing_ok=True)
+
+
+def _list(urls: list[str]) -> str:
+    return ", ".join(esc(u) for u in urls[:5]) + (f" и ещё {len(urls) - 5}" if len(urls) > 5 else "")
+
+
+async def _db_question(info: dict, name: str) -> str:
+    """What «✅ Восстановить» will change — said before the button."""
+    now = {s["url"] for s in await get_all_sites()}
+    theirs = set(info["urls"])
+    lines = [f"💾 «{esc(name)}» — копия базы бота. Восстановить из неё сайты, настройки и подключения?",
+             f"Сайтов в копии: {len(theirs)}, сейчас: {len(now)}."]
+    if gone := sorted(now - theirs):
+        lines.append(f"Пропадут: {_list(gone)}.")
+    if new := sorted(theirs - now):
+        lines.append(f"Появятся: {_list(new)}.")
+    stored = integrations.stored()
+    # A shareable copy carries no tokens: what it lacks stays as it is now.
+    differ = [k for k in integrations.KEYS
+              if info["state"].get(f"int:{k}") and info["state"][f"int:{k}"] != stored.get(k)]
+    if differ:
+        lines.append("Подключения станут как в копии: " + ", ".join(differ) + ".")
+    lines.append("Ключи подключений, заголовки и тела API-проверок, которых в копии нет, останутся текущими "
+                 "(на новом сервере их нужно ввести заново).")
+    # What silences alerts right after the restore must not come as a surprise.
+    try:
+        windows = len(json.loads(info["state"].get("cfg:maint_windows") or "[]"))
+    except ValueError:
+        windows = 0
+    paused = sum(1 for k in info["state"] if k.startswith("paused:"))
+    if windows or paused:
+        lines.append(f"В копии окон тишины: {windows}, сайтов на паузе «🔧 Я чиню»: {paused}.")
+    lines.append("Владелец и помощники останутся как сейчас, "
+                 + ("секреты ссылок — тоже." if await count_sites_total()
+                    else "секреты ссылок возьму из копии — старые ссылки задач продолжат работать.")
+                 + " Текущая база сохранится рядом.")
+    return "\n".join(lines)
+
+
 @router.message(F.document, StateFilter(None))
 async def msg_backup_file(message: Message, state: FSMContext):
     """A file sent to the chat outside any wizard: if it is a copy of the
-    bot's database (or an old export), offer to restore from it."""
+    bot's database (or an old export), offer to restore from it. The file is
+    downloaded once, checked, and kept on disk until the answer."""
     doc = message.document
-    if (doc.file_size or 0) > _MAX_FILE:
+    if doc.file_size is None:
+        await message.answer("Не вижу размер файла — пришли его ещё раз как документ (📎 → Файл).")
+        return
+    if doc.file_size > _MAX_FILE:
         await message.answer("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).")
         return
-    head = (await message.bot.download(doc)).read()
+    _clear_uploads()
+    await state.update_data(restore=None)
+    path = os.path.join(db_dir(), f"upload-{doc.file_unique_id}.tmp")
+    try:
+        # The default 30 s for the whole file fails a 20 MB copy below ~0.7 MB/s.
+        await message.bot.download(doc, destination=path, timeout=max(60, doc.file_size // (128 * 1024)))
+    except Exception as e:
+        _drop_upload({"path": path})
+        await message.answer(f"Не смог скачать файл из Telegram ({esc(e)}). Пришли его ещё раз.")
+        return
+    with open(path, "rb") as f:
+        head = f.read(16)
+    name = doc.file_name or "файл"
     if head.startswith(b"SQLite format 3"):
-        question = ("💾 Это копия базы бота. Восстановить из неё всё — сайты, настройки, подключения? "
-                    "Текущая база сохранится рядом как .bak.")
+        try:
+            info = await asyncio.to_thread(probe_copy, path)
+        except ValueError as e:
+            _drop_upload({"path": path})
+            await message.answer(f"❌ Не похоже на мою копию базы: {esc(e)}.")
+            return
+        kind, question = "db", await _db_question(info, name)
     elif head.lstrip()[:1] in (b"{", b"["):
-        question = "📥 Это файл экспорта из прежней версии. Добавить из него сайты и настройки? Лишнее не удалю."
+        kind = "json"
+        question = (f"📥 «{esc(name)}» — файл экспорта из прежней версии. Добавить из него сайты и настройки? "
+                    "Лишнее не удалю.")
     else:
+        _drop_upload({"path": path})
         await message.answer("Не знаю, что делать с этим файлом. Чтобы восстановить бота, пришли копию базы "
                              "(.db), которую я присылаю по воскресеньям.")
         return
-    await state.update_data(restore_file=doc.file_id)
-    await message.answer(question, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+    sent = await message.answer(question, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Восстановить", callback_data="restore:yes"),
         InlineKeyboardButton(text="✖️ Не надо", callback_data="restore:no")]]))
+    await state.update_data(restore={"path": path, "kind": kind, "question_id": sent.message_id})
 
 
 @router.callback_query(F.data.in_({"restore:yes", "restore:no"}))
 async def cb_restore(call: CallbackQuery, state: FSMContext):
-    file_id = (await state.get_data()).get("restore_file")
-    await state.update_data(restore_file=None)
-    if call.data == "restore:no" or not file_id:
-        await ack(call, "Ничего не менял")
-        await render(call, "Ничего не менял.", back_button())
+    pending = (await state.get_data()).get("restore")
+    if not pending or pending.get("question_id") != call.message.message_id:
+        # Only the newest question counts: «✅» under an older one must not
+        # apply a different file.
+        await ack(call, "Это старый вопрос")
+        await render(call, "Это старый вопрос — пришли файл ещё раз.", back_button())
         return
-    await ack(call, "Восстанавливаю…")
-    raw = (await call.bot.download(file_id)).read()
-    await render(call, await _restore_bytes(raw), back_button())
+    await state.update_data(restore=None)
+    try:
+        if call.data == "restore:no":
+            await ack(call, "Ничего не менял")
+            await render(call, "Ничего не менял.", back_button())
+            return
+        await ack(call, "Восстанавливаю…")
+        if pending["kind"] == "db":
+            text = await _restore_db(pending["path"])
+        else:
+            with open(pending["path"], "rb") as f:
+                text = await _restore_bytes(f.read())
+        await render(call, text, back_button())
+    finally:
+        _drop_upload(pending)
 
 
 async def reload_services():

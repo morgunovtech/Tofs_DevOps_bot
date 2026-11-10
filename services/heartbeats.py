@@ -192,8 +192,13 @@ async def ping_watchdog(url: str) -> str | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.get(url) as resp:
                 status, body = resp.status, (await resp.content.read(512)).decode(errors="replace")
+    except TimeoutError:
+        return "не ответил за 10 с"
+    except aiohttp.ClientConnectorError:
+        return "не удаётся подключиться (сеть или DNS на моей стороне)"
     except Exception as e:
-        logger.warning("Watchdog ping failed: %s", e)
+        # Never the exception text: it may carry the whole address, and the address is a secret.
+        logger.warning("Watchdog ping to %s failed: %s", watchdog_name(url), type(e).__name__)
         return "не отвечает"
     if status >= 400:
         return f"отвечает ошибкой {status}"

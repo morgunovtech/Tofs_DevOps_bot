@@ -30,7 +30,8 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |
 | Скорость у посетителей Chrome (данные Google) | `CRUX_API_KEY` |
 | Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
-| Перезапуск контейнеров / очистка диска | `AUTORESTART_CONTAINERS` + монтирование docker.sock |
+| Перезапуск контейнеров | `AUTORESTART_CONTAINERS` + монтирование docker.sock (сокет = root на хосте) |
+| Очистка диска (висячие образы и кэш сборки старше суток, не чаще раза в 12 ч) | `AUTO_CLEANUP=1` + docker.sock, по умолчанию выключена |
 | Внешний сторож | `SELF_HEARTBEAT_URL` |
 | Telegram через прокси (сервер в России) | `TELEGRAM_PROXY` |
 
@@ -103,7 +104,7 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 ruff check .          # линтер + порядок импортов
 pytest -q             # ~150 тестов, без сети и без Telegram
-pip-audit -r requirements.txt
+pip-audit -r requirements.txt --strict
 ```
 
-CI гоняет те же три команды на каждый push и PR (Python 3.12, 3.13 и 3.14). Dependabot по субботам открывает один сгруппированный PR; `.github/workflows/dependabot-automerge.yml` автоматически вливает минорные и патч-обновления после зелёного CI — включи **Allow auto-merge** в настройках репозитория и защити `main` правилом с обязательной проверкой «lint · test · audit», иначе мерж не будет ждать тестов. Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.
+CI (ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict`, сборка образа на ноге 3.13) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.

@@ -134,6 +134,7 @@ async def test_post_api_check_end_to_end(bot, db, monkeypatch):
         await db.update_site_settings(sid, keyword="nope")
         scheduler._next_avail_check.clear()
         await scheduler.run_availability_checks()
+        await scheduler.drain_alert_worker()
     alert = bot.sent[-1]
     assert "отвечает, но показывает не то" in alert["text"] and "в ответе нет фразы «nope»" in alert["text"]
     assert "📸 Как выглядит сайт" not in buttons(alert["reply_markup"])

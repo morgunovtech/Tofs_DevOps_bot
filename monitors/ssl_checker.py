@@ -102,4 +102,4 @@ async def check_all_ssl(urls: list[str], manage: bool = True) -> list[SslResult]
     hosting's default certificate (a false «недействителен»), and on
     http://host:8080 there is no TLS at all."""
     https = [u for u in urls if u.lower().startswith("https://")]
-    return await gather_checks((check_ssl(u, manage=manage) for u in https), "ssl")
+    return await gather_checks(https, check_ssl, "ssl", manage=manage)

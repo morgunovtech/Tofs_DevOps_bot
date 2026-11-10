@@ -37,6 +37,9 @@ router.errors.register(on_handler_error)
 router.include_router(start.router)
 
 admin = Router(name="admin")
+# Every update type a handler below listens to needs its own
+# `admin.<type>.filter(AdminFilter())` line — otherwise it is public. The
+# list of types is pinned by a test in tests/test_dispatcher.py.
 admin.message.filter(AdminFilter())
 admin.callback_query.filter(AdminFilter())
 admin.include_routers(

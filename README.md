@@ -17,7 +17,7 @@ Made for people who have never heard of DNS or a 502. Three buttons: **is everyt
 ### For advanced users
 
 - **API checks** — watch what the site actually does (`POST /api/v1/analyze` must answer with `scoreLabel`): method, headers, body; an API check gets status, phrase and timing only, no SEO noise. TCP ports and ping too.
-- **Self-healing** — Cloudflare Pages redeploy and cache purge; on your own server, container restart and disk cleanup, with a report of what was already done.
+- **Self-healing** — Cloudflare Pages redeploy and cache purge; on your own server, container restart and optional disk cleanup (dangling images and build cache), with a report of what was already done.
 - **Scheduled jobs and other bots** — a dead-man switch: one `curl` line at the end of a cron job, and the bot notices when it goes silent.
 - **Google Search Console and Yandex.Webmaster** — whether the site is actually in the index.
 - **GitHub hygiene** in the Sunday digest (read-only token): stale PRs, extra branches, red CI, repositories that vanished.
@@ -44,6 +44,8 @@ services:
   bot:
     image: ghcr.io/morgunovtech/tofs_devops_bot:latest
     restart: always
+    init: true
+    stop_grace_period: 20s
     env_file: .env
     volumes:
       - bot_data:/app/data
@@ -51,13 +53,34 @@ volumes:
   bot_data:
 ```
 
-Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
+Run `docker compose up -d` and send `/start` — the first user becomes the admin and adds the first site right in the chat. To update: `docker compose pull && docker compose up -d`; the bot says «🔄 Бот обновился» by itself. Every other setting is a line in the same `.env` (the full list is in [.env.example](.env.example)); the feedback widget, task links and the status page need a public address — see [Public address on your own server](#public-address-on-your-own-server).
 
-Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
+Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, put your `TELEGRAM_BOT_TOKEN` into `.env`, `docker compose up -d --build`; the repository's `docker-compose.yml` builds the image.
 
 **A server in Russia.** api.telegram.org is often unreachable from there directly, and the bot cannot talk to Telegram. Set a proxy in `.env`: `TELEGRAM_PROXY=socks5://user:password@host:1080` (`socks4://` and `http://host:3128` work too). Only the traffic to Telegram goes through it; the sites are checked directly.
 
 Every `.env` integration, the architecture and the development loop: [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
+
+#### Public address on your own server
+
+The feedback widget, the links for your cron jobs and the status page need the bot's web server to be reachable from the internet over **HTTPS**. The bot itself speaks plain HTTP on port 8080, so put a reverse proxy with TLS in front of it and keep the port closed to everyone else:
+
+1. In `docker-compose.yml` publish the port on this machine only:
+   ```yaml
+       ports:
+         - "127.0.0.1:8080:8080"
+   ```
+   Not `"8080:8080"`: a port published by Docker bypasses ufw, the heartbeat secret then travels in clear text, and anyone can fake the visitor address the rate limit relies on.
+2. Run a reverse proxy with TLS on the same machine — for example Caddy, which gets the certificate by itself. `/etc/caddy/Caddyfile`:
+   ```
+   bot.example.com {
+       reverse_proxy 127.0.0.1:8080
+   }
+   ```
+   nginx with a certificate or a Cloudflare Tunnel works too.
+3. In `.env`: `PUBLIC_BASE_URL=https://bot.example.com` and `TRUST_PROXY=1`, then `docker compose up -d`.
+
+Without TLS the widget does not load on https sites (browsers block it) and the heartbeat secret is visible to anyone on the way.
 
 ### Easier: Railway in one click — 5 minutes
 
@@ -69,6 +92,19 @@ Every `.env` integration, the architecture and the development loop: [docs/FEATU
 **What it costs.** For the first 30 days Railway gives $5 and asks for no card. After that the account drops to the Free plan with $1 a month, and the bot needs about $2: without the Hobby plan it stops and nobody is told, and 30 days later Railway deletes the database volume. Hobby is $5 a month and includes $5 of usage — enough for the bot. Paying needs a card; Russian cards are not accepted abroad. The bot reminds you itself: after the first site and around day 25. Railway's terms: [its docs](https://docs.railway.com/pricing/free-trial).
 
 Prefer your own fork? Railway → **Deploy from GitHub repo** → variable `TELEGRAM_BOT_TOKEN`, a volume at `/app/data`, a generated domain on port 8080.
+
+### Rolling back a version
+
+Every image is also published as `:sha-<7 chars>` — the commit it was built from. Before a version changes the database schema the bot copies the database to `data/backups/schema-v<N>-<date>.db` (N is the schema the copy holds; the last 3 are kept). When there is no room for the copy the bot still migrates and says so in Telegram. An old version refuses to start on a newer database and logs «База от более новой версии бота…».
+
+Own server with Docker:
+1. `docker compose stop bot`.
+2. In `docker-compose.yml` replace `:latest` with the previous tag, e.g. `ghcr.io/morgunovtech/tofs_devops_bot:sha-1a2b3c4` (tags are on the package page on GitHub), and `docker compose up -d`. Building from source: `git checkout <sha> && docker compose up -d --build`.
+3. If `docker compose logs bot` shows «База от более новой версии бота», the schema had already changed: `docker compose stop bot`, keep the current database and put back the copy that fits the old version (its schema number is in that log line):
+   `docker compose run --rm --no-deps --entrypoint sh bot -c 'cp /app/data/bot.db /app/data/bot.db.before-rollback && cp /app/data/backups/schema-vNNN-DATE.db /app/data/bot.db && rm -f /app/data/bot.db-wal /app/data/bot.db-shm'`, then `docker compose up -d`. Everything the bot wrote after the update is lost.
+4. Back to updates: `:latest` again and `docker compose pull && docker compose up -d`.
+
+Railway: roll the deployment back in the Railway panel (Deployments → previous deployment → Redeploy). The copies live on the volume in `/app/data/backups`, reachable through the CLI — `railway volume` (check Railway's volume documentation). Without access to the volume, roll forward only: bring the newer version back.
 
 ## Status
 

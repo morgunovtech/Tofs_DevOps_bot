@@ -6,12 +6,13 @@ the meaningful actions are: re-run the check, trigger a Pages deploy hook
 """
 
 import logging
+from typing import NamedTuple
 
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from services import hosting as hosting_svc
-from services import humanize, integrations, seo_fixes
+from services import humanize, integrations, maintenance, seo_fixes
 from utils.text import esc
 from utils.urls import host_of, is_http_url
 
@@ -36,7 +37,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     its screen answers below instead of replacing the alert text. An API
     check has no page to photograph."""
     http = is_http_url(url)
-    rows = [[InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{site_id}"),
+    rows = [[InlineKeyboardButton(text=f"🔧 Я чиню, {maintenance.fix_length()} тишины", callback_data=f"act:fix:{site_id}"),
              InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{site_id}")]]
     second = []
     if http and not api:
@@ -56,6 +57,15 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     if panel:
         rows.append([InlineKeyboardButton(text=f"🔗 Открыть панель {hosting_svc.label(hosting)}", url=panel)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def deep_alert_keyboard(url: str, site_id: int, incident_id: int | None) -> InlineKeyboardMarkup | None:
+    """«5xx на страницах»: the home page opens, so «🔧 Я чиню» (silences the
+    whole site), «🔍 Проверить сейчас» (checks the home page only) and «📸»
+    (photographs the home page) would answer a different question."""
+    redeploy = ([InlineKeyboardButton(text="🚀 Пересобрать сайт", callback_data=f"act:redeploy:{site_id}")]
+                if deploy_hook_for(url) else [])
+    return explain_keyboard(incident_id, redeploy)
 
 
 def explain_keyboard(incident_id: int | None, *extra_rows: list[InlineKeyboardButton]) -> InlineKeyboardMarkup | None:
@@ -98,20 +108,47 @@ def domain_keyboard(registrar: str | None, incident_id: int | None = None) -> In
     return explain_keyboard(incident_id, link_row)
 
 
-async def trigger_redeploy(url: str) -> str:
-    """Fire the Cloudflare Pages deploy hook. Returns a human-readable line."""
+class RedeployResult(NamedTuple):
+    ok: bool
+    text: str    # one sentence, no icon: the caller adds 🚀 / ❌ or «🤖 …»
+
+
+async def trigger_redeploy(url: str) -> RedeployResult:
+    """Fire the Cloudflare Pages deploy hook. The text says what happened and,
+    on a failure, what to do about it. Never the exception text or the hook
+    address: the address is the secret."""
     hook = deploy_hook_for(url)
     if not hook:
-        return "❌ Пересборка не настроена для этого сайта (⚙️ Настройки → 🔌 Подключения → Cloudflare)"
+        return RedeployResult(False, "Пересборка не настроена для этого сайта "
+                                     "(⚙️ Настройки → 🔌 Подключения → ☁️ Cloudflare)")
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.post(hook) as resp:
-                if resp.status in (200, 201):
-                    return "🚀 Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты"
-                return f"❌ Cloudflare не принял команду пересборки (ошибка {resp.status})"
+                status = resp.status
+    except aiohttp.InvalidURL:
+        logger.warning("Deploy hook for %s is not a valid URL", host_of(url))
+        return RedeployResult(False, "Адрес deploy hook испорчен — задай его заново "
+                                     "(⚙️ Настройки → 🔌 Подключения → ☁️ Cloudflare)")
+    except aiohttp.ClientConnectorError:
+        logger.warning("Deploy hook for %s: cannot connect", host_of(url))
+        return RedeployResult(False, "Не удалось связаться с Cloudflare — нажми «🚀 Пересобрать сайт» чуть позже")
+    except TimeoutError:
+        logger.warning("Deploy hook for %s: timed out", host_of(url))
+        return RedeployResult(False, f"Cloudflare не ответил за {int(_TIMEOUT.total)} с — "
+                                     f"нажми «🚀 Пересобрать сайт» чуть позже")
     except Exception as e:
-        logger.warning("Deploy hook for %s failed: %s", url, e)
-        return f"❌ Не удалось запустить пересборку: {esc(str(e) or type(e).__name__)}"
+        logger.warning("Deploy hook for %s failed: %s", host_of(url), type(e).__name__)
+        return RedeployResult(False, "Не удалось запустить пересборку — подробности в логе бота")
+    if status in (200, 201):
+        return RedeployResult(True, "Запустил пересборку сайта — Cloudflare Pages соберёт его за 1–2 минуты")
+    if status in (404, 410):
+        return RedeployResult(False, f"Cloudflare не знает этот хук пересборки (ошибка {status}) — похоже, его "
+                                     f"удалили. Создай новый в Cloudflare Pages и вставь его: ⚙️ Настройки → "
+                                     f"🔌 Подключения → ☁️ Cloudflare")
+    if status >= 500:
+        return RedeployResult(False, f"Cloudflare сейчас не принимает команды (ошибка {status}) — "
+                                     f"нажми «🚀 Пересобрать сайт» чуть позже")
+    return RedeployResult(False, f"Cloudflare не принял команду пересборки (ошибка {status})")
 
 
 async def purge_cf_cache(url: str) -> str:

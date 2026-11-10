@@ -5,7 +5,7 @@ import asyncio
 import logging
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     ErrorEvent,
@@ -19,12 +19,39 @@ from aiogram.types import (
 
 from db.database import get_site
 from handlers.filters import AdminFilter
-from services import helpers
+from services import helpers, runtime
 from utils.text import clip
 
 logger = logging.getLogger(__name__)
 
 DENIED = "⛔ Доступ только для администратора."
+ELSEWHERE = ("Здесь я не управляюсь: пиши мне в наш личный чат "
+             "(или в группу из TELEGRAM_ADMIN_CHAT_ID).")
+NO_OWNER = ("Мной сейчас никто не может управлять: в .env задан TELEGRAM_ADMIN_CHAT_ID группы, "
+            "но не задан TELEGRAM_ADMIN_USER_ID. Впиши туда свой числовой id (его покажет @userinfobot) "
+            "и перезапусти бота.")
+# The heartbeat address is a password: whoever has it can mark in for any task.
+HEARTBEAT_SECRET_NOTE = ("🔐 Этот адрес — как пароль: кто его знает, может выходить на связь вместо "
+                         "задачи. Не публикуй его и не клади в файлы репозитория.")
+NOT_DELETED = ("⚠️ Не смог удалить твоё сообщение с ключом — удали его сам. "
+               "В группе для этого мне нужно право администратора «Удаление сообщений».")
+
+
+async def forget_secret(message: Message) -> bool:
+    """A token, key, password or hook URL must not stay in the chat history.
+    Called first, before the input is checked: a mistyped secret is still a
+    secret. When Telegram refuses (a group where the bot is not an admin),
+    the owner is told — silence would leave the key on view."""
+    try:
+        await message.delete()
+        return True
+    except TelegramAPIError as e:
+        logger.warning("Could not delete a message with a secret: %s", type(e).__name__)
+        try:
+            await message.answer(NOT_DELETED)
+        except TelegramAPIError:
+            pass
+        return False
 
 # The bot's three doors, always under the input field (no ☰ menu).
 HOME, ABOUT, ICONS = "🏠 Главная", "📖 Что я умею", "❓ Значки"
@@ -174,15 +201,30 @@ async def stale_callback(call: CallbackQuery):
 deny_router = Router(name="deny")
 
 
+def _admin_elsewhere(event: Message | CallbackQuery) -> bool:
+    """The real admin, but in a chat that is not ours."""
+    user = event.from_user
+    on_behalf = not isinstance(event, CallbackQuery) and event.sender_chat is not None
+    return bool(user and not user.is_bot and not on_behalf and runtime.is_admin(user.id))
+
+
+def refusal(message: Message) -> str:
+    """Why this message gets no screen: the owner is misconfigured, the admin
+    is in a foreign chat, or it is simply not the admin."""
+    if runtime.nobody_steers() and str(message.chat.id) == runtime.admin_chat_id():
+        return NO_OWNER
+    return ELSEWHERE if _admin_elsewhere(message) else DENIED
+
+
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
 async def deny_command(message: Message):
     if await helpers.is_helper(message.chat.id):
         await message.answer("👥 Ты помощник: я присылаю тебе только тревоги 🔴 о сайтах, управляет ботом "
                              "владелец. Перестать — /stop.")
         return
-    await message.answer(DENIED)
+    await message.answer(refusal(message))
 
 
 @deny_router.callback_query(~AdminFilter())
 async def deny_callback(call: CallbackQuery):
-    await ack(call, "⛔ Доступ запрещён", show_alert=True)
+    await ack(call, ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён", show_alert=True)

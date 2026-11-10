@@ -9,12 +9,15 @@ import contextlib
 import json
 import logging
 import re
+import sqlite3
 import time
+from collections import deque
 from urllib.parse import urlparse
 
 import aiohttp
 
 from db.database import (
+    get_active_incidents,
     get_recent_check_statuses,
     get_site_by_url,
     get_state,
@@ -25,8 +28,9 @@ from db.database import (
 )
 from monitors.base import AvailabilityResult, decode_body, gather_checks, read_capped
 from monitors.second_opinion import repeatable, second_opinion_up
-from services import hosting, integrations, sitestatus
+from services import health, hosting, integrations, sitestatus
 from utils.parse import parse_accepted_codes
+from utils.redact import without_query
 from utils.urls import USER_AGENT, is_api_check
 
 logger = logging.getLogger(__name__)
@@ -38,6 +42,13 @@ PROBE_TIMEOUT_SEC = 10
 # Consecutive failures before an incident opens (per-site override in
 # «⚙️ Настройки сайта»). A single transient flap should not page the user.
 CONSECUTIVE_FAILURE_THRESHOLD = 2
+# The last statuses per site, newest last: the failure threshold keeps
+# working while the database refuses to store the history.
+RECENT_IN_MEMORY = 50
+_recent: dict[int, deque[str]] = {}
+# Sites alerted while the database refused writes: no incident row exists,
+# so «new» and «снова открывается» are decided here.
+_down_without_db: set[int] = set()
 # Keyword search looks at the first 1 MB of the page body.
 KEYWORD_BODY_LIMIT = 1024 * 1024
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -116,8 +127,19 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
         r.status, r.error = "error", f"Timeout ({int(TIMEOUT.total)}s)"
         r.response_time_ms = int((time.monotonic() - start) * 1000)
     except aiohttp.ClientError as e:
-        r.status, r.error = "error", str(e) or type(e).__name__
+        r.status, r.error = "error", _error_text(e)
         r.response_time_ms = int((time.monotonic() - start) * 1000)
+
+
+def _error_text(e: aiohttp.ClientError) -> str:
+    """aiohttp puts the whole request URL, query and all, into str() of its
+    response errors; r.error goes to the history, the alert and the helpers'
+    copy — an API check's token must not."""
+    if isinstance(e, aiohttp.TooManyRedirects):
+        return "слишком много перенаправлений (редирект по кругу)"
+    if isinstance(e, aiohttp.ClientResponseError):
+        return f"HTTP {e.status}" if e.status else type(e).__name__
+    return without_query(str(e)) or type(e).__name__
 
 
 async def _probe_tcp(url: str, r: AvailabilityResult):
@@ -204,30 +226,45 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         # must degrade to ONE failed check, not escape into the batch.
         r.status, r.error = "error", str(e) or type(e).__name__
 
-    await save_check(r.site_id, "availability", r.status,
-                     response_time_ms=r.response_time_ms,
-                     status_code=r.status_code, details=r.error)
+    memory = _recent.setdefault(r.site_id, deque(maxlen=RECENT_IN_MEMORY))
+    memory.append(r.status)
+    # While writes fail, do not even try: under «database is locked» each one
+    # holds the only DB thread for busy_timeout (5 s). run_alive probes it.
+    stored = not health.db_failing() and await _write(save_check(
+        r.site_id, "availability", r.status, response_time_ms=r.response_time_ms,
+        status_code=r.status_code, details=r.error))
     # Remember the hosting so alerts can link to its panel even when the
     # failing response carries no headers at all.
     if r.hosting:
-        if await get_state(f"hosting:{r.site_id}") != r.hosting:
-            await set_state(f"hosting:{r.site_id}", r.hosting)
-            await sitestatus.set_field(r.site_id, "hosting", r.hosting)
+        if stored and await get_state(f"hosting:{r.site_id}") != r.hosting:
+            await _write(set_state(f"hosting:{r.site_id}", r.hosting))
+            await _write(sitestatus.set_field(r.site_id, "hosting", r.hosting))
     else:
         r.hosting = await get_state(f"hosting:{r.site_id}")
-    await sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms, error=r.error,
-                            code=r.status_code)
+    if stored:
+        await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms,
+                                       error=r.error, code=r.status_code))
     if not manage:
         return r
 
     threshold = site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD
     if r.ok:
-        resolved = await resolve_incident(r.site_id, "availability")
+        if r.site_id in _down_without_db:            # alerted from memory: say it is back
+            _down_without_db.discard(r.site_id)
+            r.recovered = True
+        try:
+            resolved = await resolve_incident(r.site_id, "availability")
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)                 # closed by a check once writes work
+            resolved = None
         if resolved:
             r.recovered, r.resolved_incident = True, resolved
         return r
 
-    recent = await get_recent_check_statuses(r.site_id, "availability", limit=threshold)
+    if stored:
+        recent = await get_recent_check_statuses(r.site_id, "availability", limit=threshold)
+    else:
+        recent = list(memory)[-threshold:]
     if len(recent) < threshold or any(s != "error" for s in recent):
         return r  # a single flap is normal on the public internet
     # Second opinion from external nodes before paging: reachable from
@@ -240,11 +277,33 @@ async def check_availability(url: str, manage: bool = True) -> AvailabilityResul
         logger.warning("%s: down from here but UP externally — skipping incident", url)
         return r
     prefix = "Bad content" if r.keyword_failed else "Site down"
-    r.incident_id, r.incident_new = await save_incident(
-        r.site_id, "availability", f"{prefix}: {r.error}", severity="critical")
+    try:
+        r.incident_id, r.incident_new = await save_incident(
+            r.site_id, "availability", f"{prefix}: {r.error}", severity="critical")
+        if r.site_id in _down_without_db:            # said from memory already: the row catches up
+            _down_without_db.discard(r.site_id)
+            r.incident_new = False
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
+        # The alert matters more than its row: it is new unless already said —
+        # by an earlier tick from memory or by an incident opened before the failure.
+        open_before = any(i["site_id"] == r.site_id and i["check_type"] == "availability"
+                          for i in await get_active_incidents())
+        r.incident_new = r.site_id not in _down_without_db and not open_before
+        _down_without_db.add(r.site_id)
     return r
 
 
+async def _write(coro) -> bool:
+    """Await one write; a database that refuses it (full disk, «database is
+    locked») is noted in services.health instead of killing the check."""
+    try:
+        await coro
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
+        return False
+    return True
+
+
 async def check_all(urls: list[str], manage: bool = True) -> list[AvailabilityResult]:
-    return await gather_checks((check_availability(u, manage=manage) for u in urls),
-                               "availability")
+    return await gather_checks(urls, check_availability, "availability", manage=manage)

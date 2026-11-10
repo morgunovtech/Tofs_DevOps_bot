@@ -156,9 +156,9 @@ async def _gh_json(session: aiohttp.ClientSession, url: str, **params):
 
 
 async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
-    """Dependabot PRs that wait for a human: major bumps (never auto-merged)
-    and minor ones still open after STUCK_AFTER (auto-merge waits for a
-    green CI, so the tests failed)."""
+    """Dependabot PRs that wait for a human: major bumps and base-image bumps
+    (never auto-merged) and pip ones still open after STUCK_AFTER (auto-merge
+    waits for a green CI, so the tests failed)."""
     slug = repo_slug()
     if not slug:
         return []
@@ -170,7 +170,10 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict]:
         title = str((pr or {}).get("title") or "")
         if not login.startswith("dependabot"):
             continue
-        major = is_major_bump(title)
+        # The base image (a new Python) and the Actions are merged by a human,
+        # whatever their CI says (.github/workflows/dependabot-automerge.yml).
+        branch = str(((pr or {}).get("head") or {}).get("ref") or "")
+        major = is_major_bump(title) or branch.startswith(("dependabot/docker/", "dependabot/github_actions/"))
         try:
             opened = datetime.fromisoformat(str(pr.get("created_at")).replace("Z", "+00:00"))
         except ValueError:

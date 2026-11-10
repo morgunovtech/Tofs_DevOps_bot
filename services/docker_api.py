@@ -1,12 +1,14 @@
 """
 Minimal Docker Engine API client over the unix socket.
 
-Used for bot-host remediation: restarting unhealthy containers and pruning
-unused images/containers when the disk fills up. Requires the socket to be
-mounted into the container (see docker-compose.yml); every function degrades
-to a no-op/None when the socket is absent, so the feature is safely optional.
+Used for bot-host remediation: restarting unhealthy containers and, when
+the owner turned it on (AUTO_CLEANUP=1), removing dangling images and old
+build cache when the disk fills up. Requires the socket to be mounted into
+the container (see docker-compose.yml); every function degrades to a
+no-op/None when the socket is absent, so the feature is safely optional.
 """
 
+import json
 import logging
 import os
 
@@ -67,27 +69,37 @@ async def restart_container(name: str) -> bool:
         return False
 
 
-async def prune() -> int | None:
-    """Prune stopped containers and unused images. Returns bytes reclaimed."""
+async def prune() -> dict | None:
+    """Free disk space without touching anything that may still be needed:
+    dangling images (untagged layers no container uses) and build cache
+    unused for a day. Stopped containers and tagged images stay — a stopped
+    container may be a service waiting for its restart, with data in its
+    layer; a tagged image may be the way back. Returns what was removed:
+    {"bytes", "layers", "caches"}; None when the socket is absent or failed."""
     if not docker_available():
         return None
-    reclaimed = 0
+    out = {"bytes": 0, "layers": 0, "caches": 0}
     try:
         async with _session() as s:
-            async with s.post("http://localhost/containers/prune") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    reclaimed += data.get("SpaceReclaimed") or 0
-            # filters={"dangling":["false"]} = remove ALL unused images,
-            # not just dangling layers.
             async with s.post(
                 "http://localhost/images/prune",
-                params={"filters": '{"dangling":["false"]}'},
+                params={"filters": json.dumps({"dangling": ["true"]})},
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    reclaimed += data.get("SpaceReclaimed") or 0
-        return reclaimed
+                    out["bytes"] += data.get("SpaceReclaimed") or 0
+                    out["layers"] += sum(1 for d in data.get("ImagesDeleted") or [] if d.get("Deleted"))
+            # Older daemons have no /build/prune: a 404 there is not an error.
+            async with s.post(
+                "http://localhost/build/prune",
+                params={"filters": json.dumps({"until": ["24h"]})},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    out["bytes"] += data.get("SpaceReclaimed") or 0
+                    out["caches"] += len(data.get("CachesDeleted") or [])
+        logger.info("Docker prune: %s", out)
+        return out
     except Exception as e:
         logger.warning("Docker API prune failed: %s", e)
         return None

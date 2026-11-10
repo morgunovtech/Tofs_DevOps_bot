@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from conftest import FakeMessage, FakeState
 
 import main
-from config import config
+from config import _tg_id, config
 from handlers import setup, start
 from services import runtime, settings
 
@@ -62,7 +62,7 @@ async def test_a_database_off_the_railway_volume_is_said_at_once(db, cfg, tmp_pa
     monkeypatch.setattr(runtime, "_chat_id", None)
     monkeypatch.setattr(runtime, "_user_id", None)
     msg = FakeMessage("/start")
-    msg.from_user, msg.chat = SimpleNamespace(id=42), SimpleNamespace(id=42)
+    msg.from_user, msg.chat = SimpleNamespace(id=42, is_bot=False), SimpleNamespace(id=42, type="private")
     await start.cmd_start(msg, FakeState())
     assert msg.texts[0].startswith("🔑 Ты стал администратором") and "не на постоянном диске Railway" in msg.texts[1]
 
@@ -77,3 +77,21 @@ async def test_bottom_buttons_are_announced_once(bot, db):
     n = len(bot.sent)
     await main._show_bottom_buttons(bot)
     assert len(bot.sent) == n
+
+
+def test_admin_ids_must_be_numbers(monkeypatch):
+    for bad in ("abc", "@my_channel", "12 34", "777x"):
+        monkeypatch.setenv("TELEGRAM_ADMIN_USER_ID", bad)
+        assert _tg_id("TELEGRAM_ADMIN_USER_ID") == ""
+    for good in ("777", "-1001234567890"):
+        monkeypatch.setenv("TELEGRAM_ADMIN_USER_ID", good)
+        assert _tg_id("TELEGRAM_ADMIN_USER_ID") == good
+
+
+async def test_a_free_seat_with_sites_is_an_error_in_the_log(db, monkeypatch, caplog):
+    monkeypatch.setattr(runtime, "_chat_id", None)
+    await runtime.warn_if_seat_free()
+    assert "Nobody holds the admin seat" not in caplog.text       # no sites: nothing is lost
+    await db.get_or_create_site("https://example.com")
+    await runtime.warn_if_seat_free()
+    assert "Nobody holds the admin seat" in caplog.text

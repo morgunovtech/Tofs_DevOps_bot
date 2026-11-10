@@ -3,6 +3,7 @@ import pathlib
 import re
 from types import SimpleNamespace
 
+from aiogram.types import Message
 from conftest import FakeMessage, FakeState
 
 import main
@@ -35,13 +36,22 @@ def test_parse_site_input():
     assert parse_site_input("a" * 70 + ".com")[0] is None    # label too long
 
 
+def _tg_message(uid: int | None, chat_id: int, chat_type: str = "private", **extra) -> Message:
+    data = {"message_id": 1, "date": 0, "text": "/menu", "chat": {"id": chat_id, "type": chat_type}, **extra}
+    if uid is not None:
+        data["from"] = {"id": uid, "is_bot": False, "first_name": "T"}
+    return Message.model_validate(data)
+
+
 async def test_admin_filter(monkeypatch):
     monkeypatch.setattr(runtime, "_chat_id", "10")
     monkeypatch.setattr(runtime, "_user_id", "10")
     f = AdminFilter()
-    assert await f(SimpleNamespace(from_user=SimpleNamespace(id=10)))
-    assert not await f(SimpleNamespace(from_user=SimpleNamespace(id=11)))
-    assert not await f(SimpleNamespace(from_user=None))
+    assert await f(_tg_message(10, 10))
+    assert not await f(_tg_message(11, 11))
+    assert not await f(_tg_message(None, 10))
+    assert not await f(_tg_message(10, -300, "group"))      # the admin, in somebody else's group
+    assert not await f(_tg_message(10, 10, sender_chat={"id": -5, "type": "channel"}))
 
 
 def test_one_word_for_being_alive():
@@ -62,7 +72,7 @@ async def test_start_leaves_nothing_for_the_bottom_buttons_note(bot, db):
     """/start brings the bottom buttons itself, so the one-time «кнопки
     теперь под полем ввода» note must not follow it."""
     msg = FakeMessage("/start")
-    msg.from_user, msg.chat = SimpleNamespace(id=777), SimpleNamespace(id=777)
+    msg.from_user, msg.chat = SimpleNamespace(id=777, is_bot=False), SimpleNamespace(id=777, type="private")
     await start.cmd_start(msg, FakeState())
     n = len(bot.sent)
     await main._show_bottom_buttons(bot)

@@ -186,7 +186,8 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     await heartbeats.cb_hb_cron(call)
     text = call.message.texts[-1]
     assert "GitHub Actions" in text and "- run: curl -fsS" in text and "&& curl -fsS" in text
-    assert buttons(call.message.reply_markup) == ["← Назад"]
+    assert "secrets.HEARTBEAT_URL" in text and "- run: curl -fsS http" not in text
+    assert buttons(call.message.reply_markup) == ["🔑 Адрес мог утечь — сменить", "← Назад"]
     # From the morning digest: the answer goes below, the digest stays as it was.
     call = FakeCall("hb_how:backup")
 
@@ -637,9 +638,10 @@ async def test_bots_page_says_everything_and_hands_out_a_backup(bot, db, cfg, tm
                            "➕ Бот или задача", "🏠 Главная"]
     call = FakeCall("sys:backup")
     await blocks.cb_backup_now(call)
-    assert call.message.documents and "храни её как пароль" in call.message.documents[-1]
+    assert bot.sent[-1]["chat_id"] == "777" and "секретов в ней нет" in bot.sent[-1]["caption"]
+    assert call.message.texts[-1] == "💾 Прислал копию тебе в личку."
     text, _ = await blocks.bots_page()
-    assert "✅ Резервная копия базы — " in text and "Делаю каждую ночь" in text
+    assert "⏳ Резервная копия базы — первую сделаю сегодня ночью." in text   # a manual copy is not a nightly one
 
 
 async def test_old_check_everything_button_lands_on_main(bot, db):

@@ -10,7 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import get_active_page_urls, get_site, update_site_settings
-from handlers.common import ack, back_button, cancel_kb, cb_args, render, site_by_cb
+from handlers.common import ack, back_button, cancel_kb, cb_args, forget_secret, render, site_by_cb
 from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS
 from reports.scheduler import PAGE_CHECKS, close_inapplicable, reset_site_schedule
 from services import public_urls, settings
@@ -363,6 +363,7 @@ async def msg_site_headers(message: Message, state: FSMContext):
     site = await _form_site(message, state)
     if not site:
         return
+    await forget_secret(message)       # «Authorization: Bearer …», a password in the body
     raw = (message.text or "").strip()
     if raw == "-":
         headers = None
@@ -383,6 +384,7 @@ async def msg_site_body(message: Message, state: FSMContext):
     site = await _form_site(message, state)
     if not site:
         return
+    await forget_secret(message)       # «Authorization: Bearer …», a password in the body
     raw = message.text or ""
     if len(raw) > 4000:
         await message.answer("Слишком длинно (лимит 4000 символов).", reply_markup=cancel_kb())
