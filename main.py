@@ -5,6 +5,7 @@ Entry point: запускает бота, планировщик и веб-се�
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -99,6 +100,9 @@ def telegram_session() -> AiohttpSession | None:
 
 
 async def main():
+    # The database holds tokens: the files the bot creates — the database,
+    # its copies, logs — are for its own user only (also when run without Docker).
+    os.umask(0o077)
     if not config.bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is not set in .env")
     bot = Bot(token=config.bot_token, session=telegram_session(), default=DefaultBotProperties(

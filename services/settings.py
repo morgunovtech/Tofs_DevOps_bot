@@ -25,6 +25,7 @@ class Overrides:
     status_page: bool | None = None      # None → .env
     timezone: str | None = None          # IANA key; None → .env
     ring_only_down: bool = False         # ring only for «site down»; the rest waits quietly
+    weekly_backup: bool = True           # Sunday: a copy of the DB (without tokens) to the owner's private chat
 
 
 _o = Overrides()
@@ -61,6 +62,7 @@ async def load():
     o.timezone = valid_timezone(await get_state("cfg:timezone"))
     clock.set_timezone(o.timezone)
     o.ring_only_down = (await get_state("cfg:ring_only_down")) == "1"
+    o.weekly_backup = (await get_state("cfg:weekly_backup")) != "off"
     _o = o
 
 
@@ -80,6 +82,11 @@ def timezone() -> str:
 
 def ring_only_down() -> bool:
     return _o.ring_only_down
+
+
+def weekly_backup() -> bool:
+    """Sunday copy of the database to the owner's private chat — on by default."""
+    return _o.weekly_backup
 
 
 # ── Effective values (override → env default) ────────────────────────────────
@@ -169,6 +176,11 @@ async def set_timezone(key: str | None) -> bool:
 async def set_ring_only_down(on: bool):
     _o.ring_only_down = on
     await set_state("cfg:ring_only_down", "1" if on else "0")
+
+
+async def set_weekly_backup(on: bool):
+    _o.weekly_backup = on
+    await set_state("cfg:weekly_backup", "on" if on else "off")
 
 
 HB_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")

@@ -44,11 +44,21 @@ async def get_db() -> aiosqlite.Connection:
         async with _conn_lock:
             if _conn is None:
                 os.makedirs(os.path.dirname(_db_path) or ".", exist_ok=True)
+                # The database holds tokens typed into the chat: the file and
+                # its directory are for the bot's user only (a mounted volume
+                # may refuse the chmod — then its owner decides).
+                with contextlib.suppress(OSError):
+                    os.chmod(os.path.dirname(_db_path) or ".", 0o700)
                 conn = await aiosqlite.connect(_db_path)
+                with contextlib.suppress(OSError):
+                    os.chmod(_db_path, 0o600)
                 conn.row_factory = aiosqlite.Row
                 await conn.execute("PRAGMA journal_mode=WAL")
                 await conn.execute("PRAGMA busy_timeout=5000")
                 await conn.execute("PRAGMA foreign_keys=ON")
+                # A token removed with «🗑 Отключить» must not stay as bytes
+                # in the free pages of the live file.
+                await conn.execute("PRAGMA secure_delete=ON")
                 _conn = conn
     return _conn
 
@@ -654,15 +664,69 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
     await db.commit()
 
 
+def _remove_quietly(*paths: str):
+    for path in paths:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+
+
 async def backup_db(dest_path: str):
     """Write a compact, consistent copy of the DB via VACUUM INTO — on its
     own short-lived connection: on the shared one, any reader's unfinished
-    SELECT fails it with «cannot VACUUM - SQL statements in progress»."""
-    async with _write_lock:
-        if os.path.exists(dest_path):
-            os.remove(dest_path)
-        async with aiosqlite.connect(_db_path) as db:
-            await db.execute("VACUUM INTO ?", (dest_path,))
+    SELECT fails it with «cannot VACUUM - SQL statements in progress».
+    Written next to the target, checked, and only then put in its place: a
+    full disk must not leave a 0-byte «copy» where a good one was."""
+    tmp = dest_path + ".tmp"
+    sidecars = (tmp, tmp + "-journal", tmp + "-wal", tmp + "-shm")
+    try:
+        _remove_quietly(*sidecars)
+        async with _write_lock:
+            async with aiosqlite.connect(_db_path) as db:
+                await db.execute("VACUUM INTO ?", (tmp,))
+        async with aiosqlite.connect(Path(tmp).resolve().as_uri() + "?mode=ro", uri=True) as chk:
+            row = await (await chk.execute("PRAGMA quick_check")).fetchone()
+        if not row or row[0] != "ok":
+            raise sqlite3.DatabaseError(f"backup copy failed quick_check: {row and row[0]}")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, dest_path)          # the previous copy lives until this line
+    finally:
+        _remove_quietly(*sidecars)
+
+
+# What a copy that leaves the server must not carry: the tokens typed into
+# the chat wizards (int:*) and the generated secrets (secret:*) — except the
+# values that are public or plain settings by design, which a restored copy
+# on a new server needs as they were (the widget secret ships inside the
+# feedback widget to every visitor; a regenerated one would 403 every site).
+_PRIVATE_STATE = ("""(key LIKE 'int:%' AND key NOT IN ('int:second_opinion', 'int:cf_zone_id',
+                                                    'int:gsc_property', 'int:github_owner'))
+                     OR (key LIKE 'secret:%' AND key <> 'secret:webhook')
+                     OR key = 'helper_invite'""")
+
+
+async def shareable_copy(dest_path: str):
+    """A copy of the database fit to leave the server (the weekly file in
+    Telegram, «💾 Скачать копию базы»): without the tokens typed into the
+    chat wizards (int:*), generated secrets (secret:*), a pending helper
+    invite, request headers and bodies of API checks, visitors' IP
+    addresses. The values are gone from the file, not only from its tables:
+    VACUUM rebuilds it without the freed pages."""
+    try:
+        await backup_db(dest_path)
+        async with aiosqlite.connect(dest_path) as db:
+            await db.execute("PRAGMA journal_mode=DELETE")
+            await db.execute("PRAGMA secure_delete=ON")
+            await db.execute("DELETE FROM bot_state WHERE " + _PRIVATE_STATE)
+            await db.execute("UPDATE sites SET http_headers = NULL, http_body = NULL")
+            await db.execute("UPDATE feedback SET ip_address = NULL")
+            await db.commit()
+            await db.execute("VACUUM")
+            left = await (await db.execute("SELECT COUNT(*) FROM bot_state WHERE " + _PRIVATE_STATE)).fetchone()
+        if left[0]:
+            raise sqlite3.DatabaseError("private values are still in the copy")
+    except BaseException:
+        _remove_quietly(dest_path)
+        raise
 
 
 # Who owns the bot and who gets its alerts: always as in the LIVE database.
@@ -719,11 +783,16 @@ def probe_copy(path: str) -> dict:
         raise ValueError(f"файл не читается как база: {e}") from e
 
 
-def _copy_rows(src: str, dst: str, keep: dict[str, str | None]) -> dict[str, int]:
+def _copy_rows(src: str, dst: str, keep: dict[str, str | None],
+               fill_state: list[tuple[str, str]] = (), fill_requests: list[tuple[str, str | None, str | None]] = ()
+               ) -> dict[str, int]:
     """Worker thread. `dst` is a fresh database with OUR migrations; the copy's
     rows of OUR tables go in column by column, so nothing of the file's own
     schema gets in. Keys in `keep` get the live database's values (None =
-    removed). Rows per table returned."""
+    removed). `fill_state` / `fill_requests` are the live values a SHAREABLE
+    copy leaves out (connection tokens, generated secrets, request headers
+    and bodies of API checks): they fill the gaps, never override what the
+    copy has. Rows per table returned."""
     con = sqlite3.connect(Path(dst).resolve().as_uri(), uri=True)
     try:
         _harden(con)
@@ -740,6 +809,10 @@ def _copy_rows(src: str, dst: str, keep: dict[str, str | None]) -> dict[str, int
                 if cols:
                     con.execute(f'INSERT INTO main."{table}" ({cols}) SELECT {cols} FROM src."{table}"')
             counts[table] = con.execute(f'SELECT COUNT(*) FROM main."{table}"').fetchone()[0]
+        con.executemany("INSERT OR IGNORE INTO main.bot_state (key, value) VALUES (?, ?)", list(fill_state))
+        for url, headers, body in fill_requests:
+            con.execute("UPDATE main.sites SET http_headers = ? WHERE url = ? AND http_headers IS NULL", (headers, url))
+            con.execute("UPDATE main.sites SET http_body = ? WHERE url = ? AND http_body IS NULL", (body, url))
         for key, value in keep.items():
             con.execute("DELETE FROM main.bot_state WHERE key = ?", (key,))
             if value is not None:
@@ -776,6 +849,15 @@ async def restore_from_file(path: str) -> tuple[int, str]:
         # heartbeat secret. With no sites (moving to a new server) the copy's
         # secrets come along, and the old task links keep working.
         keep.update({key: await get_state(key) for key in SECRET_KEYS})
+    # What a shareable copy leaves out (connection tokens, generated secrets,
+    # request headers and bodies of API checks) stays as it is in the live
+    # database, so restoring one's own copy does not disconnect anything.
+    live = await get_db()
+    cursor = await live.execute("SELECT key, value FROM bot_state WHERE key LIKE 'int:%' OR key LIKE 'secret:%'")
+    fill_state = [tuple(r) for r in await cursor.fetchall()]
+    cursor = await live.execute(
+        "SELECT url, http_headers, http_body FROM sites WHERE http_headers IS NOT NULL OR http_body IS NOT NULL")
+    fill_requests = [tuple(r) for r in await cursor.fetchall()]
     fresh = _db_path + ".restoring"
     _remove_files(fresh)
     try:
@@ -784,7 +866,7 @@ async def restore_from_file(path: str) -> tuple[int, str]:
         async with aiosqlite.connect(fresh) as conn:
             await migrate(conn, upto=max(info["version"], 1))
             await conn.commit()
-        await asyncio.to_thread(_copy_rows, path, fresh, keep)
+        await asyncio.to_thread(_copy_rows, path, fresh, keep, fill_state, fill_requests)
         async with aiosqlite.connect(fresh) as conn:
             await migrate(conn)
             await conn.commit()

@@ -32,6 +32,7 @@ from db.database import (
     save_incident,
     set_dns_state,
     set_state,
+    shareable_copy,
 )
 from monitors import region
 from monitors.availability import check_all, check_availability
@@ -882,31 +883,76 @@ def backup_info() -> tuple[str, datetime] | None:
     return path, datetime.fromtimestamp(os.path.getmtime(path), UTC)
 
 
-async def run_db_backup():
-    """Nightly local DB backup with rotation."""
+async def run_db_backup() -> bool:
+    """Nightly local DB backup with rotation. True when the copy was written."""
     try:
-        os.makedirs(_backups_dir(), exist_ok=True)
+        os.makedirs(_backups_dir(), mode=0o700, exist_ok=True)
         path = os.path.join(_backups_dir(), f"bot-{datetime.now(UTC):%Y%m%d}.db")
         await backup_db(path)
         for stale in _backup_files()[:-max(1, config.db_backup_keep)]:
-            os.remove(os.path.join(_backups_dir(), stale))
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(os.path.join(_backups_dir(), stale))
         logger.info("DB backup written: %s", path)
+        return True
     except Exception as e:
         logger.error("DB backup failed: %s", e)
         await notifier.send("🟠 Не удалось сохранить резервную копию базы бота. Проверь место на диске."
                             + _tech_line(str(e)))
+        return False
+
+
+# What the Bot API lets a bot send, and what it lets a bot download (a copy
+# sent back to restore from) — taken as decimal megabytes, to be safe.
+# Source: the aiogram 3 docstrings, which quote the Bot API — «Bots can
+# currently send files of any type of up to 50 MB in size»
+# (aiogram/methods/send_document.py) and «bots can download files of up to
+# 20MB in size» (aiogram/methods/get_file.py).
+TG_SEND_LIMIT = 50_000_000
+TG_DOWNLOAD_LIMIT = 20_000_000
+_share_lock = asyncio.Lock()
+
+
+async def send_copy_to_owner(caption: str) -> str | None:
+    """A fresh copy without tokens and secrets (db.database.shareable_copy)
+    for the owner's private chat. None when sent; otherwise why not.
+    Its own file: the nightly copies stay as they were, and the rotation
+    and the screens (`_backup_files`, bot-*.db) never see it."""
+    async with _share_lock:
+        os.makedirs(_backups_dir(), mode=0o700, exist_ok=True)
+        path = os.path.join(_backups_dir(), f"share-{datetime.now(UTC):%Y%m%d-%H%M%S}.db")
+        try:
+            await shareable_copy(path)
+            size = os.path.getsize(path)
+            if size > TG_SEND_LIMIT:
+                return (f"копия весит {size / 1e6:.0f} МБ, а Telegram принимает от бота файлы до 50 МБ. "
+                        f"Полные ночные копии лежат на сервере: {_backups_dir()}")
+            if size > TG_DOWNLOAD_LIMIT:
+                caption += (f"\n\nФайл {size / 1e6:.0f} МБ — больше 20 МБ, которые я могу скачать: прислать "
+                            f"его мне обратно не получится. Восстановить можно на сервере: останови бота и "
+                            f"положи файл на место bot.db.")
+            return await notifier.send_document_to_owner(FSInputFile(path), caption)
+        except Exception as e:
+            logger.exception("Copy for the owner failed")
+            return f"не получилось сделать копию ({type(e).__name__}) — чаще всего кончилось место на диске"
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(path)
 
 
 async def send_db_backup_to_telegram():
-    """Weekly: push the freshest backup into the admin chat — an off-host
-    copy with zero extra infrastructure."""
-    if not _backup_files():
-        await run_db_backup()
-    files = _backup_files()
-    if files:
-        await notifier.send_document(FSInputFile(os.path.join(_backups_dir(), files[-1])),
-                                     "🗄 Еженедельная копия базы бота. Чтобы восстановить из неё — просто "
-                                     "пришли мне этот файл. В нём токены подключений: храни как пароль.")
+    """Weekly: a copy of the database for the owner's private chat — the
+    off-host copy with zero extra infrastructure. Without tokens and
+    secrets, never into a group; it can be switched off in «🔔 Когда писать»."""
+    if not settings.weekly_backup():
+        return
+    problem = await send_copy_to_owner(
+        "🗄 Еженедельная копия базы бота: сайты, настройки, история. Ключей подключений и секретов в ней "
+        "нет — после восстановления на новом сервере подключения нужно будет ввести заново. Чтобы "
+        "восстановить — пришли мне этот файл.")
+    if problem:
+        await notifier.send(f"🟠 Еженедельную копию базы не прислал: {esc(problem)}.\n"
+                            f"Ночные копии на сервере целы. Попробовать ещё раз — 🏠 Главная → «🤖 Боты» → "
+                            f"«💾 Скачать копию базы».")
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────
@@ -1084,7 +1130,10 @@ async def send_weekly_report():
             await notifier.send(tip[0], Priority.DIGEST, reply_markup=tip[1])
     except Exception as e:
         logger.error("Weekly report failed: %s", e)
-    await send_db_backup_to_telegram()
+    try:
+        await send_db_backup_to_telegram()
+    except Exception:
+        logger.exception("Weekly copy of the database failed")
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────

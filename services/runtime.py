@@ -118,6 +118,14 @@ def admin_chat_id() -> str | None:
     return _chat_id
 
 
+def owner_private_chat() -> str | None:
+    """The owner's private chat with the bot — in Telegram its id is the
+    owner's user id. None when only a group is known (TELEGRAM_ADMIN_CHAT_ID
+    without TELEGRAM_ADMIN_USER_ID): group ids are negative."""
+    owner = _user_id or _chat_id
+    return owner if owner and not owner.startswith("-") else None
+
+
 def nobody_steers() -> bool:
     """A group chat from env without TELEGRAM_ADMIN_USER_ID: is_admin() is
     false for everyone, the owner included."""

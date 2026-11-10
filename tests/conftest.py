@@ -170,6 +170,7 @@ def _fresh_module_state(monkeypatch):
     notifier._delivered_rows.clear()
     monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
     health.reset()
+    monkeypatch.setattr(scheduler, "_share_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_conn_lock", asyncio.Lock())
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())

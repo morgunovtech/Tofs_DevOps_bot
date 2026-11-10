@@ -47,6 +47,11 @@ from utils.urls import host_of, proxy_label
 
 router = Router(name="setup")
 
+# Said after every «🗑 Отключить»: copies of the database sent before this
+# version carried the tokens — removing one here does not recall it.
+OLD_COPIES_NOTE = ("Если я раньше присылал копии базы — токен остался в них: отзови его у "
+                   "провайдера.")
+
 
 class SetupForm(StatesGroup):
     gsc_property = State()
@@ -563,7 +568,8 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
 async def cb_watchdog_off(call: CallbackQuery):
     await integrations.set_value("self_heartbeat_url", None)
     await heartbeats.forget_watchdog()
-    await ack(call, "Отключено")
+    await ack(call, "Отключено. Если я раньше присылал копии базы — ссылка сторожа осталась в них: "
+                    "пересоздай check на healthchecks.io.", show_alert=True)
     await show_checklist(call)
 
 
@@ -622,7 +628,7 @@ async def msg_yx_token(message: Message, state: FSMContext):
 @router.callback_query(F.data == "setup:yx_off")
 async def cb_yx_off(call: CallbackQuery):
     await integrations.set_value("yandex_token", None)
-    await ack(call, "Отключено")
+    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -682,7 +688,7 @@ async def msg_crux_key(message: Message, state: FSMContext):
 @router.callback_query(F.data == "setup:crux_off")
 async def cb_crux_off(call: CallbackQuery):
     await integrations.set_value("crux_key", None)
-    await ack(call, "Отключено")
+    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -789,7 +795,7 @@ async def cb_gsc_off(call: CallbackQuery):
     await integrations.set_value("gsc_key", None)
     await integrations.set_value("gsc_property", None)
     gsc.reset_token_cache()
-    await ack(call, "Отключено")
+    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -891,7 +897,7 @@ async def msg_cf_zone(message: Message, state: FSMContext):
 async def cb_cf_off(call: CallbackQuery):
     for key in ("deploy_hooks", "cf_api_token", "cf_zone_id"):
         await integrations.set_value(key, None)
-    await ack(call, "Сброшено")
+    await ack(call, "Сброшено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -981,5 +987,5 @@ async def msg_gh_owner(message: Message, state: FSMContext):
 async def cb_gh_off(call: CallbackQuery):
     for key in ("github_token", "github_owner"):
         await integrations.set_value(key, None)
-    await ack(call, "Отключено")
+    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)

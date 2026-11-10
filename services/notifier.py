@@ -500,15 +500,30 @@ async def edit(message_id: int, text: str, reply_markup=None) -> bool:
         return False
 
 
-async def send_document(document, caption: str) -> bool:
-    if not runtime.admin_chat_id() or _bot is None:
-        return False
+async def send_document_to_owner(document, caption: str) -> str | None:
+    """A file only the owner may hold (a copy of the database) goes to the
+    owner's private chat — never to a group admin chat, where every member
+    would get it. None when sent; otherwise why not, in words for the owner.
+    Not through _call(): a private chat never becomes a supergroup."""
+    chat_id = runtime.owner_private_chat()
+    if _bot is None:
+        return "бот ещё не запущен"
+    if not chat_id:
+        return "не знаю твой личный чат со мной: укажи TELEGRAM_ADMIN_USER_ID в настройках сервера"
     try:
-        await _call(_bot.send_document, document=document, caption=caption, disable_notification=True)
-        return True
+        await _bot.send_document(chat_id=chat_id, document=document, caption=caption,
+                                 disable_notification=True)
+        return None
+    except (TelegramForbiddenError, TelegramBadRequest) as e:
+        # A bot cannot write first: until the owner opens the private chat
+        # Telegram answers 403 «bot can't initiate conversation» or 400 «chat
+        # not found» [not verified against the official Bot API text].
+        logger.warning("Could not send a file to the owner's private chat: %s", e)
+        return "ты ещё не открывал личный чат со мной — открой его и нажми /start"
     except Exception as e:
-        logger.error("Failed to send document to admin: %s", e)
-        return False
+        # Not str(e): aiohttp's messages can carry the API address with the bot token.
+        logger.error("Failed to send a file to the owner: %r", type(e).__name__)
+        return "Telegram не принял файл (сеть или сбой на его стороне)"
 
 
 async def flush_queue():

@@ -925,9 +925,13 @@ async def _db_question(info: dict, name: str) -> str:
     if new := sorted(theirs - now):
         lines.append(f"Появятся: {_list(new)}.")
     stored = integrations.stored()
-    differ = [k for k in integrations.KEYS if (info["state"].get(f"int:{k}") or None) != stored.get(k)]
+    # A shareable copy carries no tokens: what it lacks stays as it is now.
+    differ = [k for k in integrations.KEYS
+              if info["state"].get(f"int:{k}") and info["state"][f"int:{k}"] != stored.get(k)]
     if differ:
         lines.append("Подключения станут как в копии: " + ", ".join(differ) + ".")
+    lines.append("Ключи подключений, заголовки и тела API-проверок, которых в копии нет, останутся текущими "
+                 "(на новом сервере их нужно ввести заново).")
     # What silences alerts right after the restore must not come as a surprise.
     try:
         windows = len(json.loads(info["state"].get("cfg:maint_windows") or "[]"))

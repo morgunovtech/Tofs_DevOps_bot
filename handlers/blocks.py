@@ -5,11 +5,11 @@ block opens the site cards (handlers.sites)."""
 from datetime import UTC, datetime
 
 from aiogram import F, Router
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from handlers.common import ack, render
-from reports.scheduler import backup_info, run_db_backup
-from services import heartbeats, updates
+from reports.scheduler import backup_info, send_copy_to_owner
+from services import heartbeats, settings, updates
 from services.heartbeats import job_states
 from utils.clock import to_local
 from utils.text import esc, fmt_duration, parse_iso_utc
@@ -32,8 +32,9 @@ def backup_state() -> tuple[str, str, str]:
         return ("🟠", f"последняя {when}",
                 f"🟠 Резервная копия базы — последняя {when}: ночные копии не делаются. Чаще всего "
                 f"кончилось место на диске.")
-    return ("✅", when, f"✅ Резервная копия базы — {when}. Делаю каждую ночь, по воскресеньям присылаю "
-                        f"файлом сюда.")
+    weekly = ("по воскресеньям присылаю тебе в личку — без ключей подключений" if settings.weekly_backup()
+              else "в Telegram не присылаю (выключено в «🔔 Когда писать»)")
+    return "✅", when, f"✅ Резервная копия базы — {when}. Делаю каждую ночь, {weekly}."
 
 
 async def bots_page() -> tuple[str, InlineKeyboardMarkup]:
@@ -66,17 +67,17 @@ async def cb_bots(call: CallbackQuery):
 
 @router.callback_query(F.data == "sys:backup")
 async def cb_backup_now(call: CallbackQuery):
-    """A fresh copy, now — not last night's — sent below the page."""
+    """A fresh copy, now — not last night's: its own file, so the nightly
+    ones stay as they were; to the owner's private chat only, without
+    tokens and secrets (reports.scheduler.send_copy_to_owner). A double tap
+    is safe: the copies are made one after another."""
     await ack(call, "Делаю копию…")
-    await run_db_backup()
-    backup = backup_info()
-    if backup is None or call.message is None:
-        await ack(call, "Не получилось сделать копию — проверь место на диске", show_alert=True)
-        return
-    await call.message.answer_document(
-        FSInputFile(backup[0]),
-        caption=f"💾 Копия базы бота на {to_local(backup[1]).strftime('%d.%m %H:%M')}. Чтобы восстановить "
-                f"из неё — просто пришли мне этот файл. В ней токены подключений — храни её как пароль.")
+    problem = await send_copy_to_owner(
+        f"💾 Копия базы бота на {to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')}: сайты, настройки, "
+        f"история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.")
+    if call.message is not None:
+        await call.message.answer(f"❌ Копию не прислал: {esc(problem)}." if problem
+                                  else "💾 Прислал копию тебе в личку.")
 
 
 @router.callback_query(F.data.startswith("blk:seen:"))
