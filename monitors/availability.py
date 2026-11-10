@@ -6,6 +6,7 @@ monitor that runs."""
 
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import re
@@ -73,6 +74,10 @@ _recent: dict[int, deque[str]] = {}
 _down_without_db: set[int] = set()
 # Keyword search looks at the first 1 MB of the page body.
 KEYWORD_BODY_LIMIT = 1024 * 1024
+# asyncio reports «Connect call failed (host, port)» whatever the cause; the
+# errno says why, and the alert says it in words (services.humanize).
+_CONNECT_ERRNO = {errno.ECONNREFUSED: "Connection refused", errno.EHOSTUNREACH: "No route to host",
+                  errno.ENETUNREACH: "Network is unreachable"}
 HTTP_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 _REDIRECT_CODES = (301, 302, 303, 307, 308)
@@ -294,6 +299,10 @@ def _error_text(e: aiohttp.ClientError) -> str:
         return "слишком много перенаправлений (редирект по кругу)"
     if isinstance(e, aiohttp.ClientResponseError):
         return f"HTTP {e.status}" if e.status else type(e).__name__
+    if isinstance(e, aiohttp.ClientConnectorError):
+        reason = _CONNECT_ERRNO.get(getattr(e.os_error, "errno", None))
+        if reason:
+            return f"Cannot connect to host {e.host}:{e.port} [{reason}]"
     return without_query(str(e)) or type(e).__name__
 
 
@@ -316,7 +325,7 @@ async def _probe_tcp(url: str, r: AvailabilityResult):
         r.status, r.error = "error", f"Timeout ({PROBE_TIMEOUT_SEC}s)"
         r.response_time_ms = int((time.monotonic() - start) * 1000)
     except OSError as e:
-        r.status, r.error = "error", e.strerror or str(e)
+        r.status, r.error = "error", _CONNECT_ERRNO.get(e.errno) or e.strerror or str(e)
         r.response_time_ms = int((time.monotonic() - start) * 1000)
 
 

@@ -69,6 +69,21 @@ def _http(code: int) -> str:
     return f"сервер отверг запрос (ошибка {code})"
 
 
+def due_words(days: int) -> str:
+    """«сегодня» · «завтра» · «через 5 дн.» — the last days in words, not «через 0 дн.»."""
+    return "сегодня" if days == 0 else "завтра" if days == 1 else f"через {days} дн."
+
+
+def expires_words(what: str, days: int) -> str:
+    """«сертификат истекает сегодня» · «… завтра» · «… через 5 дн.»."""
+    return f"{what} истекает {due_words(days)}"
+
+
+# A string that is an exception's own words (aiohttp, asyncio, the OS):
+# never shown as the cause, the grey footer keeps it for the engineer.
+_TECHNICAL = re.compile(r"error|errno|exception|failed|disconnected|connection|cannot|timeout|\[|message=", re.I)
+_CYRILLIC = re.compile(r"[А-Яа-яЁё]")
+
 _RULES: list[tuple[re.Pattern, object]] = [
     # A keyword verdict carries the site's own text («Connection refused» on a
     # PHP error page): with or without «Bad content: » it is never re-read.
@@ -82,12 +97,12 @@ _RULES: list[tuple[re.Pattern, object]] = [
     # error page) — never re-read it as a network error.
     (re.compile(r"^Bad content: (.+)$", re.S), lambda m: m.group(1)),
     (re.compile(r"^SSL expired (\d+) days ago$"), lambda m: f"сертификат истёк {m.group(1)} дн. назад"),
-    (re.compile(r"^SSL expires in (\d+) days!?$"), lambda m: f"сертификат истекает через {m.group(1)} дн."),
+    (re.compile(r"^SSL expires in (\d+) days!?$"), lambda m: expires_words("сертификат", int(m.group(1)))),
     (re.compile(r"^SSL certificate has expired$"), lambda m: "сертификат истёк"),
     (re.compile(r"^SSL certificate invalid: (.+)$", re.S), lambda m: f"сертификат недействителен: {m.group(1)}"),
     (re.compile(r"^SSL check failed: (.+)$", re.S), lambda m: "не удалось проверить сертификат"),
     (re.compile(r"^Domain expired (\d+) days ago!?$"), lambda m: f"домен истёк {m.group(1)} дн. назад"),
-    (re.compile(r"^Domain expires in (\d+) days!?$"), lambda m: f"домен истекает через {m.group(1)} дн."),
+    (re.compile(r"^Domain expires in (\d+) days!?$"), lambda m: expires_words("домен", int(m.group(1)))),
     (re.compile(r"^Lookup failed: .+$", re.S), lambda m: "не удалось узнать срок домена"),
     (re.compile(r"^Slow responses: ~(\d+)ms$"), lambda m: f"открывается за {fmt_seconds(int(m.group(1)))}"),
     (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"),
@@ -106,8 +121,18 @@ _RULES: list[tuple[re.Pattern, object]] = [
     # certificate is the cause, so it goes first.
     (re.compile(r"certificate has expired", re.I), lambda m: "сертификат истёк"),
     (re.compile(r"certificate verify failed|SSL: ", re.I), lambda m: "сертификат не прошёл проверку"),
-    (re.compile(r"connection refused|Connect call failed", re.I), lambda m: "сервер отказал в соединении"),
-    (re.compile(r"cannot connect to host", re.I), lambda m: "не удалось соединиться с сервером"),
+    (re.compile(r"timeout", re.I), lambda m: "не ответил вовремя"),
+    # asyncio says «Connect call failed (…)» for every cause; the monitor keeps
+    # the errno's words («Connection refused», «No route to host») in the text.
+    (re.compile(r"connection refused", re.I), lambda m: "сервер отказал в соединении"),
+    (re.compile(r"no route to host|network is unreachable|host is unreachable", re.I),
+     lambda m: "сервер недоступен: до него нет маршрута"),
+    (re.compile(r"connect call failed|cannot connect to host", re.I), lambda m: "не удалось соединиться с сервером"),
+    (re.compile(r"^server disconnected|connection reset by peer", re.I), lambda m: "сервер оборвал соединение"),
+    (re.compile(r"response payload is not completed", re.I), lambda m: "ответ оборвался на середине"),
+    (re.compile(r"too many redirects", re.I), lambda m: "адрес перенаправляет по кругу"),
+    # aiohttp ClientResponseError / TooManyRedirects: «0, message='', url='…?token=…'»
+    (re.compile(r"^\d{1,3}, message="), lambda m: "сервер ответил ошибкой"),
     (re.compile(r"хост не отвечает на ping"), lambda m: "не отвечает на ping"),
 ]
 
@@ -151,6 +176,8 @@ def describe_error(text: str | None) -> str:
         m = pattern.search(text)
         if m:
             return render(m)
+    if not _CYRILLIC.search(text) and _TECHNICAL.search(text):
+        return "необычная ошибка соединения"     # the raw words stay in the grey footer only
     return text
 
 
@@ -280,6 +307,12 @@ EXPLANATIONS: dict[str, Explanation] = {
                      "ты или кто-то с доступом поменял DNS: переезд хостинга, настройка почты, или чужие руки",
                      ("Если это ты менял — ничего делать не нужно, я запомнил новое значение.",
                       "Если нет — зайти в панель регистратора или Cloudflare и проверить, кто и что менял.")),
+    "addr_gone": _E("addr_gone",
+                    "Запись, по которой браузеры находят сайт, пропала из DNS. Если она не вернётся, сайт "
+                    "перестанет открываться.",
+                    "запись удалили при правке DNS, домен переехал к другому DNS-провайдеру или истёк",
+                    ("Открыть DNS у регистратора или в Cloudflare и вернуть запись A или CNAME на хостинг.",
+                     "Доступность сайта я проверяю отдельно: если он перестанет открываться — сразу напишу.")),
     "ns_change": _E("ns_change",
                     "Сменились серверы, которые управляют всем доменом. Так выглядит угон домена или "
                     "переезд к другому DNS-провайдеру.",

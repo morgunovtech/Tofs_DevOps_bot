@@ -5,6 +5,7 @@ do. Technical details go last, in italics."""
 
 from datetime import UTC, datetime
 
+from monitors import domain_checker, ssl_checker
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
@@ -159,7 +160,7 @@ def format_domain_alert(r: DomainResult) -> str:
     icon = level_icon(r.severity)
     registrar = r.domain_info.registrar if r.domain_info and r.domain_info.registrar not in ("", "Unknown") else ""
     where = f" Продлевается у регистратора: {esc(registrar)}." if registrar else ""
-    return (f"{icon} Домен {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
+    return (f"{icon} {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
             + _tech(r.error))
 
 
@@ -243,18 +244,26 @@ def format_dns_failing(change: DnsChange) -> str:
             f"Последний известный ответ: {esc(change['old'])}\n\n{steps}")
 
 
+# (what, «changed», «gone») — the verb agrees with the noun, and a record that
+# is gone is said to be gone, not «changed» with «пока ничего не сломалось».
+_DNS_KINDS = {"A": ("адрес сервера (запись A)", "изменился", "пропал"),
+              "AAAA": ("адрес сервера IPv6 (запись AAAA)", "изменился", "пропал"),
+              "CNAME": ("псевдоним адреса (запись CNAME)", "изменился", "пропал"),
+              "NS": ("NS-серверы домена", "изменились", "пропали"),
+              "MX": ("почтовые серверы (запись MX)", "изменились", "пропали")}
+
+
 def format_dns_change(change: DnsChange) -> str:
     if change.get("failing"):
         return format_dns_failing(change)
-    key = {"NS": "ns_change", "MX": "mx_gone" if change["new"] == "—" else "mx_change"}.get(change["rtype"],
-                                                                                         "dns_change")
+    gone = change["new"] == "—"
+    key = {"NS": "ns_change", "MX": "mx_gone" if gone else "mx_change"}.get(
+        change["rtype"], "addr_gone" if gone else "dns_change")
     expl = humanize.EXPLANATIONS[key]
-    kinds = {"A": "адрес сервера (запись A)", "AAAA": "адрес сервера IPv6 (запись AAAA)",
-             "CNAME": "псевдоним адреса (запись CNAME)", "NS": "NS-серверы домена",
-             "MX": "почтовые серверы (запись MX)"}
     icon = level_icon("critical" if change["critical"] else "warning")
-    what = kinds.get(change["rtype"], change["rtype"])
-    return (f"{icon} У {esc(change['host'])} изменились {what}\n{expl.meaning}\n\n"
+    what, changed, vanished = _DNS_KINDS.get(change["rtype"],
+                                             (f"запись {change['rtype']}", "изменилась", "пропала"))
+    return (f"{icon} У {esc(change['host'])} {vanished if gone else changed} {what}\n{expl.meaning}\n\n"
             f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}\n\n"
             f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
 
@@ -369,17 +378,17 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
             notes.append((None, "сертификат не удалось проверить"))
         elif ssl.ssl_info.days_left < 0:
             notes.append(("critical", f"сертификат истёк {abs(ssl.ssl_info.days_left)} дн. назад"))
-        elif ssl.ssl_info.days_left <= 14:
-            notes.append(("critical" if ssl.ssl_info.days_left <= 3 else "warning",
-                          f"сертификат истекает через {ssl.ssl_info.days_left} дн."))
+        elif ssl.ssl_info.days_left <= ssl_checker.WARN_DAYS:
+            notes.append(("critical" if ssl.ssl_info.days_left <= ssl_checker.CRITICAL_DAYS else "warning",
+                          humanize.expires_words("сертификат", ssl.ssl_info.days_left)))
     if dom is not None and not dom.unsupported:
         if not dom.domain_info or dom.domain_info.days_left is None:
             notes.append((None, "срок домена не удалось проверить"))
         elif dom.domain_info.days_left < 0:
             notes.append(("critical", f"домен истёк {abs(dom.domain_info.days_left)} дн. назад"))
-        elif dom.domain_info.days_left <= 30:
-            notes.append(("critical" if dom.domain_info.days_left <= 7 else "warning",
-                          f"домен истекает через {dom.domain_info.days_left} дн."))
+        elif dom.domain_info.days_left <= domain_checker.WARN_DAYS:
+            notes.append(("critical" if dom.domain_info.days_left <= domain_checker.CRITICAL_DAYS else "warning",
+                          humanize.expires_words("домен", dom.domain_info.days_left)))
     if notes:
         worst = worst_severity(s for s, _ in notes)
         icon = level_icon(worst) if worst else UNCHECKED

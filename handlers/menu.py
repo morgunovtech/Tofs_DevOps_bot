@@ -22,6 +22,7 @@ from handlers import seo as seo_screen
 from handlers.blocks import backup_state
 from handlers.common import ack, render
 from handlers.mail import mail_brief
+from monitors import domain_checker, ssl_checker
 from monitors.mail_checker import MAIL_CHECKS, carriers
 from services import heartbeats, humanize, maintenance, notifier, sitestatus, updates
 from services.heartbeats import Job, Watchdog, job_states
@@ -62,6 +63,14 @@ def _without_label(text: str, label: str) -> str:
     return text
 
 
+def _due(what: str, days: int) -> str:
+    """«сертификат истёк» · «сертификат истекает сегодня» · «сертификат через 5 дн.» —
+    short, for the main screen; the last days in words (services.humanize)."""
+    if days < 0:
+        return f"{what} истёк"
+    return humanize.expires_words(what, days) if days <= 1 else f"{what} через {days} дн."
+
+
 async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[str, str, float | None]:
     """(icon, short state, minutes since the last availability check) from
     the stored snapshot — no network, the menu must open instantly. The
@@ -85,13 +94,11 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
     ssl = (st.get("ssl") or {}) if ssl_applies(site["url"]) else {}
     dom = st.get("domain") or {}
     days = ssl.get("days_left")
-    if days is not None and days <= 14:
-        notes.append(("ssl", "critical" if days <= 3 else "warning",
-                      "сертификат истёк" if days < 0 else f"сертификат через {days} дн."))
+    if days is not None and days <= ssl_checker.WARN_DAYS:
+        notes.append(("ssl", "critical" if days <= ssl_checker.CRITICAL_DAYS else "warning", _due("сертификат", days)))
     days = dom.get("days_left")
-    if not dom.get("unsupported") and days is not None and days <= 30:
-        notes.append(("domain", "critical" if days <= 7 else "warning",
-                      "домен истёк" if days < 0 else f"домен через {days} дн."))
+    if not dom.get("unsupported") and days is not None and days <= domain_checker.WARN_DAYS:
+        notes.append(("domain", "critical" if days <= domain_checker.CRITICAL_DAYS else "warning", _due("домен", days)))
     links = st.get("links") or {}
     n = links.get("broken", links.get("internal"))   # «internal»: snapshots from before 11.2026
     if n:

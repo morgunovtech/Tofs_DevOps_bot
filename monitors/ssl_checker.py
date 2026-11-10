@@ -19,6 +19,9 @@ from utils.urls import ssl_applies
 logger = logging.getLogger(__name__)
 
 SSL_THRESHOLDS = [0, 1, 3, 7, 14]
+# The ladder's levels: 🟠 from WARN_DAYS, 🔴 from CRITICAL_DAYS — the one place
+# the reports and the main screen take them from.
+WARN_DAYS, CRITICAL_DAYS = 14, 3
 HANDSHAKE_TIMEOUT = 10   # s: a host that takes TCP but never finishes TLS
 CONNECT_BUDGET = 20      # s: the whole fetch, the name lookup included
 
@@ -79,9 +82,9 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
                               f"{days} дн., а сертификат не менялся.")
         if days < 0:
             r.status, r.error = "error", f"SSL expired {abs(days)} days ago"
-        elif days <= 3:
+        elif days <= CRITICAL_DAYS:
             r.status, r.error = "critical", f"SSL expires in {days} days!"
-        elif days <= 14:
+        elif days <= WARN_DAYS:
             r.status, r.error = "warning", f"SSL expires in {days} days"
     except ssl.SSLCertVerificationError as e:
         # An expired/invalid cert fails the handshake before we can read

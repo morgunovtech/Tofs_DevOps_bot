@@ -25,6 +25,7 @@ from utils.urls import PLATFORM_DOMAINS, host_of, owned_domain, registrable_doma
 logger = logging.getLogger(__name__)
 
 DOMAIN_THRESHOLDS = [0, 1, 3, 7, 14, 30]
+WARN_DAYS, CRITICAL_DAYS = 30, 7     # the ladder's levels, as in monitors.ssl_checker
 DOMAIN_PARALLEL = 4        # lookups at once: RDAP servers and whois.tcinet.ru rate-limit
 
 
@@ -97,9 +98,9 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
             r.error = "срок регистрации не сообщается"
         elif days < 0:
             r.status, r.error = "error", f"Domain expired {abs(days)} days ago!"
-        elif days <= 7:
+        elif days <= CRITICAL_DAYS:
             r.status, r.error = "critical", f"Domain expires in {days} days!"
-        elif days <= 30:
+        elif days <= WARN_DAYS:
             r.status, r.error = "warning", f"Domain expires in {days} days"
     except rdap.RdapUnsupported as e:
         r.unsupported, r.error = True, str(e)

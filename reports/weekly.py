@@ -1,4 +1,4 @@
-"""Weekly report: per-site uptime over 7/30/90 days, an ASCII response-time
+"""Weekly report: per-site downtime over the week and the month, an ASCII response-time
 chart (monospace, no image libraries), what is open now and what was
 solved this week, facts of normal operation (certificates that renewed by
 themselves), search metrics and the dependency check — sent every Sunday.
@@ -212,5 +212,5 @@ async def renewals_block(sites: list[dict]) -> list[str]:
         ssl = (await sitestatus.get(s["id"])).get("ssl") or {}
         at = parse_iso_utc(ssl.get("renewed_at"))
         if at and at >= since:
-            chips.setdefault(short_host(s["url"]), f"{esc(short_host(s['url']))} ({at.strftime('%d.%m')})")
+            chips.setdefault(short_host(s["url"]), f"{esc(short_host(s['url']))} ({to_local(at).strftime('%d.%m')})")
     return ["\n🔒 Сертификаты продлились сами: " + ", ".join(chips.values())] if chips else []
