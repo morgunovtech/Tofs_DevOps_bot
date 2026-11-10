@@ -36,6 +36,11 @@ router = Router(name="menu")
 # number younger than seven is the current one.
 FRESH_REGION_MINUTES = 7 * 60
 
+# The sites block shows this many lines, the worst first; the rest are a
+# count with how many of them are problems.
+MAIN_SITES = 10
+_RANK = {"🔴": 0, "🟠": 1, "⚠️": 2, "🔧": 3, "⏳": 4, "✅": 5}
+
 
 async def mute_until_local() -> str | None:
     deadline = await notifier.mute_until()
@@ -183,14 +188,6 @@ def headline(problem_icons: list[str], checked: str) -> str:
     return f"{worst} {n} {plural(n, 'проблема', 'проблемы', 'проблем')}{checked}"
 
 
-def job_lines(jobs: list[Job], watchdog: Watchdog | None = None) -> list[str]:
-    """A line per task (and the watchdog last) — for /sites."""
-    lines = [f"{j.icon} {esc(j.name)} · {esc(j.state)}" for j in jobs]
-    if watchdog:
-        lines.append(f"{watchdog.icon} сторож {esc(watchdog.name)} · {esc(watchdog.state)}")
-    return lines
-
-
 async def status_blocks(jobs: list[Job]) -> list[tuple[Job, str, list[tuple[str, str, str]]]]:
     """(job, title, [(icon, name, text)]) for every bot that reports what it
     sees; a late bot's block is one «не знаю» line."""
@@ -230,7 +227,10 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                 "можно добавить бота или задачу по расписанию: скажу, если замолчит.", kb)
 
     incidents = await get_active_incidents()
+    # Problems first (a stable sort: within a level the sites keep their
+    # order), so a down site is never below the fold of the first ten.
     states = [(s, *await site_state(s, incidents)) for s in sites]
+    states.sort(key=lambda t: _RANK.get(t[1], 9))
     avail = [(await sitestatus.get(s["id"])).get("avail") for s in sites]
     newest = max((a for a in avail if a and a.get("at")), key=lambda a: a["at"], default=None)
     mail = await mail_rows(sites)
@@ -239,10 +239,12 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
 
     lines: list[str] = []
     if states:
+        shown, hidden = states[:MAIN_SITES], states[MAIN_SITES:]
         lines += ["", "<b>Сайты</b>", *(f"{icon} {esc(site_label(s['url']))} · {esc(state)}"
-                                        for s, icon, state, _ in states[:10])]
-        if len(states) > 10:
-            lines.append(f"… и ещё {len(states) - 10}")
+                                        for s, icon, state, _ in shown)]
+        if hidden:
+            bad = sum(1 for _, icon, _, _ in hidden if icon in PROBLEM_ICONS)
+            lines.append(f"… и ещё {len(hidden)}" + (f", из них с проблемами: {bad}" if bad else ""))
     if mail:
         lines += ["", "<b>Почта</b>", *(f"{icon} {esc(domain)} · {esc(words)}" for icon, domain, words in mail)]
     for _, title, rows in reported:
@@ -252,7 +254,14 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
               *(f"{icon} {esc(name)}{f' · {esc(state)}' if state else ''}".lstrip()
                 for icon, name, state in systems)]
 
-    problems = [icon_of(line) for line in lines if line.startswith(PROBLEM_ICONS)]
+    # Counted by the things themselves, not by the lines on the screen: a
+    # site below the fold still counts, and a silent bot's «не знаю» block
+    # is the same problem as its line under «Боты и системы».
+    problems = [icon for _, icon, _, _ in states if icon in PROBLEM_ICONS]
+    problems += [icon for icon, _, _ in mail if icon in PROBLEM_ICONS]
+    problems += [icon for j, _, rows in reported if j.icon == "✅" for icon, _, _ in rows if icon in PROBLEM_ICONS]
+    problems += [j.icon for j in jobs if j.icon in PROBLEM_ICONS]
+    problems += [icon for icon, _, _ in systems if icon in PROBLEM_ICONS]
     if not newest and not any(j.ago is not None for j in jobs):
         head = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой связи"
     else:
@@ -278,6 +287,8 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     blocks = []
     if states:
         blocks.append(InlineKeyboardButton(text="🌐 Сайты", callback_data="blk:sites"))
+    else:   # tasks without sites: the way to the first site stays on the screen
+        blocks.append(InlineKeyboardButton(text="➕ Сайт", callback_data="site_add"))
     blocks += [InlineKeyboardButton(text=title.split(" · ")[0], callback_data=f"blk:seen:{j.name}")
                for j, title, _ in reported if len(f"blk:seen:{j.name}".encode()) <= 64]
     blocks.append(InlineKeyboardButton(text="🤖 Боты", callback_data="blk:bots"))

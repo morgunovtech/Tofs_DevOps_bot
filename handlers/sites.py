@@ -362,19 +362,22 @@ async def _avail_line(site: dict, st: dict, page: bool) -> str:
 
 
 async def _history_lines(site: dict) -> list[str]:
-    """Downtime over the week and the month, and when it last went down."""
+    """Downtime over the week and the month, and when it last went down.
+    ✅ only for a week and a month without a single outage; a line with
+    downtime in it carries no icon — history, neither fine nor a problem."""
     week = await get_uptime_over_days(site["id"], 7)
-    parts = []
+    parts, clean = [], False
     if week["total_checks"]:
         month = await get_uptime_over_days(site["id"], 30)
         w, m = humanize.downtime(week), humanize.downtime(month)
-        parts.append("без сбоев ни за неделю, ни за месяц" if w == m == "без сбоев" else
+        clean = w == m == "без сбоев"
+        parts.append("без сбоев ни за неделю, ни за месяц" if clean else
                      f"простой: за неделю {w.removeprefix('недоступен ')}, за месяц {m.removeprefix('недоступен ')}")
     outage = await _last_outage(site)
     if outage:
         parts.append(outage)
     text = "; ".join(parts)
-    return [f"✅ {text[:1].upper()}{text[1:]}"] if text else []
+    return [f"{'✅ ' if clean else ''}{text[:1].upper()}{text[1:]}"] if text else []
 
 
 async def _last_outage(site: dict) -> str:
@@ -540,8 +543,10 @@ async def render_card(call: CallbackQuery, site: dict):
     pos = next((i for i, s in enumerate(sites) if s["id"] == sid), 0)
     st = await sitestatus.get(sid)
     found, blocks = await card_parts(site)
-    lines = [f"<b>{esc(site_label(url))}</b>{await hosting_words(site)}",
-             headline([icon_of(item[0]) for item in found], checked_at(st.get("avail")))]
+    # Before the first check the card knows nothing: not «всё в порядке».
+    head = (headline([icon_of(item[0]) for item in found], checked_at(st.get("avail"))) if st.get("avail")
+            else "⏳ Ещё не проверял — первая проверка в течение минуты")
+    lines = [f"<b>{esc(site_label(url))}</b>{await hosting_words(site)}", head]
     pause_row, notes = await _pause_rows(sid)
     lines += notes
     if found:

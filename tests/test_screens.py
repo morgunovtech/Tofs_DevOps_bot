@@ -279,7 +279,7 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     header, kb = await menu.build_main_menu()
     assert "Пока ни за чем не слежу" not in header and "<b>Боты и системы</b>" in header
     assert "<b>Сайты</b>" not in header
-    assert buttons(kb) == ["🤖 Боты", "⚙️ Настройки"]
+    assert buttons(kb) == ["➕ Сайт", "🤖 Боты", "⚙️ Настройки"]
 
 
 async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
@@ -740,7 +740,7 @@ async def test_site_card_tells_when_it_fell_where_it_lives_and_how_the_rest_is(b
                        "resolved = 1, resolved_at = datetime('now', '-2 days', '+5 minutes') WHERE id = ?", (inc_id,))
     await conn.commit()
     text = "\n".join(await sites.card_lines(await db.get_site(sid)))
-    assert "✅ Последний сбой " in text and " — 5 мин, хостинг отвечает ошибкой 502" in text
+    assert "\nПоследний сбой " in text and " — 5 мин, хостинг отвечает ошибкой 502" in text
     assert "✅ Фраза «Привет» на месте" in text
     assert await sites.hosting_words(await db.get_site(sid)) == " · Cloudflare"   # in the card's title
     assert "✅ DNS не менялись с " in text
