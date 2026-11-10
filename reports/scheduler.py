@@ -570,6 +570,8 @@ async def deliver_missed_alerts():
                            if availability else None)
             sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
                                      always_ring=availability, to_helpers=availability, helper_text=helper_text)
+            if availability:
+                await _remember_alert(inc["id"], sent, text)
             if availability and sent is not None:
                 _after_availability_alert(inc["url"], inc["site_id"], inc["id"],
                                           getattr(sent, "message_id", None), text, kb)
@@ -597,6 +599,7 @@ async def _send_availability_alert(r, site: dict):
     sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True,
                              to_helpers=True, helper_text=format_availability_alert(
                                  r, second, label=helper_label(r.url, site.get("http_method")), **dials))
+    await _remember_alert(r.incident_id, sent, msg)
     if sent is not None:
         _after_availability_alert(r.url, r.site_id, r.incident_id, getattr(sent, "message_id", None), msg, kb)
 
@@ -673,6 +676,14 @@ async def _alert_down(results: list, by_url: dict):
     within GROUP_WINDOW_MIN after it. A paused site always goes on its own:
     its alert is held until the silence ends."""
     now = datetime.now(UTC)
+    for r in results:
+        # One problem, not two: a site that is down is not also «медленно» —
+        # whether it is said on its own or in a group message.
+        forget_slow_streak(r.site_id)
+        try:
+            await resolve_incident(r.site_id, "performance")
+        except sqlite3.OperationalError as e:
+            logger.warning("Could not close the «медленно» of site %s: %s", r.site_id, e)
     fresh = await _not_paused(results)
     for r in results:
         if r not in fresh:
@@ -792,11 +803,22 @@ async def _recover_one(r):
 
 
 async def _alert_up(results: list):
-    """«Снова открывается»: one by one while they are few; one message when
-    several come back, which then takes the sites coming back within
-    GROUP_WINDOW_MIN after it. A paused site goes on its own: whether its ✅
-    passes the pause is notifier's rule (the fall was announced), and the
-    «🔧» pause it ends is lifted there (_send_recovery)."""
+    """«Снова открывается» (_say_up), then the single alerts and reminders
+    of every incident that is over are settled: they say «✅ Поднялся» and
+    lose their «🔧» (_settle_alerts). A group message is edited by _say_up
+    itself and is not touched here."""
+    await _say_up(results)
+    for r in results:
+        with _isolated(f"Settling the alerts of {site_label(r.url)}"):
+            await _settle_alerts(r.resolved_incident)
+
+
+async def _say_up(results: list):
+    """One by one while they are few; one message when several come back,
+    which then takes the sites coming back within GROUP_WINDOW_MIN after
+    it. A paused site goes on its own: whether its ✅ passes the pause is
+    notifier's rule (the fall was announced), and the «🔧» pause it ends is
+    lifted there (_send_recovery)."""
     now = datetime.now(UTC)
     fresh = await _not_paused(results)
     for r in results:
@@ -919,6 +941,60 @@ async def _redeploy_after_alert(url: str, site_id: int, incident_id: int | None,
 
 
 FOLLOWUP_MINUTES = (2, 5)
+ALERT_MSGS = "alert_msgs:"      # <incident id> → [[message_id, text], …] of its single alerts and reminders
+REMEMBERED_ALERTS = 5
+
+
+def _known_alerts(raw: str | None) -> list[tuple[int, str]]:
+    try:
+        items = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [(int(m), str(t)) for m, t in items if isinstance(m, int) and isinstance(t, str)] \
+        if isinstance(items, list) else []
+
+
+async def _remember_alert(incident_id: int | None, sent, text: str):
+    """The message of a single alert or reminder, to settle after the ✅
+    (ALERT_MSGS, the last REMEMBERED_ALERTS). True — queued or kept for a
+    retry: nothing to edit. A group message is _alert_up's to edit and is
+    never remembered here."""
+    message_id = getattr(sent, "message_id", None)
+    if not incident_id or not message_id:
+        return
+    key = f"{ALERT_MSGS}{incident_id}"
+    try:
+        known = _known_alerts(await get_state(key))
+        await set_state(key, json.dumps([*known, [message_id, text]][-REMEMBERED_ALERTS:]))
+    except sqlite3.OperationalError as e:
+        logger.warning("Could not remember the alert of incident %s: %s", incident_id, e)
+
+
+async def _settle_alerts(incident: dict | None):
+    """After the ✅ the alert and the reminders of the incident say
+    «✅ Поднялся» and keep only «ℹ️ Что делать»: «🔧» on an old alert would
+    pause a working site for an hour. The 2- and 5-minute re-checks of
+    those messages are cancelled."""
+    if not incident:
+        return
+    key = f"{ALERT_MSGS}{incident['id']}"
+    known = _known_alerts(await get_state(key))
+    if not known:
+        return
+    duration = incident_duration_line(incident)
+    when = f"{now_local():%H:%M}"
+    if (incident.get("message") or "").startswith("Bad content: "):
+        head = f"✅ Снова как надо в {when}" + (f", было не так {duration}" if duration else "")
+    else:
+        head = f"✅ Поднялся в {when}" + (f", лежал {duration}" if duration else "")
+    for message_id, text in known:
+        if _scheduler is not None:
+            for minutes in FOLLOWUP_MINUTES:
+                job = _scheduler.get_job(f"followup:{message_id}:{minutes}")
+                if job:
+                    job.remove()
+        await notifier.edit(message_id, clip(f"{head}. Было:\n{text}"), reply_markup=explain_keyboard(incident["id"]))
+    await set_state(key, None)
 
 
 def _schedule_followups(url: str, site_id: int, message_id: int, text: str, kb):
@@ -1810,13 +1886,14 @@ async def _escalate_one(inc: dict, sent_n: int, now: datetime, repeat_min: int):
     kb = InlineKeyboardMarkup(inline_keyboard=[*kb.inline_keyboard, _quiet_button(inc["id"])])
     # The helpers get the first reminder only (it is still «сайт лёг»):
     # the public name of the site and no talk of buttons they do not have.
+    text = (f"{_escalation_head(inc, age_min, every)}\n\n"
+            f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
+            f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.")
     sent = await notifier.send(
-        f"{_escalation_head(inc, age_min, every)}\n\n"
-        f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
-        f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.",
-        Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
+        text, Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
         to_helpers=sent_n == 0,
         helper_text=_escalation_head(inc, age_min, every, helper_label(inc["url"], inc.get("http_method"))))
+    await _remember_alert(inc["id"], sent, text)
     if sent:
         await set_state(f"escalated:{inc['id']}", now.isoformat())
         await set_state(f"escalated_n:{inc['id']}", str(sent_n + 1))

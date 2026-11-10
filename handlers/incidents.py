@@ -54,7 +54,9 @@ def explain_text(inc: dict) -> str:
     expl = humanize.explain(inc["check_type"], inc.get("message"))
     when = (f"закрыта {fmt_local(inc.get('resolved_at'))}" if inc.get("resolved")
             else f"с {fmt_local(inc.get('started_at') or inc['created_at'])}")
-    lines = [f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}", f"<i>{when}</i>", "",
+    head = (f"✅ Было: {esc(incident_line(inc))}" if inc.get("resolved")
+            else f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}")
+    lines = [head, f"<i>{when}</i>", "",
              esc(expl.meaning), "", f"Что это обычно значит: {esc(expl.cause)}.", "",
              esc(humanize.steps_block(expl))]
     if inc.get("resolved"):
@@ -70,7 +72,7 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}")])
     elif kind == "links":
         rows.append([InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
-    elif kind == "availability":
+    elif kind == "availability" and not inc.get("resolved"):     # «🔧» would pause a working site
         rows.append([InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{sid}"),
                      InlineKeyboardButton(text="🔍 Проверить сейчас", callback_data=f"act:recheck:{sid}")])
     elif kind in ("mail", "mail_auth"):

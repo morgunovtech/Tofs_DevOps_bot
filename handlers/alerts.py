@@ -160,6 +160,13 @@ async def cb_alert_action(call: CallbackQuery):
             text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
         await call.message.answer(text)
     elif action == "fix":
+        # An old alert about a site that opens by now: a pause would mute the
+        # next real fall for an hour. Pages with errors (deep) are still a fix.
+        if not any(i["site_id"] == site["id"] and i["check_type"] in ("availability", "deep")
+                   for i in await get_active_incidents()):
+            await ack(call, "Сайт сейчас работает — пауза не нужна. Чинишь что-то другое — поставь паузу "
+                            "на карточке сайта.", show_alert=True)
+            return
         await _quiet_hour(site["id"])
         length = maintenance.fix_length()
         await ack(call, f"Понял, молчу {length}")
