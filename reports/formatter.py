@@ -398,9 +398,23 @@ def incident_line(inc: dict) -> str:
                                       page=is_web_page(inc["url"], inc.get("http_method")))
 
 
+# Direction overrides and isolates (U+202A–U+202E, U+2066–U+2069) turn «exe.png» into «gnp.exe».
+_BIDI = dict.fromkeys([*range(0x202A, 0x202F), *range(0x2066, 0x206A)])
+
+
+def _one_line(value: str) -> str:
+    """A visitor's field as ONE line: no line breaks or control characters —
+    it cannot draw lines that look like the bot's own."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value).translate(_BIDI))
+    return esc(" ".join(text.split()))
+
+
 def format_feedback(site_url: str, page_url: str, message: str,
-                    feedback_id: int, ip_address: str) -> str:
+                    feedback_id: int, ip_address: str, verified: bool = False) -> str:
+    """The visitor's words stay inside a quote; the lines around it are the bot's."""
+    note = "" if verified else " (не подтверждено: так написал отправитель)"
+    text = "\n".join(_one_line(line) for line in str(message).translate(_BIDI).splitlines())
     return (f"📩 Сообщение с сайта\n"
-            f"Сайт: {esc(site_url)}\nСтраница: {esc(page_url)}\n"
-            f"Сообщение: {esc(message)}\n\n"
-            f"🆔 #{feedback_id} · 🌍 {esc(ip_address)}")
+            f"Сайт: {_one_line(site_url)}{note}\nСтраница: {_one_line(page_url)}\n"
+            f"Сообщение:\n<blockquote>{text}</blockquote>\n"
+            f"🆔 #{feedback_id} · 🌍 {_one_line(ip_address)}")

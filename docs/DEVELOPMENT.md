@@ -87,7 +87,9 @@ main.py                 точка входа: БД → сервисы → ве�
 │                       порядок в GitHub
 ├── reports/            планировщик (19 джоб), форматтеры, ASCII-недельный отчёт
 ├── handlers/           по роутеру на экран за одним AdminFilter
-├── web/                aiohttp: API фидбека, heartbeat, статус-страница + JSON
+├── web/                aiohttp: API фидбека (CORS только для сайтов из бота,
+│                       лимиты по адресу и по сайту, ≤5 сообщений в час в чат +
+│                       часовая сводка), heartbeat, статус-страница + JSON
 │                       + бейджи, виджет; HTML-шаблон в web/templates
 ├── db/                 aiosqlite, WAL, миграции через PRAGMA user_version,
 │                       ретенция, бэкапы

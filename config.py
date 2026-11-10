@@ -201,7 +201,13 @@ class Config:
     net_canaries: tuple[str, ...] = field(default_factory=lambda: tuple(
         s.strip() for s in os.getenv("NET_CANARIES", DEFAULT_NET_CANARIES).split(",") if s.strip()))
     # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
+    # TRUSTED_PROXIES (optional) narrows it further: the header counts only
+    # when the peer is in one of these networks (the proxy as the bot sees
+    # it: docker networks, localhost, a CDN's published ranges), and the
+    # visitor is the first address right-to-left that is not one of them.
+    # Empty: the header is trusted from any peer — only its last IP-shaped entry.
     trust_proxy: bool = _bool("TRUST_PROXY")
+    trusted_proxies: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("TRUSTED_PROXIES")))
     # Optional: every call to Telegram goes through this proxy
     # (socks5://user:pass@host:1080 or http://host:3128). For a server where
     # api.telegram.org is not reachable directly — a Russian VPS, for one.

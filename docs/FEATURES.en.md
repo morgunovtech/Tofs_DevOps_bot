@@ -88,7 +88,7 @@ curl -fsS https://your-server:8080/api/heartbeat/<job token>/backup
 - Secrets take care of themselves: an empty or placeholder `WEBHOOK_SECRET`/`HEARTBEAT_SECRET` is replaced by a generated one stored in the DB. The two are always different — the webhook secret is public by design (it ships in the widget), the heartbeat one is not. A heartbeat is accepted only with the job's own token (derived from the heartbeat secret) or the old shared heartbeat secret, never the webhook one.
 
 ### 📩 Bonus: feedback widget
-A tiny embeddable JS widget for your sites — messages land in your Telegram (rate limiting and size caps server-side) and stay readable in the bot («🔌 Подключения» → «📩 Обратная связь»). Two modes: a floating "⚠️ Проблема?" button, or `button: false` plus `data-devops-feedback` on any link — the classic footer "нашли опечатку?" opens the form with the visitor's selected text pre-filled. Setup snippet and the CSP notes: [docs/SETUP.md](docs/SETUP.md#виджет-обратной-связи-нашли-опечатку).
+A tiny embeddable JS widget for your sites — messages are stored in the bot («🔌 Подключения» → «📩 Обратная связь») and land in your Telegram with the visitor's text as a quote, so it cannot draw lines that look like the bot's own. Server-side: CORS only for the sites added to the bot (www. and subdomains count), separate rate limits per address and per site, size caps, and a budget of 5 chat messages per hour per site — the rest is stored and summed up in one quiet hourly message with a button to the list. Two modes: a floating "⚠️ Проблема?" button, or `button: false` plus `data-devops-feedback` on any link — the classic footer "нашли опечатку?" opens the form with the visitor's selected text pre-filled. Setup snippet and the CSP notes: [docs/SETUP.md](docs/SETUP.md#виджет-обратной-связи-нашли-опечатку).
 
 ## What it looks like
 
@@ -201,7 +201,7 @@ main.py                 entry point: DB → services → web server → schedule
 
 Stack: Python 3.12+, [aiogram 3](https://github.com/aiogram/aiogram), aiohttp, APScheduler, SQLite (WAL), stdlib `zoneinfo`. No external monitoring dependencies — the bot *is* the monitoring. No image libraries either: charts are monospace text.
 
-A note on the feedback widget's security model: the widget's "secret" ships to every site visitor, so the endpoint is treated as public — protection is rate limiting and strict size caps, not the token. That is exactly why the heartbeat endpoint uses a *different* secret. A deliberate, documented trade-off for a personal-scale tool.
+A note on the feedback widget's security model: the widget's "secret" ships to every site visitor, so the endpoint is treated as public — protection is CORS limited to the monitored sites, rate limits per address and per site, strict size caps and a per-site budget of chat messages (at most 5 an hour, the rest summed up hourly), not the token. That is exactly why the heartbeat endpoint uses a *different* secret. A deliberate, documented trade-off for a personal-scale tool.
 
 ## Development
 

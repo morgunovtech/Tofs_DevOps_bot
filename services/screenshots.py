@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import logging
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -136,8 +137,12 @@ def _sig(site_id: int) -> str:
     return hmac.new(key, f"shot:{site_id}".encode(), hashlib.sha256).hexdigest()[:16]
 
 
+_SIG_RE = re.compile(r"[0-9a-f]{16}")
+
+
 def sig_ok(site_id: int, sig: str) -> bool:
-    return hmac.compare_digest(_sig(site_id), sig)
+    """Format first, then bytes: a non-ASCII «signature» is a 404, not a 500."""
+    return bool(_SIG_RE.fullmatch(sig)) and hmac.compare_digest(_sig(site_id).encode(), sig.encode())
 
 
 def image_type(data: bytes) -> str:

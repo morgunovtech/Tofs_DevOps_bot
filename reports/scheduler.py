@@ -115,6 +115,7 @@ from utils import validate
 from utils.clock import local_tz, to_local
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
+from web.webhook import send_feedback_summary
 
 logger = logging.getLogger(__name__)
 
@@ -1871,6 +1872,7 @@ def setup_scheduler() -> AsyncIOScheduler:
         misfire_grace_time=60)
     job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
+    job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:
         # One reminder around day 25 of Railway's 30-day trial (services.railway).
         job(railway.remind_if_due, lambda: IntervalTrigger(hours=6, start_date=soon, timezone=UTC),
