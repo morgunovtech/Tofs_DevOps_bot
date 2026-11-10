@@ -86,10 +86,10 @@ class Module:
 MODULES = (
     ("second_opinion", Module(
         "🌐 Вторая точка проверки",
-        "перед тревогой «сайт лёг» перепроверю с серверов в других странах, раз в час — скорость из страны "
-        "твоей аудитории",
-        "почти всем: меньше ложных тревог. Бесплатно, без регистрации",
-        ("🌐 Вторая точка", "setup:so:on"))),
+        "перед тревогой «сайт лёг» перепроверю с серверов check-host.net в других странах; по желанию — "
+        "скорость из страны твоей аудитории",
+        "почти всем: меньше ложных тревог. Бесплатный сервис check-host.net, ему уходят адреса сайтов",
+        ("🌐 Вторая точка", "setup:so"))),
     ("watchdog", Module(
         "🛡 Внешний сторож",
         "healthchecks.io напишет тебе, если перестану работать я сам",
@@ -150,7 +150,7 @@ async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
     for key, m in MODULES:
         mark = " ✅ подключено" if on.get(key) else ""
         lines += ["", f"<b>{m.title}</b>{mark}", f"{m.gives[:1].upper()}{m.gives[1:]} → <i>{m.who}</i>."]
-        if not on.get(key):
+        if not on.get(key) or key == "second_opinion":   # its screen is where it is switched off too
             off.append(m.button)
     rows, row = [], []
     for label, data in off:

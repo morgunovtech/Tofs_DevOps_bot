@@ -81,6 +81,7 @@ from reports.formatter import (
 )
 from reports.weekly import build_weekly_report
 from services import (
+    automation,
     crux,
     github,
     gsc,
@@ -108,13 +109,14 @@ from services.actions import (
     explain_keyboard,
     heartbeat_keyboard,
     seo_fix_keyboard,
-    trigger_redeploy,
 )
 from services.notifier import Priority
 from utils import validate
 from utils.clock import local_tz, to_local
+from utils.net import is_private_target
 from utils.text import SAFE_LIMIT, chunks, clip, esc, fmt_duration, parse_iso_utc, parse_sqlite_utc, plural
 from utils.urls import is_api_check, is_web_page, short_host, site_label
+from web.webhook import send_feedback_summary
 
 logger = logging.getLogger(__name__)
 
@@ -467,7 +469,8 @@ async def deliver_missed_alerts():
             sent = await _alert_once(inc["id"], inc["site_id"], text, notifier.priority_for(inc["severity"]), kb,
                                      always_ring=availability, to_helpers=availability)
             if availability and sent is not None:
-                _after_availability_alert(inc["url"], inc["site_id"], getattr(sent, "message_id", None), text, kb)
+                _after_availability_alert(inc["url"], inc["site_id"], inc["id"],
+                                          getattr(sent, "message_id", None), text, kb)
         except Exception:
             logger.exception("Re-sending the alert of incident %s failed", inc["id"])
 
@@ -477,7 +480,7 @@ async def _send_availability_alert(r, site: dict):
     kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
     sent = await _alert_once(r.incident_id, r.site_id, msg, Priority.CRITICAL, kb, always_ring=True, to_helpers=True)
     if sent is not None:
-        _after_availability_alert(r.url, r.site_id, getattr(sent, "message_id", None), msg, kb)
+        _after_availability_alert(r.url, r.site_id, r.incident_id, getattr(sent, "message_id", None), msg, kb)
 
 
 async def _send_recovery(r):
@@ -500,18 +503,25 @@ async def _site_is_up(r, slow_ms: int):
     await _track_slow(r, slow_ms)
 
 
-def _after_availability_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
-    """Once the alert is out: the deploy hook (AUTO_REDEPLOY) — it reports
-    into the same message — and the 2- and 5-minute re-checks."""
-    if config.auto_redeploy and deploy_hook_for(url):
-        _enqueue(_redeploy_after_alert, url, site_id, message_id, text, kb)
+def _after_availability_alert(url: str, site_id: int, incident_id: int | None, message_id: int | None,
+                              text: str, kb):
+    """Once the alert is out: the deploy hook — whether to fire it is
+    services.automation's call (the «🚀» switch, the pause, the hook's
+    budget); it reports into the same message — and the 2- and 5-minute
+    re-checks."""
+    if deploy_hook_for(url):
+        _enqueue(_redeploy_after_alert, url, site_id, incident_id, message_id, text, kb)
     elif message_id is not None:
         _schedule_followups(url, site_id, message_id, text, kb)
 
 
-async def _redeploy_after_alert(url: str, site_id: int, message_id: int | None, text: str, kb):
-    res = await trigger_redeploy(url)
-    line = f"🤖 Уже сделал сам: 🚀 {res.text}" if res.ok else f"🤖 Пробовал пересобрать сайт — не вышло. {res.text}"
+async def _redeploy_after_alert(url: str, site_id: int, incident_id: int | None, message_id: int | None,
+                                text: str, kb):
+    line = await automation.auto_redeploy(url, site_id, incident_id)
+    if line is None:            # switched off: nothing to say, only the re-checks
+        if message_id is not None:
+            _schedule_followups(url, site_id, message_id, text, kb)
+        return
     if message_id is None:      # the alert sits in the outbox or the quiet queue — say it separately
         await notifier.send(f"{esc(site_label(url))}: {line}", Priority.NORMAL, site_id=site_id)
         return
@@ -758,11 +768,12 @@ async def run_seo_checks():
 async def run_card_pictures():
     """Once a day, after the search audit: a fresh picture of every page
     for its card (services.screenshots). One at a time — the free
-    screenshot service allows about fifty a day."""
+    screenshot service has a small daily quota, so only pages whose card
+    can show the picture, and never an internal address (is_due)."""
     for site in await get_all_sites():
         with _isolated(f"Card picture of {site_label(site['url'])}"):
             if is_web_page(site["url"], site.get("http_method")) \
-                    and await screenshots.is_due(site["id"]):
+                    and await screenshots.is_due(site["id"], site["url"]):
                 await screenshots.refresh(site["id"], site["url"])
 
 
@@ -779,11 +790,12 @@ REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
 
 
 async def run_region_checks():
-    """Hourly: how fast each site opens from the audience's region — a
-    check-host node picked by the owner's timezone. Same opt-in as the
-    second opinion (same external service). Sites that are down right now
-    are skipped: a timing of a broken site is noise."""
-    if not integrations.second_opinion_enabled():
+    """Every 6 hours: how fast each site opens from the audience's region —
+    a check-host node picked by the owner's timezone. Its own opt-in
+    (REGION_SPEED / «⏱ Скорость из региона»), off by default: the address
+    of every site goes to the external service. Sites that are down right
+    now are skipped: a timing of a broken site is noise."""
+    if not integrations.region_speed_enabled():
         return
     country = region.country_for_timezone(settings.timezone())
     for site in await get_all_sites():
@@ -857,8 +869,10 @@ def _security_keyboard(r):
 @_once("visitor_checks", mark=True)
 @_alerts_on("visitors")
 async def run_visitor_checks():
-    """Daily: real visitors' speed from Google's Chrome data, when a key is set."""
-    urls = await get_active_page_urls()
+    """Daily: real visitors' speed from Google's Chrome data, when a key is
+    set. An internal address is not asked about — Google would only learn
+    it — and its old finding closes as inapplicable."""
+    urls = [u for u in await get_active_page_urls() if not is_private_target(u)]
     await close_inapplicable(("visitors",), urls)
     await _notify_transitions(await check_all_visitors(urls), format_visitors_alert, format_visitors_recovery,
                               keyboard=_visitors_keyboard)
@@ -1098,10 +1112,14 @@ async def run_container_watch():
                                     f"(было: {esc(e['problem'])}). Ничего делать не нужно.")
             elif not await get_state(key):
                 expl = humanize.EXPLANATIONS["container"]
+                # Not restarted because the owner said so (the «🔁» switch, the pause): the
+                # container is still down, and the owner hears that — and why nothing was done.
+                verdict = ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
+                           else f"Сам больше не перезапускаю: {esc(e['skipped'])}. Нужен человек."
+                           if e.get("skipped") else "Перезапустить не удалось.")
                 sent = await notifier.send(
-                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. "
-                    + ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
-                       else "Перезапустить не удалось.") + f"\n{expl.meaning}\n\n{_container_steps(name)}",
+                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. {verdict}"
+                    f"\n{expl.meaning}\n\n{_container_steps(name)}",
                     Priority.CRITICAL)
                 if sent:
                     await set_state(key, "1")
@@ -1756,7 +1774,7 @@ def _cron_specs() -> dict[str, dict]:
         "mail_checks": dict(minute=25),
         "security_checks": dict(hour="*/6", minute=35),
         "visitor_checks": _before_morning(50),
-        "region_checks": dict(minute=17),
+        "region_checks": dict(hour="*/6", minute=17),
         "deep_checks": dict(minute=40),
         "retention": dict(hour=3, minute=30),
         "db_backup": dict(hour=3, minute=45),
@@ -1871,6 +1889,7 @@ def setup_scheduler() -> AsyncIOScheduler:
         misfire_grace_time=60)
     job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
+    job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:
         # One reminder around day 25 of Railway's 30-day trial (services.railway).
         job(railway.remind_if_due, lambda: IntervalTrigger(hours=6, start_date=soon, timezone=UTC),

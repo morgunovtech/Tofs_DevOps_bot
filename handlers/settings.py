@@ -4,6 +4,7 @@ connections (the test alert lives there), status page, feedback,
 export/import. What is watched — sites, tasks and bots — is on the main
 screen, not here."""
 
+import contextlib
 import secrets as _secrets
 
 from aiogram import F, Router
@@ -14,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import count_feedback
-from handlers.common import ack, back_button, cancel_kb, render
+from handlers.common import STALE_TAP, ack, back_button, cancel_kb, render
 from handlers.menu import mute_until_local
 from reports.scheduler import reschedule_all
 from services import (
@@ -139,8 +140,10 @@ async def cb_helper_invite(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("helper_rm:"))
 async def cb_helper_remove(call: CallbackQuery):
+    if not await ack(call):                     # a tap from the queue after a restart removes nobody
+        await call.message.answer(STALE_TAP)
+        return
     gone = await helpers.remove(call.data.split(":", 1)[1])
-    await ack(call, f"Убрал: {gone['name']}" if gone else "Его уже нет")
     if gone:
         await notifier.send_to(gone["chat_id"], "Владелец убрал тебя из помощников — тревоги больше не приходят.")
     await render(call, *await helpers_screen())
@@ -204,6 +207,15 @@ async def cb_reports(call: CallbackQuery):
 @router.callback_query(F.data.startswith("set_"))
 async def cb_settings_pick(call: CallbackQuery):
     kind, _, value = call.data.partition(":")
+    if kind == "set_sp" and value == "on":
+        # Publishing the status page waits for a fresh tap (STALE_TAP rule); switching off is always safe.
+        if not await ack(call, "Сохранено ✅"):
+            await call.message.answer(STALE_TAP)
+            return
+        await settings.set_status_page(True)
+        with contextlib.suppress(TelegramBadRequest):
+            await show_status_page(call)
+        return
     if kind == "set_m" and _offered(value, MORNING_HOURS) is not None:
         await settings.set_morning_hour(int(value))
     elif kind == "set_e" and (value == "off" or _offered(value, EVENING_HOURS) is not None):
@@ -346,6 +358,8 @@ async def cb_status_page(call: CallbackQuery):
 @router.callback_query(F.data.startswith("sp_secret:"))
 async def cb_status_page_secret(call: CallbackQuery):
     on = call.data.endswith(":on")
+    if not await ack(call, "Готово"):
+        await call.message.answer(STALE_TAP)
+        return
     await integrations.set_value("status_page_slug", _secrets.token_urlsafe(8) if on else None)
-    await ack(call, "Готово")
     await show_status_page(call)

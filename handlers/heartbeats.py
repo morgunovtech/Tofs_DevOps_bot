@@ -13,7 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_state
-from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, render
+from handlers.common import HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.text import esc
@@ -244,10 +244,13 @@ async def cb_hb_remove_here(call: CallbackQuery):
     """«🗑 Удалить» under an alert or the digest: remove the task and drop its
     buttons — the message itself stays as it was."""
     name = call.data.split(":", 1)[1]
-    removed = await settings.remove_heartbeat_job(name)
+    known = name in settings.heartbeat_jobs()
+    if not await ack(call, f"Удалил «{name}» — больше не жду" if known else "Её уже нет"):
+        await call.message.answer(STALE_TAP)    # pressed while the bot was down: nothing is deleted
+        return
+    removed = known and await settings.remove_heartbeat_job(name)
     if removed:
         await heartbeats.forget_status(name)
-    await ack(call, f"Удалил «{name}» — больше не жду" if removed else "Её уже нет")
     markup = getattr(call.message, "reply_markup", None)
     if removed and markup is not None:
         rows = [row for row in markup.inline_keyboard
@@ -260,11 +263,14 @@ async def cb_hb_remove_here(call: CallbackQuery):
 async def cb_hb_del(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
     from_env = settings.heartbeat_job_from_env(name)
-    if not await settings.remove_heartbeat_job(name):
+    if name not in settings.heartbeat_jobs():
         await ack(call, "Её уже нет", show_alert=True)
         return
+    if not await ack(call, "Удалил"):
+        await call.message.answer(STALE_TAP)
+        return
+    await settings.remove_heartbeat_job(name)
     await heartbeats.forget_status(name)
-    await ack(call, "Удалил")
     note = ("\n\nОна была записана в переменной <code>HEARTBEAT_JOBS</code> на сервере бота. Там она "
             "может остаться — я её больше не жду." if from_env else "")
     await render(call, f"🗑 «{esc(name)}» больше не жду.{note}", back_button())

@@ -1,23 +1,87 @@
 """One-tap actions attached to alert messages: act:<action>:<site_id>.
 Results go out as replies — the alert text itself stays intact and the
-buttons remain usable."""
+buttons remain usable. «🚀»/«🧹» change production: the first tap asks,
+«Да» (act:ok:…) within automation.CONFIRM_TTL does — once, journaled."""
 
 from datetime import UTC, datetime, timedelta
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, CallbackQuery
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, set_state
-from handlers.common import ack, cb_args, site_by_cb
+from handlers.common import STALE_TAP, ack, cb_args, render, site_by_cb
 from monitors.availability import check_availability
-from services import humanize, maintenance
+from services import automation, humanize, maintenance
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
 from utils.text import esc
-from utils.urls import is_web_page, short_host, site_label
+from utils.urls import host_of, is_web_page, short_host, site_label
 
 router = Router(name="alerts")
+
+# «🚀»/«🧹» change production: the first tap asks, «Да» within CONFIRM_TTL does.
+_CONFIRM = {
+    "redeploy": ("🚀 Да, пересобрать",
+                 "🚀 Пересобрать {label}? Cloudflare Pages выложит то, что сейчас лежит в ветке сайта, "
+                 "сборка займёт 1–2 минуты."),
+    "purge": ("🧹 Да, сбросить кэш",
+              "🧹 Сбросить кэш Cloudflare для {host}? Первые посетители после сброса пойдут мимо кэша "
+              "прямо на сервер сайта."),
+}
+
+
+def _target(action: str, url: str) -> str:
+    """What the double-tap guard and the journal key the action by: the hook
+    for a rebuild (never its secret address), the host for a purge."""
+    return (automation.redeploy_target(url) or host_of(url)) if action == "redeploy" else host_of(url)
+
+
+async def _ask(call: CallbackQuery, action: str, site: dict):
+    url = site["url"]
+    button, question = _CONFIRM[action]
+    text = question.format(label=esc(site_label(url)), host=esc(host_of(url)))
+    if action == "redeploy":
+        done = await automation.last_auto("redeploy", _target(action, url), automation.BUDGETS["redeploy"][1])
+        if done:
+            text += f"\nЯ уже пересобирал его сам в {done}."
+    stamp = int(datetime.now(UTC).timestamp())
+    await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=button, callback_data=f"act:ok:{action}:{site['id']}:{stamp}"),
+        InlineKeyboardButton(text="✖️ Отмена", callback_data=f"act:no:{site['id']}")]]))
+
+
+# Registered BEFORE cb_alert_action: its F.data.startswith("act:") would take «act:ok:…» first.
+@router.callback_query(F.data.startswith("act:ok:"))
+async def cb_alert_confirmed(call: CallbackQuery):
+    """act:ok:<redeploy|purge>:<site_id>:<unix time of the question>."""
+    parts = (call.data or "").split(":")
+    if len(parts) != 5 or parts[2] not in _CONFIRM or not parts[3].isdigit() or not parts[4].isdigit():
+        await ack(call, "Не понял действие", show_alert=True)
+        return
+    action, sid, asked = parts[2], parts[3], int(parts[4])
+    if not await ack(call, "Запускаю…"):
+        await call.message.answer(STALE_TAP)
+        return
+    site = await site_by_cb(sid)
+    if not site:
+        await call.message.answer("Сайт не найден или убран из мониторинга — ничего не делаю.")
+        return
+    if datetime.now(UTC).timestamp() - asked > automation.CONFIRM_TTL.total_seconds():
+        await call.message.answer("⌛ Этот вопрос устарел — нажми кнопку под тревогой ещё раз.")
+        return
+    url = site["url"]
+    row, why = await automation.tap(action, _target(action, url), label=host_of(url))
+    if row is None:
+        await call.message.answer(f"⏳ Не запускаю второй раз: {esc(why)}.")
+        return
+    if action == "redeploy":
+        res = await trigger_redeploy(url)
+        text = ("🚀 " if res.ok else "❌ ") + res.text
+    else:
+        text = await purge_cf_cache(url)
+    await automation.finish(row, text)
+    await call.message.answer(text)
 
 
 @router.callback_query(F.data.startswith("act:"))
@@ -72,12 +136,11 @@ async def cb_alert_action(call: CallbackQuery):
                 caption=f"📸 {esc(short_host(url))} · {now_local().strftime('%d.%m %H:%M')}")
         else:
             await call.message.answer(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
-    elif action == "redeploy":
-        await ack(call, "Запускаю передеплой…")
-        res = await trigger_redeploy(url)
-        await call.message.answer(f"{'🚀' if res.ok else '❌'} {res.text}")
-    elif action == "purge":
-        await ack(call, "Сбрасываю кэш…")
-        await call.message.answer(await purge_cf_cache(url))
+    elif action in _CONFIRM:
+        await ack(call)
+        await _ask(call, action, site)
+    elif action == "no":
+        await ack(call)
+        await render(call, "✖️ Хорошо, ничего не делаю.")
     else:
         await ack(call, "Неизвестное действие", show_alert=True)

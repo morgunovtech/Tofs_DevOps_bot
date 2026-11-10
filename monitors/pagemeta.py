@@ -5,6 +5,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 
 from monitors.base import decode_body, phrase_found, read_capped
+from utils.net import owner_connector
 from utils.urls import USER_AGENT, host_of, registrable_domain
 
 TIMEOUT = aiohttp.ClientTimeout(total=10, connect=5)
@@ -17,7 +18,8 @@ async def suggest_keyword(url: str) -> str | None:
     phrase_found: in the source, or in the text as a visitor sees it — so
     «&nbsp;», «&laquo;» or a <b> inside the heading no longer disqualify it)."""
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as s:
+        async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT},
+                                         connector=owner_connector(url)) as s:
             async with s.get(url, allow_redirects=True) as resp:
                 if resp.status != 200 or "html" not in (resp.content_type or ""):
                     return None
@@ -48,7 +50,10 @@ async def alt_host_note(url: str) -> str | None:
         return None
     alt_url = f"https://{alt}/"
     try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as s:
+        # Trusted is the monitor's address, not the twin: the twin is its own
+        # domain anyway, and must be public unless the monitor is a LAN one.
+        async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT},
+                                         connector=owner_connector(url)) as s:
             async with s.get(alt_url, allow_redirects=False) as resp:
                 if 300 <= resp.status < 400:
                     return None                       # redirects to the main version — fine

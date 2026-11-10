@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_incident, resolve_all_incidents, resolve_incident_by_id
-from handlers.common import ack, back_button, render
+from handlers.common import STALE_TAP, ack, back_button, render
 from reports.formatter import incident_line
 from services import crux, humanize, sitestatus
 from utils.clock import fmt_local
@@ -115,7 +115,9 @@ async def cb_incident_explain(call: CallbackQuery):
 
 @router.callback_query(F.data == "incidents_clear")
 async def cb_incidents_clear(call: CallbackQuery):
-    await ack(call)
+    if not await ack(call):
+        await call.message.answer(STALE_TAP)
+        return
     n = await resolve_all_incidents()
     await render(call, f"🗑 Закрыл {n}. Если что-то из этого всё ещё сломано, следующая проверка "
                        f"откроет проблему заново.", back_button())
@@ -124,8 +126,9 @@ async def cb_incidents_clear(call: CallbackQuery):
 @router.callback_query(F.data.startswith("inc_close:"))
 async def cb_incident_close(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
-    if arg.isdigit() and await resolve_incident_by_id(int(arg)):
-        await ack(call, "Закрыл ✅")
-    else:
-        await ack(call, "Уже закрыта")
+    if not await ack(call, "Закрываю…"):
+        await call.message.answer(STALE_TAP)
+        return
+    if not (arg.isdigit() and await resolve_incident_by_id(int(arg))):
+        await call.message.answer("Уже закрыта.")
     await render_incidents(call)

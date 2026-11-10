@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_all_sites, get_site
-from handlers.common import ack, back_button, cancel_kb, cb_args, render, site_by_cb
+from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_args, render, site_by_cb
 from services import maintenance
 from utils.parse import parse_time_window
 from utils.text import esc
@@ -162,6 +162,9 @@ async def msg_mw_time(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("mw_del:"))
 async def cb_mw_del(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
-    removed = arg.isdigit() and await maintenance.remove_window(int(arg))
-    await ack(call, "Удалено" if removed else "Уже удалено")
+    if not await ack(call, "Удаляю…"):
+        await call.message.answer(STALE_TAP)
+        return
+    if not (arg.isdigit() and await maintenance.remove_window(int(arg))):
+        await call.message.answer("Уже удалено.")
     await _show(call)

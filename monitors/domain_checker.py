@@ -9,6 +9,7 @@ from monitors import rdap
 from monitors.base import DomainResult, gather_checks
 from monitors.ladder import apply_ladder
 from services import sitestatus
+from utils.net import is_private_target
 from utils.urls import host_of, registrable_domain
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,13 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
         pass
     else:
         r.unsupported, r.error = True, "это IP-адрес, домена нет"
+        await save_check(site_id, "domain", "ok", details=r.error)
+        await sitestatus.update(site_id, "domain", days_left=None, unsupported=True, error=r.error)
+        return r
+    if is_private_target(url):
+        # nas.local, pihole.lan, a single-label name: no registration to
+        # look up, and the name must not go to rdap.org.
+        r.unsupported, r.error = True, "внутренний адрес — регистрации домена нет"
         await save_check(site_id, "domain", "ok", details=r.error)
         await sitestatus.update(site_id, "domain", days_left=None, unsupported=True, error=r.error)
         return r

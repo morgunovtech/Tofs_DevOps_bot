@@ -22,16 +22,13 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-import dns.exception
-import dns.resolver
-
 from db.database import (
     get_active_host_urls,
     get_dns_record,
     get_or_create_site,
 )
 from monitors.base import CheckResult, Finding
-from monitors.dns_checker import _resolve_sync
+from monitors.dns_checker import query, resolve
 from monitors.ladder import apply_incident
 from monitors.second_opinion import second_opinion_up
 from services import hosting, humanize, integrations, sitestatus
@@ -108,32 +105,16 @@ def provider_by_include(domain: str) -> Provider | None:
 
 # ── DNS ──────────────────────────────────────────────────────────────────────
 
-def _resolver() -> dns.resolver.Resolver:
-    resolver = dns.resolver.Resolver()
-    resolver.lifetime = 8
-    return resolver
-
-
-def _txt_sync(name: str) -> list[str] | None:
+async def _txt(name: str) -> list[str] | None:
     """TXT strings with their chunks joined; [] = none; None = lookup failed."""
-    try:
-        answer = _resolver().resolve(name, "TXT")
-        return [b"".join(r.strings).decode("utf-8", "replace") for r in answer]
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-        return []
-    except dns.exception.DNSException as e:
-        logger.debug("TXT %s failed: %s", name, e)
-        return None
+    answer = await query(name, "TXT")
+    return None if answer is None else [b"".join(r.strings).decode("utf-8", "replace") for r in answer]
 
 
-def _mx_sync(domain: str) -> list[str] | None:
+async def _mx(domain: str) -> list[str] | None:
     """MX hosts, most preferred first; [] = no mail (a null MX «.» too)."""
-    try:
-        answer = _resolver().resolve(domain, "MX")
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
-        return []
-    except dns.exception.DNSException as e:
-        logger.debug("MX %s failed: %s", domain, e)
+    answer = await query(domain, "MX")
+    if answer is None:
         return None
     hosts = [r.exchange.to_text().rstrip(".").lower() for r in sorted(answer, key=lambda r: r.preference)]
     return [h for h in hosts if h]
@@ -141,8 +122,7 @@ def _mx_sync(domain: str) -> list[str] | None:
 
 async def _exists(host: str) -> bool | None:
     """Has an address; None = could not tell."""
-    answers = await asyncio.gather(asyncio.to_thread(_resolve_sync, host, "A"),
-                                   asyncio.to_thread(_resolve_sync, host, "AAAA"))
+    answers = await asyncio.gather(resolve(host, "A"), resolve(host, "AAAA"))
     if any(answers):
         return True
     return None if None in answers else False
@@ -196,7 +176,7 @@ async def spf_expand(record: str) -> tuple[int, set[str]]:
             if name in included or "%" in name:
                 continue
             included.add(name)
-            nested = spf_records(await asyncio.to_thread(_txt_sync, name) or [])
+            nested = spf_records(await _txt(name) or [])
             if len(nested) == 1:
                 queue.append(nested[0])
     return lookups, included
@@ -207,7 +187,7 @@ async def _dkim_found(domain: str, selectors: tuple[str, ...]) -> bool | None:
     lookups failed, so nothing can be said."""
     if not selectors:
         return None
-    answers = await asyncio.gather(*(asyncio.to_thread(_txt_sync, f"{s}._domainkey.{domain}") for s in selectors))
+    answers = await asyncio.gather(*(_txt(f"{s}._domainkey.{domain}") for s in selectors))
     if any(any("p=" in t.replace(" ", "") for t in a or []) for a in answers):
         return True
     return None if None in answers else False
@@ -400,9 +380,9 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
     """Both verdicts for one domain: [delivery, spam]. Lookups that failed
     leave the previous snapshot and the incidents as they were."""
     site_id = await get_or_create_site(url)
-    mx = await asyncio.to_thread(_mx_sync, domain)
-    txt = await asyncio.to_thread(_txt_sync, domain)
-    dmarc_txt = await asyncio.to_thread(_txt_sync, f"_dmarc.{domain}")
+    mx = await _mx(domain)
+    txt = await _txt(domain)
+    dmarc_txt = await _txt(f"_dmarc.{domain}")
     if mx is None or txt is None or dmarc_txt is None:
         logger.info("Mail check for %s: DNS lookups failed, keeping the last result", domain)
         return []

@@ -1,13 +1,16 @@
-"""Response time from where the audience is — hourly, via check-host.net.
+"""Response time from where the audience is — every 6 hours, via check-host.net.
 
 The bot's own probe runs from wherever the bot is hosted: Railway in the
-US for a site whose visitors are in Russia. One request per hour from a
-check-host node in the owner's region gives the number the owner cares
-about: «из России, 0.8 с». Off unless the second opinion (the same
-external service, same opt-in) is enabled."""
+US for a site whose visitors are in Russia. One request every six hours
+from a check-host node in the owner's region gives the number the owner
+cares about: «из России, 0.8 с». Its own opt-in (REGION_SPEED, off by
+default): the address of every site goes to the external service, and that
+is a choice the owner makes, not a side effect of the second opinion. Only
+the site's origin goes there — never a path or a query."""
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -79,13 +82,28 @@ def parse_ms(node_result) -> int | None:
     return None
 
 
+def origin(url: str) -> str:
+    """scheme://host[:port]/ — the speed of the site, not of one page: no
+    path, no query (it may hold a token) goes to check-host."""
+    try:
+        p = urlparse(url)
+        port = f":{p.port}" if p.port else ""
+    except ValueError:
+        return url                       # malformed: endpoint_for refuses it as it is
+    return f"{p.scheme}://{p.hostname}{port}/"
+
+
 async def measure(url: str, country: str) -> tuple[int, str] | None:
     """(ms, «из России») from a node in the country — or from whichever node
     check-host picks when that country has none. None on any failure."""
-    target = endpoint_for(url)
+    page = origin(url)
+    # The same gate as the second opinion (an internal address never leaves
+    # the bot) — on the origin: a query of the monitor's address stays home
+    # either way, and the site's speed is still worth measuring.
+    target = endpoint_for(page)
     if not target or target[0] != "check-http":
         return None
-    attempts = ({"host": url, "node": f"{country}1.node.check-host.net"}, {"host": url, "max_nodes": 1})
+    attempts = ({"host": page, "node": f"{country}1.node.check-host.net"}, {"host": page, "max_nodes": 1})
     try:
         async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"Accept": "application/json"}) as session:
             for params in attempts:

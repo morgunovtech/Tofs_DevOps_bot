@@ -543,9 +543,9 @@ async def test_a_clean_manual_link_check_closes_the_links_alert(bot, db, monkeyp
     page = {"html": '<a href="https://gone.test/x">x</a>'}
 
     async def fetch(session, url):
-        return page["html"]
+        return page["html"], url
 
-    async def link(session, url, base):
+    async def link(session, url):
         return LinkCheck(url, 404 if "gone" in url else 200, "gone" not in url)
 
     monkeypatch.setattr(links_checker, "_fetch_page", fetch)

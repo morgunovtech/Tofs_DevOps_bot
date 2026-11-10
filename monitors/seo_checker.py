@@ -42,6 +42,7 @@ from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, rea
 from monitors.security_checker import plain_http_opens
 from monitors.sitemap import pick_sample, scan_sitemap
 from services import seo_fixes, sitestatus
+from utils.net import owner_connector
 from utils.text import plural
 from utils.urls import USER_AGENT, bare_host
 
@@ -314,7 +315,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
     problems = r.problems
 
     # The session carries the timeout: plain_http_opens has none of its own.
-    async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+    async with aiohttp.ClientSession(timeout=TIMEOUT, connector=owner_connector(url)) as session:
         # Unreachable, down (5xx) or blocking this server (401/403/451) →
         # every check below would produce false findings and a bogus SEO
         # incident. Availability is another monitor's job — skip as transient.

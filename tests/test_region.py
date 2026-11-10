@@ -51,11 +51,13 @@ async def test_region_job_writes_the_snapshot_and_the_card_shows_it(bot, db, mon
         return (250, "из России") if country == "ru" else None
     monkeypatch.setattr(region, "measure", fake_measure)
 
-    await scheduler.run_region_checks()                 # second opinion off → external service untouched
-    assert "region" not in await sitestatus.get(sid)
     await integrations.set_value("second_opinion", "on")
+    await scheduler.run_region_checks()                 # its own switch is off → external service untouched
+    assert "region" not in await sitestatus.get(sid)
+    await integrations.set_value("region_speed", "on")
     await scheduler.run_region_checks()
     assert (await sitestatus.get(sid))["region"]["ms"] == 250
     lines = await sites.card_lines(await db.get_site(sid))
     assert any("из России" in line and "0.25 с" in line for line in lines)
     await integrations.set_value("second_opinion", None)
+    await integrations.set_value("region_speed", None)

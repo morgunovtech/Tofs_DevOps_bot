@@ -1,5 +1,7 @@
 """Bot-host monitoring: disk usage with auto-cleanup, and watching /
-auto-restarting docker containers on the same host. With an empty
+auto-restarting docker containers on the same host. Both act on the host
+only through services.automation: the owner's switches, the pause for
+everything automatic, the cleanup budget and the journal live there. With an empty
 AUTORESTART_CONTAINERS the container features are off; with a non-empty one
 and a Docker that does not answer (no socket, or a socket nobody listens on)
 the watch does not go quiet — it reports that (the `api_down` event), and a
@@ -19,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 from config import config
 from db.database import db_file, get_state, set_state
-from services import docker_api
+from services import automation, docker_api
 from utils.text import parse_iso_utc
 
 logger = logging.getLogger(__name__)
@@ -65,11 +67,12 @@ PRUNE_EVERY = timedelta(hours=12)
 
 
 async def check_disk(auto_cleanup: bool | None = None) -> dict:
-    """Disk usage; over the threshold and with AUTO_CLEANUP=1, a docker
-    prune (services.docker_api.prune) — at most once in PRUNE_EVERY, and
-    not again in the same full-disk episode once a prune freed nothing."""
-    if auto_cleanup is None:
-        auto_cleanup = config.auto_cleanup
+    """Disk usage; over the threshold, a docker prune (services.docker_api
+    .prune) when the gate allows it (automation.claim: the «🧹» switch —
+    AUTO_CLEANUP or the chat —, the pause, at most once in PRUNE_EVERY), and
+    not again in the same full-disk episode once a prune freed nothing.
+    auto_cleanup=False — look only (the morning report)."""
+    look_only = auto_cleanup is False
     m = _measure()
     pct, used_gb, total_gb = m["pct"], m["used_gb"], m["total_gb"]
     result = {"path": m["path"], "label": m["label"],
@@ -78,18 +81,23 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
               "cleaned": None, "cleaned_bytes": None, "cleanup_failed": False,
               "pct_after": pct, "used_gb_after": round(used_gb, 1)}
     if not result["over_threshold"]:
-        if auto_cleanup and await get_state("disk_prune_useless"):
+        if not look_only and await get_state("disk_prune_useless"):
             await set_state("disk_prune_useless", None)   # a new full-disk episode may prune again
         return result
     # A prune frees the root disk only: a full database volume gains nothing from it.
-    if not auto_cleanup or m["root_pct"] < config.disk_alert_pct or await get_state("disk_prune_useless"):
+    if look_only or m["root_pct"] < config.disk_alert_pct or await get_state("disk_prune_useless"):
         return result
     now = datetime.now(UTC)
     last = parse_iso_utc(await get_state("disk_pruned_at"))
     if last and now - last < PRUNE_EVERY:
         return result
+    row, _why = await automation.claim("cleanup", "docker", f"диск заполнен на {pct}%")
+    if row is None:
+        return result                         # off, paused or done lately: the gate said why in the log
     await set_state("disk_pruned_at", now.isoformat())
     cleaned = await docker_api.prune()
+    await automation.finish(row, "Docker не ответил" if cleaned is None
+                            else f"освободил {cleaned['bytes'] / 1e9:.1f} GB")
     if cleaned is not None:
         result["cleaned"], result["cleaned_bytes"] = cleaned, cleaned["bytes"]
         # Measure everything again, so the alert's percent and gigabytes agree.
@@ -131,6 +139,8 @@ async def watch_containers() -> list[dict]:
       {"name", "healthy": True, "healthy_for"}        running, healthcheck passing (or none)
       {"name", "waiting": True}                       starting up / within the gap: no verdict
       {"name", "problem", "gave_up": True}            broken, the budget is spent
+      {"name", "problem", "skipped": why, …}          broken, not restarted: the «🔁» switch is
+                                                      off or everything automatic is paused
       {"name", "problem", "restarted", "ok_after"}    broken: restarted (or the restart failed);
                                                       with "unverified": True the run's budget
                                                       ran out before the verdict"""
@@ -170,12 +180,23 @@ async def watch_containers() -> list[dict]:
         if history and now - history[-1] < BACKOFF * 2 ** (len(history) - 1):
             events.append({"name": name, "waiting": True})
             continue
+        # The gate: the «🔁» switch, the pause for everything automatic, the
+        # journal. The budget per episode is the one above — not an hourly one.
+        row, why = await automation.claim("restart", name, problem)
+        if row is None:
+            events.append({"name": name, "problem": problem, "restarted": False, "ok_after": False,
+                           "skipped": why})
+            continue
         # Written before the call: if the restart ever takes this process down,
         # the next start still sees it.
         history.append(now)
         await set_state(f"restarts:{name}", json.dumps([t.isoformat() for t in history]))
         restarted = await docker_api.restart_container(name)
         verdict = await _comes_up(name, run_deadline) if restarted else False
+        await automation.finish(row, "перезапустил, работает" if verdict
+                                else "перезапустил, вердикта пока нет" if verdict is None
+                                else "перезапустил, всё ещё нездоров" if restarted
+                                else "Docker не принял команду")
         event = {"name": name, "problem": problem, "restarted": restarted, "ok_after": bool(verdict)}
         if verdict is None:
             event["unverified"] = True

@@ -4,7 +4,6 @@ generated secrets, UI overrides) lives in the services layer, not here."""
 import logging
 import os
 import re
-import string
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -130,15 +129,18 @@ def _url(name: str, schemes: tuple[str, ...]) -> str:
     return raw
 
 
+# Values of a URL template that mean «this feature is off».
+TEMPLATE_OFF = ("off", "0", "no", "none", "false")
+
+
 def _template(name: str, default: str) -> str:
-    """A URL template whose only field is {url}; anything else breaks later."""
+    """A URL template with a {url} field (other braces are a provider's own
+    and stay as they are), or an «off» word that switches the feature off."""
     raw = os.getenv(name, "").strip() or default
-    try:
-        fields = {f for _, f, _, _ in string.Formatter().parse(raw) if f is not None}
-    except ValueError:
-        fields = set()
-    if fields != {"url"}:
-        logger.warning("Invalid %s — it needs {url} and no other {…} field; using the default", name)
+    if raw.lower() in TEMPLATE_OFF:
+        return "off"
+    if "{url}" not in raw:
+        logger.warning("Invalid %s — it needs {url} (or «off»); using the default", name)
         return default
     return raw
 
@@ -201,7 +203,13 @@ class Config:
     net_canaries: tuple[str, ...] = field(default_factory=lambda: tuple(
         s.strip() for s in os.getenv("NET_CANARIES", DEFAULT_NET_CANARIES).split(",") if s.strip()))
     # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
+    # TRUSTED_PROXIES (optional) narrows it further: the header counts only
+    # when the peer is in one of these networks (the proxy as the bot sees
+    # it: docker networks, localhost, a CDN's published ranges), and the
+    # visitor is the first address right-to-left that is not one of them.
+    # Empty: the header is trusted from any peer — only its last IP-shaped entry.
     trust_proxy: bool = _bool("TRUST_PROXY")
+    trusted_proxies: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("TRUSTED_PROXIES")))
     # Optional: every call to Telegram goes through this proxy
     # (socks5://user:pass@host:1080 or http://host:3128). For a server where
     # api.telegram.org is not reachable directly — a Russian VPS, for one.
@@ -237,6 +245,9 @@ class Config:
 
     # ── Second-opinion check (external vantage point) ────────────────────────
     second_opinion: bool = _bool("SECOND_OPINION", "1")
+    # Every 6 hours the address of each site goes to check-host.net for the
+    # «из России, 0.8 с» line of the card. Its own opt-in, off by default.
+    region_speed: bool = _bool("REGION_SPEED", "0")
 
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
     deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10, 0, 100)
@@ -277,6 +288,14 @@ class Config:
     # Off by default: removes dangling docker images and old build cache on the
     # whole host when the disk is full (services.docker_api.prune).
     auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
+
+    # ── Where checks may connect (utils.net) ─────────────────────────────────
+    # 1: a monitor the owner types may be an internal address (a NAS, a LAN
+    # service) — as before; so may its own name when the DNS points it inside.
+    # 0: only public addresses, even typed ones — the strict mode for watching
+    # other people's sites. Links, nested sitemaps, the redirects of public
+    # sites and the screenshot service's image never lead inside either way.
+    allow_private_targets: bool = _bool("ALLOW_PRIVATE_TARGETS", "1")
 
     # ── SSL renewal watch ────────────────────────────────────────────────────
     ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10, 0, 60)

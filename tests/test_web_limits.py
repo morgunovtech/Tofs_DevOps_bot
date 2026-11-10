@@ -27,7 +27,7 @@ async def _closed_by_server(reader: asyncio.StreamReader) -> bool:
         return False
 
 
-async def test_silent_flood_keeps_health_alive_and_fds_bounded(monkeypatch):
+async def test_silent_flood_keeps_health_alive_and_fds_bounded(db, monkeypatch):
     runner, port = await _start(monkeypatch, MAX_CONNECTIONS=20)
     socks = []
     try:
@@ -45,7 +45,7 @@ async def test_silent_flood_keeps_health_alive_and_fds_bounded(monkeypatch):
         await runner.cleanup()
 
 
-async def test_silent_connection_is_dropped_after_keepalive(monkeypatch):
+async def test_silent_connection_is_dropped_after_keepalive(db, monkeypatch):
     runner, port = await _start(monkeypatch, KEEPALIVE_SEC=0.5)
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -55,7 +55,7 @@ async def test_silent_connection_is_dropped_after_keepalive(monkeypatch):
         await runner.cleanup()
 
 
-async def test_oversized_header_is_refused(monkeypatch):
+async def test_oversized_header_is_refused(db, monkeypatch):
     runner, port = await _start(monkeypatch)
     try:
         async with aiohttp.ClientSession() as s:

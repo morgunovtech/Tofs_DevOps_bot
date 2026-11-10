@@ -16,15 +16,25 @@ from datetime import date, timedelta
 
 import aiohttp
 from aiogram import F, Router
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import get_all_sites, get_state, set_state
-from handlers.common import HEARTBEAT_SECRET_NOTE, ack, back_button, cancel_kb, forget_secret, render
+from handlers.common import (
+    HEARTBEAT_SECRET_NOTE,
+    STALE_TAP,
+    ack,
+    back_button,
+    cancel_kb,
+    forget_secret,
+    render,
+)
 from reports.scheduler import audit_time
 from services import (
+    automation,
     crux,
     docker_api,
     github,
@@ -73,6 +83,7 @@ class Item:
     title: str                 # shown in the "works" line or as the bullet
     detail: str = ""           # what is wrong / what it gives (HTML-escaped)
     button: tuple[str, str] | None = None   # (label, callback_data)
+    manage: tuple[str, str] | None = None   # shown while it works: switch off, settings
 
 
 # ── Probes ───────────────────────────────────────────────────────────────────
@@ -172,12 +183,15 @@ async def build_items() -> list[Item]:
                           ("🌐 Включить статус-страницу", "setup:sp_on")))
 
     if integrations.second_opinion_enabled():
-        items.append(Item("second_opinion", "ok", "вторая точка проверки"))
+        items.append(Item("second_opinion", "ok", "вторая точка проверки (check-host.net)",
+                          manage=("🌐 Вторая точка: выключить", "setup:so")))
     else:
+        # A screen with what goes where, not a one-tap switch: the service
+        # learns the sites' addresses, and that is the owner's choice.
         items.append(Item("second_opinion", "off", "🌐 Вторая точка проверки",
-                          "перед тревогой «сайт лежит» перепроверка с внешних серверов check-host.net, "
-                          "и раз в час — скорость сайта из региона твоей аудитории",
-                          ("🌐 Включить вторую точку", "setup:so:on")))
+                          "перед тревогой «сайт лежит» перепроверка с серверов check-host.net — "
+                          "им уходят адреса сайтов",
+                          ("🌐 Вторая точка", "setup:so")))
 
     if settings.heartbeat_jobs():
         items.append(Item("heartbeats", "ok", "задачи и боты"))
@@ -219,7 +233,7 @@ async def build_items() -> list[Item]:
         items.append(Item("cloudflare", "ok", "Cloudflare"))
     else:
         items.append(Item("cloudflare", "off", "☁️ Cloudflare",
-                          "кнопки «передеплой» и «сброс кэша» в тревогах, автопередеплой при падении",
+                          "кнопки «пересобрать» и «сбросить кэш» в тревогах, пересборка сама при падении",
                           ("☁️ Подключить Cloudflare", "setup:cf")))
 
     if github.available():
@@ -301,8 +315,14 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
                  + (f" · сборка {esc(config.app_commit[:7])}" if config.app_commit else "") + "</i>")
 
     rows = _button_rows(warn)
+    # What works has no buttons of its own — except a switch to turn it off.
+    manage = [InlineKeyboardButton(text=i.manage[0], callback_data=i.manage[1]) for i in ok if i.manage]
+    if manage:
+        rows.append(manage)
     if warn:
         rows.append([InlineKeyboardButton(text="🔁 Проверить снова", callback_data="setup:check")])
+    if integrations.deploy_hooks() or docker_api.docker_available():
+        rows.append([InlineKeyboardButton(text="🤖 Что бот делает сам", callback_data="auto:menu")])
     if off:
         rows.append([InlineKeyboardButton(text=f"➕ Подключить ещё ({len(off)})", callback_data="setup:more")])
     rows.append([InlineKeyboardButton(text="← Настройки", callback_data="menu_settings")])
@@ -423,22 +443,102 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
         InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# ── A key without its wizard ─────────────────────────────────────────────────
+
+_URL_SECRET = re.compile(r"https://\S*(deploy_hooks/|hc-ping\.com/|/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-)")
+
+
+def looks_like_key(text: str | None) -> bool:
+    """Does this message look like what the wizards ask for — a token (one
+    long word of letters AND digits), a service-account JSON, a deploy hook
+    or a watchdog address? The checks are the wizards' own patterns
+    (yandex / crux / cloudflare / github tokens, gsc key, cf_hook,
+    watchdog_url), narrowed so that an ordinary message never matches."""
+    t = (text or "").strip()
+    if "private_key" in t and "client_email" in t:
+        return True
+    if _URL_SECRET.search(t):
+        return True
+    return bool(re.fullmatch(r"[A-Za-z0-9_\-.]{20,255}", t) and re.search(r"\d", t) and re.search(r"[A-Za-z]", t))
+
+
+@router.message(F.text, StateFilter(None), F.text.func(looks_like_key))
+async def msg_key_without_wizard(message: Message):
+    """The wizard's state lives in memory: a restart between «Пришли токен»
+    and the token leaves the token in the chat with no handler to delete
+    it (SEC-010). A key-like message outside any wizard is removed the same
+    way, and the owner is told to start the wizard again."""
+    await forget_secret(message)
+    await message.answer("⌛ Мастер прервался после перезапуска — начни заново: ⚙️ Настройки → 🔌 Подключения.",
+                         reply_markup=back_button("← К подключениям", "setup:check"))
+
+
 # ── One-tap fixes ────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "setup:sp_on")
 async def cb_status_page_on(call: CallbackQuery):
+    if not await ack(call, "Статус-страница включена"):
+        await call.message.answer(STALE_TAP)
+        return
     await settings.set_status_page(True)
-    await ack(call, "Статус-страница включена")
     await render(call, f"🌐 Статус-страница включена:\n{esc(public_urls.status_page_url())}\n\n"
                        f"Выключить можно в ⚙️ Настройках.", back_button("← К подключениям", "setup:check"))
 
 
-@router.callback_query(F.data.startswith("setup:so:"))
+def _switch_source(key: str, env_name: str, env_value: bool) -> str:
+    """Where the current on/off comes from — the owner must see that a tap
+    here overrides .env."""
+    env = f"{env_name}={'1' if env_value else '0'}"
+    if integrations.stored().get(key) in ("on", "off"):
+        return f"задано здесь, в чате (в .env {env})"
+    return f"из .env ({env})"
+
+
+def second_opinion_screen() -> tuple[str, InlineKeyboardMarkup]:
+    """What goes to check-host.net, the switches and where each comes from:
+    turning the service on is a choice made on this screen, not one tap."""
+    so_on = integrations.second_opinion_enabled()
+    rs_on = integrations.region_speed_enabled()
+    text = ("🌐 Вторая точка проверки — бесплатный сервис check-host.net\n\n"
+            "• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его "
+            "серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, "
+            "и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n"
+            "• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для "
+            "строки «из России, 0.8 с» в карточке.\n\n"
+            "Внутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\n"
+            f"Перепроверка: {'включена' if so_on else 'выключена'} — "
+            f"{esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion))}.\n"
+            f"Скорость из региона: {'включена' if rs_on else 'выключена'} — "
+            f"{esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))}.")
+    rows = [[InlineKeyboardButton(text="🌐 Перепроверку выключить" if so_on else "🌐 Перепроверку включить",
+                                  callback_data="setup:so:off" if so_on else "setup:so:on")],
+            [InlineKeyboardButton(text="⏱ Скорость из региона выключить" if rs_on
+                                  else "⏱ Скорость из региона включить",
+                                  callback_data="setup:rs:off" if rs_on else "setup:rs:on")],
+            [InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")]]
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "setup:so")
+async def cb_second_opinion_screen(call: CallbackQuery):
+    await ack(call)
+    await render(call, *second_opinion_screen())
+
+
+@router.callback_query(F.data.startswith(("setup:so:", "setup:rs:")))
 async def cb_second_opinion(call: CallbackQuery):
+    key, env_value = (("second_opinion", config.second_opinion) if call.data.startswith("setup:so:")
+                      else ("region_speed", config.region_speed))
     on = call.data.endswith(":on")
-    await integrations.set_value("second_opinion", "on" if on else "off")
-    await ack(call, "Включено" if on else "Выключено")
-    await show_checklist(call)
+    # Switching the service ON is consent: a tap that waited in the queue
+    # while the bot was down does not give it (handlers.common.ack).
+    fresh = await ack(call, "Включено" if on else "Выключено")
+    if on and not fresh:
+        await call.message.answer(STALE_TAP)
+        return
+    # The same as .env says → forget the chat value, so .env is the master again.
+    await integrations.set_value(key, None if on == env_value else ("on" if on else "off"))
+    await render(call, *second_opinion_screen())
 
 
 @router.callback_query(F.data == "setup:hb_regen")
@@ -459,8 +559,10 @@ async def cb_regen_heartbeat_ask(call: CallbackQuery):
 
 @router.callback_query(F.data == "setup:hb_regen_ok")
 async def cb_regen_heartbeat(call: CallbackQuery):
+    if not await ack(call, "Готово"):
+        await call.message.answer(STALE_TAP)
+        return
     await secrets.regenerate("heartbeat")
-    await ack(call, "Готово")
     jobs = list(settings.heartbeat_jobs())
     example = jobs[0] if jobs else "backup"
     note = ("\n\nHEARTBEAT_SECRET в окружении больше не используется — удали переменную."
@@ -597,10 +699,12 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:watchdog_off")
 async def cb_watchdog_off(call: CallbackQuery):
+    if not await ack(call, "Отключено. Если я раньше присылал копии базы — ссылка сторожа осталась в них: "
+                           "пересоздай check на healthchecks.io.", show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     await integrations.set_value("self_heartbeat_url", None)
     await heartbeats.forget_watchdog()
-    await ack(call, "Отключено. Если я раньше присылал копии базы — ссылка сторожа осталась в них: "
-                    "пересоздай check на healthchecks.io.", show_alert=True)
     await show_checklist(call)
 
 
@@ -658,8 +762,10 @@ async def msg_yx_token(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:yx_off")
 async def cb_yx_off(call: CallbackQuery):
+    if not await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     await integrations.set_value("yandex_token", None)
-    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -718,8 +824,10 @@ async def msg_crux_key(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:crux_off")
 async def cb_crux_off(call: CallbackQuery):
+    if not await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     await integrations.set_value("crux_key", None)
-    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -823,10 +931,12 @@ async def msg_gsc_key(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:gsc_off")
 async def cb_gsc_off(call: CallbackQuery):
+    if not await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     await integrations.set_value("gsc_key", None)
     await integrations.set_value("gsc_property", None)
     gsc.reset_token_cache()
-    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -836,6 +946,8 @@ def _cf_kb() -> InlineKeyboardMarkup:
     buttons = [("🚀 Добавить deploy hook", "setup:cf_hook"),
                ("🧹 Токен для сброса кэша", "setup:cf_token"),
                ("🆔 Zone ID", "setup:cf_zone")]
+    if integrations.deploy_hooks():
+        buttons.append(("🤖 Что бот делает сам", "auto:menu"))
     if any(integrations.source(k) == "bot" for k in ("deploy_hooks", "cf_api_token", "cf_zone_id")):
         buttons.append(("🗑 Сбросить введённое в боте", "setup:cf_off"))
     return _guide_kb(*buttons)
@@ -845,6 +957,9 @@ def _cf_state_line() -> str:
     hooks = integrations.deploy_hooks()
     parts = [f"deploy hooks: {', '.join(sorted(hooks))}" if hooks else "deploy hooks: нет",
              "сброс кэша: настроен" if integrations.cf_purge_configured() else "сброс кэша: нет"]
+    if hooks:
+        parts.append("пересобираю сам: " + ("да, " + automation.limit_text("redeploy")
+                                            if integrations.auto_enabled("redeploy") else "нет"))
     return " · ".join(parts)
 
 
@@ -853,9 +968,11 @@ async def cb_guide_cf(call: CallbackQuery):
     await ack(call)
     await render(call, ("☁️ Cloudflare\n\n"
                         f"{esc(_cf_state_line())}\n\n"
-                        "<b>Deploy hook</b> даёт кнопку «🚀 Передеплой» в тревогах (и автопередеплой "
-                        "при падении, если включить AUTO_REDEPLOY): Cloudflare Pages → проект → "
-                        "Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n"
+                        "<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока "
+                        "пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза "
+                        "в час на хук и никогда на паузе; выключить — «🤖 Что бот делает сам». Где взять: "
+                        "Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда "
+                        "«хост URL».\n\n"
                         "<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge "
                         "(dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы "
                         "Overview домена."), _cf_kb())
@@ -926,9 +1043,11 @@ async def msg_cf_zone(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:cf_off")
 async def cb_cf_off(call: CallbackQuery):
+    if not await ack(call, "Сброшено. " + OLD_COPIES_NOTE, show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     for key in ("deploy_hooks", "cf_api_token", "cf_zone_id"):
         await integrations.set_value(key, None)
-    await ack(call, "Сброшено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)
 
 
@@ -1016,7 +1135,9 @@ async def msg_gh_owner(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "setup:gh_off")
 async def cb_gh_off(call: CallbackQuery):
+    if not await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True):
+        await call.message.answer(STALE_TAP)
+        return
     for key in ("github_token", "github_owner"):
         await integrations.set_value(key, None)
-    await ack(call, "Отключено. " + OLD_COPIES_NOTE, show_alert=True)
     await show_checklist(call)

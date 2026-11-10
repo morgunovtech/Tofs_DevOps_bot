@@ -33,14 +33,16 @@ import pytest  # noqa: E402
 
 from config import config  # noqa: E402
 from db import database  # noqa: E402
-from monitors import availability, netcheck  # noqa: E402
+from monitors import availability, dns_checker, links_checker, netcheck  # noqa: E402
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
+    automation,
     health,
     integrations,
     maintenance,
     notifier,
     runtime,
+    screenshots,
     secrets,
     settings,
     sitestatus,
@@ -167,8 +169,11 @@ def _fresh_module_state(monkeypatch):
     clean in every test: results must not depend on the order of the tests."""
     monkeypatch.setattr(status_page, "_cache", None)
     status_page._badge_cache.clear()
-    webhook._ip_hits.clear()
-    webhook._global_hits.clear()
+    for window in (webhook._ip_hits, webhook._site_hits, webhook._bad_hits, webhook._notified,
+                   webhook._held, webhook._warned):
+        window.clear()
+    monkeypatch.setattr(webhook, "_origins", None)
+    webhook._widget_noted.clear()
     monkeypatch.setattr(runtime, "_bot_username", "")
     scheduler._next_avail_check.clear()
     scheduler._failed_jobs.clear()
@@ -190,8 +195,12 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(database, "_write_lock", asyncio.Lock())
     monkeypatch.setattr(sitestatus, "_lock", asyncio.Lock())
     monkeypatch.setattr(netcheck, "_lock", asyncio.Lock())
+    monkeypatch.setattr(automation, "_lock", asyncio.Lock())
     netcheck.reset()
     scheduler._cannot_check_noted.clear()
+    screenshots._inflight.clear()
+    monkeypatch.setattr(links_checker, "_loop_state", None)
+    monkeypatch.setattr(dns_checker, "_slots", None)
 
 
 @pytest.fixture
