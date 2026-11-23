@@ -15,8 +15,8 @@ SECRET = "unit-test-webhook-secret"
 
 
 async def test_snippet_loads_the_widget_after_the_page_and_pins_it(bot, db):
-    call = FakeCall("menu_feedback:0")
-    await feedback.cb_feedback(call)
+    call = FakeCall("menu_widget")
+    await feedback.cb_widget(call)
     text = call.message.texts[-1]
     assert f"feedback-widget.{widget.VERSION}.js" in text
     assert widget.INTEGRITY in text and "crossOrigin='anonymous'" in text
@@ -64,10 +64,10 @@ def test_query_is_dropped_even_from_an_address_urlsplit_refuses():
 
 async def test_no_public_base_url_warning_when_railway_gives_the_address(bot, db, cfg):
     cfg(public_base_url="", railway_public_domain="bot-prod.up.railway.app")
-    call = FakeCall("menu_feedback:0")
-    await feedback.cb_feedback(call)
+    call = FakeCall("menu_widget")
+    await feedback.cb_widget(call)
     text = call.message.texts[-1]
-    assert "Задай PUBLIC_BASE_URL" not in text
+    assert "нет публичного адреса" not in text and "PUBLIC_BASE_URL" not in text
     assert "https://bot-prod.up.railway.app/feedback-widget." in text
 
 

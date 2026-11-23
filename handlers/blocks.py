@@ -35,7 +35,7 @@ def backup_state() -> tuple[str, str, str]:
                 t("🟠 Резервная копия базы — последняя {when}: ночные копии не делаются. Чаще всего "
                   "кончилось место на диске.").format(when=when))
     weekly = (t("по воскресеньям присылаю тебе в личку — без ключей подключений") if settings.weekly_backup()
-              else t("в Telegram не присылаю (выключено в «🔔 Когда писать»)"))
+              else t("в Telegram не присылаю (включить — «⚙️ Настройки → 💾 Копия базы»)"))
     return "✅", when, t("✅ Резервная копия базы — {when}. Делаю каждую ночь, {weekly}.").format(when=when, weekly=weekly)
 
 

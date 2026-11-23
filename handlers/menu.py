@@ -298,7 +298,11 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
                for j, title, _ in reported if len(f"blk:seen:{j.name}".encode()) <= 64]
     blocks.append(InlineKeyboardButton(text=t("🤖 Боты"), callback_data="blk:bots"))
     rows += [blocks[i:i + 3] for i in range(0, len(blocks), 3)]
-    rows.append([InlineKeyboardButton(text=t("⚙️ Настройки"), callback_data="menu_settings")])
+    # Silence is one tap from the main screen: a pause when the owner is
+    # about to work on something, and the way out of it while it lasts.
+    rows.append([InlineKeyboardButton(text=t("⚙️ Настройки"), callback_data="menu_settings"),
+                 InlineKeyboardButton(text=t("🔔 Снять тишину"), callback_data="mute:off") if mute_until
+                 else InlineKeyboardButton(text=t("🔕 Помолчать…"), callback_data="menu_mute")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 

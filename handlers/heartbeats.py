@@ -133,7 +133,8 @@ async def cb_hb_bot(call: CallbackQuery):
     if await _job_gone(call, name):
         return
     await ack(call)
-    await render(call, t("🤖 Подключить «{name}»\n\n{not_public_note}Дай этому боту адрес — нажми на него, он скопируется:\n{url_line}\n\nБот должен открывать его каждый раз, когда удачно поработал. В его настройках такое поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> или «Ping URL».\n\n{HEARTBEAT_SECRET_NOTE}\n\nКак только связь появится, строка на главном экране станет ✅.").format(name=esc(name), not_public_note=_not_public_note(), url_line=_url_line(name), HEARTBEAT_SECRET_NOTE=t(HEARTBEAT_SECRET_NOTE)), _connect_kb(name))
+    await render(call, t("🤖 Подключить «{name}»\n\n{not_public_note}Дай этому боту адрес — нажми на него, он скопируется:\n{url_line}\n\nБот должен открывать его каждый раз, когда удачно поработал. В его настройках такое поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> или «Ping URL».\n\n{HEARTBEAT_SECRET_NOTE}\n\nКак только связь появится, строка на главном экране станет ✅.").format(name=esc(name), not_public_note=_not_public_note(), url_line=_url_line(name), HEARTBEAT_SECRET_NOTE=t(HEARTBEAT_SECRET_NOTE))
+                 + "\n\n" + t("Бот умеет не только выходить на связь, но и рассказывать, что видит: POST на тот же адрес с JSON вида <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — строки появятся блоком на главном экране. Формат целиком — в docs/DEVELOPMENT.md, раздел «Статус от другого бота»."), _connect_kb(name))
 
 
 @router.callback_query(F.data.startswith("hb_cron:"))

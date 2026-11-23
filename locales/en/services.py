@@ -327,7 +327,7 @@ STRINGS: dict[str, str] = {
     "ℹ️ Что делать": "ℹ️ What to do",
     "🚀 Пересобрать сайт": "🚀 Rebuild the site",
     "🧹 Сбросить кэш": "🧹 Purge the cache",
-    "⏸ Не чинить самому 2 ч": "⏸ Don't self-fix for 2 h",
+    "⏸ Не пересобирать сам 2 ч": "⏸ Don't rebuild by myself for 2 h",
     "🔗 Открыть панель {panel}": "🔗 Open the {panel} panel",
     "🔗 Открыть панель {label}": "🔗 Open the {label} panel",
     "📋 Показать по сайтам": "📋 Show per site",
@@ -490,9 +490,9 @@ STRINGS: dict[str, str] = {
         "<code>/app/data</code>, and the variable <code>DB_PATH=/app/data/bot.db</code>.",
     # ── services/public_urls.py ─────────────────────────────────────────────
     "⚠️ У бота нет публичного адреса, поэтому ссылка ниже не заработает: вместо YOUR_SERVER нужен адрес сервера "
-    "бота. Задай PUBLIC_BASE_URL (https://…) — кнопка «🌍 Как задать адрес».":
+    "бота — нажми «🌍 Как задать адрес» (на своём сервере это PUBLIC_BASE_URL в .env).":
         "⚠️ The bot has no public address, so the link below will not work: YOUR_SERVER must be the bot server's "
-        "address. Set PUBLIC_BASE_URL (https://…) — the «🌍 How to set the address» button.",
+        "address — tap «🌍 How to set the address» (on your own server that is PUBLIC_BASE_URL in .env).",
     # ── services/github.py ──────────────────────────────────────────────────
     "токен не принят: истёк, отозван или скопирован не целиком": "the token was rejected: expired, revoked or not copied whole",
     "GitHub отказал в доступе или лимит запросов исчерпан": "GitHub refused access or the request limit is used up",

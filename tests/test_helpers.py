@@ -232,7 +232,7 @@ async def test_owner_manages_helpers_and_a_helper_can_leave(bot, db):
     call = FakeCall("helper_rm:556")
     await settings_screen.cb_helper_remove(call)
     assert await helpers.helpers() and call.message.texts[-1].startswith("Убрать Боря?")   # nothing yet
-    assert buttons(call.message.reply_markup) == ["🗑 Да, убрать", "Отмена"]
+    assert buttons(call.message.reply_markup) == ["🗑 Да, убрать", "✖️ Отмена"]
     call = FakeCall("helper_rm_ok:556")
     await settings_screen.cb_helper_remove_ok(call)
     assert not await helpers.helpers() and bot.sent[-1]["chat_id"] == "556"

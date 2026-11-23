@@ -136,10 +136,10 @@ async def test_cancel_returns_to_the_screen_the_step_was_opened_from(bot, db):
 async def test_after_mute_the_way_back_and_unmute_are_buttons(bot, db):
     call = FakeCall("mute:8h")
     await mute.cb_mute_pick(call)
-    assert buttons(call.message.reply_markup) == ["🔔 Снять тишину", "← Когда писать"]
+    assert buttons(call.message.reply_markup) == ["🔔 Снять тишину", "← Тишина", "🏠 Главная"]
     call = FakeCall("mute:off")
     await mute.cb_mute_pick(call)
-    assert buttons(call.message.reply_markup) == ["← Когда писать"]
+    assert buttons(call.message.reply_markup) == ["← Тишина", "🏠 Главная"]
 
 
 def test_when_to_write_marks_the_current_values():
@@ -264,7 +264,7 @@ async def test_visitor_messages_can_be_deleted(bot, db):
     done = FakeCall(yes.callback_data)
     await feedback.cb_feedback_delete(done)
     assert await count_feedback() == 2
-    assert done.message.texts[-1].startswith("🗑 Удалил: 5\n\n📩 Обратная связь с сайтов (2)")
+    assert done.message.texts[-1].startswith("🗑 Удалил: 5\n\n📩 Сообщения с сайтов (2)")
 
 
 async def test_a_stranger_gets_one_denial_per_ten_minutes(bot, db):

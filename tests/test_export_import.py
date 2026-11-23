@@ -270,3 +270,14 @@ async def test_the_import_summary_never_shows_a_query_string(bot, db):
     assert "Пропущено" in text and "api.ex.test/api/health" in text
     assert "SECRET123" not in text and "KEY456" not in text
     assert "SECRET123" not in sites._list([secret_url]) and "api.ex.test/api/health" in sites._list([secret_url])
+
+
+async def test_the_restore_question_says_whether_the_copy_holds_the_task_secret(bot, db):
+    """A copy sent through Telegram carries no heartbeat secret: on an empty
+    install the question must not promise that the old task links keep working."""
+    info = {"urls": ["https://a.test"], "state": {}, "version": 1}
+    text = await sites._db_question(info, "bot-copy.db")
+    assert "секрета ссылок задач в этой копии нет" in text and "HEARTBEAT_SECRET" in text
+    info["state"]["secret:heartbeat"] = "x"
+    text = await sites._db_question(info, "bot-copy.db")
+    assert "секреты ссылок возьму из копии" in text

@@ -146,7 +146,11 @@ async def test_the_group_buttons_list_the_sites_and_quiet_them_all(bot, db):
     call = FakeCall(show)
     await alerts.cb_alert_group(call)
     assert call.message.texts[-1].startswith("1. 🔴 127.0.0.1/s")
-    assert buttons(call.message.reply_markup) == ["ℹ️ 1", "ℹ️ 2", "ℹ️ 3", "ℹ️ 4"]
+    # A row per site with the alert's own actions, not «ℹ️» alone.
+    rows = [[b.text for b in row] for row in call.message.reply_markup.inline_keyboard]
+    assert rows[0] == ["ℹ️ 1", "🔄 1", "📸 1", "🔧 1"] and len(rows) == 4 and rows[3][0] == "ℹ️ 4"
+    assert [b.callback_data for b in call.message.reply_markup.inline_keyboard[0]][1:] == [
+        f"act:recheck:{ids[0]}", f"act:shot:{ids[0]}", f"act:fix:{ids[0]}"]
 
     call = FakeCall(fix)
     await alerts.cb_alert_group(call)

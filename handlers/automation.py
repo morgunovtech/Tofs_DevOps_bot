@@ -36,7 +36,7 @@ def _when(entry: dict) -> str:
 
 
 async def auto_screen() -> tuple[str, InlineKeyboardMarkup]:
-    lines, rows = [t("🤖 Что я делаю сам"), ""], []
+    lines, rows = [t("🤖 Что делаю сам"), ""], []
     for kind in kinds():
         on = integrations.auto_enabled(kind)
         title = t(_TITLE[kind]).format(names=", ".join(config.autorestart_containers))

@@ -234,7 +234,7 @@ async def build_items(probe: bool = True) -> list[Item]:
     else:
         # A screen with what goes where, not a one-tap switch: the service
         # learns the sites' addresses, and that is the owner's choice.
-        items.append(Item("second_opinion", "off", t("🌐 Вторая точка проверки"),
+        items.append(Item("second_opinion", "off", t("🌐 Вторая точка"),
                           t("перед тревогой «сайт лежит» перепроверка с серверов check-host.net — им уходят адреса сайтов"),
                           (t("🌐 Вторая точка"), "setup:so")))
 
@@ -389,7 +389,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
     if warn:
         rows.append([InlineKeyboardButton(text=t(RECHECK), callback_data="setup:recheck")])
     if integrations.deploy_hooks() or docker_api.docker_available():
-        rows.append([InlineKeyboardButton(text=t("🤖 Что бот делает сам"), callback_data="auto:menu")])
+        rows.append([InlineKeyboardButton(text=t("🤖 Что делаю сам"), callback_data="auto:menu")])
     if off:
         rows.append([InlineKeyboardButton(text=t("➕ Подключить ещё ({n})").format(n=len(off)), callback_data="setup:more")])
     rows.append([InlineKeyboardButton(text=t("← Настройки"), callback_data="menu_settings")])
@@ -575,7 +575,7 @@ def second_opinion_screen() -> tuple[str, InlineKeyboardMarkup]:
     turning the service on is a choice made on this screen, not one tap."""
     so_on = integrations.second_opinion_enabled()
     rs_on = integrations.region_speed_enabled()
-    text = (t("🌐 Вторая точка проверки — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.").format(words=t("включена") if so_on else t("выключена"), switch_source=esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion)), words2=t("включена") if rs_on else t("выключена"), switch_source2=esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))))
+    text = (t("🌐 Вторая точка — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.").format(words=t("включена") if so_on else t("выключена"), switch_source=esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion)), words2=t("включена") if rs_on else t("выключена"), switch_source2=esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))))
     rows = [[InlineKeyboardButton(text=t("🌐 Перепроверку выключить") if so_on else t("🌐 Перепроверку включить"),
                                   callback_data="setup:so:off" if so_on else "setup:so:on")],
             [InlineKeyboardButton(text=t("⏱ Скорость из региона выключить") if rs_on
@@ -618,7 +618,7 @@ async def cb_regen_heartbeat_ask(call: CallbackQuery):
     await render(call, t("🔑 Выпустить новый ключ ссылок для задач?\n\n{who} Делай это, если ссылка могла попасть в чужие руки — например, лежала в файле репозитория.").format(who=who),
                  InlineKeyboardMarkup(inline_keyboard=[
                      [InlineKeyboardButton(text=t("🔑 Да, выпустить"), callback_data="setup:hb_regen:ok"),
-                      InlineKeyboardButton(text=t("← Назад"), callback_data="setup:check")]]))
+                      InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="setup:check")]]))
 
 
 @router.callback_query(F.data == "setup:hb_regen:ok")
@@ -677,7 +677,7 @@ async def cb_off_ask(call: CallbackQuery):
     await ack(call)
     await render(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("🗑 Да, отключить"), callback_data=f"{call.data}:ok"),
-         InlineKeyboardButton(text=t("← Назад"), callback_data=f"setup:{group}")]]))
+         InlineKeyboardButton(text=t("✖️ Отмена"), callback_data=f"setup:{group}")]]))
 
 
 async def _switch_off(call: CallbackQuery, group: str, toast: str) -> bool:
@@ -1039,7 +1039,7 @@ def _cf_kb() -> InlineKeyboardMarkup:
                (t("🧹 Токен для сброса кэша"), "setup:cf_token"),
                ("🆔 Zone ID", "setup:cf_zone")]
     if integrations.deploy_hooks():
-        buttons.append((t("🤖 Что бот делает сам"), "auto:menu"))
+        buttons.append((t("🤖 Что делаю сам"), "auto:menu"))
     if off := _off_button("cf"):
         buttons.append(off)
     return _guide_kb(*buttons)

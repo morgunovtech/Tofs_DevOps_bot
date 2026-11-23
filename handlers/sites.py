@@ -92,6 +92,7 @@ from services import (
     yandex_webmaster,
 )
 from services import hosting as hosting_svc
+from services.actions import deploy_hook_for, in_cf_zone
 from utils import validate
 from utils.clock import to_local, utcnow
 from utils.i18n import fmt_duration, plural, t
@@ -171,6 +172,22 @@ def _host_policy(host: str) -> tuple[str, str | None]:
 
 
 API_PATH_LIMIT = 300
+
+
+def dropped_path(typed: str, url: str) -> str | None:
+    """The path the owner typed that the monitor does not keep (a page
+    monitor is its home page; only an API address keeps its path) — so
+    that «example.com/healthz» becoming «example.com» is said, not silent."""
+    raw = typed.strip()
+    if not raw.startswith(("http://", "https://")):
+        raw = "https://" + raw
+    try:
+        path = urlparse(raw).path
+    except ValueError:
+        return None
+    if path in ("", "/") or not is_http_url(url) or urlparse(url).path not in ("", "/"):
+        return None
+    return path
 
 
 def parse_site_input(raw: str) -> tuple[str | None, str | None]:
@@ -538,7 +555,7 @@ async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
         notes.append(t("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут."))
         row = [InlineKeyboardButton(text=t("✅ Починил, пиши снова"), callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text=t("🔧 Я чиню: {length} тишины").format(length=maintenance.fix_length()),
+        row = [InlineKeyboardButton(text=t("🔧 Я чиню, {length} тишины").format(length=maintenance.fix_length()),
                                     callback_data=f"pause:{sid}:{maintenance.FIX_MINUTES}")]
     if maintenance.maintenance_now(sid):
         notes.append(t("Сейчас плановые работы — про этот сайт не пишу."))
@@ -562,25 +579,42 @@ async def render_card(call: CallbackQuery, site: dict):
     lines += _card_body(found, blocks)
     problems = [inc for inc in await get_active_incidents() if inc["site_id"] == sid]
     rows = []
-    # One way to the fix, only when there is something to fix: search
-    # findings and mail have a screen with the steps, anything else its
-    # «что делать».
-    seo = st.get("seo") or {}
-    other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
-    if is_web_page(url, site.get("http_method")) and seo.get("problems"):
-        rows.append([InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{sid}")])
-    elif other:
+    page = is_web_page(url, site.get("http_method"))
+    # An open problem that none of the screens below explains (the site is
+    # down, slow, its certificate, domain, DNS) has its «что делать» first.
+    other = [inc for inc in problems
+             if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors", "seo", "links")]
+    if other:
         rows.append([InlineKeyboardButton(text=t("ℹ️ Что делать"), callback_data=f"inc_explain:{other[0]['id']}")])
-    if (st.get("mail") or {}).get("findings") or any(inc["check_type"] in MAIL_CHECKS for inc in problems):
-        rows.append([InlineKeyboardButton(text=t("✉️ Как починить почту"), callback_data=f"mail:{sid}")])
-    if (st.get("security") or {}).get("findings") or any(inc["check_type"] in SECURITY_CHECKS for inc in problems):
-        rows.append([InlineKeyboardButton(text=t("🛡 Как защитить сайт"), callback_data=f"sec:{sid}")])
-    if any(inc["check_type"] == "visitors" for inc in problems):
-        rows.append([InlineKeyboardButton(text=t("👥 Почему медленно"), callback_data=f"spd:{sid}")])
-    if is_web_page(url, site.get("http_method")) and await seo_screen.cloudflare_check_pending(sid, st):
+    # The site's own screens are a tap away on a good day too: the audit,
+    # the mail records and the headers used to appear only once something
+    # was wrong with them. Mail is the domain's: the one site that speaks
+    # for it carries the button.
+    carries_mail = await carrier_of(url) == url
+    if page:
+        screens = [InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{sid}")]
+        if carries_mail:
+            screens.append(InlineKeyboardButton(text=t("✉️ Почта"), callback_data=f"mail:{sid}"))
+        screens.append(InlineKeyboardButton(text=t("🛡 Безопасность"), callback_data=f"sec:{sid}"))
+        rows.append(screens)
+        # Not here on purpose: «🔗 Ссылки» is a 30-second live crawl (the
+        # card already lists the broken ones) and the visitors' speed has
+        # its line on the card and its screen under «⚙️ Настройки сайта».
+    elif carries_mail:
+        rows.append([InlineKeyboardButton(text=t("✉️ Почта"), callback_data=f"mail:{sid}")])
+    if page and await seo_screen.cloudflare_check_pending(sid, st):
         rows.append([InlineKeyboardButton(text=t("🤖 Проверить в Cloudflare"), callback_data=f"seo_fix:{sid}:ai_cloudflare")])
     rows.append([InlineKeyboardButton(text=t(RECHECK), callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
+    # The hands-on actions the alert offers, from the card too — each
+    # after its question (handlers.alerts), the answer below the card.
+    actions = []
+    if deploy_hook_for(url):
+        actions.append(InlineKeyboardButton(text=t("🚀 Пересобрать сайт"), callback_data=f"act:redeploy:{sid}"))
+    if in_cf_zone(url, await get_state(f"hosting:{sid}")):
+        actions.append(InlineKeyboardButton(text=t("🧹 Сбросить кэш"), callback_data=f"act:purge:{sid}"))
+    if actions:
+        rows.append(actions)
     rows.append([InlineKeyboardButton(text=t("⚙️ Настройки сайта"), callback_data=f"sset:{sid}")])
     if len(sites) > 1:
         prev, nxt = sites[pos - 1], sites[(pos + 1) % len(sites)]
@@ -785,6 +819,9 @@ async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
 @router.message(AddSiteForm.url)
 async def msg_site_add(message: Message, state: FSMContext):
     url, error = parse_site_input(message.text or "")
+    path = dropped_path(message.text or "", url) if url else None
+    if path:
+        await message.answer(t("ℹ️ Путь «{path}» не сохранил: сайт проверяю по главной, а его страницы — по карте сайта и ссылкам с главной. Отдельную страницу как главную функцию можно добавить API-проверкой: адрес под /api/ или на api.-домене («🛠 API, порт или ping»).").format(path=esc(path)))
     if not url:
         await message.answer(error, reply_markup=_add_kb())
         return
@@ -840,36 +877,51 @@ async def msg_site_add(message: Message, state: FSMContext):
     rows = [[InlineKeyboardButton(text=t("🌍 Открыть карточку"), callback_data=f"check_site:{site_id}")]]
     if r.api:
         rows.append([InlineKeyboardButton(text=t("📡 Настроить запрос"), callback_data=f"ssetx:{site_id}")])
-    kb = InlineKeyboardMarkup(inline_keyboard=[*rows, *back_button().inline_keyboard])
     phrase = None
     if page and r.ok:
         note = await alt_host_note(url)
         if note:
             lines.append("\n" + esc(note))
         phrase = await suggest_keyword(url)
-    await status.edit_text("\n".join(lines), reply_markup=kb)
     if phrase:
-        # A question of its own: its answer removes the buttons, not the result above.
+        # The question rides on the result itself (three keyboards landing
+        # at once was one too many): its answer takes only its row away
+        # (cb_keyword_accept / _decline), the result and its buttons stay.
         await set_state(f"kw_suggest:{site_id}", phrase)
-        await message.answer(t("💡 На главной есть «{phrase}». Следить, чтобы она не пропадала? Так я замечу пустую страницу или ошибку вместо сайта.").format(phrase=esc(phrase)),
-                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                 [InlineKeyboardButton(text=t("✅ Да, следить"), callback_data=f"kwok:{site_id}"),
-                                  InlineKeyboardButton(text=t("Не надо"), callback_data=f"kwno:{site_id}")]]))
+        lines.append("\n" + t("💡 На главной есть «{phrase}». Следить, чтобы она не пропадала? Так я замечу пустую страницу или ошибку вместо сайта.").format(phrase=esc(phrase)))
+        rows.append([InlineKeyboardButton(text=t("✅ Да, следить"), callback_data=f"kwok:{site_id}"),
+                     InlineKeyboardButton(text=t("Не надо"), callback_data=f"kwno:{site_id}")])
+    kb = InlineKeyboardMarkup(inline_keyboard=[*rows, *back_button().inline_keyboard])
+    await status.edit_text("\n".join(lines), reply_markup=kb)
     await offer_last_steps(message)
+
+
+def _without_phrase_row(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """The keyboard without the «✅ Да, следить / Не надо» row: the question
+    lives on the add result or a weekly tip, whose other buttons stay."""
+    if markup is None or not hasattr(markup, "inline_keyboard"):
+        return None
+    rows = [row for row in markup.inline_keyboard
+            if not any((b.callback_data or "").startswith(("kwok:", "kwno:")) for b in row)]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+async def _drop_phrase_row(call: CallbackQuery):
+    if call.message is not None and hasattr(call.message, "edit_reply_markup"):
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_reply_markup(reply_markup=_without_phrase_row(call.message.reply_markup))
 
 
 @router.callback_query(F.data.startswith("kwno:"))
 async def cb_keyword_decline(call: CallbackQuery):
     """«Не надо» is remembered: the weekly tip never re-suggests it. The
-    question loses its buttons; the screen stays where it was."""
+    question loses its row; the message and its other buttons stay."""
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site:
         await set_state(f"kw_declined:{site['id']}", "1")
         await set_state(f"kw_suggest:{site['id']}", None)
     await ack(call, t("Ок, больше не предложу"))
-    if call.message is not None and hasattr(call.message, "edit_reply_markup"):
-        with contextlib.suppress(TelegramBadRequest):
-            await call.message.edit_reply_markup(reply_markup=None)
+    await _drop_phrase_row(call)
 
 
 @router.callback_query(F.data.startswith("rec_no:"))
@@ -896,7 +948,9 @@ async def cb_keyword_accept(call: CallbackQuery):
     await update_site_settings(site["id"], keyword=phrase, keyword_mode="present")
     await set_state(f"kw_suggest:{site['id']}", None)
     await ack(call, t("Слежу ✅"))
-    await render(call, t("✅ Слежу, чтобы на {label} была фраза «{phrase}». Поменять можно в настройках сайта.").format(label=esc(site_label(site['url'])), phrase=esc(phrase)), back_button())
+    await _drop_phrase_row(call)
+    if call.message is not None:
+        await call.message.answer(t("✅ Слежу, чтобы на {label} была фраза «{phrase}». Поменять можно в настройках сайта.").format(label=esc(site_label(site['url'])), phrase=esc(phrase)), reply_markup=back_button())
 
 
 # ── Remove ───────────────────────────────────────────────────────────────────
@@ -910,7 +964,7 @@ async def cb_site_del_confirm(call: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("🗑 Да, убрать"), callback_data=f"delok:{site['id']}")],
-        [InlineKeyboardButton(text=t("← Отмена"), callback_data=f"sset:{site['id']}")]])
+        [InlineKeyboardButton(text=t("✖️ Отмена"), callback_data=f"sset:{site['id']}")]])
     await render(call, t("Убрать {label} из мониторинга?\nОткрытые инциденты по нему закроются, история останется. Его настройки (фраза, метод, заголовки, пороги) и пауза «🔧 Я чиню» сбросятся — если добавишь его снова, начнёшь с чистого листа.").format(label=esc(site_label(site['url']))), kb)
 
 
@@ -924,7 +978,10 @@ async def cb_site_del_do(call: CallbackQuery):
         await maintenance.remove_windows_for_site(site["id"])
         await screenshots.forget(site["id"])        # its picture must not be served any more
         reset_site_schedule(site["id"])
-        await render(call, t("🗑 {label} больше не под присмотром. История сохранилась, настройки сброшены.").format(label=esc(site_label(site['url']))), back_button())
+        await render(call, t("🗑 {label} больше не под присмотром. История сохранилась, настройки сброшены.").format(label=esc(site_label(site['url']))),
+                     InlineKeyboardMarkup(inline_keyboard=[
+                         [InlineKeyboardButton(text=t("📋 Все сайты"), callback_data="blk:sites"),
+                          InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]]))
     else:
         await render(call, t("Сайт уже убран."), back_button())
 
@@ -1183,10 +1240,13 @@ async def _db_question(info: dict, name: str) -> str:
     paused = sum(1 for k in info["state"] if k.startswith("paused:"))
     if windows or paused:
         lines.append(t("В копии окон тишины: {windows}, сайтов на паузе «🔧 Я чиню»: {paused}.").format(windows=windows, paused=paused))
-    lines.append(t("Владелец и помощники останутся как сейчас, ")
-                 + (t("секреты ссылок — тоже.") if await count_sites_total()
-                    else t("секреты ссылок возьму из копии — старые ссылки задач продолжат работать."))
-                 + t(" Текущая база сохранится рядом."))
+    if await count_sites_total():
+        secrets_note = t("секреты ссылок — тоже.")
+    elif "secret:heartbeat" in info["state"]:
+        secrets_note = t("секреты ссылок возьму из копии — старые ссылки задач продолжат работать.")
+    else:   # a copy sent through Telegram carries no heartbeat secret (db.database.shareable_copy)
+        secrets_note = t("секрета ссылок задач в этой копии нет (в присланную в Telegram копию он не кладётся) — ссылки задач станут новыми, они будут в карточках задач; оставить прежние можно, задав HEARTBEAT_SECRET в .env до восстановления.")
+    lines.append(t("Владелец и помощники останутся как сейчас, ") + secrets_note + t(" Текущая база сохранится рядом."))
     return "\n".join(lines)
 
 
@@ -1232,7 +1292,7 @@ async def msg_backup_file(message: Message, state: FSMContext):
         return
     sent = await message.answer(question, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=t("✅ Восстановить"), callback_data="restore:yes"),
-        InlineKeyboardButton(text=t("✖️ Не надо"), callback_data="restore:no")]]))
+        InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="restore:no")]]))
     await state.update_data(restore={"path": path, "kind": kind, "question_id": sent.message_id})
 
 

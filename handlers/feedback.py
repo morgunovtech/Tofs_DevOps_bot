@@ -29,6 +29,46 @@ def widget_snippet() -> str:
             f"document.readyState==='complete'?l():addEventListener('load',l)}})();</script>")
 
 
+def widget_text() -> str:
+    lines = [t("📩 Виджет «нашли опечатку?»"), ""]
+    if not public_urls.is_public():
+        lines += [esc(public_urls.NOT_PUBLIC), ""]
+    lines.append(t("Вставь на сайт перед <code>&lt;/body&gt;</code>:\n<code>{widget_snippet}</code>\n\nЛюбая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму. Язык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. После обновления бота сниппет может смениться — скажу, и его надо будет заменить на сайтах.\n\nСтрогий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией файла у себя — в начале файла {widget_url}").format(widget_snippet=esc(widget_snippet()), widget_url=esc(public_urls.widget_url())))
+    lines += ["", t("Сообщения посетителей приходят сюда и лежат в «📩 Сообщения». Ключ в сниппете виден любому посетителю — это не пароль, а фильтр от случайных ботов; сменить его можно здесь.")]
+    return "\n".join(lines)
+
+
+def widget_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("📩 Сообщения"), callback_data="menu_feedback:0"),
+         InlineKeyboardButton(text=t("🔑 Сменить ключ виджета"), callback_data="fb_secret")],
+        [InlineKeyboardButton(text=t("← Для посетителей"), callback_data="menu_visitors")]])
+
+
+@router.callback_query(F.data == "menu_widget")
+async def cb_widget(call: CallbackQuery):
+    await ack(call)
+    await render(call, widget_text(), widget_kb())
+
+
+@router.callback_query(F.data.in_({"fb_secret", "fb_secret:ok"}))
+async def cb_widget_secret(call: CallbackQuery):
+    """A new widget key, after a question: every site's snippet has to be
+    replaced, and until it is the old one is refused (403)."""
+    if call.data == "fb_secret":
+        await ack(call)
+        await render(call, t("🔑 Выпустить новый ключ виджета?\n\nСниппет на каждом сайте придётся заменить: со старым ключом сообщения перестанут приниматься. Делай это, если ключ попал туда, где ему не место, или виджет заваливают спамом."),
+                     InlineKeyboardMarkup(inline_keyboard=[
+                         [InlineKeyboardButton(text=t("🔑 Да, выпустить"), callback_data="fb_secret:ok")],
+                         [InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="menu_widget")]]))
+        return
+    if not await ack(call, t("Готово")):          # a tap from the queue after a restart changes no key
+        await call.message.answer(t(STALE_TAP))
+        return
+    await secrets.regenerate("webhook")
+    await render(call, t("🔑 Новый ключ виджета выпущен — замени сниппет на сайтах.\n\n") + widget_text(), widget_kb())
+
+
 @router.callback_query(F.data.startswith("menu_feedback:"))
 async def cb_feedback(call: CallbackQuery):
     await ack(call)
@@ -40,7 +80,7 @@ async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
     """The page of visitors' messages from `offset`; note — a line above it."""
     total = await count_feedback()
     rows = await list_feedback(PAGE, offset)
-    lines = [f"{note}\n" if note else "", t("📩 Обратная связь с сайтов ({total}):").format(total=total) + "\n"]
+    lines = [f"{note}\n" if note else "", t("📩 Сообщения с сайтов ({total}):").format(total=total) + "\n"]
     lines = lines[1:] if not note else lines
     if not rows:
         lines.append(t("Пока ни одного сообщения.") if offset == 0 else t("Дальше пусто."))
@@ -50,9 +90,7 @@ async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
         message = one_line(fb["message"])
         lines.append(f"#{fb['id']} · {fmt_local(fb['created_at'])} · {one_line(fb['page_url'] or fb['site_url'])}\n"
                      f"   {message[:300]}{'…' if len(message) > 300 else ''}")
-    if not public_urls.is_public():
-        lines.append(t("\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке."))
-    lines.append("\n" + t("Подключение виджета на сайт (перед <code>&lt;/body&gt;</code>):\n<code>{widget_snippet}</code>\nЛюбая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму.\nЯзык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. После обновления бота сниппет может смениться — бот скажет, и его надо заменить на сайтах.\nСтрогий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией файла у себя — в начале файла {widget_url}").format(widget_snippet=esc(widget_snippet()), widget_url=esc(public_urls.widget_url())))
+    lines.append("\n" + t("Подключить виджет на сайт — «📩 Подключить виджет» на экране «🌍 Для посетителей»."))
     nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(text=t("← Новее"), callback_data=f"menu_feedback:{max(0, offset - PAGE)}"))
@@ -80,7 +118,7 @@ async def cb_feedback_delete(call: CallbackQuery):
         await ack(call)
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=t("🗑 Да, удалить"), callback_data=f"fb_del_ok:{hi}:{lo}")],
-            [InlineKeyboardButton(text=t("← Не надо"), callback_data="menu_feedback:0")]])
+            [InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="menu_feedback:0")]])
         await render(call, t("Удалить эти сообщения посетителей? Вернуть их будет нельзя."), kb)
         return
     if not await ack(call):           # «Да» from the queue after a restart: nothing is deleted

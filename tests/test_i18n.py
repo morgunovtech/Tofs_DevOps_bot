@@ -662,6 +662,12 @@ async def test_problem_screens(bot, db, monkeypatch):
     call = FakeCall("menu_feedback:0")
     await feedback.cb_feedback(call)
     _calls_english(call)
+    call = FakeCall("menu_widget")
+    await feedback.cb_widget(call)
+    _calls_english(call)
+    call = FakeCall("fb_secret")
+    await feedback.cb_widget_secret(call)
+    _calls_english(call)
 
     monkeypatch.setattr(automation.integrations, "deploy_hooks", lambda: {"ex.test": "https://hook.test"})
     screen_english(*await automation.auto_screen())
@@ -697,7 +703,8 @@ async def test_problem_screens(bot, db, monkeypatch):
 async def test_settings_connections_and_wizards(bot, db, monkeypatch):
     sid = await db.activate_or_create_site("https://ex.test")
     for data, handler in (("menu_settings", "cb_settings"), ("menu_helpers", "cb_helpers"), ("helper_invite", "cb_helper_invite"),
-                          ("menu_reports", "cb_reports"), ("menu_tz", "cb_tz"), ("menu_visitors", "cb_visitors"),
+                          ("menu_reports", "cb_reports"), ("menu_quiet", "cb_quiet"), ("menu_backup", "cb_backup"),
+                          ("menu_tz", "cb_tz"), ("menu_visitors", "cb_visitors"),
                           ("menu_statuspage", "cb_status_page"), ("sp_pub:", "cb_status_page_publish")):
         call = FakeCall(data)
         await getattr(settings_screen, handler)(call)

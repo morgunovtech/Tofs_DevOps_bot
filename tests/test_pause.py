@@ -13,6 +13,7 @@ from conftest import FakeCall, buttons
 
 from db.database import get_active_incidents, get_state, get_states_like
 from handlers import alerts
+from handlers.alerts import fix_more_kb
 from reports import scheduler
 from services import maintenance, notifier
 from services.actions import alert_actions_keyboard, deep_alert_keyboard
@@ -172,3 +173,13 @@ def test_every_fix_text_names_the_same_length():
     length = maintenance.fix_length()
     assert length in buttons(alert_actions_keyboard("https://example.com", 1, 7))[0]
     assert maintenance.FIX_MINUTES == 60 and length == "час"
+
+
+async def test_the_fix_reply_offers_a_longer_pause_and_the_end_of_it(bot, db):
+    sid = await db.activate_or_create_site("https://fix.test")
+    labels = buttons(fix_more_kb(sid))
+    assert labels == ["🔧 2 часа", "🔧 До утра", "✅ Починил"]
+    data = [b.callback_data for row in fix_more_kb(sid).inline_keyboard for b in row]
+    assert data[0] == f"pause:{sid}:120" and data[2] == f"pause:{sid}:off"
+    minutes = int(data[1].rsplit(":", 1)[1])
+    assert 1 <= minutes <= 24 * 60

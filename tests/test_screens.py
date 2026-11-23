@@ -27,7 +27,7 @@ from monitors import links_checker
 from monitors.base import LinkCheck, SeoResult
 from reports import scheduler
 from services import heartbeats as heartbeats_service
-from services import integrations, recommend, screenshots, secrets, sitestatus
+from services import integrations, notifier, recommend, screenshots, secrets, sitestatus
 from services import maintenance as maint_service
 from services import settings as settings_service
 from services.actions import heartbeat_keyboard
@@ -49,7 +49,7 @@ async def test_main_menu_header_states(bot, db):
     assert "🟠 ex.test · чинится, expiring" in header               # on its site's line, said once
     labels = [b.text for row in kb.inline_keyboard for b in row]
     # «Что не так» first, then a button per block — not one per site.
-    assert labels == ["🟠 Что не так", "🌐 Сайты", "🤖 Боты", "⚙️ Настройки"]
+    assert labels == ["🟠 Что не так", "🌐 Сайты", "🤖 Боты", "⚙️ Настройки", "🔕 Помолчать…"]
     assert kb.inline_keyboard[1][0].callback_data == "blk:sites"
     await maint_service.pause_site(sid, None)
     await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
@@ -154,14 +154,24 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     assert text.startswith("⚙️ Настройки\n\n🔔 Когда писать — сводка 9:00")
     assert "👥 Помощники — нет" in text and "🔌 Подключения — " in text and "🌍 Для посетителей — " in text
     labels = [b.text for row in call.message.reply_markup.inline_keyboard for b in row]
-    assert labels == ["🔔 Когда писать", "👥 Помощники", "🔌 Подключения", "🌍 Для посетителей",
-                      "🕐 Часовой пояс", "🏠 Главная"]
-    call = FakeCall("menu_reports")                                   # pause, planned work, the test alert live here
+    assert labels == ["🔔 Когда писать", "🔕 Тишина", "👥 Помощники", "🔌 Подключения", "🌍 Для посетителей",
+                      "💾 Копия базы", "🕐 Часовой пояс", "🏠 Главная"]
+    assert "🔕 Тишина — тихих часов нет" in text and "💾 Копия базы — " in text
+    call = FakeCall("menu_reports")                                   # the digests, the ring and the test alert
     await settings.cb_reports(call)
-    assert {"🔕 Помолчать…", "🗓 Плановые работы", "🔔 Пробная тревога"} <= set(buttons(call.message.reply_markup))
+    assert "🔔 Пробная тревога" in buttons(call.message.reply_markup)
+    assert not {"🔕 Помолчать…", "🗓 Плановые работы"} & set(buttons(call.message.reply_markup))
+    call = FakeCall("menu_quiet")                                     # the five silences live here
+    await settings.cb_quiet(call)
+    assert call.message.texts[-1].startswith("🔕 Тишина\n\n🔕 Помолчать: не молчу")
+    assert {"🔕 Помолчать…", "🗓 Плановые работы", "🌙 23–8", "✅ 🌙 выкл"} <= set(buttons(call.message.reply_markup))
+    call = FakeCall("menu_backup")
+    await settings.cb_backup(call)
+    assert call.message.texts[-1].startswith("💾 Копия базы\n\n⏳ Резервная копия базы")
+    assert buttons(call.message.reply_markup)[0] == "💾 Скачать копию базы"
     call = FakeCall("menu_visitors")
     await settings.cb_visitors(call)
-    assert buttons(call.message.reply_markup) == ["🌐 Статус-страница", "📩 Сообщения", "← Настройки"]
+    assert buttons(call.message.reply_markup) == ["🌐 Статус-страница", "📩 Сообщения", "📩 Подключить виджет", "← Настройки"]
     call = FakeCall("set_w:18")
     await settings.cb_settings_pick(call)
     assert settings_service.weekly_hour() == 18
@@ -211,8 +221,13 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     call = FakeCall("menu_feedback:0")
     await feedback.cb_feedback(call)
     text = call.message.texts[-1]
-    assert "typo &lt;here&gt;" in text and "data-devops-feedback" in text
-    assert "unit-test-webhook-secret" in text
+    assert "typo &lt;here&gt;" in text and "📩 Подключить виджет" in text          # the snippet has a screen of its own
+    assert "unit-test-webhook-secret" not in text
+    call = FakeCall("menu_widget")
+    await feedback.cb_widget(call)
+    text = call.message.texts[-1]
+    assert "data-devops-feedback" in text and "unit-test-webhook-secret" in text
+    assert buttons(call.message.reply_markup) == ["📩 Сообщения", "🔑 Сменить ключ виджета", "← Для посетителей"]
 
 
 async def test_main_menu_header_is_short_when_all_is_well(bot, db):
@@ -230,8 +245,8 @@ async def test_main_menu_header_is_short_when_all_is_well(bot, db):
     labels = [b.text for row in kb.inline_keyboard for b in row]
     # A button per block, not per site; no «Что не так» on a good day, no
     # «Проверить всё сейчас» — the screen is never older than a minute or two.
-    assert labels == ["🌐 Сайты", "🤖 Боты", "⚙️ Настройки"]
-    assert [len(row) for row in kb.inline_keyboard] == [2, 1]
+    assert labels == ["🌐 Сайты", "🤖 Боты", "⚙️ Настройки", "🔕 Помолчать…"]
+    assert [len(row) for row in kb.inline_keyboard] == [2, 2]       # blocks; settings + mute
 
 
 async def _long_standing(*jobs):
@@ -280,7 +295,7 @@ async def test_tasks_and_bots_sit_on_the_main_screen(bot, db):
     header, kb = await menu.build_main_menu()
     assert "Пока ни за чем не слежу" not in header and "<b>Боты и системы</b>" in header
     assert "<b>Сайты</b>" not in header
-    assert buttons(kb) == ["➕ Сайт", "🤖 Боты", "⚙️ Настройки"]
+    assert buttons(kb) == ["➕ Сайт", "🤖 Боты", "⚙️ Настройки", "🔕 Помолчать…"]
 
 
 async def test_main_screen_shows_the_watchdog(bot, db, monkeypatch):
@@ -829,3 +844,50 @@ async def test_declining_an_old_weekly_tip_survives_a_message_too_old_to_edit(bo
     call.message = SimpleNamespace(chat=SimpleNamespace(id=1, type="private"))    # InaccessibleMessage: no edit
     await sites.cb_tip_decline(call)
     assert call.answers == ["Ок, больше не предложу"]
+
+
+async def test_a_healthy_sites_card_still_leads_to_its_screens(bot, db):
+    """The audit, the mail records and the headers used to be reachable only
+    once something was wrong with them; a good day has the same doors."""
+    sid = await db.activate_or_create_site("https://good.test")
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    labels = buttons(call.message.reply_markup)
+    assert labels[:3] == ["🔎 Поиск и ИИ", "✉️ Почта", "🛡 Безопасность"]
+    assert "🔧 Я чиню, час тишины" in labels and "⚙️ Настройки сайта" in labels
+    assert not {"🔗 Ссылки", "📸 Как выглядит сайт", "🚀 Пересобрать сайт"} & set(labels)   # a crawl, an automatic picture, no hook
+
+
+async def test_the_status_page_screen_lists_the_badges(bot, db, cfg):
+    cfg(public_base_url="https://bot.example.com")
+    await db.activate_or_create_site("https://shop.example.com")
+    await settings_service.set_status_page(True)
+    call = FakeCall("menu_statuspage")
+    await settings.cb_status_page(call)
+    text = call.message.texts[-1]
+    assert "🏷 Бейдж аптайма" in text and "shop.example.com: <code>https://bot.example.com/badge/" in text
+
+
+async def test_deleting_a_maintenance_window_asks_first(bot, db):
+    await maint_service.add_window(None, [0, 1, 2, 3, 4], 120, 240)
+    win_id = maint_service.windows()[0]["id"]
+    call = FakeCall(f"mw_del:{win_id}")
+    await maintenance.cb_mw_del(call)
+    assert call.message.texts[-1].startswith("Удалить окно ") and len(maint_service.windows()) == 1
+    assert buttons(call.message.reply_markup) == ["🗑 Да, удалить", "✖️ Отмена"]
+    call = FakeCall(f"mw_del_ok:{win_id}")
+    await maintenance.cb_mw_del_ok(call)
+    assert maint_service.windows() == [] and call.message.texts[-1].startswith("✅ Окно удалено.")
+
+
+async def test_the_silence_screen_names_what_is_quiet_and_lifts_it(bot, db):
+    sid = await db.activate_or_create_site("https://fix.test")
+    await maint_service.pause_site(sid, 60)
+    await notifier.set_mute(timedelta(hours=2))
+    call = FakeCall("menu_quiet")
+    await settings.cb_quiet(call)
+    text, labels = call.message.texts[-1], buttons(call.message.reply_markup)
+    assert "🔕 Помолчать: молчу до " in text and "🔧 Я чиню: fix.test" in text
+    assert labels[0] == "🔔 Снять тишину" and "✅ Починил fix.test, пиши снова" in labels
+    header, kb = await menu.build_main_menu()
+    assert buttons(kb)[-1] == "🔔 Снять тишину"                          # the main screen too, while it lasts

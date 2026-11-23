@@ -74,6 +74,8 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
     elif kind == "availability" and not inc.get("resolved"):     # «🔧» would pause a working site
         rows.append([InlineKeyboardButton(text=t("🔧 Я чиню, час тишины"), callback_data=f"act:fix:{sid}"),
                      InlineKeyboardButton(text=t(RECHECK), callback_data=f"act:recheck:{sid}")])
+        if inc["severity"] == "critical":     # the reminders of a fall can be stopped from here too
+            rows.append([InlineKeyboardButton(text=t("👀 Знаю, не напоминать"), callback_data=f"inc_quiet:{inc['id']}")])
     elif kind in ("mail", "mail_auth"):
         rows.append([InlineKeyboardButton(text=t("✉️ Почта"), callback_data=f"mail:{sid}")])
     elif kind in ("exposed", "security"):
@@ -94,10 +96,12 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-@router.callback_query(F.data == "menu_incidents")
+@router.callback_query(F.data.in_({"menu_incidents", "menu_incidents:a"}))
 async def cb_incidents(call: CallbackQuery):
+    """«:a» — the button lives on a digest: the list comes below it, the
+    digest stays (render() answers for a target without a message)."""
     await ack(call)
-    await render_incidents(call)
+    await render_incidents(call.message if call.data.endswith(":a") and call.message is not None else call)
 
 
 @router.callback_query(F.data.startswith("inc_explain:"))
@@ -145,7 +149,7 @@ async def cb_incidents_clear(call: CallbackQuery):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("🗑 Да, закрыть все"), callback_data=f"incidents_clear:ok:{int(time.time())}")],
-        [InlineKeyboardButton(text=t("← Отмена"), callback_data="menu_incidents")]])
+        [InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="menu_incidents")]])
     await render(call, t("Закрыть все открытые проблемы ({n})?\n\nЛежащие сайты я сначала проверю: что всё ещё не открывается, останется в списке. Остальное, если оно настоящее, следующая проверка откроет снова — 🔴 со звонком.").format(n=n), kb)
 
 

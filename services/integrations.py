@@ -7,7 +7,7 @@ deploy_hooks (JSON {host: url}), cf_api_token, cf_zone_id, cf_zone_name
 (learnt from Cloudflare on the first purge), second_opinion ("on"/"off"),
 github_token, github_owner, crux_key (Google API key for the Chrome UX
 Report), auto_redeploy / auto_restart / auto_cleanup ("on"/"off": the
-switches of «🤖 Что бот делает сам», they win over .env), region_speed
+switches of «🤖 Что делаю сам», they win over .env), region_speed
 ("on"/"off": the «⏱ Скорость из региона» switch of «🌐 Вторая точка»).
 
 «🗑 Отключить» in the chat must mean off even when .env still carries the

@@ -269,7 +269,7 @@ async def test_the_switched_off_service_is_offered_as_a_screen_not_a_tap(bot, db
     call = FakeCall("setup:so")
     await setup.cb_second_opinion_screen(call)
     text = call.message.texts[-1]
-    assert text.startswith("🌐 Вторая точка проверки — бесплатный сервис check-host.net")
+    assert text.startswith("🌐 Вторая точка — бесплатный сервис check-host.net")
     assert "Внутренние адреса" in text and "Перепроверка: выключена" in text
     assert buttons(call.message.reply_markup)[:2] == ["🌐 Перепроверку включить", "⏱ Скорость из региона включить"]
 
