@@ -12,7 +12,6 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 
-from config import config
 from db.database import (
     get_active_host_urls,
     get_active_incidents,
@@ -24,7 +23,7 @@ from handlers.common import ack, render
 from handlers.mail import mail_brief
 from monitors import domain_checker, ssl_checker
 from monitors.mail_checker import MAIL_CHECKS, carriers
-from services import heartbeats, humanize, maintenance, notifier, sitestatus, updates
+from services import heartbeats, humanize, maintenance, notifier, settings, sitestatus, updates
 from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
 from utils.i18n import plural, t
@@ -228,7 +227,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
         return (t("👋 Пока ни за чем не слежу. Добавь первый сайт — и я начну проверять его каждые "
                   "{minutes} мин и напишу, только если что-то сломается. Там же "
                   "можно добавить бота или задачу по расписанию: скажу, если замолчит.")
-                .format(minutes=config.check_interval_minutes), kb)
+                .format(minutes=settings.check_interval_minutes()), kb)
 
     incidents = await get_active_incidents()
     # Problems first (a stable sort: within a level the sites keep their

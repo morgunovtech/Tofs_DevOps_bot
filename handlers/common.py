@@ -82,6 +82,11 @@ STALE_BUTTON = "Кнопка устарела — нажми «🏠 Главна
 NOT_UNDERSTOOD = "Не понял. Всё — кнопками под полем ввода: 🏠 Главная, 📖 Что я умею, ❓ Значки."
 
 
+def mark(on: bool, text: str) -> str:
+    """✅ before the value that is current — every row says what is chosen."""
+    return f"✅ {text}" if on else text
+
+
 def back_button(text: str = HOME, callback: str = "menu_main") -> InlineKeyboardMarkup:
     """One button back; the label is translated here, so a caller passes its Russian source."""
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(text), callback_data=callback)]])
@@ -92,6 +97,45 @@ def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
     the step was opened from, which «Отмена» draws again (handlers.menu)."""
     data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(CANCEL), callback_data=data)]])
+
+
+# ── Where a connection wizard was opened from ────────────────────────────────
+# «🔌 Подключения» by default; «📖 Что можно подключить» sets the door
+# (handlers.about, about:go:…) and the «←» at the end of every wizard —
+# and «✖️ Отмена» under its steps — leads back there. One owner and one
+# chat, so a module variable is enough: a restart forgets it, and the
+# wizard then leads to «🔌 Подключения» — never wrong, only one tap longer.
+WIZARD_DOORS = {"": ("← К подключениям", "setup:check"), "about": ("← Что можно подключить", "about:modules")}
+_wizard_door = ""
+# The buttons that keep the door: a wizard's own (setup:…), «✖️ Отмена»
+# inside it and the door itself. Any other tap leaves the wizard.
+WIZARD_KEEP = ("setup:", "fsm_cancel:setup:", "about:go:")
+
+
+def set_wizard_door(door: str) -> None:
+    global _wizard_door
+    _wizard_door = door if door in WIZARD_DOORS else ""
+
+
+def wizard_door() -> str:
+    return _wizard_door
+
+
+def wizard_back() -> tuple[str, str]:
+    """(Russian label, callback) of the way out of a connection wizard —
+    the label is a t() key, translated where the button is drawn."""
+    return WIZARD_DOORS[_wizard_door]
+
+
+class ForgetWizardDoor(BaseMiddleware):
+    """A tap outside a wizard (the checklist, a settings screen, the main
+    screen) closes the door opened from «📖»: the next wizard, wherever it
+    is opened from, leads back to «🔌 Подключения» again unless «📖» opens it."""
+
+    async def __call__(self, handler, event, data):
+        if not (event.data or "").startswith(WIZARD_KEEP):
+            set_wizard_door("")
+        return await handler(event, data)
 
 
 class DropInputOnNavigation(BaseMiddleware):

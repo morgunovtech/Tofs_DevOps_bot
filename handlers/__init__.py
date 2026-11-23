@@ -29,8 +29,15 @@ from handlers import (
     sites,
     speed,
     start,
+    tune,
 )
-from handlers.common import DropInputOnNavigation, deny_router, on_handler_error, stale_router
+from handlers.common import (
+    DropInputOnNavigation,
+    ForgetWizardDoor,
+    deny_router,
+    on_handler_error,
+    stale_router,
+)
 from handlers.filters import AdminFilter
 
 router = Router(name="root")
@@ -45,12 +52,14 @@ admin.message.filter(AdminFilter())
 admin.callback_query.filter(AdminFilter())
 # A tap anywhere but inside the step ends a pending input step (UX-019).
 admin.callback_query.middleware(DropInputOnNavigation())
+# A tap anywhere but inside a connection wizard forgets where it was opened from.
+admin.callback_query.middleware(ForgetWizardDoor())
 admin.include_routers(
     bottom.router,   # first: a bottom button aborts any pending input
     menu.router, about.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router, mail.router,
-    security.router, speed.router, automation.router,
+    security.router, speed.router, automation.router, tune.router,
     stale_router,   # last: catches only what nothing above handled
 )
 router.include_router(admin)

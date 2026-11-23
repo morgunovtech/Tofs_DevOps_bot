@@ -867,8 +867,8 @@ async def msg_site_add(message: Message, state: FSMContext):
                 lines.append(t("🔴 Сертификат: {why}").format(why=esc(humanize.describe_error(ssl_r.error))))
         # The real next runs (reports.scheduler), not a promise the schedule may break.
         domain_at = next_run_words("domain_checks") or t("утром")
-        links = (t(", ссылки — в ближайшие {links_check_interval_hours} ч").format(links_check_interval_hours=config.links_check_interval_hours)
-                 if config.links_check_interval_hours else "")
+        links = (t(", ссылки — в ближайшие {links_check_interval_hours} ч").format(links_check_interval_hours=settings.links_check_interval_hours())
+                 if settings.links_check_interval_hours() else "")
         lines.append("\n" + t("Срок домена проверю {domain_at}, поиск и ИИ — {v} (итоги — в утренней сводке){links}.").format(domain_at=domain_at, v=next_run_words('seo_checks') or t("утром"), links=links) if page else "\n" + t("Срок домена проверю {domain_at}.").format(domain_at=domain_at))
     if first_site and not await get_state(RULES_SHOWN):   # /start said it already
         lines.append("\n" + rules_of_the_game())

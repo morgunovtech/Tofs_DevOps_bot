@@ -8,7 +8,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import config
 from db.database import get_active_page_urls, update_site_settings
 from handlers.common import ack, back_button, cancel_kb, cb_args, forget_secret, render, site_by_cb
 from monitors.availability import CONSECUTIVE_FAILURE_THRESHOLD, HTTP_METHODS, phrase_state
@@ -49,11 +48,11 @@ async def advanced_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     sid, http = site["id"], is_http_url(site["url"])
     interval, thr, slow = site.get("check_interval_min"), site.get("fail_threshold"), site.get("slow_ms")
     lines = [t("⚙️ Настройки: {label}").format(label=esc(site_label(site['url']))) + "\n",
-             t("⏱ Интервал проверки: {v} мин").format(v=interval or config.check_interval_minutes)
+             t("⏱ Интервал проверки: {v} мин").format(v=interval or settings.check_interval_minutes())
              + ("" if interval else t(" (по умолчанию)")),
              t("🔁 Неудачных проверок подряд до тревоги: {v}").format(v=thr or CONSECUTIVE_FAILURE_THRESHOLD)
              + ("" if thr else t(" (по умолчанию)")),
-             t("🐢 Порог «медленно»: {v} мс").format(v=slow or config.slow_response_ms)
+             t("🐢 Порог «медленно»: {v} мс").format(v=slow or settings.slow_response_ms())
              + ("" if slow else t(" (по умолчанию)"))]
     if http:
         codes = site.get("accepted_codes")
@@ -115,7 +114,7 @@ async def sset_screen(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     whether to watch a phrase on the page. Everything else is advanced."""
     sid, http = site["id"], is_http_url(site["url"])
     api = is_api_check(site["url"], site.get("http_method"))
-    interval = site.get("check_interval_min") or config.check_interval_minutes
+    interval = site.get("check_interval_min") or settings.check_interval_minutes()
     how_often = t(_SIMPLE_INTERVALS.get(interval, "раз в {interval} мин")).format(interval=interval)
     lines = [f"⚙️ {esc(site_label(site['url']))}\n",
              t("⏱ Проверяю {how_often}.").format(how_often=how_often)]

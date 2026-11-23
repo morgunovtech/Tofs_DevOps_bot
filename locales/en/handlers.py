@@ -83,7 +83,8 @@ STRINGS: dict[str, str] = {
     "🤖 Боты — задачи по расписанию и другие боты, внешний сторож.\n"
     "⚙️ Настройки — 🔔 Когда писать (сводки, звонок, пробная тревога), 🔕 Тишина (помолчать, тихие часы, "
     "плановые работы), 👥 Помощники, 🔌 Подключения (вторая точка, Google, Яндекс, Cloudflare, GitHub, сторож), "
-    "🌍 Для посетителей (статус-страница, бейджи, виджет), 💾 Копия базы, 🕐 Часовой пояс.\n\n"
+    "🌍 Для посетителей (статус-страница, бейджи, виджет), 💾 Копия базы, 🕐 Часовой пояс, 🛠 Тонкие настройки "
+    "(интервал проверки, порог «медленно», напоминания, язык — то, что раньше было только в .env).\n\n"
     "Пять видов тишины: «🔧 Я чиню» — один сайт на час, продлить можно сразу под ответом; «🔕 Помолчать…» "
     "(и /mute) — всё, кроме звонящего; «🗓 Плановые работы» — по расписанию; «⏸ Не пересобирать сам» — только "
     "автодействия; «👀 Знаю, не напоминать» — только напоминания об одной проблеме. Всё это — «⚙️ Настройки → 🔕 Тишина».\n\n"
@@ -108,7 +109,8 @@ STRINGS: dict[str, str] = {
         "🤖 Bots — scheduled tasks and other bots, the external watchdog.\n"
         "⚙️ Settings — 🔔 When to write (digests, the ring, a test alert), 🔕 Silence (mute, quiet hours, "
         "maintenance windows), 👥 Helpers, 🔌 Connections (the second vantage point, Google, Yandex, Cloudflare, GitHub, "
-        "the watchdog), 🌍 For visitors (status page, badges, the widget), 💾 Database copy, 🕐 Time zone.\n\n"
+        "the watchdog), 🌍 For visitors (status page, badges, the widget), 💾 Database copy, 🕐 Time zone, 🛠 Fine settings "
+        "(check interval, the «slow» threshold, reminders, language — what used to live only in .env).\n\n"
         "Five kinds of silence: «🔧 I'm fixing it» — one site for an hour, extendable right under the reply; "
         "«🔕 Mute…» (and /mute) — everything but what rings; «🗓 Maintenance windows» — on a schedule; "
         "«⏸ Don't rebuild by myself» — only the auto-actions; «👀 I know, don't remind me» — only the reminders about one "
@@ -372,6 +374,7 @@ STRINGS: dict[str, str] = {
     "по кнопке": "by a button",
     "выполняю…": "running…",
     "← К подключениям": "← Connections",
+    "← Что можно подключить": "← What can be connected",
     "Остановил": "Paused",
     "⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что бот делает сам.":
         "⏸ Doing nothing by myself {words}: no rebuilds, no restarts, no cleanup. To turn on: ⚙️ Settings → 🔌 Connections → 🤖 What the bot does by itself.",
@@ -1281,8 +1284,8 @@ STRINGS: dict[str, str] = {
     "Это не JSON-ключ сервис-аккаунта (нужны поля client_email и private_key).": "That is not a service account JSON key (the client_email and private_key fields are needed).",
     "✅ Ключ сохранён. Теперь укажи ресурс: «1️⃣ Указать ресурс».": "✅ The key is saved. Now set the property: «1️⃣ Set the property».",
     "✅ Google Search Console подключён, API отвечает.": "✅ Google Search Console is connected, the API answers.",
-    "Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан шаг 3: добавь <code>{client_email}</code> в пользователи ресурса в Search Console и нажми «← К подключениям».":
-        "The key is saved, but the API still answers with an error. Most often step 3 is missing: add <code>{client_email}</code> to the property's users in Search Console and tap «← Connections».",
+    "Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан шаг 3: добавь <code>{client_email}</code> в пользователи ресурса в Search Console и нажми «{back}».":
+        "The key is saved, but the API still answers with an error. Most often step 3 is missing: add <code>{client_email}</code> to the property's users in Search Console and tap «{back}».",
     "🚀 Добавить deploy hook": "🚀 Add a deploy hook",
     "🧹 Токен для сброса кэша": "🧹 Token for purging the cache",
     "deploy hooks: нет": "deploy hooks: none",
@@ -1338,8 +1341,8 @@ STRINGS: dict[str, str] = {
     "автодействия остановлены": "auto-actions are stopped",
     "сводка {morning_hour}:00 · будить: {ring}": "digest at {morning_hour}:00 · ring for: {ring}",
     " · по воскресеньям в личку": " · on Sundays in a private message",
-    "⚙️ Настройки\n\n🔔 Когда писать — {write}\n🔕 Тишина — {silence}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n💾 Копия базы — {backup}\n🕐 Часовой пояс — {timezone}, сейчас {time}":
-        "⚙️ Settings\n\n🔔 When to write — {write}\n🔕 Silence — {silence}\n👥 Helpers — {helpers_now}\n🔌 Connections — {connections}\n🌍 For visitors — {visitors}\n💾 Database copy — {backup}\n🕐 Time zone — {timezone}, now {time}",
+    "⚙️ Настройки\n\n🔔 Когда писать — {write}\n🔕 Тишина — {silence}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n💾 Копия базы — {backup}\n🕐 Часовой пояс — {timezone}, сейчас {time}\n🛠 Тонкие настройки — {tune}":
+        "⚙️ Settings\n\n🔔 When to write — {write}\n🔕 Silence — {silence}\n👥 Helpers — {helpers_now}\n🔌 Connections — {connections}\n🌍 For visitors — {visitors}\n💾 Database copy — {backup}\n🕐 Time zone — {timezone}, now {time}\n🛠 Fine settings — {tune}",
     "🔕 Тишина": "🔕 Silence",
     "💾 Копия базы": "💾 Database copy",
     "🔔 Когда писать\n\n🌅 Утренняя сводка: {morning_hour}:00 — {words}.\n🌙 Вечерняя: {words2}.\n📊 Недельная: воскресенье {weekly_hour}:00 — простой за неделю и месяц, строки скорости только для сайтов, где она менялась, одна идея.\n🔔 Будить: {words5}.\n\nТихие часы, «помолчать» и плановые работы — на экране «🔕 Тишина»; копия базы — «💾 Копия базы».\n\nТапни, чтобы изменить:":
@@ -1412,12 +1415,99 @@ STRINGS: dict[str, str] = {
     "<b>Где что</b>": "<b>Where things are</b>",
     "🏠 Главная → 🌐 Сайты → карточка: проверить снова, «🔧 Я чиню», 🔎 Поиск и ИИ, ✉️ Почта, 🛡 Безопасность, ⚙️ Настройки сайта.": "🏠 Home → 🌐 Sites → a card: check again, «🔧 I'm fixing it», 🔎 Search & AI, ✉️ Mail, 🛡 Security, ⚙️ Site settings.",
     "🏠 Главная → 🤖 Боты: задачи и боты по расписанию, внешний сторож.": "🏠 Home → 🤖 Bots: scheduled tasks and bots, the external watchdog.",
-    "⚙️ Настройки: 🔔 Когда писать · 🔕 Тишина · 👥 Помощники · 🔌 Подключения · 🌍 Для посетителей · 💾 Копия базы · 🕐 Часовой пояс.": "⚙️ Settings: 🔔 When to write · 🔕 Silence · 👥 Helpers · 🔌 Connections · 🌍 For visitors · 💾 Database copy · 🕐 Time zone.",
+    "⚙️ Настройки: 🔔 Когда писать · 🔕 Тишина · 👥 Помощники · 🔌 Подключения · 🌍 Для посетителей · 💾 Копия базы · 🕐 Часовой пояс · 🛠 Тонкие настройки (интервал проверки, порог «медленно», напоминания, язык).":
+        "⚙️ Settings: 🔔 When to write · 🔕 Silence · 👥 Helpers · 🔌 Connections · 🌍 For visitors · 💾 Database copy · 🕐 Time zone · 🛠 Fine settings (check interval, the «slow» threshold, reminders, language).",
     "❓ Значки (кнопка под полем ввода) — что значат 🔴 🟠 ✅ ⚠️, пять видов тишины и команды.": "❓ Icons (the button under the input field) — what 🔴 🟠 ✅ ⚠️ mean, the five kinds of silence and the commands.",
     # ── handlers/heartbeats.py: the status JSON ────────────────────────────
     "Бот умеет не только выходить на связь, но и рассказывать, что видит: POST на тот же адрес с JSON вида <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — строки появятся блоком на главном экране. Формат целиком — в docs/DEVELOPMENT.md, раздел «Статус от другого бота».":
         "A bot can do more than mark in — it can tell what it sees: a POST to the same address with JSON like <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — the lines appear as a block on the main screen. The full format is in docs/DEVELOPMENT.md, the section on a status from another bot.",
 
+    # ── 🛠 Тонкие настройки (handlers.tune) ──────────────────────────────────
+    "🛠 Тонкие настройки": "🛠 Fine settings",
+    "← Тонкие настройки": "← Fine settings",
+    "из .env": "from .env",
+    "задано здесь": "set here",
+    "задано здесь (в .env {env})": "set here (in .env {env})",
+    "пусто": "empty",
+    "по-русски": "in Russian",
+    "по-английски": "in English",
+    "русский": "Russian",
+    "английский": "English",
+    "{v} мин": "{v} min",
+    "{v} с": "{v} s",
+    "за {v} дн.": "{v} days ahead",
+    "{v} стр.": "{v} pages",
+    "от {v} зн.": "from {v} chars",
+    "раз в {v}": "every {v}",
+    "от {v}": "from {v}",
+    "от {v} %": "from {v} %",
+    "через {v}": "after {v}",
+    "Что раньше менялось только в .env на сервере. Значение, выбранное здесь, главнее .env и переживает перезапуск; «↩︎ Как в .env» возвращает серверное.":
+        "What used to change only in .env on the server. A value chosen here wins over .env and survives a restart; «↩︎ As in .env» brings the server's value back.",
+    "Только на сервере (.env):": "On the server only (.env):",
+    "• внутренние адреса: {v} — ALLOW_PRIVATE_TARGETS": "• internal addresses: {v} — ALLOW_PRIVATE_TARGETS",
+    "разрешены": "allowed",
+    "только публичные": "public only",
+    "• перезапуск контейнеров: {v} — AUTORESTART_CONTAINERS": "• container restarts: {v} — AUTORESTART_CONTAINERS",
+    "• история проверок: {days} дн., ночных копий: {keep} — RETENTION_DAYS, DB_BACKUP_KEEP":
+        "• check history: {days} days, nightly copies: {keep} — RETENTION_DAYS, DB_BACKUP_KEEP",
+    "• снимки страниц: {v} — SCREENSHOT_TEMPLATE": "• page screenshots: {v} — SCREENSHOT_TEMPLATE",
+    "• проверка уязвимостей и деплоя: {v} — DEPENDENCY_WATCH": "• vulnerability and deploy watch: {v} — DEPENDENCY_WATCH",
+    "• прокси для Telegram: {v} — TELEGRAM_PROXY": "• proxy for Telegram: {v} — TELEGRAM_PROXY",
+    "проверка раз в {m} мин · «медленно» от {s} · напоминание {r}": "checks every {m} min · «slow» from {s} · reminder {r}",
+    " · задано здесь: {n}": " · set here: {n}",
+    " · всё из .env": " · all from .env",
+    "🌐 Статус-страница: {words} — {where}": "🌐 Status page: {words} — {where}",
+    "🌐 Статус-страница: {words}.": "🌐 Status page: {words}.",
+    ", название «{title}»": ", titled «{title}»",
+    ", без своего названия": ", no title of its own",
+    "🗣 Язык бота: {lang} — {where}": "🗣 Bot language: {lang} — {where}",
+    "🗣 Язык бота": "🗣 Bot language",
+    "🗣 Русский": "🗣 Russian",
+    "🗣 Язык бота: <b>{lang}</b> — {src}.": "🗣 Bot language: <b>{lang}</b> — {src}.",
+    "Проверка сайтов": "Site checks",
+    "Для сайтов, у которых интервал не задан в их настройках. Чаще — раньше узнаю о падении, но больше запросов к сайту.":
+        "For sites with no interval of their own in their settings. More often — I learn of an outage sooner, but the site gets more requests.",
+    "Порог «медленно»": "«Slow» threshold",
+    "Ответ дольше — заметка «медленно отвечает» в сводке и на карточке. У сайта может быть свой порог в его настройках.":
+        "A longer answer earns a «slow to answer» note in the digest and on the card. A site may have its own threshold in its settings.",
+    "Напоминание о лежащем сайте": "Reminder about a down site",
+    "Первое напоминание, пока сайт лежит; дальше каждый раз вдвое реже, не чаще раза в 4 ч. «Выкл» — одна тревога и одно «снова работает».":
+        "The first reminder while the site is down; then half as often each time, never more than once in 4 h. «Off» — one alert and one «up again».",
+    "Автопродление сертификата": "Certificate auto-renewal",
+    "Тревога, если так близко к сроку сертификат ещё не заменился — автопродление, похоже, сломалось.":
+        "An alert when the certificate has still not been replaced this close to expiry — auto-renewal looks broken.",
+    "Тревога о диске": "Disk alert",
+    "Диск сервера, где я работаю, заполнен сильнее — 🟠 (от 95 % — 🔴); на том же пороге чищу docker, если очистка включена.":
+        "The disk of the server I run on is fuller than this — 🟠 (from 95 % — 🔴); at the same threshold I clean docker, if cleanup is on.",
+    "Обход ссылок": "Link crawl",
+    "Как часто обходить ссылки с главной и страницы из карты сайта. «Выкл» — не обходить.":
+        "How often to crawl the links on the home page and the pages of the sitemap. «Off» — never.",
+    "Глубокая проверка 5xx": "Deep 5xx probe",
+    "Сколько страниц из карты сайта открывать раз в час в поисках ошибок сервера глубже главной.":
+        "How many pages of the sitemap to open every hour looking for server errors deeper than the home page.",
+    "Поиск и ИИ: страниц": "Search and AI: pages",
+    "Сколько страниц кроме главной смотреть в ежедневной проверке поиска и ИИ-ассистентов.":
+        "How many pages besides the home page the daily search and AI check looks at.",
+    "Поиск и ИИ: мало текста": "Search and AI: thin text",
+    "Страница с текстом короче — находка «мало текста» в проверке поиска. «Выкл» — не проверять.":
+        "A page with less text gets a «thin text» finding in the search check. «Off» — do not check.",
+    "↩︎ Как в .env ({v})": "↩︎ As in .env ({v})",
+    "↩︎ Как в .env": "↩︎ As in .env",
+    "Язык — {src}; название — {src2}.": "Language — {src}; title — {src2}.",
+    "Язык страницы, её JSON-текстов и бейджей — для посетителей; язык самого бота — «🗣 Язык бота». Название показывается над баннером и во вкладке браузера.":
+        "The language of the page, its JSON texts and badges — for visitors; the bot's own language is «🗣 Bot language». The title shows above the banner and in the browser tab.",
+    "🌐 По-русски": "🌐 Russian",
+    "🌐 По-английски": "🌐 English",
+    "✏️ Название: «{title}»": "✏️ Title: «{title}»",
+    "✏️ Задать название": "✏️ Set a title",
+    "Пришли название статус-страницы одним сообщением — до {n} знаков, например «Acme — статус сервисов». Прислать <code>-</code> — без своего названия.":
+        "Send the status page's title in one message — up to {n} characters, e.g. «Acme — service status». Send <code>-</code> for no title of its own.",
+    "Нужна одна строка до {n} знаков. Попробуй ещё раз:": "One line up to {n} characters, please. Try again:",
+    "✅ Сохранил.": "✅ Saved.",
+    "Каждый экран, тревога и отчёт. Язык статус-страницы и виджета для посетителей — отдельно, «🌐 Статус-страница».":
+        "Every screen, alert and report. The language of the status page and the widget for visitors is separate — «🌐 Status page».",
+    "Язык бота: {lang}. Кнопки под полем ввода обновил.": "Bot language: {lang}. The buttons under the input field are updated.",
 }
 
 # Russian singular → (English singular, English plural).

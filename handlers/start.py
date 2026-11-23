@@ -8,7 +8,6 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import config
 from db.database import get_all_sites, get_state, set_state
 from handlers.common import HELPER_NOTE, back_button, bottom, deny, deny_due, refusal
 from handlers.filters import in_admin_chat
@@ -49,7 +48,8 @@ HELP = (
     "🤖 Боты — задачи по расписанию и другие боты, внешний сторож.\n"
     "⚙️ Настройки — 🔔 Когда писать (сводки, звонок, пробная тревога), 🔕 Тишина (помолчать, тихие часы, "
     "плановые работы), 👥 Помощники, 🔌 Подключения (вторая точка, Google, Яндекс, Cloudflare, GitHub, сторож), "
-    "🌍 Для посетителей (статус-страница, бейджи, виджет), 💾 Копия базы, 🕐 Часовой пояс.\n\n"
+    "🌍 Для посетителей (статус-страница, бейджи, виджет), 💾 Копия базы, 🕐 Часовой пояс, 🛠 Тонкие настройки "
+    "(интервал проверки, порог «медленно», напоминания, язык — то, что раньше было только в .env).\n\n"
     "Пять видов тишины: «🔧 Я чиню» — один сайт на час, продлить можно сразу под ответом; «🔕 Помолчать…» "
     "(и /mute) — всё, кроме звонящего; «🗓 Плановые работы» — по расписанию; «⏸ Не пересобирать сам» — только "
     "автодействия; «👀 Знаю, не напоминать» — только напоминания об одной проблеме. Всё это — «⚙️ Настройки → 🔕 Тишина».\n\n"
@@ -73,7 +73,7 @@ def rules_of_the_game() -> str:
                   .format(start=quiet[0], end=quiet[1])
                   if quiet else t("Тихих часов нет — можно включить в ⚙️ Настройках."))
     return (t("Как я работаю:") + "\n"
-            + t("• Проверяю каждый сайт каждые {minutes} мин.").format(minutes=config.check_interval_minutes) + "\n"
+            + t("• Проверяю каждый сайт каждые {minutes} мин.").format(minutes=settings.check_interval_minutes()) + "\n"
             + t("• Пишу только если что-то сломалось, и сразу говорю, что делать.") + "\n"
             + t("• Каждое утро в {hour}:00 одно короткое «всё в порядке».").format(hour=settings.morning_hour()) + "\n"
             f"• {quiet_line}\n"
@@ -92,7 +92,7 @@ def tz_button() -> InlineKeyboardMarkup:
 def _down_line() -> str:
     """What the escalation really does (reports.scheduler.run_escalation_watch):
     reminders at a growing pause, none at all with 0 repeats."""
-    repeat = config.escalation_repeat_min
+    repeat = settings.escalation_repeat_min()
     return (t("Если сайт лёг, напишу в любое время")
             + (t(" и напомню через {repeat} мин, потом всё реже (не чаще раза в 4 ч), пока не поднимется.")
                .format(repeat=repeat) if repeat else "."))

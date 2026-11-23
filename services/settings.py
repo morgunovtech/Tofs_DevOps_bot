@@ -1,6 +1,12 @@
 """UI-editable overrides on top of .env defaults, cached in memory and
 written through to bot_state. Sync getters so schedule triggers and
-quiet-hours checks never touch the DB."""
+quiet-hours checks never touch the DB.
+
+The dials of «🛠 Тонкие настройки» (DIALS, the status page's language and
+title, the bot's language) are the .env knobs an owner changes more than
+once a year: every reader asks the getter here — settings.check_interval_minutes(),
+never config.check_interval_minutes — so a tap in the chat reaches the
+scheduler, the monitors and the status page at once, with no restart."""
 
 import json
 from dataclasses import dataclass, field
@@ -8,8 +14,9 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import config
+from db import database
 from db.database import delete_heartbeat, get_state, set_state
-from utils import clock, validate
+from utils import clock, i18n, validate
 from utils.parse import parse_hour_range
 
 
@@ -28,6 +35,36 @@ class Overrides:
     ring_only_down: bool = False         # ring only for «site down»; the rest waits quietly
     weekly_backup: bool = True           # Sunday: a copy of the DB (without tokens) to the owner's private chat
     digest_full: bool = False            # morning digest: a line per site («🌅 Каждый сайт») instead of the short view
+    dials: dict[str, int] = field(default_factory=dict)   # «🛠 Тонкие настройки»: DIALS keys set in the chat
+    status_page_title: str | None = None  # None → .env; "" → the generic title
+    status_page_lang: str | None = None   # ru | en; None → .env
+    lang: str | None = None               # the bot's own language; None → .env (BOT_LANG)
+
+
+@dataclass(frozen=True)
+class Dial:
+    """A number that used to be set only in .env: its bot_state key, the
+    .env variable it stands in for, the bound every door applies and the
+    config attribute with the .env value."""
+    key: str
+    env: str
+    bounds: tuple[int, int]
+    attr: str
+
+
+# What «🛠 Тонкие настройки» may change. The order is the screen's.
+DIALS: dict[str, Dial] = {d.key: d for d in (
+    Dial("check_interval", "CHECK_INTERVAL_MINUTES", validate.CHECK_INTERVAL_MIN, "check_interval_minutes"),
+    Dial("slow_ms", "SLOW_RESPONSE_MS", validate.SLOW_MS, "slow_response_ms"),
+    Dial("escalation_repeat", "ESCALATION_REPEAT_MIN", validate.ESCALATION_REPEAT_MIN, "escalation_repeat_min"),
+    Dial("ssl_renew_warn", "SSL_RENEW_WARN_DAYS", validate.SSL_RENEW_WARN_DAYS, "ssl_renew_warn_days"),
+    Dial("disk_alert_pct", "DISK_ALERT_PCT", validate.DISK_ALERT_PCT, "disk_alert_pct"),
+    Dial("links_hours", "LINKS_CHECK_INTERVAL_HOURS", validate.LINKS_INTERVAL_HOURS, "links_check_interval_hours"),
+    Dial("deep_sample", "DEEP_CHECK_SAMPLE", validate.DEEP_SAMPLE, "deep_check_sample"),
+    Dial("seo_pages", "SEO_PAGES_SAMPLE", validate.SEO_PAGES, "seo_pages_sample"),
+    Dial("seo_min_text", "SEO_MIN_TEXT_CHARS", validate.SEO_MIN_TEXT, "seo_min_text_chars"),
+)}
+STATUS_PAGE_TITLE_MAX = 60
 
 
 _o = Overrides()
@@ -64,7 +101,21 @@ async def load():
     o.ring_only_down = (await get_state("cfg:ring_only_down")) == "1"
     o.weekly_backup = (await get_state("cfg:weekly_backup")) != "off"
     o.digest_full = (await get_state("cfg:digest_full")) == "1"
+    for d in DIALS.values():
+        # A value outside the bound (a restored copy, an older build) is «not set».
+        v = validate.int_in(await get_state(f"cfg:{d.key}"), *d.bounds)
+        if v is not None:
+            o.dials[d.key] = v
+    v = await get_state("cfg:status_page_title")
+    o.status_page_title = v if isinstance(v, str) and len(v) <= STATUS_PAGE_TITLE_MAX else None
+    v = await get_state("cfg:status_page_lang")
+    o.status_page_lang = v if v in ("ru", "en") else None
+    v = await get_state("cfg:lang")
+    o.lang = v if v in i18n.LANGUAGES else None
     _o = o
+    database.set_default_interval_min(o.dials.get("check_interval"))
+    if o.lang:   # config.py set the .env language at import; only a choice made here changes it
+        i18n.set_language(o.lang)
 
 
 def valid_timezone(key: str | None) -> str | None:
@@ -140,6 +191,80 @@ def status_page_enabled() -> bool:
     return _o.status_page if _o.status_page is not None else config.status_page
 
 
+# ── Dials («🛠 Тонкие настройки»): the chat's value, else .env ───────────────
+
+def dial(key: str) -> int:
+    d = DIALS[key]
+    return _o.dials.get(key, getattr(config, d.attr))
+
+
+def dial_from_env(key: str) -> bool:
+    """True while the .env value is in force — nothing was chosen in the chat."""
+    return key not in _o.dials
+
+
+def dial_default(key: str) -> int:
+    """The .env value (or config's default) the dial falls back to."""
+    return getattr(config, DIALS[key].attr)
+
+
+def check_interval_minutes() -> int:
+    """Minutes between two checks of a site that has no interval of its own."""
+    return dial("check_interval")
+
+
+def slow_response_ms() -> int:
+    return dial("slow_ms")
+
+
+def escalation_repeat_min() -> int:
+    """The first reminder about a down site; 0 = no reminders."""
+    return dial("escalation_repeat")
+
+
+def ssl_renew_warn_days() -> int:
+    return dial("ssl_renew_warn")
+
+
+def disk_alert_pct() -> int:
+    return dial("disk_alert_pct")
+
+
+def links_check_interval_hours() -> int:
+    """Hours between two link crawls; 0 = no crawl."""
+    return dial("links_hours")
+
+
+def deep_check_sample() -> int:
+    return dial("deep_sample")
+
+
+def seo_pages_sample() -> int:
+    return dial("seo_pages")
+
+
+def seo_min_text_chars() -> int:
+    return dial("seo_min_text")
+
+
+def status_page_title() -> str:
+    return _o.status_page_title if _o.status_page_title is not None else config.status_page_title
+
+
+def status_page_lang() -> str:
+    return _o.status_page_lang or config.status_page_lang
+
+
+def lang() -> str:
+    """The bot's own language — the chat's choice, else BOT_LANG."""
+    return _o.lang or config.lang
+
+
+def text_from_env(key: str) -> bool:
+    """For the three non-numeric dials: True while .env is in force."""
+    return {"status_page_title": _o.status_page_title, "status_page_lang": _o.status_page_lang, "lang": _o.lang}[key] is None
+
+
 # ── Setters (write-through) ──────────────────────────────────────────────────
 
 async def set_morning_hour(hour: int) -> bool:
@@ -211,6 +336,56 @@ async def set_weekly_backup(on: bool):
 async def set_digest_full(on: bool):
     _o.digest_full = on
     await set_state("cfg:digest_full", "1" if on else "0")
+
+
+async def set_dial(key: str, value: int | None) -> bool:
+    """A number within the dial's bound, or None to fall back to .env.
+    False, and nothing saved, for anything else."""
+    d = DIALS.get(key)
+    if d is None:
+        return False
+    if value is None:
+        _o.dials.pop(key, None)
+    else:
+        v = validate.int_in(value, *d.bounds)
+        if v is None:
+            return False
+        _o.dials[key] = v
+    await set_state(f"cfg:{key}", None if value is None else str(_o.dials[key]))
+    if key == "check_interval":   # the availability windows in the DB read it without importing this module
+        database.set_default_interval_min(_o.dials.get(key))
+    return True
+
+
+async def set_status_page_title(title: str | None) -> bool:
+    """One line up to STATUS_PAGE_TITLE_MAX characters; "" — the generic
+    title; None — as in .env."""
+    if title is not None:
+        title = " ".join(title.split())
+        if len(title) > STATUS_PAGE_TITLE_MAX:
+            return False
+    _o.status_page_title = title
+    await set_state("cfg:status_page_title", title)
+    return True
+
+
+async def set_status_page_lang(code: str | None) -> bool:
+    if code is not None and code not in ("ru", "en"):
+        return False
+    _o.status_page_lang = code
+    await set_state("cfg:status_page_lang", code)
+    return True
+
+
+async def set_lang(code: str | None) -> bool:
+    """The bot's language from the chat; None — as BOT_LANG says. Every
+    screen, alert and report switches at once (utils.i18n)."""
+    if code is not None and code not in i18n.LANGUAGES:
+        return False
+    _o.lang = code
+    await set_state("cfg:lang", code)
+    i18n.set_language(code or config.lang)
+    return True
 
 
 MAX_HB_JOBS = 12

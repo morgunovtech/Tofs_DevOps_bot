@@ -36,13 +36,12 @@ from urllib.parse import unquote, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
-from config import config
 from db.database import get_open_incident, get_or_create_site, resolve_incident, save_check, save_incident
 from monitors import parse_worker
 from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, read_capped
 from monitors.security_checker import plain_http_opens
 from monitors.sitemap import pick_sample, scan_sitemap
-from services import seo_fixes, sitestatus
+from services import seo_fixes, settings, sitestatus
 from utils import text as _text
 from utils.i18n import plural, t
 from utils.net import owner_connector
@@ -374,7 +373,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                                t("карта сайта ведёт на другой адрес: ") + ", ".join(scan.foreign_hosts[:2])))
         home_key = _key(base + "/")
         sample = [base + "/"] + pick_sample(
-            [p for p in scan.pages or [] if _key(p) != home_key], max(0, config.seo_pages_sample - 1))
+            [p for p in scan.pages or [] if _key(p) != home_key], max(0, settings.seo_pages_sample() - 1))
         seen: set[tuple[str, str]] = set()     # final addresses already analysed
         for page in sample:
             is_home = page == sample[0]
@@ -401,7 +400,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             if is_home:
                 home_read = True
                 r.no_js_chars = text_len
-                if text_len < config.seo_min_text_chars:
+                if text_len < settings.seo_min_text_chars():
                     problems.append(_p("no_js", "warning", (
                         t("без JavaScript на главной всего {text_len} {words} текста").format(text_len=text_len, words=plural(text_len, 'символ', 'символа', 'символов')))))
 
@@ -423,7 +422,7 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
             # A homepage that is nearly empty without JavaScript is an
             # application in the browser: its catch-all rule must stay, so
             # the steps differ (services.seo_fixes «soft404_spa»).
-            spa = r.no_js_chars is not None and r.no_js_chars < config.seo_min_text_chars
+            spa = r.no_js_chars is not None and r.no_js_chars < settings.seo_min_text_chars()
             problems.append(_p("soft404_spa" if spa else "soft404", "warning",
                                t("несуществующий адрес ответил «всё хорошо» (HTTP 200)")))
 
