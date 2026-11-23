@@ -10,12 +10,41 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from conftest import FakeMessage, FakeState, buttons
+from conftest import FakeCall, FakeMessage, FakeState, buttons
 from test_docs import _config_with
 
 import main
-from db.database import heartbeat_ping, queue_notification, save_incident
-from handlers import about, blocks, common, menu, start
+from db.database import heartbeat_ping, queue_notification, save_feedback, save_incident
+from handlers import (
+    about,
+    alerts,
+    automation,
+    blocks,
+    common,
+    feedback,
+    incidents,
+    menu,
+    mute,
+    site_settings,
+    sites,
+    speed,
+    start,
+)
+from handlers import (
+    heartbeats as hb_screens,
+)
+from handlers import (
+    mail as mail_screen,
+)
+from handlers import (
+    maintenance as maint_screen,
+)
+from handlers import (
+    security as security_screen,
+)
+from handlers import (
+    seo as seo_screen,
+)
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
@@ -453,3 +482,197 @@ async def test_scheduler_messages(bot, db):
     screen_english("", scheduler._visitors_keyboard(SimpleNamespace(site_id=1, incident_id=1, url="https://ex.test")))
     screen_english("", scheduler._watchdog_kb())
     screen_english("", scheduler._index_keyboard(1, "↗️ Search Console", "https://x.test"))
+
+
+def _calls_english(call) -> None:
+    for text, kb in zip(call.message.texts, call.message.markups, strict=True):
+        screen_english(text, kb if kb is not None and hasattr(kb, "inline_keyboard") else None)
+    for answer in call.answers:
+        english_only(answer or "")
+
+
+async def test_site_card_settings_and_list(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    await sitestatus.update(sid, "avail", status="ok", ms=90, error=None)
+    for _ in range(3):
+        await db.save_check(sid, "availability", "ok", response_time_ms=120)
+    await sitestatus.update(sid, "ssl", days_left=5, issuer="LE", not_after="2026-12-01T00:00:00+00:00", error=None)
+    await sitestatus.update(sid, "domain", days_left=12, expiration="2026-12-10", registrar="Cloudflare", error=None)
+    await sitestatus.update(sid, "links", status="warning", broken=1, pending=0, total=24,
+                            items=[{"url": "https://github.com/x/gone", "code": 404, "error": None}])
+    await sitestatus.update(sid, "deep", status="warning", total=10, bad=2, silent=True,
+                            broken=[("/a", 502), ("/b", 0)])
+    await sitestatus.update(sid, "seo", status="ok", critical=0, improve=0, pages=3, no_js_chars=500, problems=[])
+    await sitestatus.update(sid, "security", plain_http=False, redirects=True, missing=["X-Frame-Options"],
+                            headers_ok=False, exposed=[], findings=[_FINDING], csp=False)
+    await save_incident(sid, "performance", "Slow responses: ~3000ms", "warning")
+    await maintenance.pause_site(sid, 30)
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    _calls_english(call)
+    await maintenance.pause_site(sid, None)
+    await sitestatus.update(sid, "avail", status="error", ms=None, error="HTTP 502")
+    call = FakeCall(f"check_site:{sid}")
+    await sites.cb_check_single_site(call)
+    _calls_english(call)
+    api = await db.activate_or_create_site("https://api.ex.test/api/v1/health")
+    await sitestatus.update(api, "avail", status="unknown", ms=None, error="no socket")
+    call = FakeCall(f"check_site:{api}")
+    await sites.cb_check_single_site(call)
+    _calls_english(call)
+    call = FakeCall("blk:sites")
+    await sites.cb_sites_block(call)
+    _calls_english(call)
+    call = FakeCall(f"delsite:{sid}")
+    await sites.cb_site_del_confirm(call)
+    _calls_english(call)
+    call = FakeCall("site_add")
+    await sites.cb_site_add(call, FakeState())
+    _calls_english(call)
+    call = FakeCall("site_add_adv")
+    await sites.cb_site_add_advanced(call, FakeState())
+    _calls_english(call)
+    for raw in ("not a host!", "tcp://x", "tcp://mail.ex.test", "ping://1.2.3", "https://ex.test/" + "a" * 300):
+        _, problem = sites.parse_site_input(raw)
+        english_only(problem or "")
+    english_only(sites.api_line({"url": "https://api.ex.test/api/v1", "http_method": "POST", "keyword": "ok", "keyword_mode": "present"}))
+    english_only(sites._limit_screen()[0])
+    english_only(await sites._restore_bytes(b"not json"))
+    english_only(sites._short_downtime({"total_checks": 5, "down_min": 12}))
+    english_only(sites._short_downtime({}))
+    call = FakeCall(f"pause:{sid}:120")
+    await sites.cb_pause(call)
+    _calls_english(call)
+
+    site = await db.get_site(sid)
+    screen_english(*await site_settings.sset_screen(site))
+    screen_english(*await site_settings.advanced_screen(site))
+    await db.update_site_settings(sid, http_method="HEAD", keyword="shop", keyword_mode="present")
+    site = await db.get_site(sid)
+    screen_english(*await site_settings.sset_screen(site))
+    screen_english(*await site_settings.advanced_screen(site))
+    screen_english(*await site_settings.advanced_screen(await db.get_site(api)))
+    for kind in ("i", "f", "s", "c", "k", "m", "h", "b"):
+        call = FakeCall(f"ssp:{kind}:{sid}:x")
+        await site_settings.cb_site_setting_picker(call, FakeState())
+        _calls_english(call)
+    english_only(site_settings._mismatch_text(site, "shop", "present"))
+    english_only(site_settings._mismatch_text(site, "shop", "absent"))
+    screen_english("", site_settings._save_anyway_kb(sid))
+
+
+async def test_problem_screens(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    inc_id, _ = await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    await save_incident(sid, "links", "2 broken link(s)", "warning")
+    call = FakeCall("menu_incidents")
+    await incidents.cb_incidents(call)
+    _calls_english(call)
+    call = FakeCall(f"inc_explain:{inc_id}")
+    await incidents.cb_incident_explain(call)
+    _calls_english(call)
+    call = FakeCall("incidents_clear")
+    await incidents.cb_incidents_clear(call)
+    _calls_english(call)
+    call = FakeCall(f"inc_quiet:{inc_id}")
+    await incidents.cb_incident_quiet(call)
+    _calls_english(call)
+    for action in ("redeploy", "purge"):
+        call = FakeCall(f"act:{action}:{sid}")
+        await alerts._ask(call, action, await db.get_site(sid))
+        _calls_english(call)
+
+    await settings_service.add_heartbeat_job("backup", 1440)
+    await settings_service.add_heartbeat_job("sync", 60)
+    await heartbeat_ping("sync")
+    for name in ("backup", "sync"):
+        screen_english(*await hb_screens.job_screen(name))
+    for data in ("hb_show:backup", "hb_ask:backup", "hb_bot:backup", "hb_cron:backup", "hb_del:backup", "hb_rm:backup"):
+        call = FakeCall(data)
+        await getattr(hb_screens, {"hb_show": "cb_hb_show", "hb_ask": "cb_hb_ask", "hb_bot": "cb_hb_bot", "hb_cron": "cb_hb_cron",
+                                   "hb_del": "cb_hb_del", "hb_rm": "cb_hb_remove_ask"}[data.split(":")[0]])(call)
+        _calls_english(call)
+    call = FakeCall("hb_add")
+    await hb_screens.cb_hb_add(call, FakeState())
+    _calls_english(call)
+    for raw in ("кириллица", "backup", "new-job"):
+        msg = FakeMessage(raw)
+        await hb_screens.msg_hb_name(msg, FakeState())
+        for text in msg.texts:
+            english_only(text)
+    screen_english(*await blocks.bots_page())
+
+    fine = {"mx": ["mx.proton.me"], "provider": "Proton", "accepts": True, "spf": 1, "dkim": True, "dmarc": "reject",
+            "findings": [], "domain": "ex.test", "status_page": "https://status.proton.me"}
+    for mail in (None, fine, {**fine, "accepts": False, "fails": 3, "reason": "nowhere"}, {**fine, "accepts": False, "fails": 1},
+                 {**fine, "dmarc": "none", "dkim": None, "findings": [_FINDING]}, {"mx": [], "locked": True, "findings": []},
+                 {"mx": [], "sends_only": True, "locked": False, "findings": [], "spf": 1}):
+        for line in mail_screen.mail_lines(mail):
+            english_only(line)
+        english_only(mail_screen.mail_brief(mail)[1])
+    await sitestatus.update(sid, "mail", **{**fine, "findings": [_FINDING]})
+    call = FakeCall(f"mail:{sid}")
+    await mail_screen.cb_mail(call)
+    _calls_english(call)
+
+    for sec in (None, {"plain_http": False, "redirects": True, "missing": [], "exposed": [], "findings": [], "csp": True},
+                {"plain_http": True, "redirects": None, "missing": ["X-Frame-Options"], "exposed": [], "findings": [_FINDING],
+                 "csp": False, "github_pages": True}):
+        for line in security_screen.security_lines(sec):
+            english_only(line)
+    await sitestatus.update(sid, "security", plain_http=False, redirects=True, missing=["X-Frame-Options"],
+                            exposed=[], findings=[_FINDING], csp=False)
+    call = FakeCall(f"sec:{sid}")
+    await security_screen.cb_security(call)
+    _calls_english(call)
+
+    for seo in ({"status": "ok", "problems": [], "pages": 3, "no_js_chars": 500}, {"status": "unknown", "problems": []},
+                {"status": "critical", "problems": [], "partial": True}):
+        english_only(seo_screen.headline(seo, [], [], ai_checked=True))
+        english_only(seo_screen.headline(seo, [], ["Google", t("Яндекс")], ai_checked=False))
+    english_only(seo_screen.seo_text("https://ex.test", {"seo": {"status": "ok", "problems": [], "pages": 3, "no_js_chars": 500}}))
+    screen_english("", seo_screen.seo_keyboard(sid, {"status": "ok", "problems": []}))
+
+    for values in (None, {"none": True}, {"lcp": 5200, "inp": 650, "cls": 0.3, "ttfb": 900}):
+        await sitestatus.update(sid, "visitors", **(values or {}))
+        screen_english(*await speed.speed_page(await db.get_site(sid)))
+    monkeypatch.setattr(speed.crux, "available", lambda: True)
+    screen_english(*await speed.speed_page(await db.get_site(sid)))
+
+    call = FakeCall("menu_feedback:0")
+    await feedback.cb_feedback(call)
+    _calls_english(call)
+    await save_feedback("https://ex.test", "https://ex.test/p", "hello", "", "1.1.1.1")
+    call = FakeCall("menu_feedback:0")
+    await feedback.cb_feedback(call)
+    _calls_english(call)
+
+    monkeypatch.setattr(automation.integrations, "deploy_hooks", lambda: {"ex.test": "https://hook.test"})
+    screen_english(*await automation.auto_screen())
+    call = FakeCall("auto:pause:2")
+    await automation.cb_auto_pause(call)
+    _calls_english(call)
+    screen_english(*await automation.auto_screen())
+
+    await maintenance.add_window(None, [0, 1, 2, 3, 4], 120, 240)
+    screen_english(*await maint_screen._screen())
+    for data, handler in (("mw_add", "cb_mw_add"), ("mw_scope:0", "cb_mw_scope"), ("mw_days:0:w", "cb_mw_days")):
+        call = FakeCall(data)
+        await getattr(maint_screen, handler)(call)
+        _calls_english(call)
+    call = FakeCall("mw_custom:0:w")
+    await maint_screen.cb_mw_custom(call, FakeState())
+    _calls_english(call)
+    msg = FakeMessage("garbage")
+    await maint_screen.msg_mw_time(msg, FakeState(mw_scope="0", mw_days="w"))
+    english_only(msg.texts[-1])
+
+    english_only(await mute._mute("8h") or "")
+    english_only(await mute._mute("30d") or "")
+    english_only(t(mute._USAGE))
+    call = FakeCall("menu_mute")
+    await mute.cb_mute_menu(call)
+    _calls_english(call)
+    call = FakeCall("mute:off")
+    await mute.cb_mute_pick(call)
+    _calls_english(call)

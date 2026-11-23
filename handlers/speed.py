@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from handlers.common import ack, show, site_by_cb
 from reports.scheduler import next_run_words
 from services import crux, humanize, sitestatus
+from utils.i18n import t
 from utils.text import esc
 from utils.urls import is_web_page, site_label
 
@@ -30,32 +31,28 @@ def _metric_lines(values: dict) -> list[str]:
             text = crux.words(key, values[key])
             lines.append(f"{_ICON[crux.level(key, values[key])]} {esc(text[:1].upper() + text[1:])}")
     if values.get("ttfb") is not None:
-        lines.append(f"    сервер начинает отвечать за {humanize.fmt_seconds(values['ttfb'])}")
+        lines.append(t("    сервер начинает отвечать за {seconds}").format(seconds=humanize.fmt_seconds(values['ttfb'])))
     return lines
 
 
 async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
-    lines = [f"👥 Скорость у посетителей — {esc(site_label(site['url']))}",
-             f"<i>Посетители Chrome за {crux.WINDOW_DAYS} дней, данные Google</i>", ""]
+    lines = [t("👥 Скорость у посетителей — {label}").format(label=esc(site_label(site['url']))),
+             t("<i>Посетители Chrome за {WINDOW_DAYS} дней, данные Google</i>").format(WINDOW_DAYS=crux.WINDOW_DAYS), ""]
     chrome = (await sitestatus.get(site["id"])).get("crux")
     if not crux.available():
-        lines.append("Не подключено: 🔌 Подключения → ⚡ Скорость у посетителей Chrome. Бесплатно, нужен ключ "
-                     "Google; на сайт ничего ставить не нужно.")
+        lines.append(t("Не подключено: 🔌 Подключения → ⚡ Скорость у посетителей Chrome. Бесплатно, нужен ключ Google; на сайт ничего ставить не нужно."))
     elif chrome is None:
-        lines.append(f"Спрошу у Google {next_run_words('visitor_checks') or 'в ближайшее утро'}.")
+        lines.append(t("Спрошу у Google {v}.").format(v=next_run_words('visitor_checks') or t("в ближайшее утро")))
     elif not crux.has_data(chrome):
-        lines.append("У Google мало данных по сайту — так у большинства небольших сайтов: Google считает только "
-                     "сайты, у которых достаточно посетителей в Chrome. Как сайт открывается сейчас, покажет "
-                     "PageSpeed Insights.")
+        lines.append(t("У Google мало данных по сайту — так у большинства небольших сайтов: Google считает только сайты, у которых достаточно посетителей в Chrome. Как сайт открывается сейчас, покажет PageSpeed Insights."))
     else:
         lines += _metric_lines(chrome)
-        lines += ["", "<i>Числа — как у 3 из 4 посетителей, у остальных дольше. Google считает быстрым: страница "
-                      "появляется за 2.5 с или быстрее, кнопки откликаются за 0.2 с, вёрстка почти не прыгает.</i>"]
+        lines += ["", t("<i>Числа — как у 3 из 4 посетителей, у остальных дольше. Google считает быстрым: страница появляется за 2.5 с или быстрее, кнопки откликаются за 0.2 с, вёрстка почти не прыгает.</i>")]
     rows = [[InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(site["url"]))],
-            [InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{site['id']}"),
-             InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]]
+            [InlineKeyboardButton(text=t("🌍 К сайту"), callback_data=f"check_site:{site['id']}"),
+             InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]]
     if not crux.available():
-        rows.insert(0, [InlineKeyboardButton(text="⚡ Подключить данные Google", callback_data="setup:crux")])
+        rows.insert(0, [InlineKeyboardButton(text=t("⚡ Подключить данные Google"), callback_data="setup:crux")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -63,7 +60,7 @@ async def speed_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
 async def cb_speed(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":")[1])        # «spd:<id>:a» from an alert
     if not site or not is_web_page(site["url"], site.get("http_method")):
-        await ack(call, "Скорость у посетителей знаю только для страниц сайта", show_alert=True)
+        await ack(call, t("Скорость у посетителей знаю только для страниц сайта"), show_alert=True)
         return
     await ack(call)
     await show(call, *await speed_page(site))

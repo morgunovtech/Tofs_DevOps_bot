@@ -463,6 +463,22 @@ STRINGS: dict[str, str] = {
     "{icon} У посетителей: {values} · {source}{dated}": "{icon} For visitors: {values} · {source}{dated}",
     "👥 У посетителей: у Google пока мало данных по сайту — так у большинства небольших сайтов":
         "👥 For visitors: Google has little data on the site so far — as with most small sites",
+    # ── services/automation.py ──────────────────────────────────────────────
+    " на один хук (проект Pages)": " per hook (a Pages project)",
+    "не больше 3 рестартов за эпизод, потом зову человека": "at most 3 restarts per episode, then I call a human",
+    "раза": "once",
+    "{n} раз": "{n} times",
+    "не чаще {times} в ": "at most {times} in ",
+    "{hours} ч": "{hours} h",
+    "все авто-действия остановлены (⚙️ → 🔌 Подключения → 🤖)": "all auto-actions are paused (⚙️ → 🔌 Connections → 🤖)",
+    "все авто-действия остановлены до {time}": "all auto-actions are paused until {time}",
+    "уже делал это в {hhmm} — {limit_text}": "already did it at {hhmm} — {limit_text}",
+    "выключено": "switched off",
+    "уже запускал в {hhmm} — подожди пару минут": "already started it at {hhmm} — wait a couple of minutes",
+    "🤖 Сам не пересобирал: сайт на паузе или в плановых работах.": "🤖 Did not rebuild by myself: the site is paused or in planned maintenance.",
+    "🤖 Сам не пересобирал: {why}.": "🤖 Did not rebuild by myself: {why}.",
+    "🤖 Уже сделал сам: 🚀 {text}": "🤖 Already did it myself: 🚀 {text}",
+    "🤖 Пробовал пересобрать сайт — не вышло. {text}": "🤖 Tried to rebuild the site — it failed. {text}",
     # ── services/runtime.py ─────────────────────────────────────────────────
     "🟠 Моя база не на постоянном диске Railway: при каждом обновлении я забываю сайты, настройки и тебя как "
     "хозяина. Подключи диск: в Railway правый клик по сервису → Attach Volume → Mount Path <code>/app/data</code>, "

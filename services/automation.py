@@ -20,6 +20,7 @@ from db.database import get_state, set_state
 from services import integrations, maintenance
 from services.actions import deploy_hook_for, trigger_redeploy
 from utils.clock import to_local
+from utils.i18n import t
 from utils.text import parse_iso_utc
 from utils.urls import host_of
 
@@ -52,11 +53,11 @@ def limit_text(kind: str) -> str:
     """«не чаще раза в час на один хук (проект Pages)», «не чаще раза в 12 ч»;
     for a restart — the episode budget of the container watch."""
     if kind not in BUDGETS:
-        return RESTART_NOTE
+        return t(RESTART_NOTE)
     n, window = BUDGETS[kind]
     hours = int(window.total_seconds() // 3600)
-    times = "раза" if n == 1 else f"{n} раз"
-    return f"не чаще {times} в " + ("час" if hours == 1 else f"{hours} ч") + _PER.get(kind, "")
+    times = t("раза") if n == 1 else t("{n} раз").format(n=n)
+    return t("не чаще {times} в ").format(times=times) + (t("час") if hours == 1 else t("{hours} ч").format(hours=hours)) + (t(_PER[kind]) if kind in _PER else "")
 
 
 def redeploy_target(url: str) -> str | None:
@@ -153,15 +154,15 @@ def _hhmm(entry: dict) -> str:
 async def _refusal(kind: str, target: str) -> str | None:
     until = await paused_until()
     if until == FOREVER:
-        return "все авто-действия остановлены (⚙️ → 🔌 Подключения → 🤖)"
+        return t("все авто-действия остановлены (⚙️ → 🔌 Подключения → 🤖)")
     if until:
-        return f"все авто-действия остановлены до {to_local(until).strftime('%H:%M')}"
+        return t("все авто-действия остановлены до {time}").format(time=to_local(until).strftime('%H:%M'))
     if kind not in BUDGETS:
         return None
     limit, window = BUDGETS[kind]
     done = await actions_since(kind, target, datetime.now(UTC) - window, auto=True)
     if len(done) >= limit:
-        return f"уже делал это в {_hhmm(done[0])} — {limit_text(kind)}"
+        return t("уже делал это в {hhmm} — {limit_text}").format(hhmm=_hhmm(done[0]), limit_text=limit_text(kind))
     return None
 
 
@@ -169,7 +170,7 @@ async def claim(kind: str, target: str, trigger: str, label: str | None = None) 
     """Ask before acting by itself. (journal row id, None) — go ahead and
     call finish(); (None, why) — not now, `why` in words for the owner."""
     if not integrations.auto_enabled(kind):
-        return None, "выключено"
+        return None, t("выключено")
     async with _lock:   # check and record in one step: two callers must not both pass
         why = await _refusal(kind, target)
         if why:
@@ -186,7 +187,7 @@ async def tap(kind: str, target: str, label: str | None = None) -> tuple[int | N
     async with _lock:
         recent = await actions_since(kind, target, datetime.now(UTC) - TAP_GUARD, auto=False)
         if recent:
-            return None, f"уже запускал в {_hhmm(recent[0])} — подожди пару минут"
+            return None, t("уже запускал в {hhmm} — подожди пару минут").format(hhmm=_hhmm(recent[0]))
         row = await add_action(kind, target, "кнопка", auto=False, label=label)
     logger.info("action #%d %s on %s: owner's tap", row, kind, label or target)
     return row, None
@@ -210,13 +211,13 @@ async def auto_redeploy(url: str, site_id: int, incident_id: int | None = None) 
     if target is None or not integrations.auto_enabled("redeploy"):
         return None
     if await maintenance.is_paused(site_id):
-        return "🤖 Сам не пересобирал: сайт на паузе или в плановых работах."
-    trigger = f"инцидент #{incident_id}" if incident_id else "сайт упал"
+        return t("🤖 Сам не пересобирал: сайт на паузе или в плановых работах.")
+    trigger = f"инцидент #{incident_id}" if incident_id else "сайт упал"   # the journal's own words, never shown
     row, why = await claim("redeploy", target, trigger, label=host_of(url))
     if row is None:
-        return f"🤖 Сам не пересобирал: {why}."
+        return t("🤖 Сам не пересобирал: {why}.").format(why=why)
     res = await trigger_redeploy(url)
     await finish(row, ("🚀 " if res.ok else "❌ ") + res.text)
     if res.ok:
-        return f"🤖 Уже сделал сам: 🚀 {res.text}"
-    return f"🤖 Пробовал пересобрать сайт — не вышло. {res.text}"
+        return t("🤖 Уже сделал сам: 🚀 {text}").format(text=res.text)
+    return t("🤖 Пробовал пересобрать сайт — не вышло. {text}").format(text=res.text)

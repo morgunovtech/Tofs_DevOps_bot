@@ -19,6 +19,7 @@ from services import automation, humanize, maintenance
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
+from utils.i18n import t
 from utils.text import esc
 from utils.urls import host_of, is_web_page, short_host, site_label
 
@@ -43,16 +44,16 @@ def _target(action: str, url: str) -> str:
 
 async def _ask(call: CallbackQuery, action: str, site: dict):
     url = site["url"]
-    button, question = _CONFIRM[action]
+    button, question = (t(x) for x in _CONFIRM[action])
     text = question.format(label=esc(site_label(url)), host=esc(host_of(url)))
     if action == "redeploy":
         done = await automation.last_auto("redeploy", _target(action, url), automation.BUDGETS["redeploy"][1])
         if done:
-            text += f"\nЯ уже пересобирал его сам в {done}."
+            text += "\n" + t("Я уже пересобирал его сам в {done}.").format(done=done)
     stamp = int(datetime.now(UTC).timestamp())
     await call.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=button, callback_data=f"act:ok:{action}:{site['id']}:{stamp}"),
-        InlineKeyboardButton(text=CANCEL, callback_data=f"act:no:{site['id']}")]]))
+        InlineKeyboardButton(text=t(CANCEL), callback_data=f"act:no:{site['id']}")]]))
 
 
 # Registered BEFORE cb_alert_action: its F.data.startswith("act:") would take «act:ok:…» first.
@@ -61,26 +62,26 @@ async def cb_alert_confirmed(call: CallbackQuery):
     """act:ok:<redeploy|purge>:<site_id>:<unix time of the question>."""
     parts = (call.data or "").split(":")
     if len(parts) != 5 or parts[2] not in _CONFIRM or not parts[3].isdigit() or not parts[4].isdigit():
-        await ack(call, "Не понял действие", show_alert=True)
+        await ack(call, t("Не понял действие"), show_alert=True)
         return
     action, sid, asked = parts[2], parts[3], int(parts[4])
-    if not await ack(call, "Запускаю…"):
+    if not await ack(call, t("Запускаю…")):
         await call.message.answer(STALE_TAP)
         return
     site = await site_by_cb(sid)
     if not site:
-        await call.message.answer("Сайт не найден или убран из мониторинга — ничего не делаю.")
+        await call.message.answer(t("Сайт не найден или убран из мониторинга — ничего не делаю."))
         return
     if datetime.now(UTC).timestamp() - asked > automation.CONFIRM_TTL.total_seconds():
-        await call.message.answer("⌛ Этот вопрос устарел — нажми кнопку под тревогой ещё раз.")
+        await call.message.answer(t("⌛ Этот вопрос устарел — нажми кнопку под тревогой ещё раз."))
         return
     url = site["url"]
     row, why = await automation.tap(action, _target(action, url), label=host_of(url))
     if row is None:
-        await call.message.answer(f"⏳ Не запускаю второй раз: {esc(why)}.")
+        await call.message.answer(t("⏳ Не запускаю второй раз: {why}.").format(why=esc(why)))
         return
     # The hook may take up to 30 s: a line that says so at once, replaced by the outcome.
-    status = await call.message.answer("⏳ Запускаю пересборку…" if action == "redeploy" else "⏳ Сбрасываю кэш…")
+    status = await call.message.answer(t("⏳ Запускаю пересборку…") if action == "redeploy" else t("⏳ Сбрасываю кэш…"))
     if action == "redeploy":
         res = await trigger_redeploy(url)
         text = ("🚀 " if res.ok else "❌ ") + res.text
@@ -114,26 +115,23 @@ async def cb_alert_group(call: CallbackQuery):
     by_id = {inc["id"]: inc for inc in await get_active_incidents()}
     group = [by_id[i] for i in ids if i in by_id]
     if not group:
-        await ack(call, "Все сайты из этой тревоги уже открываются" if raw else "Тревога устарела — открой «Что не так»",
+        await ack(call, t("Все сайты из этой тревоги уже открываются") if raw else t("Тревога устарела — открой «Что не так»"),
                   show_alert=True)
         return
     if args[0] == "fix":
-        if not await ack(call, f"Понял, молчу {maintenance.fix_length()}"):
+        if not await ack(call, t("Понял, молчу {length}").format(length=maintenance.fix_length())):
             await call.message.answer(STALE_TAP)
             return
         for site_id in dict.fromkeys(inc["site_id"] for inc in group):
             await _quiet_hour(site_id)
         length = maintenance.fix_length()
-        await call.message.answer(f"🔧 Понял, ты чинишь: {esc(', '.join(site_label(inc['url']) for inc in group))}. "
-                                  f"{length.capitalize()} не пишу про них, проверки продолжаются. "
-                                  f"Поднимутся раньше — сразу напишу и сниму тишину.")
+        await call.message.answer(t("🔧 Понял, ты чинишь: {items}. {capitalize} не пишу про них, проверки продолжаются. Поднимутся раньше — сразу напишу и сниму тишину.").format(items=esc(', '.join(site_label(inc['url']) for inc in group)), capitalize=length.capitalize()))
         return
     await ack(call)
     lines = [f"{n}. 🔴 {esc(incident_line(inc))}" for n, inc in enumerate(group, 1)]
     buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a")
                for n, inc in enumerate(group, 1)]
-    await call.message.answer("\n".join(lines) + "\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», "
-                              "«🔄 Проверить снова», «✓ Закрыть».",
+    await call.message.answer("\n".join(lines) + t("\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», «🔄 Проверить снова», «✓ Закрыть»."),
                               reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 4]
                                                                                  for i in range(0, len(buttons), 4)]))
 
@@ -147,18 +145,18 @@ _busy: set[tuple[str, int]] = set()
 async def cb_alert_action(call: CallbackQuery):
     args = cb_args(call, 2)
     if not args:
-        await ack(call, "Не понял действие", show_alert=True)
+        await ack(call, t("Не понял действие"), show_alert=True)
         return
     action, sid = args
     site = await site_by_cb(sid)
     if not site:
-        await ack(call, "Сайт не найден или убран из мониторинга", show_alert=True)
+        await ack(call, t("Сайт не найден или убран из мониторинга"), show_alert=True)
         return
     url = site["url"]
     label = esc(site_label(url))
     if action in ("recheck", "shot"):
         if (action, site["id"]) in _busy:
-            await ack(call, "Уже проверяю — ответ будет в чате")
+            await ack(call, t("Уже проверяю — ответ будет в чате"))
             return
         _busy.add((action, site["id"]))
         try:
@@ -170,22 +168,20 @@ async def cb_alert_action(call: CallbackQuery):
         # next real fall for an hour. Pages with errors (deep) are still a fix.
         if not any(i["site_id"] == site["id"] and i["check_type"] in ("availability", "deep")
                    for i in await get_active_incidents()):
-            await ack(call, "Сайт сейчас работает — пауза не нужна. Чинишь что-то другое — поставь паузу "
-                            "на карточке сайта.", show_alert=True)
+            await ack(call, t("Сайт сейчас работает — пауза не нужна. Чинишь что-то другое — поставь паузу на карточке сайта."), show_alert=True)
             return
         await _quiet_hour(site["id"])
         length = maintenance.fix_length()
-        await ack(call, f"Понял, молчу {length}")
-        await call.message.answer(f"🔧 Понял, ты чинишь {label}. {length.capitalize()} не пишу про него, проверки "
-                                  f"продолжаются. Поднимется раньше — сразу напишу и сниму тишину.")
+        await ack(call, t("Понял, молчу {length}").format(length=length))
+        await call.message.answer(t("🔧 Понял, ты чинишь {label}. {capitalize} не пишу про него, проверки продолжаются. Поднимется раньше — сразу напишу и сниму тишину.").format(label=label, capitalize=length.capitalize()))
     elif action in _CONFIRM:
         await ack(call)
         await _ask(call, action, site)
     elif action == "no":
         await ack(call)
-        await render(call, "✖️ Хорошо, ничего не делаю.")
+        await render(call, t("✖️ Хорошо, ничего не делаю."))
     else:
-        await ack(call, "Неизвестное действие", show_alert=True)
+        await ack(call, t("Неизвестное действие"), show_alert=True)
 
 
 async def _recheck(call: CallbackQuery, site: dict):
@@ -193,16 +189,16 @@ async def _recheck(call: CallbackQuery, site: dict):
     minute on a dead host), then the same line becomes the outcome."""
     url, label = site["url"], esc(site_label(site["url"]))
     await ack(call)
-    status = await call.message.answer(f"⏳ Проверяю {label}…")
+    status = await call.message.answer(t("⏳ Проверяю {label}…").format(label=label))
     r = await check_availability(url, manage=False)
     speed = f" {humanize.speed(r.response_time_ms)}" if r.response_time_ms is not None else ""
     if r.ok:
-        text = (f"✅ {label} сейчас открывается{speed}." if is_web_page(url, site.get("http_method"))
-                else f"✅ {label} сейчас отвечает{speed}.")
+        text = (t("✅ {label} сейчас открывается{speed}.").format(label=label, speed=speed) if is_web_page(url, site.get("http_method"))
+                else t("✅ {label} сейчас отвечает{speed}.").format(label=label, speed=speed))
     elif r.transient:
-        text = f"⚠️ {label}: проверить сейчас не могу — {esc(humanize.describe_error(r.error))}."
+        text = t("⚠️ {label}: проверить сейчас не могу — {why}.").format(label=label, why=esc(humanize.describe_error(r.error)))
     else:
-        text = f"🔴 {label} всё ещё не открывается: {esc(humanize.describe_error(r.error))}."
+        text = t("🔴 {label} всё ещё не открывается: {why}.").format(label=label, why=esc(humanize.describe_error(r.error)))
     await status.edit_text(text)
 
 
@@ -211,10 +207,10 @@ async def _shot(call: CallbackQuery, site: dict):
     not in a toast that promises 15 seconds."""
     url = site["url"]
     if not is_web_page(url, site.get("http_method")):
-        await ack(call, "Здесь нет страницы, которую можно сфотографировать: это API или порт", show_alert=True)
+        await ack(call, t("Здесь нет страницы, которую можно сфотографировать: это API или порт"), show_alert=True)
         return
     await ack(call)
-    status = await call.message.answer("📸 Делаю снимок — до нескольких минут")
+    status = await call.message.answer(t("📸 Делаю снимок — до нескольких минут"))
     with contextlib.suppress(Exception):
         await call.bot.send_chat_action(call.message.chat.id, "upload_photo")
     image, reason = await fetch_screenshot(url)
@@ -225,4 +221,4 @@ async def _shot(call: CallbackQuery, site: dict):
         with contextlib.suppress(TelegramAPIError):
             await status.delete()
     else:
-        await status.edit_text(f"❌ Не получилось сделать снимок {esc(short_host(url))}: {esc(reason)}.")
+        await status.edit_text(t("❌ Не получилось сделать снимок {host}: {reason}.").format(host=esc(short_host(url)), reason=esc(reason)))

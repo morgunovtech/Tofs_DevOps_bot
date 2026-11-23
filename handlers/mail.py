@@ -13,8 +13,8 @@ from reports.formatter import finding_block
 from reports.scheduler import MAIL_RECHECK_MIN, schedule_mail_recheck
 from services import integrations, sitestatus
 from services.humanize import lower_first
-from utils.i18n import t
-from utils.text import esc, fmt_duration, plural
+from utils.i18n import fmt_duration, plural, t
+from utils.text import esc
 from utils.urls import host_of, registrable_domain
 
 router = Router(name="mail")
@@ -22,7 +22,7 @@ router = Router(name="mail")
 
 def _ago(section: dict) -> str:
     age = sitestatus.age_minutes(section)
-    return f" · {fmt_duration(age)} назад" if age is not None and age >= 1 else ""
+    return t(" · {duration} назад").format(duration=fmt_duration(age)) if age is not None and age >= 1 else ""
 
 
 def _who(mail: dict) -> str:
@@ -35,16 +35,16 @@ def _receives_line(mail: dict) -> str:
     who, domain = esc(_who(mail)), esc(mail.get("domain") or "")
     if mail.get("accepts") is False:
         if (mail.get("fails") or 0) >= FAILS_TO_ALERT:
-            why = ("записи MX ведут на сервер, которого нет" if mail.get("reason") == "nowhere"
-                   else f"{who} не отвечает")
-            return f"🔴 Почта {domain} не принимает письма — {why}"
-        return f"⏳ Почта: {who} не ответил — перепроверю через {MAIL_RECHECK_MIN} минут"
+            why = (t("записи MX ведут на сервер, которого нет") if mail.get("reason") == "nowhere"
+                   else t("{who} не отвечает").format(who=who))
+            return t("🔴 Почта {domain} не принимает письма — {why}").format(domain=domain, why=why)
+        return t("⏳ Почта: {who} не ответил — перепроверю через {MAIL_RECHECK_MIN} минут").format(who=who, MAIL_RECHECK_MIN=MAIL_RECHECK_MIN)
     if mail.get("accepts"):
-        backup = " (основной сервер молчит, принимает запасной)" if mail.get("backup_only") else ""
-        return f"✅ Почта принимает письма · {who}{backup}"
+        backup = t(" (основной сервер молчит, принимает запасной)") if mail.get("backup_only") else ""
+        return t("✅ Почта принимает письма · {who}{backup}").format(who=who, backup=backup)
     if not integrations.second_opinion_enabled():
-        return f"Почта · {who} — принимает ли письма, не проверяю: внешние проверки выключены"
-    return f"Почта · {who}"
+        return t("Почта · {who} — принимает ли письма, не проверяю: внешние проверки выключены").format(who=who)
+    return t("Почта · {who}").format(who=who)
 
 
 def mail_brief(mail: dict | None) -> tuple[str, str]:
@@ -67,24 +67,22 @@ def mail_lines(mail: dict | None) -> list[str]:
     """The card: whether letters arrive, and the spam settings — a problem
     said whole («Почта example.com: …»), since the card lifts it to the top."""
     if mail is None:
-        return ["⏳ Почта: ещё не проверял"]
+        return [t("⏳ Почта: ещё не проверял")]
     findings = mail.get("findings") or []
     if not mail.get("mx") and not mail.get("sends_only"):
-        return ["✅ Почты на домене нет, слать письма от его имени запрещено" if mail.get("locked")
-                else "✅ Почты на домене нет"]
+        return [t("✅ Почты на домене нет, слать письма от его имени запрещено") if mail.get("locked")
+                else t("✅ Почты на домене нет")]
     lines = [_receives_line(mail) if mail.get("mx")
-             else "✅ Почта только отправляет письма — входящей на домене нет"]
+             else t("✅ Почта только отправляет письма — входящей на домене нет")]
     domain = esc(mail.get("domain") or "")
     if len(findings) == 1:
-        lines.append(f"🟠 Почта {domain}: {esc(lower_first(findings[0]['title']))} — письма могут уходить в спам")
+        lines.append(t("🟠 Почта {domain}: {text} — письма могут уходить в спам").format(domain=domain, text=esc(lower_first(findings[0]['title']))))
     elif findings:
         n = len(findings)
-        lines.append(f"🟠 Почта {domain}: {n} {plural(n, 'помеха', 'помехи', 'помех')} — письма могут уходить "
-                     f"в спам")
+        lines.append(t("🟠 Почта {domain}: {n} {words} — письма могут уходить в спам").format(domain=domain, n=n, words=plural(n, 'помеха', 'помехи', 'помех')))
         lines += [f"    {i}. {esc(f['title'])}" for i, f in enumerate(findings[:5], 1)]
     elif mail.get("dmarc") == "none":
-        lines.append("    DMARC только наблюдает: подделки твоего адреса всё ещё доходят. Поменяй p=none на "
-                     "p=quarantine в записи _dmarc — тогда они будут уходить в спам.")
+        lines.append(t("    DMARC только наблюдает: подделки твоего адреса всё ещё доходят. Поменяй p=none на p=quarantine в записи _dmarc — тогда они будут уходить в спам."))
     return lines
 
 
@@ -97,58 +95,55 @@ def _record_lines(mail: dict) -> list[str]:
     if by["spf_"]:
         lines.append(f"🟠 SPF — {esc(by['spf_']['title'])}")
     else:
-        lines.append("✅ SPF — одна запись, без ошибок")
+        lines.append(t("✅ SPF — одна запись, без ошибок"))
     if by["dkim_"]:
         lines.append(f"🟠 DKIM — {esc(by['dkim_']['title'])}")
     elif mail.get("dkim") is True:
-        lines.append("✅ DKIM — письма подписываются")
+        lines.append(t("✅ DKIM — письма подписываются"))
     elif mail.get("mx"):
-        lines.append("ℹ️ DKIM — у этого почтового сервиса имя подписи выбираешь ты, проверить не могу")
+        lines.append(t("ℹ️ DKIM — у этого почтового сервиса имя подписи выбираешь ты, проверить не могу"))
     policy = mail.get("dmarc")
     if by["dmarc_"]:
         lines.append(f"🟠 DMARC — {esc(by['dmarc_']['title'])}")
     elif policy == "reject":
-        lines.append("✅ DMARC — подделки твоего адреса отклоняются")
+        lines.append(t("✅ DMARC — подделки твоего адреса отклоняются"))
     elif policy == "quarantine":
-        lines.append("✅ DMARC — подделки твоего адреса уходят в спам")
+        lines.append(t("✅ DMARC — подделки твоего адреса уходят в спам"))
     elif policy == "none" and "dmarc_missing" not in codes:
-        lines.append("ℹ️ DMARC — только наблюдает: подделки всё ещё доходят. Когда SPF и DKIM в порядке, "
-                     "поменяй p=none на p=quarantine")
+        lines.append(t("ℹ️ DMARC — только наблюдает: подделки всё ещё доходят. Когда SPF и DKIM в порядке, поменяй p=none на p=quarantine"))
     return lines
 
 
 async def mail_page(site: dict) -> tuple[str, InlineKeyboardMarkup]:
     mail = (await sitestatus.get(site["id"])).get("mail")
     domain = registrable_domain(host_of(site["url"]))
-    lines = [f"✉️ Почта на {esc(domain)}", ""]
+    lines = [t("✉️ Почта на {domain}").format(domain=esc(domain)), ""]
     rows = []
     if mail is None:
-        lines.append("Ещё не проверял — проверю в течение часа или по кнопке ниже.")
+        lines.append(t("Ещё не проверял — проверю в течение часа или по кнопке ниже."))
     elif not mail.get("mx") and not mail.get("sends_only"):
-        lines.append("Почты на этом домене нет: никто не принимает письма на него. Если она появится — начну "
-                     "следить сам.")
+        lines.append(t("Почты на этом домене нет: никто не принимает письма на него. Если она появится — начну следить сам."))
         if mail.get("locked"):
-            lines.append("✅ Слать письма от его имени запрещено записью SPF «v=spf1 -all» — подделать адрес не "
-                         "выйдет.")
+            lines.append(t("✅ Слать письма от его имени запрещено записью SPF «v=spf1 -all» — подделать адрес не выйдет."))
     else:
         if mail.get("mx"):
-            lines.append(f"Письма принимает: {esc(_who(mail))} ({esc(', '.join(mail['mx'][:3]))})")
+            lines.append(t("Письма принимает: {who} ({items})").format(who=esc(_who(mail)), items=esc(', '.join(mail['mx'][:3]))))
             lines.append(_receives_line(mail) + _ago(mail))
         else:
-            lines.append("Входящей почты на домене нет — проверяю только то, что нужно для отправки.")
+            lines.append(t("Входящей почты на домене нет — проверяю только то, что нужно для отправки."))
         lines += _record_lines(mail)
         findings = mail.get("findings") or []
         if findings:
-            lines += ["", "Что сделать:", "",
+            lines += ["", t("Что сделать:"), "",
                       "\n\n".join(finding_block(i, f) for i, f in enumerate(findings, 1)), "",
-                      "Изменения в DNS доходят за 5–30 минут — потом нажми «🔄 Перепроверить почту»."]
+                      t("Изменения в DNS доходят за 5–30 минут — потом нажми «🔄 Перепроверить почту».")]
         elif mail.get("accepts") and mail.get("dmarc") in ("quarantine", "reject"):
-            lines += ["", "Всё в порядке: письма доходят, а подделать твой адрес сложно."]
+            lines += ["", t("Всё в порядке: письма доходят, а подделать твой адрес сложно.")]
         if mail.get("status_page"):
-            rows.append([InlineKeyboardButton(text=f"↗️ Статус {_who(mail)}", url=mail["status_page"])])
-    rows.append([InlineKeyboardButton(text="🔄 Перепроверить почту", callback_data=f"mail_check:{site['id']}")])
-    rows.append([InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{site['id']}"),
-                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
+            rows.append([InlineKeyboardButton(text=t("↗️ Статус {who}").format(who=_who(mail)), url=mail["status_page"])])
+    rows.append([InlineKeyboardButton(text=t("🔄 Перепроверить почту"), callback_data=f"mail_check:{site['id']}")])
+    rows.append([InlineKeyboardButton(text=t("🌍 К сайту"), callback_data=f"check_site:{site['id']}"),
+                 InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -161,7 +156,7 @@ async def _carrier_site(arg: str | None) -> dict | None:
 async def cb_mail(call: CallbackQuery):
     site = await _carrier_site(call.data.split(":")[1])     # «mail:<id>:a» from an alert
     if not site:
-        await ack(call, "Почту этого домена я больше не проверяю", show_alert=True)
+        await ack(call, t("Почту этого домена я больше не проверяю"), show_alert=True)
         return
     await ack(call)
     await show(call, *await mail_page(site))
@@ -172,11 +167,11 @@ async def cb_mail_check(call: CallbackQuery):
     site = await _carrier_site(call.data.split(":", 1)[1])
     if not site:
         await ack(call)
-        await render(call, "Почту этого домена я больше не проверяю.", back_button())
+        await render(call, t("Почту этого домена я больше не проверяю."), back_button())
         return
-    await ack(call, "Проверяю почту…")
+    await ack(call, t("Проверяю почту…"))
     domain = registrable_domain(host_of(site["url"]))
-    await render(call, f"▰▱▱ Проверяю почту {esc(domain)} — это может занять до пары минут…")
+    await render(call, t("▰▱▱ Проверяю почту {domain} — это может занять до пары минут…").format(domain=esc(domain)))
     try:
         async with asyncio.timeout(DOMAIN_BUDGET_SEC):
             checked = await check_mail(domain, site["url"], manage=False)
@@ -190,6 +185,5 @@ async def cb_mail_check(call: CallbackQuery):
         if mail.get("accepts") is False and (mail.get("fails") or 0) < FAILS_TO_ALERT:
             schedule_mail_recheck()
     else:
-        text = ("⚠️ Сейчас проверить не получилось: DNS или внешняя проверка не ответили — показываю прошлую "
-                "проверку.\n\n" + text)
+        text = (t("⚠️ Сейчас проверить не получилось: DNS или внешняя проверка не ответили — показываю прошлую проверку.\n\n") + text)
     await render(call, text, kb)

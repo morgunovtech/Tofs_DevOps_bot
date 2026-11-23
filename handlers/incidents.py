@@ -14,6 +14,7 @@ from reports.formatter import incident_line
 from reports.scheduler import ACK_UNTIL_UP, forget_slow_streak
 from services import crux, humanize, sitestatus
 from utils.clock import fmt_local
+from utils.i18n import t
 from utils.text import esc
 from utils.urls import site_label
 
@@ -30,21 +31,19 @@ async def render_incidents(call: CallbackQuery, note: str = ""):
     incidents = await get_active_incidents()
     head = f"{note}\n\n" if note else ""
     if not incidents:
-        await render(call, f"{head}✅ Сейчас всё работает — открытых проблем нет.", back_button())
+        await render(call, t("{head}✅ Сейчас всё работает — открытых проблем нет.").format(head=head), back_button())
         return
     worst = humanize.worst_severity(i["severity"] for i in incidents)
-    lines = [f"{head}{humanize.level_icon(worst)} Что сейчас не так ({len(incidents)}):\n"]
+    lines = [t("{head}{icon} Что сейчас не так ({n}):").format(head=head, icon=humanize.level_icon(worst), n=len(incidents)) + "\n"]
     numbered = []
     for n, inc in enumerate(incidents, 1):
-        lines.append(f"{n}. {humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}\n"
-                     f"   <i>с {fmt_local(inc.get('started_at') or inc['created_at'])}</i>")
+        lines.append(t("{n}. {icon} {incident}\n   <i>с {time}</i>").format(n=n, icon=humanize.level_icon(inc['severity']), incident=esc(incident_line(inc)), time=fmt_local(inc.get('started_at') or inc['created_at'])))
         # «:l» — a button of this list, never mistaken for one on an alert.
         numbered.append(InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:l"))
-    lines.append("\nНомер — что это значит и что делать; там же «🔧 Я чиню» и «✓ Закрыть». "
-                 "🔴 — нужно действие сейчас, 🟠 — не сегодня.")
+    lines.append(t("\nНомер — что это значит и что делать; там же «🔧 Я чиню» и «✓ Закрыть». 🔴 — нужно действие сейчас, 🟠 — не сегодня."))
     rows = [numbered[i:i + 4] for i in range(0, len(numbered), 4)]
-    rows.append([InlineKeyboardButton(text="🗑 Закрыть все", callback_data="incidents_clear")])
-    rows.append([InlineKeyboardButton(text=HOME, callback_data="menu_main")])
+    rows.append([InlineKeyboardButton(text=t("🗑 Закрыть все"), callback_data="incidents_clear")])
+    rows.append([InlineKeyboardButton(text=t(HOME), callback_data="menu_main")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -52,15 +51,15 @@ def explain_text(inc: dict) -> str:
     """«ℹ️ Что делать» for one incident: what it means for visitors, what it
     usually is, the steps — from services.humanize, by check type and level."""
     expl = humanize.explain(inc["check_type"], inc.get("message"))
-    when = (f"закрыта {fmt_local(inc.get('resolved_at'))}" if inc.get("resolved")
-            else f"с {fmt_local(inc.get('started_at') or inc['created_at'])}")
-    head = (f"✅ Было: {esc(incident_line(inc))}" if inc.get("resolved")
+    when = (t("закрыта {time}").format(time=fmt_local(inc.get('resolved_at'))) if inc.get("resolved")
+            else t("с {time}").format(time=fmt_local(inc.get('started_at') or inc['created_at'])))
+    head = (t("✅ Было: {incident}").format(incident=esc(incident_line(inc))) if inc.get("resolved")
             else f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc))}")
     lines = [head, f"<i>{when}</i>", "",
-             esc(expl.meaning), "", f"Что это обычно значит: {esc(expl.cause)}.", "",
+             esc(expl.meaning), "", t("Что это обычно значит: {cause}.").format(cause=esc(expl.cause)), "",
              esc(humanize.steps_block(expl))]
     if inc.get("resolved"):
-        lines += ["", "<i>Эта проблема уже закрыта — шаги на случай, если повторится.</i>"]
+        lines += ["", t("<i>Эта проблема уже закрыта — шаги на случай, если повторится.</i>")]
     return "\n".join(lines)
 
 
@@ -69,29 +68,29 @@ async def explain_keyboard(inc: dict) -> InlineKeyboardMarkup:
     sid, kind = inc["site_id"], inc["check_type"]
     rows: list[list[InlineKeyboardButton]] = []
     if kind == "seo":
-        rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{sid}")])
     elif kind == "links":
-        rows.append([InlineKeyboardButton(text="🔗 Ссылки", callback_data=f"check_links:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🔗 Ссылки"), callback_data=f"check_links:{sid}")])
     elif kind == "availability" and not inc.get("resolved"):     # «🔧» would pause a working site
-        rows.append([InlineKeyboardButton(text="🔧 Я чиню, час тишины", callback_data=f"act:fix:{sid}"),
-                     InlineKeyboardButton(text=RECHECK, callback_data=f"act:recheck:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🔧 Я чиню, час тишины"), callback_data=f"act:fix:{sid}"),
+                     InlineKeyboardButton(text=t(RECHECK), callback_data=f"act:recheck:{sid}")])
     elif kind in ("mail", "mail_auth"):
-        rows.append([InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("✉️ Почта"), callback_data=f"mail:{sid}")])
     elif kind in ("exposed", "security"):
-        rows.append([InlineKeyboardButton(text="🛡 Безопасность", callback_data=f"sec:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🛡 Безопасность"), callback_data=f"sec:{sid}")])
     elif kind == "visitors":
-        rows.append([InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{sid}"),
+        rows.append([InlineKeyboardButton(text=t("👥 Скорость у посетителей"), callback_data=f"spd:{sid}"),
                      InlineKeyboardButton(text="↗️ PageSpeed", url=crux.pagespeed_url(inc["url"]))])
     elif kind == "domain":
         registrar = ((await sitestatus.get(sid)).get("domain") or {}).get("registrar")
         url = humanize.registrar_url(registrar)
         if url:
-            rows.append([InlineKeyboardButton(text=f"🔗 Открыть панель {registrar}", url=url)])
-    last = [InlineKeyboardButton(text="🌍 К сайту", callback_data=f"check_site:{sid}")]
+            rows.append([InlineKeyboardButton(text=t("🔗 Открыть панель {registrar}").format(registrar=registrar), url=url)])
+    last = [InlineKeyboardButton(text=t("🌍 К сайту"), callback_data=f"check_site:{sid}")]
     if not inc.get("resolved"):
-        last.append(InlineKeyboardButton(text="✓ Закрыть", callback_data=f"inc_close:{inc['id']}"))
+        last.append(InlineKeyboardButton(text=t("✓ Закрыть"), callback_data=f"inc_close:{inc['id']}"))
     rows.append(last)
-    rows.append([InlineKeyboardButton(text="← Проблемы", callback_data="menu_incidents")])
+    rows.append([InlineKeyboardButton(text=t("← Проблемы"), callback_data="menu_incidents")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -109,7 +108,7 @@ async def cb_incident_explain(call: CallbackQuery):
     arg = parts[1] if len(parts) > 1 else ""
     inc = await get_incident(int(arg)) if arg.isdigit() else None
     if not inc:
-        await ack(call, "Этой проблемы уже нет в списке", show_alert=True)
+        await ack(call, t("Этой проблемы уже нет в списке"), show_alert=True)
         return
     await ack(call)
     text, kb = explain_text(inc), await explain_keyboard(inc)
@@ -144,11 +143,9 @@ async def cb_incidents_clear(call: CallbackQuery):
         await render_incidents(call)
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Да, закрыть все", callback_data=f"incidents_clear:ok:{int(time.time())}")],
-        [InlineKeyboardButton(text="← Отмена", callback_data="menu_incidents")]])
-    await render(call, f"Закрыть все открытые проблемы ({n})?\n\nЛежащие сайты я сначала проверю: что всё ещё "
-                       f"не открывается, останется в списке. Остальное, если оно настоящее, следующая проверка "
-                       f"откроет снова — 🔴 со звонком.", kb)
+        [InlineKeyboardButton(text=t("🗑 Да, закрыть все"), callback_data=f"incidents_clear:ok:{int(time.time())}")],
+        [InlineKeyboardButton(text=t("← Отмена"), callback_data="menu_incidents")]])
+    await render(call, t("Закрыть все открытые проблемы ({n})?\n\nЛежащие сайты я сначала проверю: что всё ещё не открывается, останется в списке. Остальное, если оно настоящее, следующая проверка откроет снова — 🔴 со звонком.").format(n=n), kb)
 
 
 @router.callback_query(F.data.startswith("incidents_clear:ok:"))
@@ -158,9 +155,9 @@ async def cb_incidents_clear_confirmed(call: CallbackQuery):
     the same alert back, with a ring and one more rebuild."""
     stamp = call.data.rsplit(":", 1)[1]
     if not stamp.isdigit() or time.time() - int(stamp) > CONFIRM_TTL_SEC:
-        await ack(call, "Подтверждение устарело — открой список и нажми ещё раз", show_alert=True)
+        await ack(call, t("Подтверждение устарело — открой список и нажми ещё раз"), show_alert=True)
         return
-    if not await ack(call, "Проверяю лежащие сайты…"):
+    if not await ack(call, t("Проверяю лежащие сайты…")):
         await call.message.answer(STALE_TAP)
         return
     incidents = await get_active_incidents()
@@ -172,9 +169,9 @@ async def cb_incidents_clear_confirmed(call: CallbackQuery):
             continue
         if await _close_by_hand(inc):
             closed += 1
-    note = f"🗑 Закрыл {closed}."
+    note = t("🗑 Закрыл {closed}.").format(closed=closed)
     if still_down:
-        note += (" Не закрыл — всё ещё не открываются: "
+        note += (t(" Не закрыл — всё ещё не открываются: ")
                  + ", ".join(esc(site_label(u)) for u in sorted(still_down)) + ".")
     await render_incidents(call, note)
 
@@ -187,24 +184,22 @@ async def cb_incident_close(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
     inc = await get_incident(int(arg)) if arg.isdigit() else None
     if not inc or inc["resolved"]:
-        await ack(call, "Уже закрыта")
+        await ack(call, t("Уже закрыта"))
         await render_incidents(call)
         return
     site = await get_site(inc["site_id"])
     live = inc["check_type"] == "availability" and bool(site and site["active"])
-    if not await ack(call, "Проверяю, открывается ли…" if live else "Закрыл ✅"):
+    if not await ack(call, t("Проверяю, открывается ли…") if live else t("Закрыл ✅")):
         await call.message.answer(STALE_TAP)
         return
     note = ""
     if live:
         r = await check_availability(inc["url"], manage=False)
         if not r.ok:
-            await render(call, f"🔴 Не закрываю: {esc(site_label(inc['url']))} всё ещё не открывается "
-                               f"({esc(humanize.describe_error(r.error))}). Закрою сам, когда поднимется; "
-                               f"чинишь — нажми «🔧 Я чиню», и я замолчу.\n\n{explain_text(inc)}",
+            await render(call, t("🔴 Не закрываю: {label} всё ещё не открывается ({why}). Закрою сам, когда поднимется; чинишь — нажми «🔧 Я чиню», и я замолчу.\n\n{explain_text}").format(label=esc(site_label(inc['url'])), why=esc(humanize.describe_error(r.error)), explain_text=explain_text(inc)),
                          await explain_keyboard(inc))
             return
-        note = f"✅ Закрыл: {esc(site_label(inc['url']))} открывается."
+        note = t("✅ Закрыл: {label} открывается.").format(label=esc(site_label(inc['url'])))
     await _close_by_hand(inc)
     await render_incidents(call, note)
 
@@ -216,11 +211,10 @@ async def cb_incident_quiet(call: CallbackQuery):
     arg = call.data.split(":")[1]
     inc = await get_incident(int(arg)) if arg.isdigit() else None
     if not inc or inc.get("resolved"):
-        await ack(call, "Эта проблема уже закрыта", show_alert=True)
+        await ack(call, t("Эта проблема уже закрыта"), show_alert=True)
         return
-    if not await ack(call, "Не напоминаю"):
+    if not await ack(call, t("Не напоминаю")):
         await call.message.answer(STALE_TAP)
         return
     await set_state(f"ack:{inc['id']}", ACK_UNTIL_UP)
-    await call.message.answer(f"👀 Понял: больше не напоминаю про {esc(incident_line(inc))}. "
-                              f"Когда поднимется — напишу.")
+    await call.message.answer(t("👀 Понял: больше не напоминаю про {incident}. Когда поднимется — напишу.").format(incident=esc(incident_line(inc))))

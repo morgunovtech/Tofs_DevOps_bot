@@ -7,6 +7,7 @@ from db.database import count_feedback, delete_feedback, list_feedback
 from handlers.common import STALE_TAP, ack, render
 from services import public_urls, secrets
 from utils.clock import fmt_local
+from utils.i18n import t
 from utils.text import esc
 from web import widget
 
@@ -39,34 +40,27 @@ async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
     """The page of visitors' messages from `offset`; note — a line above it."""
     total = await count_feedback()
     rows = await list_feedback(PAGE, offset)
-    lines = [f"{note}\n" if note else "", f"📩 Обратная связь с сайтов ({total}):\n"]
+    lines = [f"{note}\n" if note else "", t("📩 Обратная связь с сайтов ({total}):").format(total=total) + "\n"]
     lines = lines[1:] if not note else lines
     if not rows:
-        lines.append("Пока ни одного сообщения." if offset == 0 else "Дальше пусто.")
+        lines.append(t("Пока ни одного сообщения.") if offset == 0 else t("Дальше пусто."))
     for fb in rows:
         lines.append(f"#{fb['id']} · {fmt_local(fb['created_at'])} · {esc(fb['page_url'] or fb['site_url'])}\n"
                      f"   {esc(fb['message'][:300])}{'…' if len(fb['message']) > 300 else ''}")
     if not public_urls.is_public():
-        lines.append("\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке.")
-    lines.append(f"\nПодключение виджета на сайт (перед <code>&lt;/body&gt;</code>):\n"
-                 f"<code>{esc(widget_snippet())}</code>\n"
-                 f"Любая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму.\n"
-                 f"Язык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; "
-                 f"закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. "
-                 f"После обновления бота сниппет может смениться — бот скажет, и его надо заменить на сайтах.\n"
-                 f"Строгий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией "
-                 f"файла у себя — в начале файла {esc(public_urls.widget_url())}")
+        lines.append(t("\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке."))
+    lines.append("\n" + t("Подключение виджета на сайт (перед <code>&lt;/body&gt;</code>):\n<code>{widget_snippet}</code>\nЛюбая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму.\nЯзык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. После обновления бота сниппет может смениться — бот скажет, и его надо заменить на сайтах.\nСтрогий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией файла у себя — в начале файла {widget_url}").format(widget_snippet=esc(widget_snippet()), widget_url=esc(public_urls.widget_url())))
     nav = []
     if offset > 0:
-        nav.append(InlineKeyboardButton(text="← Новее", callback_data=f"menu_feedback:{max(0, offset - PAGE)}"))
+        nav.append(InlineKeyboardButton(text=t("← Новее"), callback_data=f"menu_feedback:{max(0, offset - PAGE)}"))
     if offset + PAGE < total:
-        nav.append(InlineKeyboardButton(text="Старее →", callback_data=f"menu_feedback:{offset + PAGE}"))
+        nav.append(InlineKeyboardButton(text=t("Старее →"), callback_data=f"menu_feedback:{offset + PAGE}"))
     kb_rows = [nav] if nav else []
     if rows:   # spam and tests from the widget pile up: the page can be removed, after a question
         ids = [fb["id"] for fb in rows]
-        kb_rows.append([InlineKeyboardButton(text=f"🗑 Удалить эти {len(ids)}",
+        kb_rows.append([InlineKeyboardButton(text=t("🗑 Удалить эти {n}").format(n=len(ids)),
                                              callback_data=f"fb_del:{max(ids)}:{min(ids)}")])
-    kb_rows.append([InlineKeyboardButton(text="← Для посетителей", callback_data="menu_visitors")])
+    kb_rows.append([InlineKeyboardButton(text=t("← Для посетителей"), callback_data="menu_visitors")])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 
@@ -76,18 +70,18 @@ async def cb_feedback_delete(call: CallbackQuery):
     with ids in that range and shows the list again (CR-613)."""
     parts = (call.data or "").split(":")
     if len(parts) != 3 or not (parts[1].isdigit() and parts[2].isdigit()):
-        await ack(call, "Кнопка устарела — открой список заново", show_alert=True)
+        await ack(call, t("Кнопка устарела — открой список заново"), show_alert=True)
         return
     hi, lo = int(parts[1]), int(parts[2])
     if parts[0] == "fb_del":
         await ack(call)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Да, удалить", callback_data=f"fb_del_ok:{hi}:{lo}")],
-            [InlineKeyboardButton(text="← Не надо", callback_data="menu_feedback:0")]])
-        await render(call, "Удалить эти сообщения посетителей? Вернуть их будет нельзя.", kb)
+            [InlineKeyboardButton(text=t("🗑 Да, удалить"), callback_data=f"fb_del_ok:{hi}:{lo}")],
+            [InlineKeyboardButton(text=t("← Не надо"), callback_data="menu_feedback:0")]])
+        await render(call, t("Удалить эти сообщения посетителей? Вернуть их будет нельзя."), kb)
         return
     if not await ack(call):           # «Да» from the queue after a restart: nothing is deleted
         await call.message.answer(STALE_TAP)
         return
     n = await delete_feedback(hi, lo)
-    await show_feedback(call, 0, note=f"🗑 Удалил: {n}")
+    await show_feedback(call, 0, note=t("🗑 Удалил: {n}").format(n=n))
