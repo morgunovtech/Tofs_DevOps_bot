@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import aiohttp
 
 from monitors.base import DomainInfo, read_capped
+from utils.i18n import t
 from utils.text import err_text
 from utils.urls import USER_AGENT
 
@@ -158,7 +159,7 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
         # IANA lists every zone that has RDAP, and rdap.org redirects by the
         # same list: nothing to ask — rdap.org would only learn the name
         # (nas.lan). rdap.org stays for when the bootstrap itself is down.
-        raise RdapUnsupported(f"зона .{tld} без RDAP")
+        raise RdapUnsupported(t("зона .{tld} без RDAP").format(tld=tld))
     urls = [f"{base}domain/{domain}" for base in servers] + [RDAP_ORG.format(domain=domain)]
     last_error: Exception | None = None
     for url in urls:
@@ -176,11 +177,11 @@ async def rdap_lookup(domain: str, session: aiohttp.ClientSession) -> DomainInfo
             except (AttributeError, TypeError, ValueError) as e:
                 # Not a domain record (an error page as JSON, a list, a
                 # string): the next server may have the real one.
-                last_error = DomainLookupError(f"RDAP: неожиданный ответ ({type(e).__name__}: {err_text(e)})")
+                last_error = DomainLookupError(t("RDAP: неожиданный ответ ({name}: {err_text})").format(name=type(e).__name__, err_text=err_text(e)))
                 continue
     if not servers and last_error is None:
-        raise RdapUnsupported(f"зона .{tld} без RDAP")
-    raise last_error or DomainLookupError("RDAP: домен не найден")
+        raise RdapUnsupported(t("зона .{tld} без RDAP").format(tld=tld))
+    raise last_error or DomainLookupError(t("RDAP: домен не найден"))
 
 
 # ── WHOIS fallback for zones without RDAP ────────────────────────────────────
@@ -197,8 +198,8 @@ def parse_whois(text: str, domain: str) -> DomainInfo:
             fields.setdefault(key.strip().lower(), []).append(value.strip())
     if not fields.get("domain"):
         if "no entries found" in text.lower():
-            raise DomainLookupError("WHOIS: домен не найден")
-        raise DomainLookupError("WHOIS: ответ без записи о домене")
+            raise DomainLookupError(t("WHOIS: домен не найден"))
+        raise DomainLookupError(t("WHOIS: ответ без записи о домене"))
 
     def first(*names):
         for n in names:

@@ -37,6 +37,7 @@ from monitors import netcheck, region
 from monitors.base import AvailabilityResult, decode_body, gather_checks, phrase_found, read_capped
 from monitors.second_opinion import repeatable, second_opinion
 from services import health, hosting, humanize, integrations, settings, sitestatus
+from utils.i18n import t
 from utils.net import PRIVATE_REFUSED, owner_connector, refused_private
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
@@ -205,13 +206,13 @@ async def _request_at_home(session: aiohttp.ClientSession, method: str, url: str
         resp.release()
         target = urljoin(url, location)
         if not _stays_home(url, target):
-            raise RedirectStopped(f"API перенаправляет на {_netloc(target)} — ключ туда не отправляю")
+            raise RedirectStopped(t("API перенаправляет на {netloc} — ключ туда не отправляю").format(netloc=_netloc(target)))
         # As a browser (and aiohttp) does: after a 303, and after a 301/302 of
         # a POST, the request continues as a GET without the body.
         if (resp.status == 303 and method != "HEAD") or (resp.status in (301, 302) and method == "POST"):
             method, body = "GET", None
         url = target
-    raise RedirectStopped("слишком много перенаправлений (редирект по кругу)")
+    raise RedirectStopped(t("слишком много перенаправлений (редирект по кругу)"))
 
 
 def _request(session: aiohttp.ClientSession, method: str, url: str, headers: dict[str, str],
@@ -247,6 +248,7 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
                     raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
                     found = phrase_found(keyword, decode_body(raw, resp.charset))
                     mode = site.get("keyword_mode") or "present"
+                    # The verdict is a key: humanize translates it when it is shown.
                     where = "в ответе" if r.api else "на странице"
                     if mode == "absent" and found:
                         r.status, r.keyword_failed = "error", True
@@ -296,7 +298,7 @@ def _error_text(e: aiohttp.ClientError) -> str:
     response errors; r.error goes to the history, the alert and the helpers'
     copy — an API check's token must not."""
     if isinstance(e, aiohttp.TooManyRedirects):
-        return "слишком много перенаправлений (редирект по кругу)"
+        return t("слишком много перенаправлений (редирект по кругу)")
     if isinstance(e, aiohttp.ClientResponseError):
         return f"HTTP {e.status}" if e.status else type(e).__name__
     if isinstance(e, aiohttp.ClientConnectorError):
@@ -311,7 +313,7 @@ async def _probe_tcp(url: str, r: AvailabilityResult):
     parsed = urlparse(url)
     host, port = parsed.hostname, parsed.port
     if not host or not port:
-        r.status, r.error = "error", "нужен порт: tcp://host:порт"
+        r.status, r.error = "error", t("нужен порт: tcp://host:порт")
         return
     start = time.monotonic()
     try:
@@ -342,7 +344,7 @@ async def _probe_ping(url: str, r: AvailabilityResult):
     the kernel allows only to groups in net.ipv4.ping_group_range."""
     host = urlparse(url).hostname
     if not host:
-        r.status, r.error = "error", "нужен хост: ping://host"
+        r.status, r.error = "error", t("нужен хост: ping://host")
         return
     start = time.monotonic()
     try:
@@ -352,7 +354,7 @@ async def _probe_ping(url: str, r: AvailabilityResult):
             "ping", "-n", "-c", "1", "-W", "5", "--", host,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     except FileNotFoundError:
-        r.status, r.error = "error", "ping недоступен на хосте бота — используй tcp://host:порт"
+        r.status, r.error = "error", t("ping недоступен на хосте бота — используй tcp://host:порт")
         return
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_SEC)
@@ -374,21 +376,20 @@ async def _probe_ping(url: str, r: AvailabilityResult):
     low = out_text.lower()
     if any(s in low for s in ("unknown host", "name or service not known",
                               "cannot resolve", "failure in name resolution")):
-        r.error = "хост не резолвится (DNS)"
+        r.error = t("хост не резолвится (DNS)")
     elif proc.returncode == 2 and any(s in low for s in _PING_NO_SOCKET):
         # The bot's environment, not the host: no incident, no second opinion.
         logger.warning("%s: ping cannot open an ICMP socket: %s", url, out_text.strip()[:200])
         r.status, r.transient = "unknown", True
-        r.error = ("ping на сервере бота не может открыть ICMP-сокет (нужен net.ipv4.ping_group_range) "
-                   "— используй tcp://host:порт")
+        r.error = (t("ping на сервере бота не может открыть ICMP-сокет (нужен net.ipv4.ping_group_range) — используй tcp://host:порт"))
     elif "address family for hostname" in low:
         # iputils on an IPv6 address from a container without an IPv6 route:
         # the bot's environment again, not the host.
         logger.warning("%s: no IPv6 on the bot's server: %s", url, out_text.strip()[:200])
         r.status, r.transient = "unknown", True
-        r.error = "у сервера бота нет IPv6 — до IPv6-адреса ping отсюда не дойдёт"
+        r.error = t("у сервера бота нет IPv6 — до IPv6-адреса ping отсюда не дойдёт")
     else:
-        r.error = "хост не отвечает на ping"
+        r.error = t("хост не отвечает на ping")
 
 
 async def check_availability(url: str, manage: bool = True, site: dict | None = None) -> AvailabilityResult:
@@ -409,7 +410,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
         # host IDNA cannot encode): our settings, not the site.
         logger.warning("%s: request settings rejected: %s", url, e)
         r.status, r.transient = "unknown", True
-        r.error = f"настройки запроса не принимаются: {e}"
+        r.error = t("настройки запроса не принимаются: {e}").format(e=e)
     except Exception as e:
         # Anything else must degrade to ONE failed check, not escape into the
         # batch — but loudly: a bug here would read as «all sites are down».
@@ -425,7 +426,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
         logger.info("%s: %s — the bot's own network is down", url, r.error)
         await netcheck.mark_outage()
         r.status, r.transient, r.own_outage = "unknown", True, True
-        r.error = "у сервера бота нет сети"
+        r.error = t("у сервера бота нет сети")
 
     memory = _recent.setdefault(r.site_id, deque(maxlen=RECENT_IN_MEMORY))
     if manage:
@@ -566,7 +567,7 @@ async def _outside_is_up(r: AvailabilityResult, relabel: int):
     the card and the public page say «cannot check», not «down»."""
     await _write(relabel_recent_failures(r.site_id, relabel))
     r.status, r.transient = "unknown", True
-    r.error = f"с сервера бота не открывается ({humanize.describe_error(r.error)}), снаружи открывается"
+    r.error = t("с сервера бота не открывается ({why}), снаружи открывается").format(why=humanize.describe_error(r.error))
     await _write(sitestatus.update(r.site_id, "avail", status=r.status, ms=r.response_time_ms, error=r.error,
                                    code=r.status_code))
 

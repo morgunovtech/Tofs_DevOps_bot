@@ -34,8 +34,8 @@ from db.database import get_or_create_site, get_state
 from monitors.base import CheckResult, Finding, decode_body, read_capped
 from monitors.ladder import apply_findings, told_after, told_before
 from services import humanize, sitestatus
+from utils.i18n import plural, t
 from utils.net import owner_connector
-from utils.text import plural
 from utils.urls import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -96,28 +96,24 @@ def headers_block(hosting_key: str | None, names: list[str]) -> tuple[str, str, 
     pairs = [(n, v) for n, v, _ in HEADERS if n in names]
     lines = "\n".join(f"{n}: {v}" for n, v in pairs)
     if hosting_key in ("cloudflare", "netlify"):
-        note = ("Если это не Cloudflare Pages, а свой сервер за Cloudflare, — добавь те же заголовки в Cloudflare → "
-                "Rules → Transform Rules → Modify Response Header." if hosting_key == "cloudflare" else "")
-        return ("Положи в папку, которую публикует хостинг (dist, build или public), файл _headers с таким "
-                "текстом — или допиши эти строки, если файл уже есть:",
+        note = (t("Если это не Cloudflare Pages, а свой сервер за Cloudflare, — добавь те же заголовки в Cloudflare → Rules → Transform Rules → Modify Response Header.") if hosting_key == "cloudflare" else "")
+        return (t("Положи в папку, которую публикует хостинг (dist, build или public), файл _headers с таким текстом — или допиши эти строки, если файл уже есть:"),
                 "/*\n" + "\n".join(f"  {n}: {v}" for n, v in pairs), note)
     if hosting_key == "vercel":
         block = json.dumps({"headers": [{"source": "/(.*)", "headers": [{"key": n, "value": v} for n, v in pairs]}]},
                            indent=2, ensure_ascii=False)
-        return ("Добавь в vercel.json в корне проекта:", block,
-                "Если vercel.json уже есть — допиши в него только блок headers.")
-    return ("Добавь эти заголовки ко всем ответам сайта — в настройках хостинга, в nginx (add_header … always;) "
-            "или в самом приложении:", lines, "")
+        return (t("Добавь в vercel.json в корне проекта:"), block,
+                t("Если vercel.json уже есть — допиши в него только блок headers."))
+    return (t("Добавь эти заголовки ко всем ответам сайта — в настройках хостинга, в nginx (add_header … always;) или в самом приложении:"), lines, "")
 
 
 def https_fix(hosting_key: str | None) -> str:
     return {
-        "cloudflare": "В Cloudflare → SSL/TLS → Edge Certificates включи «Always Use HTTPS».",
-        "github": "В репозитории на GitHub → Settings → Pages включи «Enforce HTTPS».",
-        "netlify": "В Netlify → Domain management → HTTPS проверь, что сертификат выпущен: перенаправление "
-                   "Netlify включает сам.",
-    }.get(hosting_key or "", "Включи на хостинге перенаправление с http:// на https:// (обычно это галочка "
-                              "«Force HTTPS»; в nginx — return 301 https://$host$request_uri;).")
+        "cloudflare": t("В Cloudflare → SSL/TLS → Edge Certificates включи «Always Use HTTPS»."),
+        "github": t("В репозитории на GitHub → Settings → Pages включи «Enforce HTTPS»."),
+        "netlify": t("В Netlify → Domain management → HTTPS проверь, что сертификат выпущен: перенаправление Netlify включает сам."),
+    }.get(hosting_key or "", t("Включи на хостинге перенаправление с http:// на https:// (обычно это галочка "
+                                "«Force HTTPS»; в nginx — return 301 https://$host$request_uri;)."))
 
 
 def assess(url: str, hosting_key: str | None, git: bool, env: bool, plain_http: bool | None,
@@ -126,36 +122,31 @@ def assess(url: str, hosting_key: str | None, git: bool, env: bool, plain_http: 
     out: list[Finding] = []
     origin = _origin(url)
     if git:
-        out.append(Finding("exposed_git", "Наружу виден .git — код сайта со всей историей",
-                           "любой может скачать весь код сайта со всеми прошлыми версиями — и пароли, если они "
-                           "хоть раз были в коде",
-                           "Убери папку .git из того, что публикует хостинг: публиковаться должна папка сборки "
-                           "(dist, build или public), а не весь репозиторий. Потом смени пароли и ключи, которые "
-                           "когда-либо были в коде.", "", f"Проверь сам: {origin}/.git/HEAD"))
+        out.append(Finding("exposed_git", t("Наружу виден .git — код сайта со всей историей"),
+                           t("любой может скачать весь код сайта со всеми прошлыми версиями — и пароли, если они хоть раз были в коде"),
+                           t("Убери папку .git из того, что публикует хостинг: публиковаться должна папка сборки (dist, build или public), а не весь репозиторий. Потом смени пароли и ключи, которые когда-либо были в коде."), "", t("Проверь сам: {origin}/.git/HEAD").format(origin=origin)))
     if env:
-        out.append(Finding("exposed_env", "Наружу виден файл .env — пароли и ключи",
-                           "в нём пароли от базы и ключи сервисов, и забрать их может любой",
-                           "Срочно убери .env из публикуемой папки и смени все пароли и ключи из него: считай, "
-                           "что их уже забрали.", "", f"Проверь сам: {origin}/.env"))
+        out.append(Finding("exposed_env", t("Наружу виден файл .env — пароли и ключи"),
+                           t("в нём пароли от базы и ключи сервисов, и забрать их может любой"),
+                           t("Срочно убери .env из публикуемой папки и смени все пароли и ключи из него: считай, что их уже забрали."), "", t("Проверь сам: {origin}/.env").format(origin=origin)))
     if plain_http:
-        out.append(Finding("https_missing", "Сайт открывается и без шифрования, по http://",
-                           "по http:// пароли и формы можно подсмотреть по дороге, а браузер пишет «Не защищено»",
+        out.append(Finding("https_missing", t("Сайт открывается и без шифрования, по http://"),
+                           t("по http:// пароли и формы можно подсмотреть по дороге, а браузер пишет «Не защищено»"),
                            https_fix(hosting_key)))
     if missing and hosting_key != "github":
         what, block, note = headers_block(hosting_key, missing)
         n = len(missing)
         out.append(Finding("headers_missing",
-                           f"Не хватает {n} {plural(n, 'защитного заголовка', 'защитных заголовков', 'защитных заголовков')} "
-                           f"из {len(HEADERS)}",
-                           "; ".join(f"без {name} {without}" for name, _, without in HEADERS if name in missing),
+                           t("Не хватает {n} {words} из {n2}").format(n=n, words=plural(n, 'защитного заголовка', 'защитных заголовков', 'защитных заголовков'), n2=len(HEADERS)),
+                           "; ".join(t("без {name} {without}").format(name=name, without=t(without)) for name, _, without in HEADERS if name in missing),
                            what, block, note))
     return out
 
 
 def summary(findings: list[dict]) -> str:
     rest = len(findings) - 1
-    more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest else ""
-    return f"безопасность — {humanize.lower_first(findings[0]['title'])}{more}"
+    more = t(" и ещё {rest} {words}").format(rest=rest, words=plural(rest, 'помеха', 'помехи', 'помех')) if rest else ""
+    return t("безопасность — {text}{more}").format(text=humanize.lower_first(findings[0]['title']), more=more)
 
 
 # ── Probes ───────────────────────────────────────────────────────────────────
@@ -285,7 +276,7 @@ async def check_security(url: str, manage: bool = True) -> list[SecurityResult]:
     if exposed.findings:
         names = [name for name, is_open in ((".git", git_open), (".env", env_open)) if is_open]
         exposed.status = "critical"
-        exposed.error = f"наружу {'видны' if len(names) > 1 else 'виден'} {' и '.join(names)}"
+        exposed.error = t("наружу {words} {items}").format(words=t("видны") if len(names) > 1 else t("виден"), items=t(" и ").join(names))
     if settings.findings:
         settings.status, settings.error = "warning", summary(settings.findings)
     for r, settled in ((exposed, exposed_settled), (settings, settings_settled)):

@@ -4,7 +4,7 @@ General rules (branches and PRs, worktrees, no twins, repos in `~`, secrets) liv
 
 ## What it is
 
-A Telegram bot that watches the owner's sites (uptime, SSL, DNS, mail, links, SEO/GEO and AI-crawler visibility), heals what it can on Cloudflare Pages and Docker, and stays silent while everything is fine. The bot speaks Russian to its owner by design; the visitor-facing status page and widget are bilingual (`STATUS_PAGE_LANG`). Python 3.12–3.14, aiogram 3, aiohttp, APScheduler, SQLite.
+A Telegram bot that watches the owner's sites (uptime, SSL, DNS, mail, links, SEO/GEO and AI-crawler visibility), heals what it can on Cloudflare Pages and Docker, and stays silent while everything is fine. The bot speaks Russian (the default) or English to its owner — `BOT_LANG`, `utils/i18n.py`, `locales/en/`; the visitor-facing status page and widget have their own switch (`STATUS_PAGE_LANG`). Python 3.12–3.14, aiogram 3, aiohttp, APScheduler, SQLite.
 
 ## Commands
 

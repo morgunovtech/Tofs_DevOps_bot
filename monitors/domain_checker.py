@@ -18,6 +18,7 @@ from monitors import rdap
 from monitors.base import DomainResult, gather_checks
 from monitors.ladder import apply_ladder
 from services import integrations, sitestatus
+from utils.i18n import t
 from utils.net import is_private_target
 from utils.text import err_text
 from utils.urls import PLATFORM_DOMAINS, host_of, owned_domain, registrable_domain
@@ -42,11 +43,11 @@ def no_domain_reason(host: str) -> str | None:
     if owned_domain(host):
         return None
     if _is_ip(host):
-        return "это IP-адрес, домена нет"
+        return t("это IP-адрес, домена нет")
     domain = registrable_domain(host)
     if domain in PLATFORM_DOMAINS:
-        return f"адрес на домене платформы {domain} — его регистрацию продлевает она"
-    return "внутреннее имя, домена нет"
+        return t("адрес на домене платформы {domain} — его регистрацию продлевает она").format(domain=domain)
+    return t("внутреннее имя, домена нет")
 
 
 def domain_groups(urls: list[str]) -> dict[str, list[str]]:
@@ -76,15 +77,15 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
     domain = registrable_domain(host) if host else url
     r = DomainResult(url=url, site_id=site_id, domain=domain)
     if not host:
-        r.status, r.error, r.transient = "warning", "Некорректный URL", True
+        r.status, r.error, r.transient = "warning", t("Некорректный URL"), True
         await save_check(site_id, "domain", r.status, details=r.error)
         return r
     if _is_ip(host):
-        return await _no_domain(r, "это IP-адрес, домена нет")
+        return await _no_domain(r, t("это IP-адрес, домена нет"))
     if is_private_target(url):
         # nas.local, pihole.lan, a single-label name: no registration to
         # look up, and the name must not go to rdap.org.
-        return await _no_domain(r, "внутренний адрес — регистрации домена нет")
+        return await _no_domain(r, t("внутренний адрес — регистрации домена нет"))
     reason = no_domain_reason(host)
     if reason:
         # A platform's domain (user.github.io): not the owner's to renew.
@@ -95,7 +96,7 @@ async def check_domain(url: str, manage: bool = True) -> DomainResult:
         days = info.days_left
         if days is None:
             r.unsupported = True
-            r.error = "срок регистрации не сообщается"
+            r.error = t("срок регистрации не сообщается")
         elif days < 0:
             r.status, r.error = "error", f"Domain expired {abs(days)} days ago!"
         elif days <= CRITICAL_DAYS:

@@ -87,6 +87,7 @@ async def check_deep(url: str) -> DeepResult:
     if len(r.errors) >= threshold:
         r.status = "error"
         silent = any(code == NO_ANSWER for _, code in r.errors)
+        # A key for humanize's rules, not a sentence: translated when shown.
         r.error = (f"5xx {'или нет ответа ' if silent else ''}на {len(r.errors)} "
                    f"из {r.sampled} проверенных страниц")
         preview = ", ".join(f"{u} ({code})" for u, code in r.errors[:5])

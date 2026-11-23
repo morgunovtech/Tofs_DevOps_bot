@@ -571,6 +571,7 @@ PLURALS: dict[str, tuple[str, str]] = {
     "вспомогательный пакет": ("helper package", "helper packages"),
     "репозиторий": ("repository", "repositories"),
     "ветка": ("branch", "branches"),
+    "лишняя ветка": ("stray branch", "stray branches"),
     "сообщение": ("message", "messages"),
     "раз": ("time", "times"),
     "старое сообщение": ("old message", "old messages"),

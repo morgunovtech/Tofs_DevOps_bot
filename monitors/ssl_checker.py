@@ -14,6 +14,7 @@ from db.database import get_or_create_site, get_state, save_check, set_state
 from monitors.base import SslInfo, SslResult, gather_checks
 from monitors.ladder import apply_ladder
 from services import sitestatus
+from utils.i18n import t
 from utils.urls import ssl_applies
 
 logger = logging.getLogger(__name__)
@@ -78,8 +79,7 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
                 await set_state(f"ssl_serial:{site_id}", info.serial_number)
         days = info.days_left
         if 0 <= days <= config.ssl_renew_warn_days and prev_serial == info.serial_number:
-            r.renewal_note = (f"Автопродление, похоже, не сработало: до истечения "
-                              f"{days} дн., а сертификат не менялся.")
+            r.renewal_note = (t("Автопродление, похоже, не сработало: до истечения {days} дн., а сертификат не менялся.").format(days=days))
         if days < 0:
             r.status, r.error = "error", f"SSL expired {abs(days)} days ago"
         elif days <= CRITICAL_DAYS:

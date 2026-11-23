@@ -179,6 +179,7 @@ _RULES: list[tuple[re.Pattern, Callable[[re.Match], Phrase]]] = [
     # aiohttp ClientResponseError / TooManyRedirects: «0, message='', url='…?token=…'»
     (re.compile(r"^\d{1,3}, message="), _plain("сервер ответил ошибкой")),
     (re.compile(r"хост не отвечает на ping"), _plain("не отвечает на ping")),
+    (re.compile(r"^адрес записан с ошибкой$"), _plain("адрес записан с ошибкой")),   # monitors.links_checker.MALFORMED
 ]
 
 
