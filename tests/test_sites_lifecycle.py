@@ -6,7 +6,7 @@ from conftest import FakeCall, FakeMessage, FakeState
 
 from handlers import menu, sites, start
 from handlers.common import MAX_SITES
-from handlers.sites import parse_site_input
+from handlers.sites import dropped_path, parse_site_input
 from monitors import availability
 from monitors.base import AvailabilityResult, SslResult
 from monitors.ladder import apply_ladder
@@ -190,7 +190,6 @@ async def test_removing_a_site_forgets_everything_but_its_history(bot, db):
 
 
 def test_a_typed_path_that_is_not_kept_is_named():
-    from handlers.sites import dropped_path
     assert dropped_path("example.com/healthz", "https://example.com") == "/healthz"
     assert dropped_path("https://example.com/", "https://example.com") is None
     assert dropped_path("api.example.com/v1/health", "https://api.example.com/v1/health") is None   # an API keeps it
