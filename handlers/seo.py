@@ -18,7 +18,8 @@ from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
 from services import hosting as hosting_svc
 from services.actions import seo_fix_keyboard
 from services.humanize import level_icon
-from utils.text import clip, esc, fmt_duration, plural
+from utils.i18n import fmt_duration, plural, t
+from utils.text import clip, esc
 from utils.urls import is_web_page, site_label
 
 router = Router(name="seo")
@@ -45,11 +46,11 @@ def _ago(seo: dict) -> str:
     age = sitestatus.age_minutes(seo)
     if age is None:
         return ""
-    return "только что" if age < 2 else f"{fmt_duration(int(age))} назад"
+    return t("только что") if age < 2 else t("{duration} назад").format(duration=fmt_duration(int(age)))
 
 
 def _hindrances(n: int) -> str:
-    return f"{n} {plural(n, 'помеха', 'помехи', 'помех')}"
+    return f"{n} {plural(n, "помеха", "помехи", "помех")}"
 
 
 def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str], list[str]]:
@@ -59,44 +60,43 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str]
     g = snap.get("google") if google_on else None
     if google_on:
         if not g:
-            lines.append("📇 Google: подключён, данные появятся после утренней проверки")
+            lines.append(t("📇 Google: подключён, данные появятся после утренней проверки"))
         else:
             indexed = g.get("verdict") == "PASS"
             crawl = index_status.fmt_day(g.get("last_crawl"))
             if index_status.is_stale(g):
                 on = index_status.fmt_day(g.get("at"))
-                lines.append(f"📇 Google: по данным на {on} главная {'была' if indexed else 'не была'} в индексе"
-                             + ("" if indexed else f" 🔴 ({esc(g.get('coverage') or '?')})") + " — свежих нет")
+                lines.append(t("📇 Google: по данным на {on} главная {words} в индексе").format(on=on, words=t("была") if indexed else t("не была"))
+                             + ("" if indexed else f" 🔴 ({esc(g.get('coverage') or '?')})") + t(" — свежих нет"))
             elif indexed:
-                lines.append("📇 Google: главная в индексе" + (f" (обход {crawl})" if crawl else ""))
+                lines.append(t("📇 Google: главная в индексе") + (t(" (обход {crawl})").format(crawl=crawl) if crawl else ""))
             else:
-                lines.append(f"📇 Google: главной нет в индексе 🔴 ({esc(g.get('coverage') or '?')})")
+                lines.append(t("📇 Google: главной нет в индексе 🔴 ({v})").format(v=esc(g.get('coverage') or '?')))
                 absent.append("Google")
     y = snap.get("yandex") if yandex_on else None
     if yandex_on:
         if not y:
-            lines.append("📇 Яндекс: подключён, данные появятся после утренней проверки")
+            lines.append(t("📇 Яндекс: подключён, данные появятся после утренней проверки"))
         else:
             chunk = []
             pages = y.get("searchable_pages")
             stale = index_status.is_stale(y)
             if pages is not None:
                 if pages > 0:
-                    chunk.append(f"{pages} стр. в поиске")
+                    chunk.append(t("{pages} стр. в поиске").format(pages=pages))
                 else:
-                    chunk.append("в поиске 0 страниц 🔴")
+                    chunk.append(t("в поиске 0 страниц 🔴"))
                     if not stale:
-                        absent.append("Яндекс")
+                        absent.append(t("Яндекс"))
             if y.get("sqi") is not None:
-                chunk.append(f"ИКС {y['sqi']}")
+                chunk.append(t("ИКС {sqi}").format(sqi=y['sqi']))
             problems = y.get("alert_problems") or {}
             if problems:
                 n = index_status.yandex_problem_count(problems)
-                chunk.append(f"{level_icon(index_status.yandex_problem_level(problems))} {n} "
-                             f"{plural(n, 'проблема', 'проблемы', 'проблем')} в Вебмастере")
+                chunk.append(t("{icon} {n} {words} в Вебмастере").format(icon=level_icon(index_status.yandex_problem_level(problems)), n=n, words=plural(n, 'проблема', 'проблемы', 'проблем')))
             if chunk:
-                prefix = f"по данным на {index_status.fmt_day(y.get('at'))}: " if stale else ""
-                lines.append("📇 Яндекс: " + prefix + ", ".join(chunk))
+                prefix = t("по данным на {fmt_day}: ").format(fmt_day=index_status.fmt_day(y.get('at'))) if stale else ""
+                lines.append(t("📇 Яндекс: ") + prefix + ", ".join(chunk))
     return lines, absent
 
 
@@ -126,26 +126,25 @@ def headline(seo: dict, groups: list[tuple[str, str, list[str]]], absent: list[s
     for AI assistants → only where the probe can see it (not on Cloudflare)."""
     n = len(groups)
     if not seo or seo.get("status") is None:
-        return "⏳ Аудита ещё не было — нажми «🔄 Проверить снова»."
+        return t("⏳ Аудита ещё не было — нажми «🔄 Проверить снова».")
     if seo.get("incomplete"):
         # robots.txt or the homepage did not answer: the audit saw a part of
         # the site and has no verdict — and closed nothing (monitors.seo_checker).
-        return ("⚠️ Часть проверки не удалась (robots.txt или главная не ответили) — вердикта нет; "
-                "открытые проблемы остаются в «Что сейчас не так».")
+        return (t("⚠️ Часть проверки не удалась (robots.txt или главная не ответили) — вердикта нет; открытые проблемы остаются в «Что сейчас не так»."))
     if seo.get("status") == "error":
-        return "⚠️ Сайт не открывался, когда я проверял — аудит пропущен. Нажми «🔄 Проверить снова»."
+        return t("⚠️ Сайт не открывался, когда я проверял — аудит пропущен. Нажми «🔄 Проверить снова».")
     if any(g[1] == "critical" for g in groups):
-        return "🔴 <b>Сайт закрыт от поиска</b> — Google и Яндекс уберут его при следующем обходе."
+        return t("🔴 <b>Сайт закрыт от поиска</b> — Google и Яндекс уберут его при следующем обходе.")
     if absent:
-        where = " и ".join(absent).replace("Яндекс", "Яндексе")
-        tail = (f" Есть {_hindrances(n)} — начни с {'неё' if n == 1 else 'них'}." if n
-                else " С моей стороны помех нет — причину покажет Search Console или Вебмастер.")
-        return f"🔴 <b>В {where} сайта нет</b>.{tail}"
+        where = t(" и ").join(absent).replace("Яндекс", "Яндексе")
+        tail = (t(" Есть {hindrances} — начни с {words}.").format(hindrances=_hindrances(n), words=t("неё") if n == 1 else t("них")) if n
+                else t(" С моей стороны помех нет — причину покажет Search Console или Вебмастер."))
+        return t("🔴 <b>В {where} сайта нет</b>.{tail}").format(where=where, tail=tail)
     if n:
-        return f"🟠 Сайт открыт для поисковиков, но есть {_hindrances(n)} — у каждой кнопка «что делать»."
+        return t("🟠 Сайт открыт для поисковиков, но есть {hindrances} — у каждой кнопка «что делать».").format(hindrances=_hindrances(n))
     if not ai_checked:
-        return "✅ Сайт открыт для поисковиков, помех нет."
-    return "✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет."
+        return t("✅ Сайт открыт для поисковиков, помех нет.")
+    return t("✅ Сайт открыт для поисковиков и ИИ-ассистентов, помех нет.")
 
 
 def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool = False) -> str:
@@ -158,45 +157,43 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     idx_lines, absent = index_lines(snap, google_on, yandex_on)
     codes = {g[0] for g in groups}
     unseen = ai_unseen(seo, codes, snap.get("hosting"))
-    lines = [f"🔎 {label} в поиске и у ИИ", "", headline(seo, groups, absent, ai_checked=not unseen)]
+    lines = [t("🔎 {label} в поиске и у ИИ").format(label=label), "", headline(seo, groups, absent, ai_checked=not unseen)]
     chars = seo.get("no_js_chars")
     if "robots_ai" in codes:
-        lines.append("🤖 ИИ-ассистенты: сайт для них закрыт.")
+        lines.append(t("🤖 ИИ-ассистенты: сайт для них закрыт."))
     elif "ai_blocked" in codes:
-        lines.append("🤖 ИИ-ассистенты: запрос с их подписью получает отказ — скорее всего, сайт для них закрыт.")
+        lines.append(t("🤖 ИИ-ассистенты: запрос с их подписью получает отказ — скорее всего, сайт для них закрыт."))
     elif "no_js" in codes:
-        lines.append(f"🤖 ИИ-ассистенты: видят почти пустую страницу — {chars} "
-                     f"{plural(chars or 0, 'символ', 'символа', 'символов')} текста без JavaScript.")
+        lines.append(t("🤖 ИИ-ассистенты: видят почти пустую страницу — {chars} {words} текста без JavaScript.").format(chars=chars, words=plural(chars or 0, 'символ', 'символа', 'символов')))
     lines += idx_lines
     if groups:
-        lines += ["", "<b>Что мешает</b> (номер — кнопка ниже):"]
+        lines += ["", t("<b>Что мешает</b> (номер — кнопка ниже):")]
         for i, (code, sev, msgs) in enumerate(groups[:MAX_ITEMS], 1):
             f = seo_fixes.fix(code)
             lines.append(f"{i}. {level_icon(sev)} <b>{esc(f.title)}</b>")
             msgs = [m for m in msgs if m.casefold() != f.title.casefold()]   # the title said it already
             lines += [f"    {esc(m)}" for m in msgs[:3]]
             if len(msgs) > 3:
-                lines.append(f"    … и ещё {len(msgs) - 3} стр.")
+                lines.append(t("    … и ещё {n} стр.").format(n=len(msgs) - 3))
         if len(groups) > MAX_ITEMS:
-            lines.append(f"… и ещё {len(groups) - MAX_ITEMS}: покажу после того, как починишь эти.")
+            lines.append(t("… и ещё {n}: покажу после того, как починишь эти.").format(n=len(groups) - MAX_ITEMS))
     # The caption: what was measured and found in order, dated — no icons,
     # no counters of non-problems.
     tail = []
     pages = seo.get("pages")
     if pages:
-        tail.append(f"проверил {pages} {plural(pages, 'страницу', 'страницы', 'страниц')}")
+        tail.append(t("проверил {pages} {words}").format(pages=pages, words=plural(pages, 'страницу', 'страницы', 'страниц')))
     if chars is not None and not (codes & AI_CODES):
-        tail.append(f"без JavaScript видно {chars} {plural(chars, 'символ', 'символа', 'символов')} текста")
+        tail.append(t("без JavaScript видно {chars} {words} текста").format(chars=chars, words=plural(chars, 'символ', 'символа', 'символов')))
     if _ago(seo):
         tail.append(_ago(seo))
-    caption = " · ".join(tail) if tail else "ещё не проверял"
+    caption = " · ".join(tail) if tail else t("ещё не проверял")
     if unseen:
-        caption += (". ИИ-ассистентов robots.txt пускает, и запрос с их подписью проходит, но настоящих ботов "
-                    "Cloudflare узнаёт по адресу — пускает ли он их, видно только в его панели (кнопка ниже)")
+        caption += (t(". ИИ-ассистентов robots.txt пускает, и запрос с их подписью проходит, но настоящих ботов Cloudflare узнаёт по адресу — пускает ли он их, видно только в его панели (кнопка ниже)"))
     if any(sev == "warning" for _, sev, _ in groups):
-        caption += ". Критичное (🔴) присылаю сразу, как замечу; остальное (🟠) не шлю — оно здесь, в «Проблемах» и в сводках"
+        caption += t(". Критичное (🔴) присылаю сразу, как замечу; остальное (🟠) не шлю — оно здесь, в «Проблемах» и в сводках")
     if not google_on and not yandex_on:   # the button to connect them is right below
-        caption += ". В индексе ли сайт, знают только Google и Яндекс"
+        caption += t(". В индексе ли сайт, знают только Google и Яндекс")
     caption += "."
     lines += ["", f"<i>{caption}</i>"]
     return "\n".join(lines)
@@ -209,9 +206,9 @@ def seo_keyboard(site_id: int, seo: dict, *, google_on: bool = False, yandex_on:
     if ai_unseen(seo, {g[0] for g in groups}, hosting):
         rows += seo_fix_keyboard(site_id, ["ai_cloudflare"]).inline_keyboard
     if not google_on and not yandex_on:
-        rows.append([InlineKeyboardButton(text="🔌 Подключить Google или Яндекс", callback_data="menu_diag")])
-    rows.append([InlineKeyboardButton(text="🔄 Проверить снова", callback_data=f"seo_live:{site_id}"),
-                 InlineKeyboardButton(text="← К сайту", callback_data=f"check_site:{site_id}")])
+        rows.append([InlineKeyboardButton(text=t("🔌 Подключить Google или Яндекс"), callback_data="menu_diag")])
+    rows.append([InlineKeyboardButton(text=t("🔄 Проверить снова"), callback_data=f"seo_live:{site_id}"),
+                 InlineKeyboardButton(text=t("← К сайту"), callback_data=f"check_site:{site_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -220,20 +217,20 @@ def fix_text(url: str, code: str, seo: dict, hosting: str | None) -> str:
     found = [p.get("message", "") for p in (seo.get("problems") or []) if p.get("code") == code]
     lines = [f"{f.icon} <b>{esc(f.title)}</b>", f"<i>{esc(site_label(url))}</i>"]
     if found:
-        lines += ["", "Что я увидел:"] + [f"  • {esc(m)}" for m in found[:4]]
+        lines += ["", t("Что я увидел:")] + [f"  • {esc(m)}" for m in found[:4]]
     if f.why:
-        lines += ["", f"<b>Чем грозит:</b> {esc(f.why)}"]
+        lines += ["", t("<b>Чем грозит:</b> {why}").format(why=esc(f.why))]
     steps = seo_fixes.steps(code, hosting, url)
-    lines += ["", "<b>Что делать:</b>"] + [f"{i}. {esc(s)}" for i, s in enumerate(steps, 1)]
+    lines += ["", t("<b>Что делать:</b>")] + [f"{i}. {esc(s)}" for i, s in enumerate(steps, 1)]
     if hosting in f.by_hosting:
-        lines += ["", f"<i>Шаги для {esc(hosting_svc.label(hosting) or hosting)} — я узнал хостинг по ответам сервера.</i>"]
+        lines += ["", t("<i>Шаги для {v} — я узнал хостинг по ответам сервера.</i>").format(v=esc(hosting_svc.label(hosting) or hosting))]
     return "\n".join(lines)
 
 
 def fix_keyboard(site_id: int, url: str, code: str, hosting: str | None) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, url=target)] for label, target in seo_fixes.links(code, hosting, url)]
-    rows.append([InlineKeyboardButton(text="🔄 Проверить снова", callback_data=f"seo_live:{site_id}"),
-                 InlineKeyboardButton(text="← Назад", callback_data=f"seo_site:{site_id}")])
+    rows.append([InlineKeyboardButton(text=t("🔄 Проверить снова"), callback_data=f"seo_live:{site_id}"),
+                 InlineKeyboardButton(text=t("← Назад"), callback_data=f"seo_site:{site_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -246,13 +243,12 @@ async def show_seo(call: CallbackQuery, site: dict):
 
 
 async def run_live(call: CallbackQuery, site: dict):
-    base = (f"Смотрю на {esc(site_label(site['url']))} глазами Google, Яндекса и ИИ-ассистентов…\n"
-            "(это занимает около 30 секунд)")
+    base = (t("Смотрю на {label} глазами Google, Яндекса и ИИ-ассистентов…\n(это занимает около 30 секунд)").format(label=esc(site_label(site['url']))))
     await render(call, f"▰▱▱ {base}")
     done = await with_running_bar(call.message, base, audit_now(site))
     await show_seo(call, site)
     if not done:
-        await call.message.answer("⚠️ Проверка не удалась — на экране прошлые данные. Попробуй ещё раз позже.")
+        await call.message.answer(t("⚠️ Проверка не удалась — на экране прошлые данные. Попробуй ещё раз позже."))
 
 
 async def audit_now(site: dict) -> bool:
@@ -272,10 +268,10 @@ async def _auditable(call: CallbackQuery, site: dict | None) -> bool:
     """Search and AI visibility is a question about web pages only — an old
     button on a monitor that became an API check answers so instead."""
     if not site:
-        await ack(call, "Сайт не найден", show_alert=True)
+        await ack(call, t("Сайт не найден"), show_alert=True)
         return False
     if not is_web_page(site["url"], site.get("http_method")):
-        await ack(call, "Это API-проверка или порт: поиск и ИИ к ним не относятся", show_alert=True)
+        await ack(call, t("Это API-проверка или порт: поиск и ИИ к ним не относятся"), show_alert=True)
         return False
     return True
 
@@ -300,7 +296,7 @@ async def cb_seo_live(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not await _auditable(call, site):
         return
-    await ack(call, "Проверяю…")
+    await ack(call, t("Проверяю…"))
     await run_live(call, site)
 
 
@@ -312,7 +308,7 @@ async def cb_seo_fix(call: CallbackQuery):
     on_alert = len(parts) == 4 and parts[3] == "a"
     site = await site_by_cb(args[0]) if args else None   # an active site, like every other button
     if not site:
-        await ack(call, "Сайт не найден", show_alert=True)
+        await ack(call, t("Сайт не найден"), show_alert=True)
         return
     await ack(call)
     snap = await sitestatus.get(site["id"])

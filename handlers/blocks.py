@@ -12,12 +12,13 @@ from reports.scheduler import backup_info, send_copy_to_owner
 from services import heartbeats, settings, updates
 from services.heartbeats import job_states
 from utils.clock import to_local
-from utils.i18n import t
-from utils.text import esc, fmt_duration, parse_iso_utc
+from utils.i18n import fmt_duration, t
+from utils.text import esc, parse_iso_utc
 
 router = Router(name="blocks")
 
-HOME = InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")
+def _home() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")
 
 
 def backup_state() -> tuple[str, str, str]:
@@ -41,22 +42,21 @@ def backup_state() -> tuple[str, str, str]:
 async def bots_page() -> tuple[str, InlineKeyboardMarkup]:
     jobs = await job_states()
     watchdog = await heartbeats.watchdog()
-    lines = ["🤖 Боты и системы", ""]
+    lines = [t("🤖 Боты и системы"), ""]
     if jobs:
         lines += [heartbeats.digest_line(j)[0] for j in jobs]
     else:
-        lines.append("Ботов и задач по расписанию пока нет. Добавь — и я скажу, если они замолчат.")
+        lines.append(t("Ботов и задач по расписанию пока нет. Добавь — и я скажу, если они замолчат."))
     lines += ["", heartbeats.watchdog_digest_line(watchdog)[0], backup_state()[2]]
     if await updates.deploy_problem():
-        lines.append("🟠 Новая версия бота не запустилась — работаю на прежней. Лог сборки — в сообщении "
-                     "«Новая версия бота не запустилась».")
+        lines.append(t("🟠 Новая версия бота не запустилась — работаю на прежней. Лог сборки — в сообщении «Новая версия бота не запустилась»."))
     job_buttons = [InlineKeyboardButton(text=f"⚙️ {j.name}", callback_data=f"hb_show:{j.name}")
                    for j in jobs if len(f"hb_show:{j.name}".encode()) <= 64]
     rows = [job_buttons[i:i + 2] for i in range(0, len(job_buttons), 2)]
-    rows.append([InlineKeyboardButton(text="🛡 Подключить сторожа" if watchdog is None else "🛡 Сторож",
+    rows.append([InlineKeyboardButton(text=t("🛡 Подключить сторожа") if watchdog is None else t("🛡 Сторож"),
                                       callback_data="setup:watchdog")])
-    rows.append([InlineKeyboardButton(text="💾 Скачать копию базы", callback_data="sys:backup")])
-    rows.append([InlineKeyboardButton(text="➕ Бот или задача", callback_data="hb_add"), HOME])
+    rows.append([InlineKeyboardButton(text=t("💾 Скачать копию базы"), callback_data="sys:backup")])
+    rows.append([InlineKeyboardButton(text=t("➕ Бот или задача"), callback_data="hb_add"), _home()])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -72,15 +72,14 @@ async def cb_backup_now(call: CallbackQuery):
     ones stay as they were; to the owner's private chat only, without
     tokens and secrets (reports.scheduler.send_copy_to_owner). A double tap
     is safe: the copies are made one after another."""
-    if not await ack(call, "Делаю копию…"):
+    if not await ack(call, t("Делаю копию…")):
         await call.message.answer(STALE_TAP)
         return
     problem = await send_copy_to_owner(
-        f"💾 Копия базы бота на {to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')}: сайты, настройки, "
-        f"история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.")
+        t("💾 Копия базы бота на {time}: сайты, настройки, история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.").format(time=to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')))
     if call.message is not None:
-        await call.message.answer(f"❌ Копию не прислал: {esc(problem)}." if problem
-                                  else "💾 Прислал копию тебе в личку.")
+        await call.message.answer(t("❌ Копию не прислал: {problem}.").format(problem=esc(problem)) if problem
+                                  else t("💾 Прислал копию тебе в личку."))
 
 
 @router.callback_query(F.data.startswith("blk:seen:"))
@@ -91,16 +90,16 @@ async def cb_seen(call: CallbackQuery):
     job = next((j for j in await job_states() if j.name == name), None)
     status = await heartbeats.job_status(name) if job else None
     if not job or not status:
-        await ack(call, "Этот бот больше ничего не присылает", show_alert=True)
+        await ack(call, t("Этот бот больше ничего не присылает"), show_alert=True)
         return
     await ack(call)
     at = parse_iso_utc(status.get("at"))
-    ago = f", {fmt_duration((datetime.now(UTC) - at).total_seconds() / 60)} назад" if at else ""
-    lines = [f"{esc(heartbeats.status_title(job, status))} · от {esc(name)}{ago}", ""]
+    ago = t(", {duration} назад").format(duration=fmt_duration((datetime.now(UTC) - at).total_seconds() / 60)) if at else ""
+    lines = [t("{status_title} · от {name}{ago}").format(status_title=esc(heartbeats.status_title(job, status)), name=esc(name), ago=ago), ""]
     lines += [f"{icon} {esc(item)} — {esc(text)}" for icon, item, text in heartbeats.status_items(job, status)]
-    lines += ["", f"Подробности — графики, тревоги, безопасность аккаунтов — в самом {esc(name)}."]
+    lines += ["", t("Подробности — графики, тревоги, безопасность аккаунтов — в самом {name}.").format(name=esc(name))]
     rows = []
     if status.get("open_url"):
-        rows.append([InlineKeyboardButton(text=f"↗️ Открыть {name}", url=status["open_url"])])
-    rows.append([InlineKeyboardButton(text=f"⚙️ {name}", callback_data=f"hb_show:{name}"), HOME])
+        rows.append([InlineKeyboardButton(text=t("↗️ Открыть {name}").format(name=name), url=status["open_url"])])
+    rows.append([InlineKeyboardButton(text=f"⚙️ {name}", callback_data=f"hb_show:{name}"), _home()])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))

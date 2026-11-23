@@ -93,9 +93,10 @@ from services import (
 from services import hosting as hosting_svc
 from utils import validate
 from utils.clock import to_local, utcnow
+from utils.i18n import fmt_duration, plural, t
 from utils.net import is_lan_host, normalize_ipv4
 from utils.parse import parse_accepted_codes
-from utils.text import esc, fmt_date, fmt_duration, incident_start, parse_sqlite_utc, plural
+from utils.text import esc, fmt_date, incident_start, parse_sqlite_utc
 from utils.urls import (
     host_key,
     host_of,
@@ -162,9 +163,9 @@ def _host_policy(host: str) -> tuple[str, str | None]:
     tcp:// and ping:// only what is typed is judged."""
     host = normalize_ipv4(host) or host
     if host in ("0.0.0.0", "255.255.255.255"):
-        return host, "Это не адрес сервера. Пришли домен или IP сайта"
+        return host, t("Это не адрес сервера. Пришли домен или IP сайта")
     if not config.allow_private_targets and is_lan_host(host):
-        return host, PRIVATE_OFF
+        return host, t(PRIVATE_OFF)
     return host, None
 
 
@@ -189,8 +190,7 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
         if not v6:
             host = _ascii_host(host) or ""
             if not _HOST_RE.fullmatch(host) or not _valid_lengths(host):
-                return None, ("Не понял хост. Примеры: tcp://mail.example.com:25, ping://10.0.0.1, "
-                              "ping://[2001:db8::1]")
+                return None, (t("Не понял хост. Примеры: tcp://mail.example.com:25, ping://10.0.0.1, ping://[2001:db8::1]"))
         host, refused = _host_policy(v6 or host)
         if refused:
             return None, refused
@@ -198,7 +198,7 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
             host = f"[{host}]"   # stored in brackets: a URL needs them around an IPv6 address
         if parsed.scheme == "tcp":
             if not port:
-                return None, "Для tcp нужен порт: tcp://host:порт (например, tcp://mail.example.com:25)"
+                return None, t("Для tcp нужен порт: tcp://host:порт (например, tcp://mail.example.com:25)")
             return f"tcp://{host}:{port}", None
         return f"ping://{host}", None
     if not raw.startswith(("http://", "https://")):
@@ -207,10 +207,10 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
         parsed = urlparse(raw)
         host, port_n = parsed.hostname or "", parsed.port
     except ValueError:
-        return None, "Не похоже на адрес. Пришли что-то вроде example.com"
+        return None, t("Не похоже на адрес. Пришли что-то вроде example.com")
     host = _ascii_host(host) or ""
     if not _DOMAIN_RE.fullmatch(host) or not _valid_lengths(host):
-        return None, "Не похоже на домен. Пришли что-то вроде example.com"
+        return None, t("Не похоже на домен. Пришли что-то вроде example.com")
     host, refused = _host_policy(host)
     if refused:
         return None, refused
@@ -223,7 +223,7 @@ def parse_site_input(raw: str) -> tuple[str | None, str | None]:
     path = "" if as_typed.path in ("", "/") else as_typed.path
     tail = path + (f"?{as_typed.query}" if as_typed.query else "")
     if re.search(r"\s", tail) or len(tail) > API_PATH_LIMIT:
-        return None, f"Адрес API — без пробелов и не длиннее {API_PATH_LIMIT} символов после домена."
+        return None, t("Адрес API — без пробелов и не длиннее {API_PATH_LIMIT} символов после домена.").format(API_PATH_LIMIT=API_PATH_LIMIT)
     return site + tail, None
 
 
@@ -246,10 +246,9 @@ def api_line(site: dict) -> str:
     kw = (site.get("keyword") or "").strip()
     expect = ""
     if kw:
-        expect = (f", в ответе не должно быть «{esc(kw)}»" if site.get("keyword_mode") == "absent"
-                  else f", в ответе должно быть «{esc(kw)}»")
-    return (f"API-проверка: {method}{expect}. Слежу только за ответом — поиск, ссылки и SEO "
-            f"к API не относятся.")
+        expect = (t(", в ответе не должно быть «{kw}»").format(kw=esc(kw)) if site.get("keyword_mode") == "absent"
+                  else t(", в ответе должно быть «{kw}»").format(kw=esc(kw)))
+    return (t("API-проверка: {method}{expect}. Слежу только за ответом — поиск, ссылки и SEO к API не относятся.").format(method=method, expect=expect))
 
 
 async def host_checked_by(site: dict) -> str | None:
@@ -293,9 +292,8 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
     search: list[str] = []
     covered_by = await host_checked_by(site)
     if covered_by and covered_by != site["url"]:
-        what = "Сертификат и домен" if ssl_applies(site["url"]) else "Домен"
-        domain.append(f"{what} — на карточке {esc(site_label(covered_by))}: проверяю их один раз "
-                      f"на адрес")
+        what = t("Сертификат и домен") if ssl_applies(site["url"]) else t("Домен")
+        domain.append(t("{what} — на карточке {label}: проверяю их один раз на адрес").format(what=what, label=esc(site_label(covered_by))))
     if covered_by == site["url"]:
         domain += _domain_lines(st.get("domain"), api)
         if ssl_applies(site["url"]):
@@ -315,9 +313,9 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
 
     problems: list[list[str]] = []
     blocks: list[tuple[str, list[str]]] = []
-    mail_title = "Почта и защита" if mail and protection else "Почта" if mail else "Защита"
-    for title, lines in (("Доступность", access), ("Домен", domain), (mail_title, mail + protection),
-                         ("Поиск", search)):
+    mail_title = t("Почта и защита") if mail and protection else t("Почта") if mail else t("Защита")
+    for title, lines in ((t("Доступность"), access), (t("Домен"), domain), (mail_title, mail + protection),
+                         (t("Поиск"), search)):
         rest: list[str] = []
         for item in _items(lines):
             if item[0].startswith(PROBLEM_ICONS):
@@ -329,7 +327,7 @@ async def card_parts(site: dict) -> tuple[list[list[str]], list[tuple[str, list[
     for inc in await get_active_incidents():
         if inc["site_id"] == site["id"] and inc["check_type"] not in _SHOWN_ON_A_LINE:
             problems.append([f"{humanize.level_icon(inc['severity'])} "
-                             f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), 'Сайт', page=page))}"])
+                             f"{esc(humanize.incident_headline(inc['check_type'], inc.get('message'), t("Сайт"), page=page))}"])
     return problems, blocks
 
 
@@ -357,19 +355,18 @@ async def _typical_ms(site: dict) -> int | None:
 async def _avail_line(site: dict, st: dict, page: bool) -> str:
     avail = st.get("avail")
     if not avail:
-        return "⏳ Ещё не проверял — первая проверка в течение минуты"
+        return t("⏳ Ещё не проверял — первая проверка в течение минуты")
     if avail.get("status") == "unknown":
-        return f"{humanize.UNCHECKED} Не могу проверить: {esc(humanize.describe_error(avail.get('error')))}"
+        return t("{UNCHECKED} Не могу проверить: {why}").format(UNCHECKED=humanize.UNCHECKED, why=esc(humanize.describe_error(avail.get('error'))))
     if avail.get("status") != "ok" and avail.get("kw"):
         # The page loaded; the phrase verdict is what failed — not an outage.
-        return (f"🔴 {'Открывается' if page else 'Отвечает'}, но показывает не то: "
-                f"{esc(humanize.describe_error(avail.get('error')))}")
+        return (t("🔴 {words}, но показывает не то: {why}").format(words=t("Открывается") if page else t("Отвечает"), why=esc(humanize.describe_error(avail.get('error')))))
     if avail.get("status") != "ok":
-        return f"🔴 {'Не открывается' if page else 'Не отвечает'}: {esc(humanize.describe_error(avail.get('error')))}"
+        return f"🔴 {t("Не открывается") if page else t("Не отвечает")}: {esc(humanize.describe_error(avail.get('error')))}"
     ms, region = best_ms(st)
     typical = await _typical_ms(site)
-    usual = f", обычно за {humanize.fmt_seconds(typical)}" if typical else ""
-    return f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(ms, region)}{usual}"
+    usual = t(", обычно за {seconds}").format(seconds=humanize.fmt_seconds(typical)) if typical else ""
+    return f"✅ {t("Открывается") if page else t("Отвечает")} {humanize.speed(ms, region)}{usual}"
 
 
 async def _history_lines(site: dict) -> list[str]:
@@ -380,15 +377,22 @@ async def _history_lines(site: dict) -> list[str]:
     parts, clean = [], False
     if week["total_checks"]:
         month = await get_uptime_over_days(site["id"], 30)
-        w, m = humanize.downtime(week), humanize.downtime(month)
-        clean = w == m == "без сбоев"
-        parts.append("без сбоев ни за неделю, ни за месяц" if clean else
-                     f"простой: за неделю {w.removeprefix('недоступен ')}, за месяц {m.removeprefix('недоступен ')}")
+        clean = bool(month.get("total_checks")) and not (week.get("down_min") or month.get("down_min"))
+        parts.append(t("без сбоев ни за неделю, ни за месяц") if clean else
+                     t("простой: за неделю {week}, за месяц {month}").format(week=_short_downtime(week), month=_short_downtime(month)))
     outage = await _last_outage(site)
     if outage:
         parts.append(outage)
     text = "; ".join(parts)
     return [f"{'✅ ' if clean else ''}{text[:1].upper()}{text[1:]}"] if text else []
+
+
+def _short_downtime(stats: dict) -> str:
+    """humanize.downtime without the «недоступен» word: «без сбоев» · «≈12 мин» · «нет данных»."""
+    if not stats.get("total_checks"):
+        return t("нет данных")
+    down = stats.get("down_min") or 0
+    return t("без сбоев") if not down else f"≈{fmt_duration(max(1, down))}"
 
 
 async def _last_outage(site: dict) -> str:
@@ -400,51 +404,49 @@ async def _last_outage(site: dict) -> str:
     ended = parse_sqlite_utc(inc.get("resolved_at")) or started
     minutes = max(1, round((ended - started).total_seconds() / 60))
     why = humanize.describe_error(inc.get("message"))
-    return f"последний сбой {to_local(started).strftime('%d.%m %H:%M')} — {fmt_duration(minutes)}, {esc(why)}"
+    return t("последний сбой {time} — {duration}, {why}").format(time=to_local(started).strftime('%d.%m %H:%M'), duration=fmt_duration(minutes), why=esc(why))
 
 
 def _keyword_lines(site: dict, avail: dict | None) -> list[str]:
     """The phrase the owner asked to watch — said when it is fine too."""
     phrase = site.get("keyword")
     if phrase and (site.get("http_method") or "").upper() == "HEAD":
-        return [f"⚠️ Фраза «{esc(phrase)}» не проверяется: метод HEAD"]
+        return [t("⚠️ Фраза «{phrase}» не проверяется: метод HEAD").format(phrase=esc(phrase))]
     if not phrase or not avail or avail.get("status") != "ok":
         return []
     if site.get("keyword_mode") == "absent":
-        return [f"✅ Фразы «{esc(phrase)}» на странице нет, как и должно быть"]
-    return [f"✅ Фраза «{esc(phrase)}» на месте"]
+        return [t("✅ Фразы «{phrase}» на странице нет, как и должно быть").format(phrase=esc(phrase))]
+    return [t("✅ Фраза «{phrase}» на месте").format(phrase=esc(phrase))]
 
 
 def _ssl_lines(ssl: dict | None) -> list[str]:
     if not ssl:
-        return ["⏳ Сертификат: ещё не проверял"]
+        return [t("⏳ Сертификат: ещё не проверял")]
     days = ssl.get("days_left")
     if days is None:
-        return [f"🔴 Сертификат: {esc(humanize.describe_error(ssl.get('error')))}"]
-    until = f"до {fmt_date(ssl['not_after'])} · " if ssl.get("not_after") else ""
+        return [t("🔴 Сертификат: {why}").format(why=esc(humanize.describe_error(ssl.get('error'))))]
+    until = t("до {date} · ").format(date=fmt_date(ssl['not_after'])) if ssl.get("not_after") else ""
     if days > 14:
-        return [f"✅ Сертификат {until}ещё {days} дн."]
-    issuer = f", выдан {esc(ssl['issuer'])}" if ssl.get("issuer") else ""
-    return [f"{humanize.level_icon('warning' if days > 3 else 'critical')} Сертификат "
-            f"{'истёк' if days < 0 else f'{until}осталось {days} дн.'}{issuer}"]
+        return [t("✅ Сертификат {until}ещё {days} дн.").format(until=until, days=days)]
+    issuer = t(", выдан {issuer}").format(issuer=esc(ssl['issuer'])) if ssl.get("issuer") else ""
+    return [t("{icon} Сертификат {words}{issuer}").format(icon=humanize.level_icon('warning' if days > 3 else 'critical'), words=t("истёк") if days < 0 else t("{until}осталось {days} дн.").format(until=until, days=days), issuer=issuer)]
 
 
 def _domain_lines(dom: dict | None, api: bool) -> list[str]:
     if not dom:
-        return [] if api else ["⏳ Домен: ещё не проверял"]   # an api.* host shares its site's registration
+        return [] if api else [t("⏳ Домен: ещё не проверял")]   # an api.* host shares its site's registration
     if dom.get("unsupported"):
-        return [f"Домен: {esc(dom.get('error') or 'срок регистратура не сообщает')}"]
+        return [t("Домен: {v}").format(v=esc(dom.get('error') or t("срок регистратура не сообщает")))]
     days = dom.get("days_left")
     if days is None:
-        return [f"⚠️ Домен: {esc(humanize.describe_error(dom.get('error')))}"]
-    until = f"оплачен до {fmt_date(dom.get('expiration'))}"
+        return [t("⚠️ Домен: {why}").format(why=esc(humanize.describe_error(dom.get('error'))))]
+    until = t("оплачен до {date}").format(date=fmt_date(dom.get('expiration')))
     if days > 30:
-        return [f"✅ Домен {until} · ещё {days} дн."]
+        return [t("✅ Домен {until} · ещё {days} дн.").format(until=until, days=days)]
     # Running out: who to pay is the next question.
-    registrar = (f", регистратор {esc(dom['registrar'])}"
+    registrar = (t(", регистратор {registrar}").format(registrar=esc(dom['registrar']))
                  if dom.get("registrar") not in (None, "", "Unknown") else "")
-    return [f"{humanize.level_icon('warning' if days > 7 else 'critical')} Домен "
-            f"{'истёк' if days < 0 else f'{until} · осталось {days} дн.'}{registrar}"]
+    return [t("{icon} Домен {words}{registrar}").format(icon=humanize.level_icon('warning' if days > 7 else 'critical'), words=t("истёк") if days < 0 else t("{until} · осталось {days} дн.").format(until=until, days=days), registrar=registrar)]
 
 
 async def _dns_lines(site: dict) -> list[str]:
@@ -454,10 +456,10 @@ async def _dns_lines(site: dict) -> list[str]:
         return []      # an IP or a platform's domain: no DNS of the owner's to watch
     n = dns_checker.failing(domain, "NS")
     if n >= dns_checker.FAILS_TO_SAY:
-        return [f"🔴 DNS: NS-серверы {esc(domain)} не отвечают уже {n} ч"]
+        return [t("🔴 DNS: NS-серверы {domain} не отвечают уже {n} ч").format(domain=esc(domain), n=n)]
     ns = await get_dns_record(domain, "NS")
     since = parse_sqlite_utc(ns[1]) if ns and ns[0] else None
-    return [f"✅ DNS не менялись с {to_local(since).strftime('%d.%m.%Y')}"] if since else []
+    return [t("✅ DNS не менялись с {time}").format(time=to_local(since).strftime('%d.%m.%Y'))] if since else []
 
 
 async def hosting_words(site: dict) -> str:
@@ -473,15 +475,15 @@ def _pages_lines(deep: dict | None) -> list[str]:
         return []
     n, bad = deep["sampled"], deep.get("errors") or 0
     if not bad:
-        return [f"✅ Страницы из карты сайта: {n} из {n} отвечают"]
+        return [t("✅ Страницы из карты сайта: {n} из {n} отвечают").format(n=n)]
     # code None — answered fine; 0 — did not answer at all; else a 5xx.
     broken = [(path, code) for path, code in (deep.get("pages") or []) if code is not None]
     silent = any(code == 0 for _, code in broken)
-    lines = [f"🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера"
-             + (" или не отвечают" if silent else "")]
-    lines += [f"    🔴 {esc(path)} — {'не ответила' if code == 0 else f'ошибка {code}'}" for path, code in broken[:10]]
+    lines = [t("🟠 Страницы из карты сайта: {bad} из {n} отвечают ошибкой сервера").format(bad=bad, n=n)
+             + (t(" или не отвечают") if silent else "")]
+    lines += [f"    🔴 {esc(path)} — {t("не ответила") if code == 0 else t("ошибка {code}").format(code=code)}" for path, code in broken[:10]]
     if len(broken) > 10:
-        lines.append(f"    … и ещё {len(broken) - 10}")
+        lines.append(t("    … и ещё {n}").format(n=len(broken) - 10))
     return lines
 
 
@@ -492,15 +494,15 @@ def _links_lines(links: dict | None) -> list[str]:
         return []
     total = links.get("total")
     if links.get("status") == "ok":
-        return [f"✅ Ссылки: {f'{total} из {total}' if total else 'все'} открываются"]
+        return [t("✅ Ссылки: {words} открываются").format(words=t("{total} из {total}").format(total=total) if total else t("все"))]
     if links.get("status") != "warning":
-        return ["⚠️ Ссылки: не смог проверить"]
+        return [t("⚠️ Ссылки: не смог проверить")]
     n = links.get("broken", links.get("internal")) or 0
-    of = f" из {total}" if total else ""
-    lines = [f"🟠 Ссылки: {n}{of} не {plural(n, 'открывается', 'открываются', 'открываются')}"]
+    of = t(" из {total}").format(total=total) if total else ""
+    lines = [t("🟠 Ссылки: {n}{of} не {words}").format(n=n, of=of, words=plural(n, 'открывается', 'открываются', 'открываются'))]
     lines += [f"    • {esc(i['url'])} — {esc(humanize.link_reason(i.get('code'), i.get('error'), i['url']))}"
               for i in (links.get("items") or [])[:5]]
-    lines.append("    Что сделать: поставь новый адрес, убери ссылку или дай копию из web.archive.org.")
+    lines.append(t("    Что сделать: поставь новый адрес, убери ссылку или дай копию из web.archive.org."))
     return lines
 
 
@@ -513,33 +515,32 @@ def _seo_lines(st: dict, cf_pending: bool = False) -> list[str]:
         return []
     groups = seo_screen.grouped(seo.get("problems") or [])
     n = len(groups) or seo.get("improve") or 0   # snapshots from before 11.2026 kept a count only
-    verdict = {"ok": "✅ Поиск и ИИ: помех нет",
-               "warning": f"🟠 Поиск и ИИ: {n} {plural(n, 'помеха', 'помехи', 'помех')}",
-               "critical": "🔴 Поиск и ИИ: сайт закрыт от поисковиков"}.get(
-        seo.get("status"), "⚠️ Поиск и ИИ: не смог проверить")
+    verdict = {"ok": t("✅ Поиск и ИИ: помех нет"),
+               "warning": t("🟠 Поиск и ИИ: {n} {words}").format(n=n, words=plural(n, 'помеха', 'помехи', 'помех')),
+               "critical": t("🔴 Поиск и ИИ: сайт закрыт от поисковиков")}.get(
+        seo.get("status"), t("⚠️ Поиск и ИИ: не смог проверить"))
     lines = [verdict]
     idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available())
     lines += [f"    {line}" for line in idx]
     if cf_pending:
-        lines.append("    Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт "
-                     "по адресу. Где посмотреть — кнопка ниже.")
+        lines.append(t("    Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт по адресу. Где посмотреть — кнопка ниже."))
     lines += [f"    {i}. {humanize.level_icon(sev)} {esc(seo_fixes.fix(code).title)}"
               for i, (code, sev, _) in enumerate(groups[:5], 1)]
     if n > 5:
-        lines.append(f"    … и ещё {n - 5}")
+        lines.append(t("    … и ещё {n}").format(n=n - 5))
     return lines
 
 
 async def _pause_rows(sid: int) -> tuple[list[InlineKeyboardButton], list[str]]:
     notes = []
     if await maintenance.paused_until(sid):
-        notes.append("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут.")
-        row = [InlineKeyboardButton(text="✅ Починил, пиши снова", callback_data=f"pause:{sid}:off")]
+        notes.append(t("🔧 Режим «я чиню»: про этот сайт не пишу, проверки идут."))
+        row = [InlineKeyboardButton(text=t("✅ Починил, пиши снова"), callback_data=f"pause:{sid}:off")]
     else:
-        row = [InlineKeyboardButton(text=f"🔧 Я чиню: {maintenance.fix_length()} тишины",
+        row = [InlineKeyboardButton(text=t("🔧 Я чиню: {length} тишины").format(length=maintenance.fix_length()),
                                     callback_data=f"pause:{sid}:{maintenance.FIX_MINUTES}")]
     if maintenance.maintenance_now(sid):
-        notes.append("Сейчас плановые работы — про этот сайт не пишу.")
+        notes.append(t("Сейчас плановые работы — про этот сайт не пишу."))
     return row, notes
 
 
@@ -553,7 +554,7 @@ async def render_card(call: CallbackQuery, site: dict):
     found, blocks = await card_parts(site)
     # Before the first check the card knows nothing: not «всё в порядке».
     head = (headline([icon_of(item[0]) for item in found], checked_at(st.get("avail"))) if st.get("avail")
-            else "⏳ Ещё не проверял — первая проверка в течение минуты")
+            else t("⏳ Ещё не проверял — первая проверка в течение минуты"))
     lines = [f"<b>{esc(site_label(url))}</b>{await hosting_words(site)}", head]
     pause_row, notes = await _pause_rows(sid)
     lines += notes
@@ -566,27 +567,27 @@ async def render_card(call: CallbackQuery, site: dict):
     seo = st.get("seo") or {}
     other = [inc for inc in problems if inc["check_type"] not in (*MAIL_CHECKS, *SECURITY_CHECKS, "visitors")]
     if is_web_page(url, site.get("http_method")) and seo.get("problems"):
-        rows.append([InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{sid}")])
     elif other:
-        rows.append([InlineKeyboardButton(text="ℹ️ Что делать", callback_data=f"inc_explain:{other[0]['id']}")])
+        rows.append([InlineKeyboardButton(text=t("ℹ️ Что делать"), callback_data=f"inc_explain:{other[0]['id']}")])
     if (st.get("mail") or {}).get("findings") or any(inc["check_type"] in MAIL_CHECKS for inc in problems):
-        rows.append([InlineKeyboardButton(text="✉️ Как починить почту", callback_data=f"mail:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("✉️ Как починить почту"), callback_data=f"mail:{sid}")])
     if (st.get("security") or {}).get("findings") or any(inc["check_type"] in SECURITY_CHECKS for inc in problems):
-        rows.append([InlineKeyboardButton(text="🛡 Как защитить сайт", callback_data=f"sec:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("🛡 Как защитить сайт"), callback_data=f"sec:{sid}")])
     if any(inc["check_type"] == "visitors" for inc in problems):
-        rows.append([InlineKeyboardButton(text="👥 Почему медленно", callback_data=f"spd:{sid}")])
+        rows.append([InlineKeyboardButton(text=t("👥 Почему медленно"), callback_data=f"spd:{sid}")])
     if is_web_page(url, site.get("http_method")) and await seo_screen.cloudflare_check_pending(sid, st):
-        rows.append([InlineKeyboardButton(text="🤖 Проверить в Cloudflare", callback_data=f"seo_fix:{sid}:ai_cloudflare")])
-    rows.append([InlineKeyboardButton(text=RECHECK, callback_data=f"check_site_live:{sid}"),
+        rows.append([InlineKeyboardButton(text=t("🤖 Проверить в Cloudflare"), callback_data=f"seo_fix:{sid}:ai_cloudflare")])
+    rows.append([InlineKeyboardButton(text=t(RECHECK), callback_data=f"check_site_live:{sid}"),
                  *pause_row[:1]])
-    rows.append([InlineKeyboardButton(text="⚙️ Настройки сайта", callback_data=f"sset:{sid}")])
+    rows.append([InlineKeyboardButton(text=t("⚙️ Настройки сайта"), callback_data=f"sset:{sid}")])
     if len(sites) > 1:
         prev, nxt = sites[pos - 1], sites[(pos + 1) % len(sites)]
         rows.append([InlineKeyboardButton(text="◀", callback_data=f"check_site:{prev['id']}"),
-                     InlineKeyboardButton(text=f"📋 Все сайты · {pos + 1}/{len(sites)}", callback_data="blk:sites"),
+                     InlineKeyboardButton(text=t("📋 Все сайты · {n}/{n2}").format(n=pos + 1, n2=len(sites)), callback_data="blk:sites"),
                      InlineKeyboardButton(text="▶", callback_data=f"check_site:{nxt['id']}")])
-    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
-                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
+    rows.append([InlineKeyboardButton(text=t("➕ Добавить сайт"), callback_data="site_add"),
+                 InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")])
     picture = None
     if is_web_page(url, site.get("http_method")):
         picture = await screenshots.card_picture_url(sid)
@@ -630,7 +631,7 @@ async def cb_sites_block(call: CallbackQuery):
     (blk:sites:<page>)."""
     sites = await get_all_sites()
     if not sites:
-        await ack(call, "Сайтов пока нет", show_alert=True)
+        await ack(call, t("Сайтов пока нет"), show_alert=True)
         return
     await ack(call)
     if len(sites) == 1:
@@ -649,10 +650,10 @@ async def cb_sites_block(call: CallbackQuery):
           ([InlineKeyboardButton(text="▶", callback_data=f"blk:sites:{page + 1}")] if page < pages - 1 else [])
     if nav:
         rows.append(nav)
-    rows.append([InlineKeyboardButton(text="➕ Добавить сайт", callback_data="site_add"),
-                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
-    head = f"🌐 Сайты ({len(sites)})" + (f" · страница {page + 1} из {pages}" if pages > 1 else "")
-    await render(call, f"{head}\nСначала те, где что-то не так.", InlineKeyboardMarkup(inline_keyboard=rows))
+    rows.append([InlineKeyboardButton(text=t("➕ Добавить сайт"), callback_data="site_add"),
+                 InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")])
+    head = t("🌐 Сайты ({n})").format(n=len(sites)) + (t(" · страница {n} из {pages}").format(n=page + 1, pages=pages) if pages > 1 else "")
+    await render(call, t("{head}\nСначала те, где что-то не так.").format(head=head), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
 @router.callback_query(F.data.startswith("check_site:"))
@@ -661,7 +662,7 @@ async def cb_check_single_site(call: CallbackQuery):
     await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
-        await render(call, "Сайт не найден — список сайтов изменился.", back_button())
+        await render(call, t("Сайт не найден — список сайтов изменился."), back_button())
         return
     await render_card(call, site)
 
@@ -681,19 +682,18 @@ async def cb_check_site_live(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
         await ack(call)
-        await render(call, "Сайт не найден.", back_button())
+        await render(call, t("Сайт не найден."), back_button())
         return
     if site["id"] in _live_running:
-        await ack(call, "Уже проверяю — подожди")
+        await ack(call, t("Уже проверяю — подожди"))
         return
-    await ack(call, "Проверяю…")
+    await ack(call, t("Проверяю…"))
     _live_running.add(site["id"])
     try:
         async with asyncio.timeout(LIVE_CHECK_SEC):
             await _live_checks(call, site)
     except TimeoutError:
-        await render(call, f"⌛ Проверка {esc(site_label(site['url']))} не уложилась в {LIVE_CHECK_SEC // 60} мин — "
-                           f"сайт или его DNS отвечают очень медленно. Ниже карточка по тому, что успел узнать.")
+        await render(call, t("⌛ Проверка {label} не уложилась в {n} мин — сайт или его DNS отвечают очень медленно. Ниже карточка по тому, что успел узнать.").format(label=esc(site_label(site['url'])), n=LIVE_CHECK_SEC // 60))
     finally:
         _live_running.discard(site["id"])
     await render_card(call, site)
@@ -701,16 +701,16 @@ async def cb_check_site_live(call: CallbackQuery):
 
 async def _live_checks(call: CallbackQuery, site: dict):
     url = site["url"]
-    await render(call, f"▱▱▱ Проверяю, открывается ли {esc(site_label(url))}...")
+    await render(call, t("▱▱▱ Проверяю, открывается ли {label}...").format(label=esc(site_label(url))))
     await check_availability(url, manage=False)
     if await host_checked_by(site) == url:
         mail_domain = registrable_domain(host_of(url)) if await carrier_of(url) == url else None
-        cert = "сертификат, " if ssl_applies(url) else ""
-        base = f"Смотрю {cert}срок домена{', почту' if mail_domain else ''} и защиту сайта..."
+        cert = t("сертификат, ") if ssl_applies(url) else ""
+        base = t("Смотрю {cert}срок домена{words} и защиту сайта...").format(cert=cert, words=t(", почту") if mail_domain else '')
         await render(call, f"▰▱▱ {base}")
         await with_running_bar(call.message, base, _host_now(site, mail_domain))
     if is_web_page(url, site.get("http_method")):
-        base = "Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)..."
+        base = t("Проверяю ссылки и смотрю на сайт глазами Google, Яндекса и ИИ (около 30 секунд)...")
         await render(call, f"▰▰▱ {base}")
         await with_running_bar(call.message, base, _pages_now(site))
 
@@ -742,11 +742,11 @@ async def cb_site_add(call: CallbackQuery, state: FSMContext):
         await render(call, *_limit_screen())
         return
     await state.set_state(AddSiteForm.url)
-    await render(call, "➕ Пришли адрес сайта, например <code>example.com</code>.\n\n"
-                       "Не сайт? Выбери ниже.", _add_kb())
+    await render(call, t("➕ Пришли адрес сайта, например <code>example.com</code>.\n\nНе сайт? Выбери ниже."), _add_kb())
 
 
-_HB_BUTTON = InlineKeyboardButton(text="⏰ Бот или задача по расписанию", callback_data="hb_add")
+def _hb_button() -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=t("⏰ Бот или задача по расписанию"), callback_data="hb_add")
 
 
 async def _limit_reached(url: str | None = None) -> bool:
@@ -758,16 +758,15 @@ async def _limit_reached(url: str | None = None) -> bool:
 
 
 def _limit_screen() -> tuple[str, InlineKeyboardMarkup]:
-    return (f"Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга. Бота или задачу "
-            f"по расписанию добавить можно.",
-            InlineKeyboardMarkup(inline_keyboard=[[_HB_BUTTON], *back_button().inline_keyboard]))
+    return (t("Лимит {MAX_SITES} сайтов — сними что-нибудь с мониторинга. Бота или задачу по расписанию добавить можно.").format(MAX_SITES=MAX_SITES),
+            InlineKeyboardMarkup(inline_keyboard=[[_hb_button()], *back_button().inline_keyboard]))
 
 
 def _add_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛠 API, порт или ping", callback_data="site_add_adv")],
-        [_HB_BUTTON],
-        [InlineKeyboardButton(text=CANCEL, callback_data="fsm_cancel")]])
+        [InlineKeyboardButton(text=t("🛠 API, порт или ping"), callback_data="site_add_adv")],
+        [_hb_button()],
+        [InlineKeyboardButton(text=t(CANCEL), callback_data="fsm_cancel")]])
 
 
 @router.callback_query(F.data == "site_add_adv")
@@ -778,15 +777,7 @@ async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
         await render(call, *_limit_screen())
         return
     await state.set_state(AddSiteForm.url)
-    await render(call, "🛠 Кроме сайтов я умею следить за сервисами без веб-страницы:\n\n"
-                       "• <code>example.com/api/health</code> — главная функция сайта, его API: "
-                       "код ответа, время и фраза в ответе. Адрес под <code>/api/</code> или на "
-                       "<code>api.</code>-домене я считаю API и не проверяю у него поиск, ссылки и SEO; "
-                       "метод POST, заголовки и тело задаются в настройках после добавления\n"
-                       "• <code>tcp://mail.example.com:25</code> — отвечает ли порт "
-                       "(почта, SSH, база данных)\n"
-                       "• <code>ping://10.0.0.1</code> — отвечает ли хост на ping\n\n"
-                       "Пришли адрес в таком виде.", cancel_kb())
+    await render(call, t("🛠 Кроме сайтов я умею следить за сервисами без веб-страницы:\n\n• <code>example.com/api/health</code> — главная функция сайта, его API: код ответа, время и фраза в ответе. Адрес под <code>/api/</code> или на <code>api.</code>-домене я считаю API и не проверяю у него поиск, ссылки и SEO; метод POST, заголовки и тело задаются в настройках после добавления\n• <code>tcp://mail.example.com:25</code> — отвечает ли порт (почта, SSH, база данных)\n• <code>ping://10.0.0.1</code> — отвечает ли хост на ping\n\nПришли адрес в таком виде."), cancel_kb())
 
 
 @router.message(AddSiteForm.url)
@@ -806,52 +797,47 @@ async def msg_site_add(message: Message, state: FSMContext):
     first_site = not await get_all_sites()
     site_id = await activate_or_create_site(url)
     label = site_label(url)
-    status = await message.answer(f"▱▱ Добавил {esc(label)} — делаю первую проверку...")
+    status = await message.answer(t("▱▱ Добавил {label} — делаю первую проверку...").format(label=esc(label)))
     # Read-only first look: the scheduled monitor (next minute tick) owns
     # incidents and alert ladders; a manage=True check here would silently
     # consume the SSL alert for a nearly-expired certificate.
     r = await check_availability(url, manage=False)
     site = await get_site(site_id)
     page = is_web_page(url, site.get("http_method"))
-    lines = [f"✅ {esc(label)} под присмотром.\n"]
+    lines = [t("✅ {label} под присмотром.").format(label=esc(label)) + "\n"]
     if r.ok:
-        lines.append(f"✅ {'Открывается' if page else 'Отвечает'} {humanize.speed(r.response_time_ms)}")
+        lines.append(f"✅ {t("Открывается") if page else t("Отвечает")} {humanize.speed(r.response_time_ms)}")
     elif r.transient:
-        lines.append(f"{humanize.UNCHECKED} Проверить не могу: {esc(humanize.describe_error(r.error))}.")
+        lines.append(t("{UNCHECKED} Проверить не могу: {why}.").format(UNCHECKED=humanize.UNCHECKED, why=esc(humanize.describe_error(r.error))))
     elif r.keyword_failed:
-        lines.append(f"🔴 Сейчас {'открывается' if page else 'отвечает'}, но показывает не то: "
-                     f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда станет как надо.")
+        lines.append(t("🔴 Сейчас {words}, но показывает не то: {why}. Я уже слежу и напишу, когда станет как надо.").format(words=t("открывается") if page else t("отвечает"), why=esc(humanize.describe_error(r.error))))
     else:
-        lines.append(f"🔴 Сейчас {'не открывается' if page else 'не отвечает'}: "
-                     f"{esc(humanize.describe_error(r.error))}. Я уже слежу и напишу, когда поднимется.")
+        lines.append(t("🔴 Сейчас {words}: {why}. Я уже слежу и напишу, когда поднимется.").format(words=t("не открывается") if page else t("не отвечает"), why=esc(humanize.describe_error(r.error))))
     if r.api:
-        lines.append("\n🔌 Это API: слежу только за ответом — код, время и фраза в ответе. Поиск, ссылки "
-                     "и SEO к API не относятся.")
-        lines.append("Нужен POST, токен или тело запроса — «📡 Настроить запрос»: там метод, заголовки, "
-                     "тело и фраза, которая должна быть в ответе."
-                     + ("" if r.ok else " Ошибка выше уйдёт, когда запрос станет правильным."))
+        lines.append(t("\n🔌 Это API: слежу только за ответом — код, время и фраза в ответе. Поиск, ссылки и SEO к API не относятся."))
+        lines.append(t("Нужен POST, токен или тело запроса — «📡 Настроить запрос»: там метод, заголовки, тело и фраза, которая должна быть в ответе.")
+                     + ("" if r.ok else t(" Ошибка выше уйдёт, когда запрос станет правильным.")))
     if await host_checked_by(site) == url:
         if ssl_applies(url):
             ssl_r = await check_ssl(url, manage=False)
             if ssl_r.ssl_info:
-                lines.append(f"🔒 Сертификат безопасности действует ещё {ssl_r.ssl_info.days_left} дн.")
+                lines.append(t("🔒 Сертификат безопасности действует ещё {days_left} дн.").format(days_left=ssl_r.ssl_info.days_left))
             elif ssl_r.transient:
-                lines.append("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке.")
+                lines.append(t("⚠️ Сертификат: не удалось проверить, попробую при следующей проверке."))
             else:
-                lines.append(f"🔴 Сертификат: {esc(humanize.describe_error(ssl_r.error))}")
+                lines.append(t("🔴 Сертификат: {why}").format(why=esc(humanize.describe_error(ssl_r.error))))
         # The real next runs (reports.scheduler), not a promise the schedule may break.
-        domain_at = next_run_words("domain_checks") or "утром"
-        links = (f", ссылки — в ближайшие {config.links_check_interval_hours} ч"
+        domain_at = next_run_words("domain_checks") or t("утром")
+        links = (t(", ссылки — в ближайшие {links_check_interval_hours} ч").format(links_check_interval_hours=config.links_check_interval_hours)
                  if config.links_check_interval_hours else "")
-        lines.append(f"\nСрок домена проверю {domain_at}, поиск и ИИ — {next_run_words('seo_checks') or 'утром'} "
-                     f"(итоги — в утренней сводке){links}." if page else f"\nСрок домена проверю {domain_at}.")
+        lines.append("\n" + t("Срок домена проверю {domain_at}, поиск и ИИ — {v} (итоги — в утренней сводке){links}.").format(domain_at=domain_at, v=next_run_words('seo_checks') or t("утром"), links=links) if page else "\n" + t("Срок домена проверю {domain_at}.").format(domain_at=domain_at))
     if first_site and not await get_state(RULES_SHOWN):   # /start said it already
         lines.append("\n" + rules_of_the_game())
         await set_state(RULES_SHOWN, "1")
     reset_site_schedule(site_id)
-    rows = [[InlineKeyboardButton(text="🌍 Открыть карточку", callback_data=f"check_site:{site_id}")]]
+    rows = [[InlineKeyboardButton(text=t("🌍 Открыть карточку"), callback_data=f"check_site:{site_id}")]]
     if r.api:
-        rows.append([InlineKeyboardButton(text="📡 Настроить запрос", callback_data=f"ssetx:{site_id}")])
+        rows.append([InlineKeyboardButton(text=t("📡 Настроить запрос"), callback_data=f"ssetx:{site_id}")])
     kb = InlineKeyboardMarkup(inline_keyboard=[*rows, *back_button().inline_keyboard])
     phrase = None
     if page and r.ok:
@@ -863,11 +849,10 @@ async def msg_site_add(message: Message, state: FSMContext):
     if phrase:
         # A question of its own: its answer removes the buttons, not the result above.
         await set_state(f"kw_suggest:{site_id}", phrase)
-        await message.answer(f"💡 На главной есть «{esc(phrase)}». Следить, чтобы она не пропадала? "
-                             f"Так я замечу пустую страницу или ошибку вместо сайта.",
+        await message.answer(t("💡 На главной есть «{phrase}». Следить, чтобы она не пропадала? Так я замечу пустую страницу или ошибку вместо сайта.").format(phrase=esc(phrase)),
                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                 [InlineKeyboardButton(text="✅ Да, следить", callback_data=f"kwok:{site_id}"),
-                                  InlineKeyboardButton(text="Не надо", callback_data=f"kwno:{site_id}")]]))
+                                 [InlineKeyboardButton(text=t("✅ Да, следить"), callback_data=f"kwok:{site_id}"),
+                                  InlineKeyboardButton(text=t("Не надо"), callback_data=f"kwno:{site_id}")]]))
     await offer_last_steps(message)
 
 
@@ -879,7 +864,7 @@ async def cb_keyword_decline(call: CallbackQuery):
     if site:
         await set_state(f"kw_declined:{site['id']}", "1")
         await set_state(f"kw_suggest:{site['id']}", None)
-    await ack(call, "Ок, больше не предложу")
+    await ack(call, t("Ок, больше не предложу"))
     if call.message is not None and hasattr(call.message, "edit_reply_markup"):
         with contextlib.suppress(TelegramBadRequest):
             await call.message.edit_reply_markup(reply_markup=None)
@@ -892,7 +877,7 @@ async def cb_tip_decline(call: CallbackQuery):
     key = call.data.split(":", 1)[1]
     if key in recommend.TIPS:
         await set_state(f"{recommend.DECLINED}{key}", "1")
-    await ack(call, "Ок, больше не предложу")
+    await ack(call, t("Ок, больше не предложу"))
     await call.message.edit_reply_markup(reply_markup=None)
 
 
@@ -901,13 +886,12 @@ async def cb_keyword_accept(call: CallbackQuery):
     site = await site_by_cb(call.data.split(":", 1)[1])
     phrase = await get_state(f"kw_suggest:{site['id']}") if site else None
     if not site or not phrase:
-        await ack(call, "Подсказка устарела — задай фразу в настройках сайта", show_alert=True)
+        await ack(call, t("Подсказка устарела — задай фразу в настройках сайта"), show_alert=True)
         return
     await update_site_settings(site["id"], keyword=phrase, keyword_mode="present")
     await set_state(f"kw_suggest:{site['id']}", None)
-    await ack(call, "Слежу ✅")
-    await render(call, f"✅ Слежу, чтобы на {esc(site_label(site['url']))} была фраза «{esc(phrase)}». "
-                       f"Поменять можно в настройках сайта.", back_button())
+    await ack(call, t("Слежу ✅"))
+    await render(call, t("✅ Слежу, чтобы на {label} была фраза «{phrase}». Поменять можно в настройках сайта.").format(label=esc(site_label(site['url'])), phrase=esc(phrase)), back_button())
 
 
 # ── Remove ───────────────────────────────────────────────────────────────────
@@ -917,15 +901,12 @@ async def cb_site_del_confirm(call: CallbackQuery):
     await ack(call)
     site = await site_by_cb(call.data.split(":", 1)[1])
     if not site:
-        await render(call, "Сайт не найден.", back_button())
+        await render(call, t("Сайт не найден."), back_button())
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Да, убрать", callback_data=f"delok:{site['id']}")],
-        [InlineKeyboardButton(text="← Отмена", callback_data=f"sset:{site['id']}")]])
-    await render(call, f"Убрать {esc(site_label(site['url']))} из мониторинга?\n"
-                       "Открытые инциденты по нему закроются, история останется. Его настройки (фраза, "
-                       "метод, заголовки, пороги) и пауза «🔧 Я чиню» сбросятся — если добавишь его снова, "
-                       "начнёшь с чистого листа.", kb)
+        [InlineKeyboardButton(text=t("🗑 Да, убрать"), callback_data=f"delok:{site['id']}")],
+        [InlineKeyboardButton(text=t("← Отмена"), callback_data=f"sset:{site['id']}")]])
+    await render(call, t("Убрать {label} из мониторинга?\nОткрытые инциденты по нему закроются, история останется. Его настройки (фраза, метод, заголовки, пороги) и пауза «🔧 Я чиню» сбросятся — если добавишь его снова, начнёшь с чистого листа.").format(label=esc(site_label(site['url']))), kb)
 
 
 @router.callback_query(F.data.startswith("delok:"))
@@ -938,10 +919,9 @@ async def cb_site_del_do(call: CallbackQuery):
         await maintenance.remove_windows_for_site(site["id"])
         await screenshots.forget(site["id"])        # its picture must not be served any more
         reset_site_schedule(site["id"])
-        await render(call, f"🗑 {esc(site_label(site['url']))} больше не под присмотром. История сохранилась, "
-                     f"настройки сброшены.", back_button())
+        await render(call, t("🗑 {label} больше не под присмотром. История сохранилась, настройки сброшены.").format(label=esc(site_label(site['url']))), back_button())
     else:
-        await render(call, "Сайт уже убран.", back_button())
+        await render(call, t("Сайт уже убран."), back_button())
 
 
 # ── Pause ────────────────────────────────────────────────────────────────────
@@ -955,16 +935,16 @@ async def cb_pause(call: CallbackQuery):
     # maintenance.FIX_MINUTES.
     minutes = validate.int_in(args[1], 1, 24 * 60) if args else None
     if not site or (args[1] != "off" and minutes is None):
-        await ack(call, "Кнопка устарела — открой карточку сайта заново", show_alert=True)
+        await ack(call, t("Кнопка устарела — открой карточку сайта заново"), show_alert=True)
         return
     sid, arg = site["id"], args[1]
     # The card itself says «🔧 Режим «я чиню»» and offers «✅ Починил»: a toast and the card again.
     if arg == "off":
         await maintenance.pause_site(sid, None)
-        await ack(call, "Пауза снята — снова пишу обо всём")
+        await ack(call, t("Пауза снята — снова пишу обо всём"))
     else:
         await maintenance.pause_site(sid, minutes)
-        await ack(call, f"🔧 {fmt_duration(minutes)} не пишу про этот сайт, проверки идут")
+        await ack(call, t("🔧 {duration} не пишу про этот сайт, проверки идут").format(duration=fmt_duration(minutes)))
     await render_card(call, site)
 
 
@@ -1018,7 +998,7 @@ async def apply_document(doc) -> dict:
     skipped = counters["skipped"]
     items = doc.get("sites", doc) if isinstance(doc, dict) else doc
     if not isinstance(items, list):
-        skipped.append("список сайтов: в файле не список")
+        skipped.append(t("список сайтов: в файле не список"))
         items = []
     by_url: dict[str, int] = {}
     try:
@@ -1033,7 +1013,7 @@ async def apply_document(doc) -> dict:
             fields, bad = _site_fields(item)
             existing = await get_all_sites()
             if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
-                skipped.append(f"{url} (лимит {MAX_SITES})")
+                skipped.append(t("{url} (лимит {MAX_SITES})").format(url=url, MAX_SITES=MAX_SITES))
                 continue
             was = url in {s["url"] for s in existing}
             site_id = await activate_or_create_site(url)
@@ -1041,11 +1021,11 @@ async def apply_document(doc) -> dict:
             if fields:
                 await update_site_settings(site_id, **fields)
             if bad:
-                skipped.append(f"{url}: {', '.join(bad)} (неверные значения)")
+                skipped.append(t("{url}: {items} (неверные значения)").format(url=url, items=', '.join(bad)))
             reset_site_schedule(site_id)
             counters["updated" if was else "added"] += 1
         if len(items) > _IMPORT_CAP:
-            skipped.append(f"ещё {len(items) - _IMPORT_CAP} записей сверх {_IMPORT_CAP}")
+            skipped.append(t("ещё {n} записей сверх {IMPORT_CAP}").format(n=len(items) - _IMPORT_CAP, IMPORT_CAP=_IMPORT_CAP))
         version = doc.get("version", 1) if isinstance(doc, dict) else 1
         if not isinstance(version, int) or version < 2:
             return counters
@@ -1057,7 +1037,7 @@ async def apply_document(doc) -> dict:
             if minutes and await settings.add_heartbeat_job(str(name).strip().lower(), minutes):
                 counters["jobs"] += 1
             else:
-                skipped.append(f"задача {str(name)[:20]}")
+                skipped.append(t("задача {name}").format(name=str(name)[:20]))
         links = doc.get("integrations") if isinstance(doc.get("integrations"), dict) else {}
         for key, value in links.items():
             rule = integrations.RULES.get(key)
@@ -1065,7 +1045,7 @@ async def apply_document(doc) -> dict:
                 await integrations.set_value(key, value)
                 counters["integrations"] += 1
             else:
-                skipped.append(f"подключение {str(key)[:20]} — задай заново в «🔌 Подключения»")
+                skipped.append(t("подключение {key} — задай заново в «🔌 Подключения»").format(key=str(key)[:20]))
     finally:
         reschedule_all()      # hours in memory and cron jobs must not disagree, whatever happened above
     return counters
@@ -1082,7 +1062,7 @@ async def _apply_settings(st: dict, counters: dict):
         if await setter(st[key]):          # False: not an hour / not a range — nothing saved
             counters["settings"] += 1
         else:
-            skipped.append(f"настройка {key}")
+            skipped.append(t("настройка {key}").format(key=key))
     if isinstance(st.get("status_page"), bool):
         await settings.set_status_page(st["status_page"])
         counters["settings"] += 1
@@ -1090,7 +1070,7 @@ async def _apply_settings(st: dict, counters: dict):
         if await settings.set_timezone(st["timezone"]):
             counters["settings"] += 1
         else:
-            skipped.append("настройка timezone")
+            skipped.append(t("настройка timezone"))
     if isinstance(st.get("ring_only_down"), bool):
         await settings.set_ring_only_down(st["ring_only_down"])
         counters["settings"] += 1
@@ -1107,8 +1087,7 @@ async def _apply_windows(windows, by_url: dict[str, int], counters: dict):
                                                      validate.int_in(w.get("start_min"), 0, 1439),
                                                      validate.int_in(w.get("end_min"), 0, 1439))
         if added is None:
-            counters["skipped"].append(f"плановые работы: неверное время или дни, чужой сайт или уже "
-                                       f"{maintenance.MAX_MAINT_WINDOWS} окон")
+            counters["skipped"].append(t("плановые работы: неверное время или дни, чужой сайт или уже {MAX_MAINT_WINDOWS} окон").format(MAX_MAINT_WINDOWS=maintenance.MAX_MAINT_WINDOWS))
         else:
             counters["windows"] += 1
 
@@ -1125,20 +1104,20 @@ async def _restore_bytes(raw: bytes) -> str:
     except (ValueError, KeyError):
         items = None
     if not isinstance(items, list):     # an explicit check: `python -O` would drop an assert
-        return "Не смог разобрать файл. Нужна копия базы (.db), которую я присылаю по воскресеньям."
+        return t("Не смог разобрать файл. Нужна копия базы (.db), которую я присылаю по воскресеньям.")
     c = await apply_document(doc)
-    text = f"✅ Из файла: сайтов добавлено {c['added']}, обновлено {c['updated']}."
-    extras = [f"настроек {c['settings']}" if c["settings"] else "",
-              f"плановых работ {c['windows']}" if c["windows"] else "",
-              f"задач {c['jobs']}" if c["jobs"] else "",
-              f"подключений {c['integrations']}" if c["integrations"] else ""]
+    text = t("✅ Из файла: сайтов добавлено {added}, обновлено {updated}.").format(added=c['added'], updated=c['updated'])
+    extras = [t("настроек {settings}").format(settings=c['settings']) if c["settings"] else "",
+              t("плановых работ {windows}").format(windows=c['windows']) if c["windows"] else "",
+              t("задач {jobs}").format(jobs=c['jobs']) if c["jobs"] else "",
+              t("подключений {integrations}").format(integrations=c['integrations']) if c["integrations"] else ""]
     extras = [e for e in extras if e]
     if extras:
-        text += " Также: " + ", ".join(extras) + "."
+        text += t(" Также: ") + ", ".join(extras) + "."
     if c["skipped"]:
-        text += "\nПропущено:\n" + "\n".join(f"  • {esc(x)}" for x in c["skipped"][:10])
+        text += t("\nПропущено:\n") + "\n".join(f"  • {esc(x)}" for x in c["skipped"][:10])
         if len(c["skipped"]) > 10:
-            text += f"\n  … и ещё {len(c['skipped']) - 10}"
+            text += "\n" + t("  … и ещё {n}").format(n=len(c['skipped']) - 10)
     return text
 
 
@@ -1148,12 +1127,11 @@ async def _restore_db(path: str) -> str:
     try:
         n, bak = await restore_from_file(path)
     except (ValueError, sqlite3.Error) as e:
-        return f"❌ Не восстановил: {esc(e)}. Текущая база не тронута."
+        return t("❌ Не восстановил: {e}. Текущая база не тронута.").format(e=esc(e))
     finally:
         await reload_services()     # the previous or the new file — re-read either way
         resume_jobs()
-    return (f"✅ Восстановил из копии: активных сайтов {n}. Прежняя база сохранена рядом: "
-            f"{esc(os.path.basename(bak))}. Проверки продолжаются.")
+    return (t("✅ Восстановил из копии: активных сайтов {n}. Прежняя база сохранена рядом: {basename}. Проверки продолжаются.").format(n=n, basename=esc(os.path.basename(bak))))
 
 
 def _drop_upload(pending: dict | None):
@@ -1170,27 +1148,26 @@ def _clear_uploads():
 
 
 def _list(urls: list[str]) -> str:
-    return ", ".join(esc(u) for u in urls[:5]) + (f" и ещё {len(urls) - 5}" if len(urls) > 5 else "")
+    return ", ".join(esc(u) for u in urls[:5]) + (t(" и ещё {n}").format(n=len(urls) - 5) if len(urls) > 5 else "")
 
 
 async def _db_question(info: dict, name: str) -> str:
     """What «✅ Восстановить» will change — said before the button."""
     now = {s["url"] for s in await get_all_sites()}
     theirs = set(info["urls"])
-    lines = [f"💾 «{esc(name)}» — копия базы бота. Восстановить из неё сайты, настройки и подключения?",
-             f"Сайтов в копии: {len(theirs)}, сейчас: {len(now)}."]
+    lines = [t("💾 «{name}» — копия базы бота. Восстановить из неё сайты, настройки и подключения?").format(name=esc(name)),
+             t("Сайтов в копии: {n}, сейчас: {n2}.").format(n=len(theirs), n2=len(now))]
     if gone := sorted(now - theirs):
-        lines.append(f"Пропадут: {_list(gone)}.")
+        lines.append(t("Пропадут: {list}.").format(list=_list(gone)))
     if new := sorted(theirs - now):
-        lines.append(f"Появятся: {_list(new)}.")
+        lines.append(t("Появятся: {list}.").format(list=_list(new)))
     stored = integrations.stored()
     # A shareable copy carries no tokens: what it lacks stays as it is now.
     differ = [k for k in integrations.KEYS
               if info["state"].get(f"int:{k}") and info["state"][f"int:{k}"] != stored.get(k)]
     if differ:
-        lines.append("Подключения станут как в копии: " + ", ".join(differ) + ".")
-    lines.append("Ключи подключений, заголовки и тела API-проверок, которых в копии нет, останутся текущими "
-                 "(на новом сервере их нужно ввести заново).")
+        lines.append(t("Подключения станут как в копии: ") + ", ".join(differ) + ".")
+    lines.append(t("Ключи подключений, заголовки и тела API-проверок, которых в копии нет, останутся текущими (на новом сервере их нужно ввести заново)."))
     # What silences alerts right after the restore must not come as a surprise.
     try:
         windows = len(json.loads(info["state"].get("cfg:maint_windows") or "[]"))
@@ -1198,11 +1175,11 @@ async def _db_question(info: dict, name: str) -> str:
         windows = 0
     paused = sum(1 for k in info["state"] if k.startswith("paused:"))
     if windows or paused:
-        lines.append(f"В копии окон тишины: {windows}, сайтов на паузе «🔧 Я чиню»: {paused}.")
-    lines.append("Владелец и помощники останутся как сейчас, "
-                 + ("секреты ссылок — тоже." if await count_sites_total()
-                    else "секреты ссылок возьму из копии — старые ссылки задач продолжат работать.")
-                 + " Текущая база сохранится рядом.")
+        lines.append(t("В копии окон тишины: {windows}, сайтов на паузе «🔧 Я чиню»: {paused}.").format(windows=windows, paused=paused))
+    lines.append(t("Владелец и помощники останутся как сейчас, ")
+                 + (t("секреты ссылок — тоже.") if await count_sites_total()
+                    else t("секреты ссылок возьму из копии — старые ссылки задач продолжат работать."))
+                 + t(" Текущая база сохранится рядом."))
     return "\n".join(lines)
 
 
@@ -1213,10 +1190,10 @@ async def msg_backup_file(message: Message, state: FSMContext):
     downloaded once, checked, and kept on disk until the answer."""
     doc = message.document
     if doc.file_size is None:
-        await message.answer("Не вижу размер файла — пришли его ещё раз как документ (📎 → Файл).")
+        await message.answer(t("Не вижу размер файла — пришли его ещё раз как документ (📎 → Файл)."))
         return
     if doc.file_size > _MAX_FILE:
-        await message.answer("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).")
+        await message.answer(t("Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram)."))
         return
     _clear_uploads()
     await state.update_data(restore=None)
@@ -1226,31 +1203,29 @@ async def msg_backup_file(message: Message, state: FSMContext):
         await message.bot.download(doc, destination=path, timeout=max(60, doc.file_size // (128 * 1024)))
     except Exception as e:
         _drop_upload({"path": path})
-        await message.answer(f"Не смог скачать файл из Telegram ({esc(e)}). Пришли его ещё раз.")
+        await message.answer(t("Не смог скачать файл из Telegram ({e}). Пришли его ещё раз.").format(e=esc(e)))
         return
     with open(path, "rb") as f:
         head = f.read(16)
-    name = doc.file_name or "файл"
+    name = doc.file_name or t("файл")
     if head.startswith(b"SQLite format 3"):
         try:
             info = await asyncio.to_thread(probe_copy, path)
         except ValueError as e:
             _drop_upload({"path": path})
-            await message.answer(f"❌ Не похоже на мою копию базы: {esc(e)}.")
+            await message.answer(t("❌ Не похоже на мою копию базы: {e}.").format(e=esc(e)))
             return
         kind, question = "db", await _db_question(info, name)
     elif head.lstrip()[:1] in (b"{", b"["):
         kind = "json"
-        question = (f"📥 «{esc(name)}» — файл экспорта из прежней версии. Добавить из него сайты и настройки? "
-                    "Лишнее не удалю.")
+        question = (t("📥 «{name}» — файл экспорта из прежней версии. Добавить из него сайты и настройки? Лишнее не удалю.").format(name=esc(name)))
     else:
         _drop_upload({"path": path})
-        await message.answer("Не знаю, что делать с этим файлом. Чтобы восстановить бота, пришли копию базы "
-                             "(.db), которую я присылаю по воскресеньям.")
+        await message.answer(t("Не знаю, что делать с этим файлом. Чтобы восстановить бота, пришли копию базы (.db), которую я присылаю по воскресеньям."))
         return
     sent = await message.answer(question, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ Восстановить", callback_data="restore:yes"),
-        InlineKeyboardButton(text="✖️ Не надо", callback_data="restore:no")]]))
+        InlineKeyboardButton(text=t("✅ Восстановить"), callback_data="restore:yes"),
+        InlineKeyboardButton(text=t("✖️ Не надо"), callback_data="restore:no")]]))
     await state.update_data(restore={"path": path, "kind": kind, "question_id": sent.message_id})
 
 
@@ -1260,16 +1235,16 @@ async def cb_restore(call: CallbackQuery, state: FSMContext):
     if not pending or pending.get("question_id") != call.message.message_id:
         # Only the newest question counts: «✅» under an older one must not
         # apply a different file.
-        await ack(call, "Это старый вопрос")
-        await render(call, "Это старый вопрос — пришли файл ещё раз.", back_button())
+        await ack(call, t("Это старый вопрос"))
+        await render(call, t("Это старый вопрос — пришли файл ещё раз."), back_button())
         return
     await state.update_data(restore=None)
     try:
         if call.data == "restore:no":
-            await ack(call, "Ничего не менял")
-            await render(call, "Ничего не менял.", back_button())
+            await ack(call, t("Ничего не менял"))
+            await render(call, t("Ничего не менял."), back_button())
             return
-        await ack(call, "Восстанавливаю…")
+        await ack(call, t("Восстанавливаю…"))
         if pending["kind"] == "db":
             text = await _restore_db(pending["path"])
         else:

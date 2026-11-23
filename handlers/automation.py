@@ -11,6 +11,7 @@ from config import config
 from handlers.common import STALE_BUTTON, STALE_TAP, ack, render
 from services import automation, docker_api, integrations
 from utils.clock import to_local
+from utils.i18n import t
 from utils.text import esc, parse_iso_utc
 
 router = Router(name="automation")
@@ -35,32 +36,32 @@ def _when(entry: dict) -> str:
 
 
 async def auto_screen() -> tuple[str, InlineKeyboardMarkup]:
-    lines, rows = ["🤖 Что я делаю сам", ""], []
+    lines, rows = [t("🤖 Что я делаю сам"), ""], []
     for kind in kinds():
         on = integrations.auto_enabled(kind)
-        title = _TITLE[kind].format(names=", ".join(config.autorestart_containers))
-        lines.append(f"{title} — {automation.limit_text(kind)}: {'вкл' if on else 'выкл'}")
-        verb = "выключить" if on else "включить"
+        title = t(_TITLE[kind]).format(names=", ".join(config.autorestart_containers))
+        lines.append(f"{title} — {automation.limit_text(kind)}: {t("вкл") if on else t("выкл")}")
+        verb = t("выключить") if on else t("включить")
         rows.append([InlineKeyboardButton(text=f"{_ICON[kind]} {verb.capitalize()}",
                                           callback_data=f"auto:{'off' if on else 'on'}:{kind}")])
     if not rows:
-        lines.append("Сейчас ничего: нет deploy hook и нет доступа к Docker.")
+        lines.append(t("Сейчас ничего: нет deploy hook и нет доступа к Docker."))
     until = await automation.paused_until()
     if until:
-        when = "до включения" if until == automation.FOREVER else f"до {to_local(until).strftime('%H:%M')}"
-        lines.append(f"\n⏸ Сейчас всё остановлено {when}.")
-        rows.insert(0, [InlineKeyboardButton(text="▶️ Включить снова", callback_data="auto:resume")])
+        when = t("до включения") if until == automation.FOREVER else t("до {time}").format(time=to_local(until).strftime('%H:%M'))
+        lines.append("\n" + t("⏸ Сейчас всё остановлено {when}.").format(when=when))
+        rows.insert(0, [InlineKeyboardButton(text=t("▶️ Включить снова"), callback_data="auto:resume")])
     elif rows:
-        rows.insert(0, [InlineKeyboardButton(text="⏸ Остановить на 2 часа", callback_data="auto:pause:2"),
-                        InlineKeyboardButton(text="⏹ До включения", callback_data="auto:pause:0")])
+        rows.insert(0, [InlineKeyboardButton(text=t("⏸ Остановить на 2 часа"), callback_data="auto:pause:2"),
+                        InlineKeyboardButton(text=t("⏹ До включения"), callback_data="auto:pause:0")])
     journal = await automation.recent_actions(10)
     if journal:
-        lines.append("\nПоследнее:")
+        lines.append(t("\nПоследнее:"))
         for a in journal:
-            who = "сам" if a.get("auto") else "по кнопке"
+            who = t("сам") if a.get("auto") else t("по кнопке")
             lines.append(f"• {_when(a)} {_ICON.get(a.get('kind'), '•')} {esc(a.get('label') or a.get('target'))}, "
-                         f"{who}: {esc(a.get('result') or 'выполняю…')}")
-    rows.append([InlineKeyboardButton(text="← К подключениям", callback_data="setup:check")])
+                         f"{who}: {esc(a.get('result') or t("выполняю…"))}")
+    rows.append([InlineKeyboardButton(text=t("← К подключениям"), callback_data="setup:check")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -76,18 +77,16 @@ async def cb_auto_pause(call: CallbackQuery):
     parts = call.data.split(":")
     hours = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 2
     await automation.pause(hours or None)
-    await ack(call, "Остановил")
+    await ack(call, t("Остановил"))
     if call.data.endswith(":a"):
-        await call.message.answer(f"⏸ Ничего не делаю сам {'2 часа' if hours else 'до включения'}: "
-                                  f"не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → "
-                                  f"🔌 Подключения → 🤖 Что бот делает сам.")
+        await call.message.answer(t("⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что бот делает сам.").format(words=t("2 часа") if hours else t("до включения")))
         return
     await render(call, *await auto_screen())
 
 
 @router.callback_query(F.data == "auto:resume")
 async def cb_auto_resume(call: CallbackQuery):
-    if not await ack(call, "Включил"):
+    if not await ack(call, t("Включил")):
         await call.message.answer(STALE_TAP)
         return
     await automation.resume()
@@ -100,7 +99,7 @@ async def cb_auto_toggle(call: CallbackQuery):
     if kind not in automation.KINDS:
         await ack(call, STALE_BUTTON, show_alert=True)
         return
-    fresh = await ack(call, "Готово")
+    fresh = await ack(call, t("Готово"))
     if mode == "on" and not fresh:          # switching ON waits for a fresh tap
         await call.message.answer(STALE_TAP)
         return
