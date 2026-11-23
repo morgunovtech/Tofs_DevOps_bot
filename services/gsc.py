@@ -25,6 +25,7 @@ from urllib.parse import quote
 import aiohttp
 
 from services import integrations
+from utils.i18n import t
 from utils.text import err_text
 from utils.urls import host_of
 
@@ -112,7 +113,7 @@ async def _access_token(session: aiohttp.ClientSession) -> str | None:
     except (ValueError, TypeError) as e:
         _token_cache["fail_until"] = time.time() + FAIL_PAUSE
         logger.warning("GSC key cannot sign: %s", err_text(e))
-        await integrations.record_result("gsc", False, f"ключ не подходит ({err_text(e)})", refused=True)
+        await integrations.record_result("gsc", False, t("ключ не подходит ({err_text})").format(err_text=err_text(e)), refused=True)
         return None
     try:
         async with session.post(TOKEN_URL, data={
@@ -124,13 +125,13 @@ async def _access_token(session: aiohttp.ClientSession) -> str | None:
                 _token_cache["fail_until"] = time.time() + FAIL_PAUSE
                 logger.warning("GSC token exchange HTTP %s: %s", resp.status, data)
                 why = (data.get("error_description") or data.get("error")) if isinstance(data, dict) else None
-                await integrations.record_result("gsc", False, f"Google не принял ключ ({why or f'HTTP {resp.status}'})",
+                await integrations.record_result("gsc", False, t("Google не принял ключ ({v})").format(v=why or f'HTTP {resp.status}'),
                                                  refused=resp.status in (400, 401, 403))
                 return None
     except Exception as e:
         _token_cache["fail_until"] = time.time() + FAIL_PAUSE
         logger.warning("GSC auth failed: %s", err_text(e))
-        await integrations.record_result("gsc", False, f"Google не ответил ({err_text(e)})")
+        await integrations.record_result("gsc", False, t("Google не ответил ({err_text})").format(err_text=err_text(e)))
         return None
     _token_cache["token"] = data["access_token"]
     _token_cache["exp"] = time.time() + data.get("expires_in", 3600)
@@ -167,7 +168,7 @@ async def search_totals(start: str, end: str,
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     logger.warning("GSC analytics HTTP %s: %s", resp.status, data)
-                    await integrations.record_result("gsc", False, f"Search Console ответил HTTP {resp.status}",
+                    await integrations.record_result("gsc", False, t("Search Console ответил HTTP {status}").format(status=resp.status),
                                                      refused=resp.status in (401, 403))
                     return None
         await integrations.record_result("gsc", True)
@@ -179,7 +180,7 @@ async def search_totals(start: str, end: str,
         }
     except Exception as e:
         logger.warning("GSC analytics failed: %s", err_text(e))
-        await integrations.record_result("gsc", False, f"Google не ответил ({err_text(e)})")
+        await integrations.record_result("gsc", False, t("Google не ответил ({err_text})").format(err_text=err_text(e)))
         return None
 
 
@@ -203,7 +204,7 @@ async def inspect_url(page_url: str) -> dict | None:
                 data = await resp.json(content_type=None)
                 if resp.status != 200:
                     logger.warning("GSC inspect HTTP %s: %s", resp.status, data)
-                    await integrations.record_result("gsc", False, f"Search Console ответил HTTP {resp.status}",
+                    await integrations.record_result("gsc", False, t("Search Console ответил HTTP {status}").format(status=resp.status),
                                                      refused=resp.status in (401, 403))
                     return None
         await integrations.record_result("gsc", True)
@@ -219,5 +220,5 @@ async def inspect_url(page_url: str) -> dict | None:
         }
     except Exception as e:
         logger.warning("GSC inspect failed: %s", err_text(e))
-        await integrations.record_result("gsc", False, f"Google не ответил ({err_text(e)})")
+        await integrations.record_result("gsc", False, t("Google не ответил ({err_text})").format(err_text=err_text(e)))
         return None

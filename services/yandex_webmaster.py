@@ -15,6 +15,7 @@ import aiohttp
 
 from services import integrations
 from services.integrations import Probe
+from utils.i18n import t
 from utils.text import err_text
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def _headers() -> dict:
 async def _get(session: aiohttp.ClientSession, path: str) -> dict | None:
     async with session.get(BASE + path, headers=_headers()) as resp:
         if resp.status in (401, 403):
-            raise TokenRejected(f"токен не принят (HTTP {resp.status})")
+            raise TokenRejected(t("токен не принят (HTTP {status})").format(status=resp.status))
         if resp.status != 200:
             # A 5xx page is HTML: reading it as JSON would abort every host.
             logger.warning("Yandex.Webmaster %s HTTP %s: %s", path, resp.status, (await resp.text())[:200])
@@ -122,12 +123,12 @@ async def get_summaries(only: set[str] | None = None) -> dict[str, dict] | None:
         async with asyncio.timeout(TOTAL_BUDGET_SEC), aiohttp.ClientSession(timeout=_TIMEOUT) as session:
             user = await _get(session, "/user")
             if not user:
-                await integrations.record_result("yandex", False, "Вебмастер не ответил")
+                await integrations.record_result("yandex", False, t("Вебмастер не ответил"))
                 return None
             uid = user.get("user_id")
             hosts_data = await _get(session, f"/user/{uid}/hosts")
             if not hosts_data:
-                await integrations.record_result("yandex", False, "Вебмастер не ответил")
+                await integrations.record_result("yandex", False, t("Вебмастер не ответил"))
                 return None
             wanted = _main_hosts(hosts_data.get("hosts") or [])
             if only is not None:
@@ -160,5 +161,5 @@ async def get_summaries(only: set[str] | None = None) -> dict[str, dict] | None:
         return None
     except Exception as e:
         logger.warning("Yandex.Webmaster failed: %s", err_text(e))
-        await integrations.record_result("yandex", False, f"Вебмастер не ответил ({err_text(e)})")
+        await integrations.record_result("yandex", False, t("Вебмастер не ответил ({err_text})").format(err_text=err_text(e)))
         return None

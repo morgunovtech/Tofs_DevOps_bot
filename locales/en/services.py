@@ -328,6 +328,7 @@ STRINGS: dict[str, str] = {
     "🧹 Сбросить кэш": "🧹 Purge the cache",
     "⏸ Не чинить самому 2 ч": "⏸ Don't self-fix for 2 h",
     "🔗 Открыть панель {panel}": "🔗 Open the {panel} panel",
+    "🔗 Открыть панель {label}": "🔗 Open the {label} panel",
     "📋 Показать по сайтам": "📋 Show per site",
     "🔍 Что с {job}": "🔍 What's up with {job}",
     "🔗 Подключить {job}": "🔗 Connect {job}",
@@ -491,10 +492,86 @@ STRINGS: dict[str, str] = {
     "бота. Задай PUBLIC_BASE_URL (https://…) — кнопка «🌍 Как задать адрес».":
         "⚠️ The bot has no public address, so the link below will not work: YOUR_SERVER must be the bot server's "
         "address. Set PUBLIC_BASE_URL (https://…) — the «🌍 How to set the address» button.",
+    # ── services/github.py ──────────────────────────────────────────────────
+    "токен не принят: истёк, отозван или скопирован не целиком": "the token was rejected: expired, revoked or not copied whole",
+    "GitHub отказал в доступе или лимит запросов исчерпан": "GitHub refused access or the request limit is used up",
+    "GitHub ответил ошибкой {status}": "GitHub answered with error {status}",
+    "GitHub не ответил": "GitHub did not answer",
+    "GitHub вернул ошибку: {first}": "GitHub returned an error: {first}",
+    "пустой ответ GitHub": "an empty answer from GitHub",
+    "владелец «{owner}» не найден или токену не виден": "the owner «{owner}» is not found or not visible to the token",
+    "⚠️ GitHub: не смог проверить — {error}": "⚠️ GitHub: could not check — {error}",
+    "⚠️ GitHub: {partial} {words} не прочитано — токену не хватает прав (нужны Metadata, Contents, Pull requests, Commit statuses).":
+        "⚠️ GitHub: {partial} {words} not read — the token lacks permissions (Metadata, Contents, Pull requests, Commit statuses are needed).",
+    "🟠 Пропали с прошлой недели: {listing} — удалены, переименованы или токен их больше не видит. Если это не ты — проверь доступы аккаунта.":
+        "🟠 Gone since last week: {listing} — deleted, renamed, or no longer visible to the token. If it was not you — check the account's access.",
+    "🟠 CI упал на основной ветке: {listing} — последний коммит не прошёл проверки, открой и посмотри, что красное.":
+        "🟠 CI failed on the main branch: {listing} — the last commit did not pass the checks, open it and see what is red.",
+    " ({days} дн.)": " ({days} d)",
+    "🟠 PR висят дольше недели: {listing} — влей или закрой.": "🟠 PRs open for over a week: {listing} — merge or close them.",
+    "🟠 {n} {words} (не основная и без открытого PR): {listing}. Смёрженные можно удалить.": "🟠 {n} {words} (not the main one and without an open PR): {listing}. Merged ones can be deleted.",
+    "🟠 Ветки не удаляются после мержа: {listing} — Settings → General → «Automatically delete head branches».":
+        "🟠 Branches are not deleted after merge: {listing} — Settings → General → «Automatically delete head branches».",
+    "🟠 Dependabot видит уязвимости: {listing} — вкладка Security, обычно лечится обновлением пакета.":
+        "🟠 Dependabot sees vulnerabilities: {listing} — the Security tab, usually fixed by updating the package.",
+    "  • и ещё {n} {words}: {items}{words2}": "  • and {n} more {words}: {items}{words2}",
+    # ── services/updates.py ─────────────────────────────────────────────────
+    "🔄 Бот обновился:\n": "🔄 The bot updated:\n",
+    "📄 Лог сборки": "📄 Build log",
+    "🔗 Что в этой версии": "🔗 What is in this version",
+    "🟠 Новая версия бота не запустилась\nХостинг не смог собрать «{title}» ({sha}). Я работаю на прежней версии ({app_commit}), но и следующие обновления не встанут, пока сборка падает.\n\nЧто делать: открой лог сборки — обычно там видно, какой пакет не поставился. Быстрый выход — откатить этот коммит в GitHub (Revert).":
+        "🟠 The new bot version did not start\nThe hosting could not build «{title}» ({sha}). I run the previous version ({app_commit}), but the next updates will not land either while the build fails.\n\nWhat to do: open the build log — it usually shows which package failed to install. The quick way out is to revert this commit on GitHub (Revert).",
+    "🛡 В зависимостях бота нашлись известные уязвимости:\n": "🛡 Known vulnerabilities were found in the bot's dependencies:\n",
+    "\n\nDependabot откроет PR с обновлением; после мержа и редеплоя я сообщу, что обновился.": "\n\nDependabot will open a PR with the update; after the merge and redeploy I will say I have updated.",
+    "✅ Уязвимых зависимостей больше нет.": "✅ No vulnerable dependencies any more.",
+    ", последняя проверка {date}": ", last check {date}",
+    "⚠️ Уязвимости: база OSV не ответила{when} — повторю через неделю": "⚠️ Vulnerabilities: the OSV database did not answer{when} — I will retry in a week",
+    "⚠️ PR Dependabot: GitHub не ответил — список прошлой недели": "⚠️ Dependabot PRs: GitHub did not answer — last week's list",
+    "🛡 Уязвимые пакеты: {names} — исправление придёт с Dependabot и встанет само": "🛡 Vulnerable packages: {names} — the fix comes with Dependabot and lands by itself",
+    "🟠 Обновление не встало само — тесты не прошли: {pr_links}. Открой PR и посмотри, что упало.": "🟠 An update did not land by itself — the tests failed: {pr_links}. Open the PR and see what broke.",
+    "🔀 Ждут твоего решения: {n} PR — {pr_links}. Такие сами не вливаются (крупная версия или базовый образ): открой, прочитай «что поменялось» и нажми Merge.":
+        "🔀 Waiting for your decision: {n} PR — {pr_links}. These do not merge by themselves (a major version or the base image): open it, read «what changed» and tap Merge.",
+    "без имени": "no name",
+    "OSV ответил HTTP {status}": "OSV answered HTTP {status}",
+    "OSV не ответил ({err_text})": "OSV did not answer ({err_text})",
+    # ── services/integrations.py, gsc.py, yandex_webmaster.py ──────────────
+    "это не JSON-ключ сервис-аккаунта (нет client_email или private_key)": "not a service account JSON key (no client_email or private_key)",
+    "ключ не подходит ({err_text})": "the key does not fit ({err_text})",
+    "Google не принял ключ ({v})": "Google rejected the key ({v})",
+    "Google не ответил ({err_text})": "Google did not answer ({err_text})",
+    "Search Console ответил HTTP {status}": "Search Console answered HTTP {status}",
+    "токен не принят (HTTP {status})": "the token was rejected (HTTP {status})",
+    "Вебмастер не ответил": "Webmaster did not answer",
+    "Вебмастер не ответил ({err_text})": "Webmaster did not answer ({err_text})",
+    # ── services/railway.py ─────────────────────────────────────────────────
+    "💳 Тариф Railway — пробный период длится 30 дней с регистрации. Потом Railway переводит аккаунт на бесплатный план с $1 в месяц, а мне нужно около $2: я остановлюсь, и никто не напишет. Ещё через 30 дней Railway удалит диск с базой. Перейди на Hobby — $5 в месяц, нужна карта, которой можно платить за рубежом (российские не подойдут).":
+        "💳 Railway plan — the trial lasts 30 days from sign-up. Then Railway moves the account to the free plan with $1 a month, and I need about $2: I will stop, and nobody will write. 30 days later Railway deletes the disk with the database. Move to Hobby — $5 a month; a card that can pay abroad is needed (Russian ones will not do).",
+    "💳 Тариф Railway\n\nПробный период — 30 дней и $5 с регистрации, без карты. Потом аккаунт переходит на бесплатный план: $1 в месяц. Мне нужно около $2 — я работаю круглосуточно, — так что на бесплатном плане я остановлюсь, и никто не напишет. Диск с базой Railway удаляет через 30 дней после конца пробного периода.\n\nЧтобы этого не было: тарифы Railway → <b>Hobby</b>, $5 в месяц, в них входит $5 расхода. Нужна карта, которой можно платить за рубежом: российские не подойдут.\n\nНе хочешь платить — меня можно бесплатно поставить на свой сервер или домашний компьютер через Docker: инструкция в README репозитория.":
+        "💳 Railway plan\n\nThe trial is 30 days and $5 from sign-up, no card. Then the account moves to the free plan: $1 a month. I need about $2 — I work around the clock — so on the free plan I will stop, and nobody will write. Railway deletes the disk with the database 30 days after the trial ends.\n\nTo avoid that: Railway plans → <b>Hobby</b>, $5 a month, with $5 of usage included. A card that can pay abroad is needed: Russian ones will not do.\n\nDon't want to pay — I can run for free on your own server or home computer through Docker: the instructions are in the repository's README.",
+    "💳 Тарифы Railway": "💳 Railway plans",
+    "✅ Уже на Hobby": "✅ Already on Hobby",
+    "примерно через {days_left} дн.": "in about {days_left} days",
+    "💳 Пробный период Railway заканчивается ": "💳 The Railway trial ends ",
+    " — он длится 30 дней с регистрации, считаю от дня, когда ты меня запустил. Если аккаунт ещё на пробном, перейди на Hobby ($5 в месяц): на бесплатном плане я остановлюсь, и никто не напишет, а ещё через 30 дней Railway удалит базу с сайтами.\n\nЕсли уже на Hobby — нажми «✅ Уже на Hobby», больше не напомню.":
+        " — it lasts 30 days from sign-up, counted from the day you started me. If the account is still on the trial, move to Hobby ($5 a month): on the free plan I will stop, and nobody will write, and 30 days later Railway deletes the database with the sites.\n\nIf you are on Hobby already — tap «✅ Already on Hobby», I will not remind you again.",
+    # ── web/webhook.py ──────────────────────────────────────────────────────
+    "📩 {site}: ещё {n} {words} с сайта за час. Я их сохранил, но не присылал по одному — открыть все:":
+        "📩 {site}: {n} more {words} from the site this hour. I kept them but did not send them one by one — open them all:",
+    "⚠️ «{job}» выходит на связь по старому адресу — общему для всех задач. Он продолжает работать, но лучше заменить его на собственный адрес задачи: тогда утечка одной строки не откроет остальные. Адрес — в карточке задачи, «🔗 Как подключена».":
+        "⚠️ «{job}» checks in through the old address shared by every job. It keeps working, but the job's own address is better: then one leaked line does not expose the rest. The address is on the job's card, «🔗 How it is connected».",
+    "✅ «{job}» снова на связи — без связи было {away}.": "✅ «{job}» is in touch again — it was out of touch for {away}.",
+    "✅ «{job}» вышел на связь — теперь слежу за ним.": "✅ «{job}» checked in — I am watching it now.",
+    "📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь.":
+        "📩 The feedback widget updated together with the bot. On sites with the old snippet it no longer appears — take the new one: ⚙️ Settings → 📩 Feedback.",
 }
 
 # Russian singular → (English singular, English plural).
 PLURALS: dict[str, tuple[str, str]] = {
+    "уязвимость": ("vulnerability", "vulnerabilities"),
+    "вспомогательный пакет": ("helper package", "helper packages"),
+    "репозиторий": ("repository", "repositories"),
+    "ветка": ("branch", "branches"),
+    "сообщение": ("message", "messages"),
     "раз": ("time", "times"),
     "старое сообщение": ("old message", "old messages"),
     "критическая проблема": ("critical problem", "critical problems"),

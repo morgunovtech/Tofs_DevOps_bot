@@ -27,7 +27,8 @@ from db.database import get_all_sites, get_heartbeats, get_state, heartbeat_ping
 from reports.formatter import format_feedback
 from services import health, heartbeats, integrations, notifier, public_urls, screenshots, secrets, settings
 from services.notifier import Priority
-from utils.text import esc, fmt_duration, parse_sqlite_utc, plural
+from utils.i18n import fmt_duration, plural, t
+from utils.text import esc, parse_sqlite_utc
 from utils.urls import bare_host, host_of, is_http_url
 from web import status_page, widget
 
@@ -298,11 +299,10 @@ async def send_feedback_summary():
     """Hourly: what the per-site budget held back — one quiet message per site."""
     held = {k: n for k, n in _held.items() if n}
     _held.clear()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📩 Сообщения",
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("📩 Сообщения"),
                                                                      callback_data="menu_feedback:0")]])
     for site, n in held.items():
-        await notifier.send(f"📩 {esc(site)}: ещё {n} {plural(n, 'сообщение', 'сообщения', 'сообщений')} "
-                            f"с сайта за час. Я их сохранил, но не присылал по одному — открыть все:",
+        await notifier.send(t("📩 {site}: ещё {n} {words} с сайта за час. Я их сохранил, но не присылал по одному — открыть все:").format(site=esc(site), n=n, words=plural(n, 'сообщение', 'сообщения', 'сообщений')),
                             Priority.DIGEST, reply_markup=kb)
 
 
@@ -331,9 +331,7 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         if not await get_state(f"hb_legacy_noted:{job}"):
             await set_state(f"hb_legacy_noted:{job}", "1")
             await notifier.send(
-                f"⚠️ «{esc(job)}» выходит на связь по старому адресу — общему для всех задач. Он продолжает "
-                f"работать, но лучше заменить его на собственный адрес задачи: тогда утечка одной строки не "
-                f"откроет остальные. Адрес — в карточке задачи, «🔗 Как подключена».", Priority.NORMAL)
+                t("⚠️ «{job}» выходит на связь по старому адресу — общему для всех задач. Он продолжает работать, но лучше заменить его на собственный адрес задачи: тогда утечка одной строки не откроет остальные. Адрес — в карточке задачи, «🔗 Как подключена».").format(job=esc(job)), Priority.NORMAL)
     elif await get_state(f"hb_legacy:{job}"):
         await set_state(f"hb_legacy:{job}", None)      # moved to its own address
     mark = True
@@ -354,8 +352,8 @@ async def handle_heartbeat(request: web.Request) -> web.Response:
         if await get_state(f"hb_alerted:{job}"):
             await set_state(f"hb_alerted:{job}", None)
             away = fmt_duration((datetime.now(UTC) - last).total_seconds() / 60) if last else None
-            await notifier.send(f"✅ «{esc(job)}» снова на связи — без связи было {away}." if away
-                                else f"✅ «{esc(job)}» вышел на связь — теперь слежу за ним.", Priority.NORMAL)
+            await notifier.send(t("✅ «{job}» снова на связи — без связи было {away}.").format(job=esc(job), away=away) if away
+                                else t("✅ «{job}» вышел на связь — теперь слежу за ним.").format(job=esc(job)), Priority.NORMAL)
     return web.Response(text="ok")
 
 
@@ -493,8 +491,7 @@ async def widget_changed_notice() -> None:
     served = await get_state(WIDGET_SERVED)
     if served and served != widget.VERSION:
         await set_state(WIDGET_SERVED, None)
-        await notifier.send("📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом "
-                            "он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь.",
+        await notifier.send(t("📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь."),
                             Priority.NORMAL)
 
 

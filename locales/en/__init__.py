@@ -5,9 +5,9 @@ here. Keys must match the Russian source byte for byte, placeholders
 
 from __future__ import annotations
 
-from locales.en import handlers, monitors, reports, services
+from locales.en import handlers, monitors, reports, seo_fixes, services
 
-_PARTS = (handlers, services, reports, monitors)
+_PARTS = (handlers, services, reports, monitors, seo_fixes)
 
 STRINGS: dict[str, str] = {k: v for part in _PARTS for k, v in part.STRINGS.items()}
 # Russian singular → (English singular, English plural).

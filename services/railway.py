@@ -22,6 +22,7 @@ from db.database import get_state, set_state
 from services import notifier
 from services.notifier import Priority
 from utils.clock import utcnow
+from utils.i18n import t
 
 PRICING_URL = "https://railway.com/pricing"
 TRIAL_DAYS = 30
@@ -49,17 +50,13 @@ GUIDE = ("💳 Тариф Railway\n\n"
 
 def keyboard(paid_cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💳 Тарифы Railway", url=PRICING_URL),
-        InlineKeyboardButton(text="✅ Уже на Hobby", callback_data=paid_cb)]])
+        InlineKeyboardButton(text=t("💳 Тарифы Railway"), url=PRICING_URL),
+        InlineKeyboardButton(text=t("✅ Уже на Hobby"), callback_data=paid_cb)]])
 
 
 def reminder_text(days_left: int) -> str:
-    days = "завтра" if days_left <= 1 else f"примерно через {days_left} дн."
-    return ("💳 Пробный период Railway заканчивается " + days + " — он длится 30 дней с регистрации, "
-            "считаю от дня, когда ты меня запустил. Если аккаунт ещё на пробном, перейди на Hobby "
-            "($5 в месяц): на бесплатном плане я остановлюсь, и никто не напишет, а ещё через 30 дней "
-            "Railway удалит базу с сайтами.\n\n"
-            "Если уже на Hobby — нажми «✅ Уже на Hobby», больше не напомню.")
+    days = t("завтра") if days_left <= 1 else t("примерно через {days_left} дн.").format(days_left=days_left)
+    return (t("💳 Пробный период Railway заканчивается ") + days + t(" — он длится 30 дней с регистрации, считаю от дня, когда ты меня запустил. Если аккаунт ещё на пробном, перейди на Hobby ($5 в месяц): на бесплатном плане я остановлюсь, и никто не напишет, а ещё через 30 дней Railway удалит базу с сайтами.\n\nЕсли уже на Hobby — нажми «✅ Уже на Hobby», больше не напомню."))
 
 
 async def note_claim():

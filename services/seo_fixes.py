@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from services import hosting as hosting_svc
+from utils.i18n import t
 
 
 @dataclass(frozen=True)
@@ -299,7 +300,13 @@ FIXES: dict[str, Fix] = {
 
 
 def fix(code: str) -> Fix:
-    return FIXES.get(code) or Fix(code, "💡", code, "", ("Нажми «🔄 Проверить снова».",))
+    """The finding's fix in the chat language (FIXES itself is Russian)."""
+    f = FIXES.get(code)
+    if f is None:
+        return Fix(code, "💡", code, "", (t("Нажми «🔄 Проверить снова»."),))
+    return Fix(f.code, f.icon, t(f.title), t(f.why), tuple(t(s) for s in f.steps),
+               {hosting: tuple(t(s) for s in steps) for hosting, steps in f.by_hosting.items()},
+               tuple((t(label), url) for label, url in f.links), t(f.short) if f.short else "")
 
 
 def button_label(code: str) -> str:
@@ -319,7 +326,7 @@ def links(code: str, hosting: str | None, url: str) -> list[tuple[str, str]]:
     out = [(label, _fill(target, url)) for label, target in fix(code).links]
     panel = hosting_svc.panel_url(hosting)
     if panel and hosting in fix(code).by_hosting:
-        out.append((f"🔗 Открыть панель {hosting_svc.label(hosting)}", panel))
+        out.append((t("🔗 Открыть панель {label}").format(label=hosting_svc.label(hosting)), panel))
     return out
 
 
