@@ -28,6 +28,7 @@ import aiohttp
 
 from config import TEMPLATE_OFF, config
 from services import public_urls, secrets, sitestatus
+from utils.i18n import t
 from utils.net import is_private_target, owner_connector
 from utils.text import err_text
 
@@ -124,9 +125,9 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
     """(image, reason) — reason explains a None image in plain words."""
     template = _template()
     if template is None:
-        return None, OFF_REASON
+        return None, t(OFF_REASON)
     if is_private_target(url):
-        return None, PRIVATE_REASON
+        return None, t(PRIVATE_REASON)
     # replace, not str.format: other braces of a provider's template stay as they are
     api = template.replace("{url}", quote(url, safe=":/"))
     image: bytes | None = None
@@ -138,9 +139,9 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
             try:
                 image = await _fetch_once(session, api)
             except QuotaExceeded:
-                return None, QUOTA_REASON
+                return None, t(QUOTA_REASON)
             except ProviderRefused as e:
-                return None, f"сервис снимков не смог открыть страницу ({err_text(e)})"
+                return None, t("сервис снимков не смог открыть страницу ({why})").format(why=err_text(e))
             except Exception as e:
                 # First hit often times out while the provider renders the
                 # page; the result is cached server-side, so retry.
@@ -152,7 +153,7 @@ async def fetch_screenshot(url: str) -> tuple[bytes | None, str | None]:
                 return image, None
             if attempt < RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY_SEC)
-    return None, "сервис снимков не ответил, попробуй через минуту"
+    return None, t("сервис снимков не ответил, попробуй через минуту")
 
 
 # ── The site card's picture ──────────────────────────────────────────────────

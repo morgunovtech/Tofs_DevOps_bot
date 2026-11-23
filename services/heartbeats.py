@@ -17,7 +17,8 @@ import aiohttp
 
 from db.database import get_heartbeats, get_state, set_state
 from services import humanize, integrations, settings
-from utils.text import esc, fmt_duration, parse_iso_utc, parse_sqlite_utc
+from utils.i18n import fmt_duration, t
+from utils.text import esc, parse_iso_utc, parse_sqlite_utc
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ _DOWN_KEY = "bot_down"
 
 def every(interval: int) -> str:
     """«раз в сутки» for a preset interval, «каждые 3 ч» for any other."""
-    return next((label for label, mins in INTERVALS if mins == interval), f"каждые {fmt_duration(interval)}")
+    return next((t(label) for label, mins in INTERVALS if mins == interval),
+                t("каждые {duration}").format(duration=fmt_duration(interval)))
 
 
 def is_late(interval: int, ago: float) -> bool:
@@ -120,14 +122,14 @@ async def job_states() -> list[Job]:
         # Late by the silence the bot could hear; the words still say how long since the mark.
         silent = await silent_minutes(name, last, now)
         if ago is not None and is_late(interval, silent):
-            icon, state = "🟠", f"молчит {fmt_duration(ago)}"
+            icon, state = "🟠", t("молчит {duration}").format(duration=fmt_duration(ago))
         elif ago is not None:
-            icon, state = "✅", ("на связи, только что" if ago < 1
-                                 else f"на связи, последний раз {fmt_duration(ago)} назад")
+            icon, state = "✅", (t("на связи, только что") if ago < 1
+                                 else t("на связи, последний раз {duration} назад").format(duration=fmt_duration(ago)))
         elif await get_state(f"hb_alerted:{name}"):
-            icon, state = humanize.UNCHECKED, "так и не выходит на связь — подключали?"
+            icon, state = humanize.UNCHECKED, t("так и не выходит на связь — подключали?")
         else:
-            icon, state = "⏳", "пока не выходит на связь"
+            icon, state = "⏳", t("пока не выходит на связь")
         out.append(Job(name, icon, state, interval, ago))
     return out
 
@@ -137,13 +139,14 @@ def digest_line(job: Job) -> tuple[str, bool]:
     expected rhythm next to the last mark says why «1 дн назад» is fine."""
     name, rhythm = esc(job.name), every(job.interval)
     if job.icon == "✅":
-        return f"✅ {name} — {job.state} (выходит на связь {rhythm})", True
+        return t("✅ {name} — {state} (выходит на связь {rhythm})").format(name=name, state=job.state, rhythm=rhythm), True
     if job.icon == "🟠":
-        return (f"🟠 {name} — молчит {fmt_duration(job.ago or 0)}, а выходит на связь {rhythm}: "
-                f"проверь, запускается ли"), False
+        return t("🟠 {name} — молчит {duration}, а выходит на связь {rhythm}: проверь, запускается ли").format(
+            name=name, duration=fmt_duration(job.ago or 0), rhythm=rhythm), False
     if job.icon == "⏳":
-        return f"⏳ {name} — пока не выходит на связь (жду {rhythm})", True
-    return f"{job.icon} {name} — так и не выходит на связь: подключи или удали, кнопки ниже", False
+        return t("⏳ {name} — пока не выходит на связь (жду {rhythm})").format(name=name, rhythm=rhythm), True
+    return t("{icon} {name} — так и не выходит на связь: подключи или удали, кнопки ниже").format(
+        icon=job.icon, name=name), False
 
 
 # ── Status that a bot sends with its mark ────────────────────────────────────
@@ -233,7 +236,7 @@ async def forget_status(job: str):
 
 
 def status_title(job: Job, status: dict) -> str:
-    return status.get("title") or f"⏰ Что видит {job.name}"
+    return status.get("title") or t("⏰ Что видит {name}").format(name=job.name)
 
 
 def status_items(job: Job, status: dict) -> list[tuple[str, str, str]]:
@@ -241,12 +244,12 @@ def status_items(job: Job, status: dict) -> list[tuple[str, str, str]]:
     and the lines themselves are fresh: a status from a bot that went
     silent, or one it last sent an interval ago, says nothing about now."""
     if job.icon != "✅":
-        return [(humanize.UNCHECKED, job.name, "молчит — не знаю, что сейчас")]
+        return [(humanize.UNCHECKED, job.name, t("молчит — не знаю, что сейчас"))]
     at = parse_iso_utc(status.get("at"))
     age = (datetime.now(UTC) - at).total_seconds() / 60 if at else None
     if age is None or is_late(job.interval, age):
-        when = f" {fmt_duration(age)} назад" if age is not None else ""
-        return [(humanize.UNCHECKED, job.name, f"что видит, присылал последний раз{when} — строки устарели")]
+        when = t(" {duration} назад").format(duration=fmt_duration(age)) if age is not None else ""
+        return [(humanize.UNCHECKED, job.name, t("что видит, присылал последний раз{when} — строки устарели").format(when=when))]
     return [(STATUS_ICONS[i["level"]], i["name"], i["text"]) for i in status["items"]]
 
 
@@ -271,17 +274,17 @@ async def ping_watchdog(url: str) -> str | None:
             async with s.get(url) as resp:
                 status, body = resp.status, (await resp.content.read(512)).decode(errors="replace")
     except TimeoutError:
-        return "не ответил за 10 с"
+        return t("не ответил за 10 с")
     except aiohttp.ClientConnectorError:
-        return "не удаётся подключиться (сеть или DNS на моей стороне)"
+        return t("не удаётся подключиться (сеть или DNS на моей стороне)")
     except Exception as e:
         # Never the exception text: it may carry the whole address, and the address is a secret.
         logger.warning("Watchdog ping to %s failed: %s", watchdog_name(url), type(e).__name__)
-        return "не отвечает"
+        return t("не отвечает")
     if status >= 400:
-        return f"отвечает ошибкой {status}"
+        return t("отвечает ошибкой {status}").format(status=status)
     if "not found" in body.lower():
-        return "check не найден"
+        return t("check не найден")
     return None
 
 
@@ -324,20 +327,21 @@ async def watchdog() -> Watchdog | None:
     rec, name = await _watchdog_record(), watchdog_name(url)
     failing = failing_minutes(rec)
     if failing >= WATCHDOG_FAIL_MIN:
-        return Watchdog("🟠", name, f"не на связи {fmt_duration(failing)} ({rec.get('error')})")
+        return Watchdog("🟠", name, t("не на связи {duration} ({why})").format(duration=fmt_duration(failing),
+                                                                                why=rec.get("error")))
     if rec.get("ok_at"):
-        return Watchdog("✅", name, "на связи")
-    return Watchdog("⏳", name, "пока не на связи")
+        return Watchdog("✅", name, t("на связи"))
+    return Watchdog("⏳", name, t("пока не на связи"))
 
 
 def watchdog_digest_line(w: Watchdog | None) -> tuple[str, bool]:
     """(line, fine): what happens if the bot itself goes down."""
     if w is None:
-        return ("🛡 Внешнего сторожа нет — если я упаду, никто не напишет. Подключить: "
-                "⚙️ Настройки → 🔌 Подключения"), True
-    head = f"{w.icon} Сторож {esc(w.name)} — {esc(w.state)}"
+        return t("🛡 Внешнего сторожа нет — если я упаду, никто не напишет. Подключить: "
+                 "⚙️ Настройки → 🔌 Подключения"), True
+    head = t("{icon} Сторож {name} — {state}").format(icon=w.icon, name=esc(w.name), state=esc(w.state))
     if w.icon == "✅":
-        return f"{head}: если я упаду, он сообщит", True
+        return t("{head}: если я упаду, он сообщит").format(head=head), True
     if w.icon == "🟠":
-        return f"{head}: если я упаду, никто не узнает", False
+        return t("{head}: если я упаду, никто не узнает").format(head=head), False
     return head, True

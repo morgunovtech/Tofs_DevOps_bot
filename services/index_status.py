@@ -9,7 +9,7 @@ from datetime import datetime
 
 from services import gsc, sitestatus, yandex_webmaster
 from utils.clock import to_local
-from utils.text import plural
+from utils.i18n import plural, t
 from utils.urls import short_host
 
 # Older than this and the screen says «по данным на DD.MM» instead of
@@ -81,4 +81,4 @@ def yandex_problems_words(alert_problems: dict | None) -> str:
         n = sum(int(v) for k, v in (alert_problems or {}).items() if str(k).upper() == level and str(v).isdigit())
         if n:
             parts.append(f"{n} {plural(n, *forms)}")
-    return " и ".join(parts)
+    return t(" и ").join(parts)

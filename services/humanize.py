@@ -7,10 +7,10 @@ what it usually is, and what to do. Pure functions, unit-tested.
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from utils.i18n import t
-from utils.text import fmt_duration, plural
+from utils.i18n import fmt_duration, plural, t
 
 # ── Levels: the one dictionary behind every icon the bot draws ──────────────
 #
@@ -55,31 +55,50 @@ def speed(ms: int | float | None, region: str | None = None) -> str:
     «быстро» would be a threshold nobody set. Slow is said only where the
     owner's «медленно» threshold says so (the performance alert)."""
     if ms is None:
-        return "нет данных"
+        return t("нет данных")
     where = f" {region}" if region else ""
-    return f"за {fmt_seconds(ms)}{where}"
+    return t("за {seconds}{where}").format(seconds=fmt_seconds(ms), where=where)
+
+
+# A phrase before translation: the Russian source string (the lookup key of
+# utils.i18n) and its placeholders. The key is what the code reasons about
+# («сертификат…», «открывается…»); t() renders it in the chat language.
+Phrase = tuple[str, dict]
+
+
+def _render(phrase: Phrase) -> str:
+    key, params = phrase
+    return t(key).format(**params) if params else t(key)
+
+
+def _http_phrase(code: int) -> Phrase:
+    if code >= 500:
+        return "хостинг отвечает ошибкой {code}", {"code": code}
+    if code == 404:
+        return "страница не найдена (ошибка 404)", {}
+    if code in (401, 403):
+        return "доступ закрыт (ошибка {code})", {"code": code}
+    if code == 429:
+        return "сервер просит подождать (ошибка 429, слишком много запросов)", {}
+    return "сервер отверг запрос (ошибка {code})", {"code": code}
 
 
 def _http(code: int) -> str:
-    if code >= 500:
-        return f"хостинг отвечает ошибкой {code}"
-    if code == 404:
-        return "страница не найдена (ошибка 404)"
-    if code in (401, 403):
-        return f"доступ закрыт (ошибка {code})"
-    if code == 429:
-        return "сервер просит подождать (ошибка 429, слишком много запросов)"
-    return f"сервер отверг запрос (ошибка {code})"
+    return _render(_http_phrase(code))
 
 
 def due_words(days: int) -> str:
     """«сегодня» · «завтра» · «через 5 дн.» — the last days in words, not «через 0 дн.»."""
-    return "сегодня" if days == 0 else "завтра" if days == 1 else f"через {days} дн."
+    return t("сегодня") if days == 0 else t("завтра") if days == 1 else t("через {days} дн.").format(days=days)
 
 
 def expires_words(what: str, days: int) -> str:
-    """«сертификат истекает сегодня» · «… завтра» · «… через 5 дн.»."""
-    return f"{what} истекает {due_words(days)}"
+    """«сертификат истекает сегодня» · «… завтра» · «… через 5 дн.»; what — the Russian word."""
+    return t("{what} истекает {when}").format(what=t(what), when=due_words(days))
+
+
+def _expires_phrase(what: str, days: int) -> Phrase:
+    return "{what} истекает {when}", {"what": t(what), "when": due_words(days)}
 
 
 # A string that is an exception's own words (aiohttp, asyncio, the OS):
@@ -87,56 +106,79 @@ def expires_words(what: str, days: int) -> str:
 _TECHNICAL = re.compile(r"error|errno|exception|failed|disconnected|connection|cannot|timeout|\[|message=", re.I)
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 
-_RULES: list[tuple[re.Pattern, object]] = [
+
+def _plain(key: str) -> Callable[[re.Match], Phrase]:
+    return lambda m: (key, {})
+
+
+def _links_phrase(m: re.Match) -> Phrase:
+    n = int(m.group(1))
+    return "{n} {links}", {"n": n, "links": plural(n, "ссылка не открывается", "ссылки не открываются",
+                                                   "ссылок не открываются")}
+
+
+def _seo_summary_phrase(m: re.Match) -> Phrase:
+    n = int(m.group(1))
+    return ("{n} {obstacles} в поиске, напр.: {example}",
+            {"n": n, "obstacles": plural(n, "помеха", "помехи", "помех"), "example": t(m.group(2))})
+
+
+_RULES: list[tuple[re.Pattern, Callable[[re.Match], Phrase]]] = [
     # A keyword verdict carries the site's own text («Connection refused» on a
     # PHP error page): with or without «Bad content: » it is never re-read.
-    (re.compile(r"^(?:Bad content: )?((?:на странице|в ответе) (?:стоп-фраза|нет фразы) «.*»)$", re.S),
-     lambda m: m.group(1)),
-    (re.compile(r"^Site down$"), lambda m: "не открывается"),
-    (re.compile(r"^(?:Site down: )?HTTP (\d{3})$"), lambda m: _http(int(m.group(1)))),
-    (re.compile(r"^(?:Site down: )?Timeout \((\d+)s\)$"), lambda m: f"не ответил за {m.group(1)} секунд"),
-    (re.compile(r"^Site down: (.+)$", re.S), lambda m: describe_error(m.group(1))),
+    (re.compile(r"^(?:Bad content: )?(на странице|в ответе) (стоп-фраза|нет фразы) «(.*)»$", re.S),
+     lambda m: (f"{m.group(1)} {m.group(2)} «{{phrase}}»", {"phrase": m.group(3)})),
+    (re.compile(r"^Site down$"), _plain("не открывается")),
+    (re.compile(r"^(?:Site down: )?HTTP (\d{3})$"), lambda m: _http_phrase(int(m.group(1)))),
+    (re.compile(r"^(?:Site down: )?Timeout \((\d+)s\)$"),
+     lambda m: ("не ответил за {seconds} секунд", {"seconds": m.group(1)})),
+    (re.compile(r"^Site down: (.+)$", re.S), lambda m: _phrase(m.group(1))),
     # The stop phrase is the site's own text («Connection refused» on a PHP
     # error page) — never re-read it as a network error.
-    (re.compile(r"^Bad content: (.+)$", re.S), lambda m: m.group(1)),
-    (re.compile(r"^SSL expired (\d+) days ago$"), lambda m: f"сертификат истёк {m.group(1)} дн. назад"),
-    (re.compile(r"^SSL expires in (\d+) days!?$"), lambda m: expires_words("сертификат", int(m.group(1)))),
-    (re.compile(r"^SSL certificate has expired$"), lambda m: "сертификат истёк"),
-    (re.compile(r"^SSL certificate invalid: (.+)$", re.S), lambda m: f"сертификат недействителен: {m.group(1)}"),
-    (re.compile(r"^SSL check failed: (.+)$", re.S), lambda m: "не удалось проверить сертификат"),
-    (re.compile(r"^Domain expired (\d+) days ago!?$"), lambda m: f"домен истёк {m.group(1)} дн. назад"),
-    (re.compile(r"^Domain expires in (\d+) days!?$"), lambda m: expires_words("домен", int(m.group(1)))),
-    (re.compile(r"^Lookup failed: .+$", re.S), lambda m: "не удалось узнать срок домена"),
-    (re.compile(r"^Slow responses: ~(\d+)ms$"), lambda m: f"открывается за {fmt_seconds(int(m.group(1)))}"),
-    (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"),
-     lambda m: f"{m.group(1)} {plural(int(m.group(1)), 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"),
+    (re.compile(r"^Bad content: (.+)$", re.S), lambda m: (m.group(1), {})),
+    (re.compile(r"^SSL expired (\d+) days ago$"), lambda m: ("сертификат истёк {days} дн. назад", {"days": m.group(1)})),
+    (re.compile(r"^SSL expires in (\d+) days!?$"), lambda m: _expires_phrase("сертификат", int(m.group(1)))),
+    (re.compile(r"^SSL certificate has expired$"), _plain("сертификат истёк")),
+    (re.compile(r"^SSL certificate invalid: (.+)$", re.S),
+     lambda m: ("сертификат недействителен: {why}", {"why": m.group(1)})),
+    (re.compile(r"^SSL check failed: (.+)$", re.S), _plain("не удалось проверить сертификат")),
+    (re.compile(r"^Domain expired (\d+) days ago!?$"), lambda m: ("домен истёк {days} дн. назад", {"days": m.group(1)})),
+    (re.compile(r"^Domain expires in (\d+) days!?$"), lambda m: _expires_phrase("домен", int(m.group(1)))),
+    (re.compile(r"^Lookup failed: .+$", re.S), _plain("не удалось узнать срок домена")),
+    (re.compile(r"^Slow responses: ~(\d+)ms$"),
+     lambda m: ("открывается за {seconds}", {"seconds": fmt_seconds(int(m.group(1)))})),
+    (re.compile(r"^(\d+) broken (?:internal )?link\(s\)"), _links_phrase),
     (re.compile(r"^5xx( или нет ответа)? на (\d+) из (\d+) проверенных страниц$"),
-     lambda m: f"{m.group(2)} из {m.group(3)} проверенных страниц отдают ошибку"
-     + (" или не отвечают" if m.group(1) else "")),
-    (re.compile(r"^Could not fetch page$"), lambda m: "страница не загрузилась"),
+     lambda m: ("{n} из {total} проверенных страниц отдают ошибку или не отвечают" if m.group(1)
+                else "{n} из {total} проверенных страниц отдают ошибку", {"n": m.group(2), "total": m.group(3)})),
+    (re.compile(r"^Could not fetch page$"), _plain("страница не загрузилась")),
+    # The texts monitors store for search findings (monitors.seo_checker):
+    # the level first, the finding's own title after it.
+    (re.compile(r"^(\d+) (?:помеха|помехи|помех) в поиске, напр\.: (.+)$", re.S), _seo_summary_phrase),
+    (re.compile(r"^закрыт от поиска — (.+)$", re.S), lambda m: ("закрыт от поиска — {why}", {"why": t(m.group(1))})),
     # aiohttp wraps the guard's refusal (utils.net) in «Cannot connect to
     # host …[…]» — it is a policy, not a network error.
-    (re.compile(r"адрес во внутренней сети[^\]]*"), lambda m: m.group(0)),
+    (re.compile(r"адрес во внутренней сети[^\]]*"), lambda m: (m.group(0), {})),
     (re.compile(r"name or service not known|nodename nor servname|does not resolve|"
                 r"name resolution|хост не резолвится|Temporary failure in name", re.I),
-     lambda m: "адрес сайта не находится (проблема с DNS)"),
+     _plain("адрес сайта не находится (проблема с DNS)")),
     # aiohttp wraps a bad certificate in «Cannot connect to host …» — the
     # certificate is the cause, so it goes first.
-    (re.compile(r"certificate has expired", re.I), lambda m: "сертификат истёк"),
-    (re.compile(r"certificate verify failed|SSL: ", re.I), lambda m: "сертификат не прошёл проверку"),
-    (re.compile(r"timeout", re.I), lambda m: "не ответил вовремя"),
+    (re.compile(r"certificate has expired", re.I), _plain("сертификат истёк")),
+    (re.compile(r"certificate verify failed|SSL: ", re.I), _plain("сертификат не прошёл проверку")),
+    (re.compile(r"timeout", re.I), _plain("не ответил вовремя")),
     # asyncio says «Connect call failed (…)» for every cause; the monitor keeps
     # the errno's words («Connection refused», «No route to host») in the text.
-    (re.compile(r"connection refused", re.I), lambda m: "сервер отказал в соединении"),
+    (re.compile(r"connection refused", re.I), _plain("сервер отказал в соединении")),
     (re.compile(r"no route to host|network is unreachable|host is unreachable", re.I),
-     lambda m: "сервер недоступен: до него нет маршрута"),
-    (re.compile(r"connect call failed|cannot connect to host", re.I), lambda m: "не удалось соединиться с сервером"),
-    (re.compile(r"^server disconnected|connection reset by peer", re.I), lambda m: "сервер оборвал соединение"),
-    (re.compile(r"response payload is not completed", re.I), lambda m: "ответ оборвался на середине"),
-    (re.compile(r"too many redirects", re.I), lambda m: "адрес перенаправляет по кругу"),
+     _plain("сервер недоступен: до него нет маршрута")),
+    (re.compile(r"connect call failed|cannot connect to host", re.I), _plain("не удалось соединиться с сервером")),
+    (re.compile(r"^server disconnected|connection reset by peer", re.I), _plain("сервер оборвал соединение")),
+    (re.compile(r"response payload is not completed", re.I), _plain("ответ оборвался на середине")),
+    (re.compile(r"too many redirects", re.I), _plain("адрес перенаправляет по кругу")),
     # aiohttp ClientResponseError / TooManyRedirects: «0, message='', url='…?token=…'»
-    (re.compile(r"^\d{1,3}, message="), lambda m: "сервер ответил ошибкой"),
-    (re.compile(r"хост не отвечает на ping"), lambda m: "не отвечает на ping"),
+    (re.compile(r"^\d{1,3}, message="), _plain("сервер ответил ошибкой")),
+    (re.compile(r"хост не отвечает на ping"), _plain("не отвечает на ping")),
 ]
 
 
@@ -145,7 +187,7 @@ def link_reason(status_code: int | None, error: str | None, url: str = "") -> st
     GitHub answers 404 for a private repository: the owner opens it fine,
     everyone else does not — say that, it is the usual cause."""
     if status_code == 404 and re.match(r"https?://(www\.)?github\.com/[^/]+/[^/]+", url or "", re.I):
-        return "закрытый или удалённый репозиторий (у посетителей ошибка 404)"
+        return t("закрытый или удалённый репозиторий (у посетителей ошибка 404)")
     if status_code:
         return _http(status_code)
     return describe_error(error)
@@ -154,34 +196,41 @@ def link_reason(status_code: int | None, error: str | None, url: str = "") -> st
 def every_minutes(minutes: int) -> str:
     """«каждую минуту», «каждые 5 мин», «каждый час» — how often a site is checked."""
     if minutes <= 1:
-        return "каждую минуту"
+        return t("каждую минуту")
     if minutes == 60:
-        return "каждый час"
-    return f"каждые {minutes} мин"
+        return t("каждый час")
+    return t("каждые {minutes} мин").format(minutes=minutes)
 
 
 def times_in_a_row(n: int) -> str:
     """«один раз», «дважды подряд», «3 раза подряд»."""
     if n <= 1:
-        return "один раз"
+        return t("один раз")
     if n == 2:
-        return "дважды подряд"
-    return f"{n} {plural(n, 'раз', 'раза', 'раз')} подряд"
+        return t("дважды подряд")
+    return t("{n} {times} подряд").format(n=n, times=plural(n, "раз", "раза", "раз"))
 
 
-def describe_error(text: str | None) -> str:
-    """Technical error / incident message → short human phrase (Russian
-    text that is already human passes through unchanged)."""
+def _phrase(text: str | None) -> Phrase:
+    """Technical error / incident message → the Russian phrase and its
+    placeholders. A text that is already human (Russian, from a monitor)
+    passes through whole: t() may know it as a key."""
     if not text:
-        return "неизвестная ошибка"
+        return "неизвестная ошибка", {}
     text = text.strip()
     for pattern, render in _RULES:
         m = pattern.search(text)
         if m:
             return render(m)
     if not _CYRILLIC.search(text) and _TECHNICAL.search(text):
-        return "необычная ошибка соединения"     # the raw words stay in the grey footer only
-    return text
+        return "необычная ошибка соединения", {}     # the raw words stay in the grey footer only
+    return text, {}
+
+
+def describe_error(text: str | None) -> str:
+    """Technical error / incident message → short human phrase in the chat
+    language (Russian text that is already human passes through unchanged)."""
+    return _render(_phrase(text))
 
 
 # ── Explanations: meaning, usual cause, steps ────────────────────────────────
@@ -433,12 +482,18 @@ def classify(check_type: str, message: str | None) -> str:
             "visitors": "visitors"}.get(check_type, "unknown")
 
 
+def explanation(key: str) -> Explanation:
+    """EXPLANATIONS[key] in the chat language (the dictionary itself is Russian)."""
+    e = EXPLANATIONS[key]
+    return Explanation(e.key, t(e.meaning), t(e.cause), tuple(t(s) for s in e.steps))
+
+
 def explain(check_type: str, message: str | None) -> Explanation:
-    return EXPLANATIONS[classify(check_type, message)]
+    return explanation(classify(check_type, message))
 
 
 def steps_block(expl: Explanation) -> str:
-    return "Что делать:\n" + "\n".join(f"• {s}" for s in expl.steps)
+    return t("Что делать:") + "\n" + "\n".join(f"• {s}" for s in expl.steps)
 
 
 # ── Uptime in minutes, not percent ───────────────────────────────────────────
@@ -447,45 +502,44 @@ def downtime(stats: dict) -> str:
     """'без сбоев' · 'недоступен ≈12 мин' — from the measured time
     (db.database uptime dicts: total_checks, down_min)."""
     if not stats.get("total_checks"):
-        return "нет данных"
+        return t("нет данных")
     down = stats.get("down_min") or 0
     if not down:
-        return "без сбоев"
-    return f"недоступен ≈{fmt_duration(max(1, down))}"
+        return t("без сбоев")
+    return t("недоступен ≈{duration}").format(duration=fmt_duration(max(1, down)))
 
 
 def incident_headline(check_type: str, message: str | None, label: str, page: bool = True) -> str:
     """'example.com не открывается: хостинг отвечает ошибкой 502'. page=False
     (an API check, tcp://, ping://) says «не отвечает»; a phrase verdict says
-    «показывает не то» — the site opened the whole time."""
-    what = describe_error(message)
+    «показывает не то» — the site opened the whole time. The branches look
+    at the Russian key, the words come out in the chat language."""
+    key, _ = phrase = _phrase(message)
+    what = _render(phrase)
     if check_type == "availability":
         if (message or "").startswith("Bad content: "):
-            return f"{label} показывает не то: {what}"
-        if what.startswith("сертификат"):
+            return t("{label} показывает не то: {what}").format(label=label, what=what)
+        if key.startswith("сертификат") or key.startswith("{what} истекает"):
             return f"{label}: {what}"
-        return f"{label} {'не открывается' if page else 'не отвечает'}: {what}"
+        return (t("{label} не открывается: {what}") if page else t("{label} не отвечает: {what}")).format(label=label, what=what)
     if check_type == "performance":
-        return f"{label} {what}" if what.startswith("открывается") else f"{label} медленно отвечает"
-    if check_type in ("ssl", "domain"):
-        return f"{label}: {what}"
-    if check_type == "links":
-        return f"{label}: {what}"
-    if check_type == "deep":
+        return f"{label} {what}" if key.startswith("открывается") else t("{label} медленно отвечает").format(label=label)
+    if check_type in ("ssl", "domain", "links", "deep"):
         return f"{label}: {what}"
     if check_type == "seo":
         # «2 помехи в поиске, напр.: Нет карты сайта» → «нет карты сайта и ещё
         # 1 помеха»: what is wrong first, the count after, no «напр.».
-        m = _SEO_SUMMARY.match(what)
+        m = _SEO_SUMMARY.match((message or "").strip())
         if m:
             rest = int(m.group(1)) - 1
-            more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest > 0 else ""
-            return f"{label}: {lower_first(m.group(2))}{more}"
+            more = (t(" и ещё {n} {obstacles}").format(n=rest, obstacles=plural(rest, "помеха", "помехи", "помех"))
+                    if rest > 0 else "")
+            return f"{label}: {lower_first(t(m.group(2)))}{more}"
         return f"{label}: {what}"
     return f"{label}: {what}"
 
 
-_SEO_SUMMARY = re.compile(r"^(\d+) \S+ в поиске, напр\.: (.+)$")
+_SEO_SUMMARY = re.compile(r"^(\d+) \S+ в поиске, напр\.: (.+)$", re.S)
 
 
 def lower_first(text: str) -> str:

@@ -186,7 +186,7 @@ async def cmd_start(message: Message, state: FSMContext):
             await message.answer(t("🔑 Ты стал администратором этого бота — все отчёты "
                                    "и тревоги будут приходить сюда."))
             if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
-                await message.answer(runtime.NO_VOLUME)
+                await message.answer(t(runtime.NO_VOLUME))
     if not in_admin_chat(message):
         await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
