@@ -25,7 +25,7 @@ class MaintTimeForm(StatesGroup):
 
 async def _screen() -> tuple[str, InlineKeyboardMarkup]:
     windows = maintenance.windows()
-    lines = [t("🔧 Плановые работы — в это время я не пишу о падениях и не напоминаю, проверки и статистика продолжаются.\n")]
+    lines = [t("🗓 Плановые работы — в это время я не пишу о падениях и не напоминаю, проверки и статистика продолжаются.\n")]
     rows = [[InlineKeyboardButton(text=t("➕ Добавить окно"), callback_data="mw_add")]]
     if not windows:
         lines.append(t("Пока ни одного окна."))
@@ -39,7 +39,7 @@ async def _screen() -> tuple[str, InlineKeyboardMarkup]:
         active = t(" · 🟢 активно сейчас") if maintenance.window_active_now(w) else ""
         lines.append(f"• {esc(desc)}{active}")
         rows.append([InlineKeyboardButton(text=f"🗑 {desc}"[:60], callback_data=f"mw_del:{w['id']}")])
-    rows.append([InlineKeyboardButton(text=t("← Когда писать"), callback_data="menu_reports")])
+    rows.append([InlineKeyboardButton(text=t("← Тишина"), callback_data="menu_quiet")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -59,7 +59,7 @@ async def cb_maint(call: CallbackQuery, state: FSMContext):
 async def cb_mw_add(call: CallbackQuery):
     await ack(call)
     if len(maintenance.windows()) >= maintenance.MAX_MAINT_WINDOWS:
-        await render(call, t("Лимит {MAX_MAINT_WINDOWS} окон — удали ненужные.").format(MAX_MAINT_WINDOWS=maintenance.MAX_MAINT_WINDOWS), back_button())
+        await render(call, t("Лимит {MAX_MAINT_WINDOWS} окон — удали ненужные.").format(MAX_MAINT_WINDOWS=maintenance.MAX_MAINT_WINDOWS), back_button(t("← Плановые работы"), "menu_maint"))
         return
     rows = [[InlineKeyboardButton(text=t("🌐 Все сайты"), callback_data="mw_scope:0")]]
     rows += [[InlineKeyboardButton(text=site_label(s["url"]), callback_data=f"mw_scope:{s['id']}")]
@@ -158,10 +158,27 @@ async def msg_mw_time(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("mw_del:"))
 async def cb_mw_del(call: CallbackQuery):
+    """A question first, like every other 🗑: a window is one tap to add, but
+    a stray tap must not take tonight's silence away unnoticed."""
+    await ack(call)
+    arg = call.data.split(":", 1)[1]
+    window = next((w for w in maintenance.windows() if cb_int(arg) is not None and w.get("id") == int(arg)), None)
+    if window is None:
+        await _show(call, t("Уже удалено.\n\n"))
+        return
+    await render(call, t("Удалить окно {window}?").format(window=esc(maintenance.fmt_window(window))),
+                 InlineKeyboardMarkup(inline_keyboard=[
+                     [InlineKeyboardButton(text=t("🗑 Да, удалить"), callback_data=f"mw_del_ok:{arg}")],
+                     [InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="menu_maint")]]))
+
+
+@router.callback_query(F.data.startswith("mw_del_ok:"))
+async def cb_mw_del_ok(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
     if not await ack(call, t("Удаляю…")):
         await call.message.answer(t(STALE_TAP))
         return
     if cb_int(arg) is None or not await maintenance.remove_window(int(arg)):
-        await call.message.answer(t("Уже удалено."))
-    await _show(call)
+        await _show(call, t("Уже удалено.\n\n"))
+        return
+    await _show(call, t("✅ Окно удалено.\n\n"))

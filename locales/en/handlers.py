@@ -78,7 +78,15 @@ STRINGS: dict[str, str] = {
     "Где что:\n"
     "🏠 Главная (кнопка под полем ввода) — всё на одном экране, по блокам: сайты, почта, боты и "
     "системы (и то, что о себе присылают твои боты). Кнопка блока открывает всё о нём, там же «➕ Добавить».\n"
-    "⚙️ Настройки — во сколько присылать сводку, ночная тишина, пробная тревога.\n\n"
+    "🌐 Сайты → карточка сайта — проверить снова, «🔧 Я чиню», 🔎 Поиск и ИИ, ✉️ Почта, 🛡 Безопасность; "
+    "⚙️ Настройки сайта — как часто проверять, фраза на странице, метод и заголовки запроса для API.\n"
+    "🤖 Боты — задачи по расписанию и другие боты, внешний сторож.\n"
+    "⚙️ Настройки — 🔔 Когда писать (сводки, звонок, пробная тревога), 🔕 Тишина (помолчать, тихие часы, "
+    "плановые работы), 👥 Помощники, 🔌 Подключения (вторая точка, Google, Яндекс, Cloudflare, GitHub, сторож), "
+    "🌍 Для посетителей (статус-страница, бейджи, виджет), 💾 Копия базы, 🕐 Часовой пояс.\n\n"
+    "Пять видов тишины: «🔧 Я чиню» — один сайт на час, продлить можно сразу под ответом; «🔕 Помолчать…» "
+    "(и /mute) — всё, кроме звонящего; «🗓 Плановые работы» — по расписанию; «⏸ Не пересобирать сам» — только "
+    "автодействия; «👀 Знаю, не напоминать» — только напоминания об одной проблеме. Всё это — «⚙️ Настройки → 🔕 Тишина».\n\n"
     "Нужно, чтобы я помолчал: /mute 8h — приходят только звонящие: сайт лёг, а при «🔔 Будить: всё "
     "критичное» ещё снова работает, смена настроек домена, сайт закрыт от поисковиков; остальное — когда "
     "тишина кончится. Будить только когда сайт лёг — ⚙️ Настройки → 🔔 Когда писать.\n\n"
@@ -95,7 +103,16 @@ STRINGS: dict[str, str] = {
         "Where things are:\n"
         "🏠 Home (the button under the input field) — everything on one screen, in blocks: sites, mail, bots and "
         "systems (and what your bots report about themselves). A block's button opens all of it, with «➕ Add» there too.\n"
-        "⚙️ Settings — when to send the summary, quiet hours at night, a test alert.\n\n"
+        "🌐 Sites → a site's card — check again, «🔧 I'm fixing it», 🔎 Search & AI, ✉️ Mail, 🛡 Security; "
+        "⚙️ Site settings — how often to check, a phrase on the page, the method and headers of an API request.\n"
+        "🤖 Bots — scheduled tasks and other bots, the external watchdog.\n"
+        "⚙️ Settings — 🔔 When to write (digests, the ring, a test alert), 🔕 Silence (mute, quiet hours, "
+        "maintenance windows), 👥 Helpers, 🔌 Connections (the second vantage point, Google, Yandex, Cloudflare, GitHub, "
+        "the watchdog), 🌍 For visitors (status page, badges, the widget), 💾 Database copy, 🕐 Time zone.\n\n"
+        "Five kinds of silence: «🔧 I'm fixing it» — one site for an hour, extendable right under the reply; "
+        "«🔕 Mute…» (and /mute) — everything but what rings; «🗓 Maintenance windows» — on a schedule; "
+        "«⏸ Don't rebuild by myself» — only the auto-actions; «👀 I know, don't remind me» — only the reminders about one "
+        "problem. All of it: «⚙️ Settings → 🔕 Silence».\n\n"
         "Need me to be quiet: /mute 8h — only what rings comes through: the site is down, and with «🔔 Wake me: "
         "everything critical» also up again, changed domain settings, the site closed to search engines; the rest "
         "waits until the silence ends. To be woken only when a site is down — ⚙️ Settings → 🔔 When to write.\n\n"
@@ -257,7 +274,6 @@ STRINGS: dict[str, str] = {
     " ⚠️ подключено, но не отвечает": " ⚠️ connected, but not answering",
     " ✅ подключено": " ✅ connected",
     "← Что я умею": "← What I do",
-    "🌐 Вторая точка проверки": "🌐 Second vantage point",
     "перед тревогой «сайт лёг» перепроверю с серверов check-host.net в других странах; по желанию — "
     "скорость из страны твоей аудитории":
         "before a «site is down» alert I re-check from check-host.net servers in other countries; optionally — "
@@ -339,7 +355,7 @@ STRINGS: dict[str, str] = {
     "🚀 Пересобираю сайт, когда он падает": "🚀 I rebuild the site when it goes down",
     "🔁 Перезапускаю контейнеры {names}": "🔁 I restart the containers {names}",
     "🧹 Чищу docker, когда диск заполнен": "🧹 I clean docker when the disk is full",
-    "🤖 Что я делаю сам": "🤖 What I do by myself",
+    "🤖 Что делаю сам": "🤖 What I do by myself",
     "вкл": "on",
     "выкл": "off",
     "выключить": "turn off",
@@ -381,7 +397,7 @@ STRINGS: dict[str, str] = {
     "Подробности — графики, тревоги, безопасность аккаунтов — в самом {name}.": "The details — charts, alerts, account security — are in {name} itself.",
     "↗️ Открыть {name}": "↗️ Open {name}",
     # ── handlers/feedback.py ────────────────────────────────────────────────
-    "📩 Обратная связь с сайтов ({total}):": "📩 Feedback from the sites ({total}):",
+    "📩 Сообщения с сайтов ({total}):": "📩 Feedback from the sites ({total}):",
     "Пока ни одного сообщения.": "No messages yet.",
     "Дальше пусто.": "Nothing further.",
     "\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке.": "\n⚠️ Set PUBLIC_BASE_URL so the links below are ready to paste.",
@@ -985,8 +1001,8 @@ STRINGS: dict[str, str] = {
         "«Site is down» and «up again» reach only you right now. If you are on holiday or your phone dies, nobody learns about a down site.",
     "🔔 Когда писать\n\n🌅 Утренняя сводка: {morning_hour}:00 — {words}.\n🌙 Вечерняя: {words2}.\n📊 Недельная: воскресенье {weekly_hour}:00 — простой за неделю и месяц, строки скорости только для сайтов, где она менялась, одна идея.\n🗄 Копия базы: {words3}.\n🔕 Тихие часы: {words4} — некритичное ждёт до утра, «сайт лежит» приходит всегда.\n🔔 Будить: {words5}.\n\nТапни, чтобы изменить:":
         "🔔 When to write\n\n🌅 Morning digest: {morning_hour}:00 — {words}.\n🌙 Evening: {words2}.\n📊 Weekly: Sunday {weekly_hour}:00 — downtime for the week and the month, speed lines only for sites where it moved, one idea.\n🗄 Database copy: {words3}.\n🔕 Quiet hours: {words4} — non-critical waits until morning, «site is down» always comes.\n🔔 Wake me: {words5}.\n\nTap to change:",
-    "🕐 Часовой пояс: <b>{timezone}</b>, сейчас у тебя {time}.\nОт него зависят время сводок, тихие часы и все времена в сообщениях.{where}\n\nВыбери город или пришли свой ключ вида <code>Europe/Prague</code>:":
-        "🕐 Time zone: <b>{timezone}</b>, it is {time} for you now.\nThe digest times, quiet hours and every time in messages depend on it.{where}\n\nPick a city or send your own key like <code>Europe/Prague</code>:",
+    "🕐 Часовой пояс: <b>{timezone}</b>, сейчас у тебя {time}.\nОт него зависят время сводок, тихие часы и все времена в сообщениях.{where}\n\nВыбери город или нажми «✏️ Другой» и пришли ключ вида <code>Europe/Prague</code>:":
+        "🕐 Time zone: <b>{timezone}</b>, it is {time} for you now.\nThe digest times, quiet hours and every time in messages depend on it.{where}\n\nPick a city, or tap «✏️ Other» and send a key like <code>Europe/Prague</code>:",
     "Пришли ключ часового пояса из базы IANA, например <code>Europe/Prague</code> или <code>Asia/Tashkent</code>.":
         "Send a time zone key from the IANA database, for example <code>Europe/Prague</code> or <code>Asia/Tashkent</code>.",
     "Показывает, открываются ли сайты, простой за сутки/неделю/месяц и историю проблем без подробностей. Удобно давать клиентам или ставить в README.":
@@ -1034,7 +1050,7 @@ STRINGS: dict[str, str] = {
     "🌐 Включить": "🌐 Turn on",
     "🔑 Секретная ссылка: выключить": "🔑 Secret link: turn off",
     "🔄 Новая ссылка": "🔄 New link",
-    "🌍 Для посетителей сайтов\n\n🌐 Статус-страница — {sp}. Публичная страница «всё работает» с историей простоев — её можно дать посетителям.\n📩 Виджет «нашли опечатку?» — сообщения с сайтов приходят сюда":
+    "🌍 Для посетителей\n\n🌐 Статус-страница — {sp}. Публичная страница «всё работает» с историей простоев — её можно дать посетителям.\n📩 Виджет «нашли опечатку?» — сообщения с сайтов приходят сюда":
         "🌍 For the sites' visitors\n\n🌐 Status page — {sp}. A public «all systems go» page with the downtime history — you can give it to visitors.\n📩 The «found a typo?» widget — messages from the sites come here",
     " · {name} ⚠️ не отвечает": " · {name} ⚠️ not answering",
     "🔔 Когда писать": "🔔 When to write",
@@ -1143,7 +1159,6 @@ STRINGS: dict[str, str] = {
     "✅ Работает: ": "✅ Working: ",
     "➕ Можно подключить: ": "➕ Can be connected: ",
     " · сборка {app_commit}": " · build {app_commit}",
-    "🤖 Что бот делает сам": "🤖 What the bot does by itself",
     "➕ Подключить ещё ({n})": "➕ Connect more ({n})",
     "Всё уже подключено.": "Everything is connected already.",
     "➕ Можно подключить — всё необязательно:\n": "➕ Can be connected — all optional:\n",
@@ -1174,7 +1189,7 @@ STRINGS: dict[str, str] = {
     # ── handlers/setup.py: wizards ──────────────────────────────────────────
     "задано здесь, в чате (в .env {env})": "set here, in the chat (in .env {env})",
     "из .env ({env})": "from .env ({env})",
-    "🌐 Вторая точка проверки — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.":
+    "🌐 Вторая точка — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.":
         "🌐 Second vantage point — the free check-host.net service\n\n• A re-check before a «site is down» alert: the site's address goes to check-host.net, and its servers in other countries try to open the site. If it opens for them, the failure is mine and I don't wake you. The domain's mail servers go there too — to test port 25.\n• Speed from the region: every 6 hours the homepage address of every site goes there too — for the «from Russia, 0.8 s» line on the card.\n\nInternal addresses (192.168.x, 10.x, .local, .lan) never go there.\n\nRe-check: {words} — {switch_source}.\nSpeed from the region: {words2} — {switch_source2}.",
     "🌐 Перепроверку выключить": "🌐 Turn the re-check off",
     "🌐 Перепроверку включить": "🌐 Turn the re-check on",
@@ -1314,6 +1329,95 @@ STRINGS: dict[str, str] = {
     "Логин GitHub — латиница, цифры и дефис, до 39 символов.": "A GitHub login is Latin letters, digits and a hyphen, up to 39 characters.",
     "✅ Сохранено: {gh_state_line}": "✅ Saved: {gh_state_line}",
     "нет ответа": "no answer",
+    # ── handlers/settings.py: the hub, «🔕 Тишина», «💾 Копия базы» ───────────
+    "молчу до {mute}": "muted until {mute}",
+    "тихие часы {hours}": "quiet hours {hours}",
+    "тихих часов нет": "no quiet hours",
+    "{n} {windows} плановых работ": "{n} maintenance {windows}",
+    "чинится: {sites}": "being fixed: {sites}",
+    "автодействия остановлены": "auto-actions are stopped",
+    "сводка {morning_hour}:00 · будить: {ring}": "digest at {morning_hour}:00 · ring for: {ring}",
+    " · по воскресеньям в личку": " · on Sundays in a private message",
+    "⚙️ Настройки\n\n🔔 Когда писать — {write}\n🔕 Тишина — {silence}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n💾 Копия базы — {backup}\n🕐 Часовой пояс — {timezone}, сейчас {time}":
+        "⚙️ Settings\n\n🔔 When to write — {write}\n🔕 Silence — {silence}\n👥 Helpers — {helpers_now}\n🔌 Connections — {connections}\n🌍 For visitors — {visitors}\n💾 Database copy — {backup}\n🕐 Time zone — {timezone}, now {time}",
+    "🔕 Тишина": "🔕 Silence",
+    "💾 Копия базы": "💾 Database copy",
+    "🔔 Когда писать\n\n🌅 Утренняя сводка: {morning_hour}:00 — {words}.\n🌙 Вечерняя: {words2}.\n📊 Недельная: воскресенье {weekly_hour}:00 — простой за неделю и месяц, строки скорости только для сайтов, где она менялась, одна идея.\n🔔 Будить: {words5}.\n\nТихие часы, «помолчать» и плановые работы — на экране «🔕 Тишина»; копия базы — «💾 Копия базы».\n\nТапни, чтобы изменить:":
+        "🔔 When to write\n\n🌅 Morning digest: {morning_hour}:00 — {words}.\n🌙 Evening: {words2}.\n📊 Weekly: Sunday {weekly_hour}:00 — downtime over the week and the month, speed lines only for the sites where it moved, one idea.\n🔔 Ring: {words5}.\n\nQuiet hours, «mute» and maintenance windows are on the «🔕 Silence» screen; the database copy on «💾 Database copy».\n\nTap to change:",
+    "🔕 Помолчать: {state} — всё, кроме звонящего, ждёт; снять можно в любой момент.": "🔕 Mute: {state} — everything but what rings waits; lift it at any time.",
+    "не молчу": "not muted",
+    "🌙 Тихие часы: {state} — некритичное ждёт до утра, «сайт лежит» приходит всегда.": "🌙 Quiet hours: {state} — the non-critical waits for the morning, «site down» always comes through.",
+    "🗓 Плановые работы: {state} — в это время не пишу о падениях и не напоминаю.": "🗓 Maintenance windows: {state} — no down alerts and no reminders during them.",
+    "{n} {windows}": "{n} {windows}",
+    "нет окон": "no windows",
+    "Тапни, чтобы изменить:": "Tap to change:",
+    "🔧 Я чиню: {state} — про такой сайт не пишу, проверки идут; ставится на карточке сайта и в тревоге.": "🔧 I'm fixing: {state} — nothing about such a site, the checks go on; set on the site card and in an alert.",
+    "сейчас никто": "nobody right now",
+    "⏸ Автодействия остановлены: не пересобираю и не перезапускаю сам.": "⏸ Auto-actions are stopped: no rebuilds or restarts by myself.",
+    "✅ Починил {label}, пиши снова": "✅ Fixed {label}, write again",
+    "▶️ Автодействия снова": "▶️ Auto-actions again",
+    "В копии — сайты, настройки, история проверок, задачи и боты; ключей подключений и секретов ссылок в ней нет.": "The copy holds the sites, settings, check history, tasks and bots; no connection keys and no link secrets.",
+    "Восстановить из копии — пришли мне файл .db прямо в этот чат: скажу, что изменится, и заменю базу только после твоего «да». Прежняя база сохранится рядом.": "To restore from a copy, send me the .db file right here in this chat: I will say what changes and replace the database only after your «yes». The previous database is kept next to it.",
+    "🗄 По воскресеньям в личку: {state}.": "🗄 On Sundays in a private message: {state}.",
+    "присылаю": "sent",
+    "🗄 По воскресеньям: присылать": "🗄 On Sundays: send",
+    "🗄 не присылать": "🗄 do not send",
+    # ── handlers/blocks.py ──────────────────────────────────────────────────
+    "в Telegram не присылаю (включить — «⚙️ Настройки → 💾 Копия базы»)": "not sent to Telegram (switch on in «⚙️ Settings → 💾 Database copy»)",
+    # ── handlers/mute.py ────────────────────────────────────────────────────
+    "3 дня": "3 days",
+    "7 дней": "7 days",
+    "← Тишина": "← Silence",
+    # ── handlers/maintenance.py ─────────────────────────────────────────────
+    "🗓 Плановые работы — в это время я не пишу о падениях и не напоминаю, проверки и статистика продолжаются.\n": "🗓 Maintenance windows — during them I do not write about downtime and do not remind, checks and statistics go on.\n",
+    "Удалить окно {window}?": "Delete the window {window}?",
+    "✅ Окно удалено.\n\n": "✅ Window deleted.\n\n",
+    "Уже удалено.\n\n": "Already deleted.\n\n",
+
+    # ── handlers/sites.py: the card's screens and actions ──────────────────
+    "🔧 Я чиню, {length} тишины": "🔧 I'm fixing it, {length} of silence",
+    "✉️ Почта": "✉️ Mail",
+    "🛡 Безопасность": "🛡 Security",
+    "🚀 Пересобрать сайт": "🚀 Rebuild the site",
+    "🧹 Сбросить кэш": "🧹 Purge the cache",
+    # ── handlers/settings.py: badges on the status-page screen ─────────────
+    "🏷 Бейдж аптайма для README — картинка shields-стиля со своим адресом у каждого сайта:": "🏷 Uptime badge for a README — a shields-style picture with an address of its own per site:",
+    "… остальные — в «⚙️ Настройки сайта → 🛠 Для продвинутых».": "… the rest are in «⚙️ Site settings → 🛠 Advanced».",
+    # ── reports/scheduler.py: the digests' way into the problems ───────────
+    "Что не так ({n})": "What's wrong ({n})",
+    # ── handlers/alerts.py: the group list and the pause after «🔧» ────────
+    "\n\nПо номеру: ℹ️ что это и что делать, 🔄 проверить снова, 📸 как выглядит сайт, 🔧 я чиню — {length} тишины.": "\n\nBy number: ℹ️ what it is and what to do, 🔄 check again, 📸 how the site looks, 🔧 I'm fixing it — {length} of silence.",
+    "🔧 2 часа": "🔧 2 hours",
+    "🔧 До утра": "🔧 Until morning",
+    "✅ Починил": "✅ Fixed",
+
+    # ── handlers/sites.py: a typed path, the phrase row, the restore question ─
+    "ℹ️ Путь «{path}» не сохранил: сайт проверяю по главной, а его страницы — по карте сайта и ссылкам с главной. Отдельную страницу как главную функцию можно добавить API-проверкой: адрес под /api/ или на api.-домене («🛠 API, порт или ping»).":
+        "ℹ️ I did not keep the path «{path}»: a site is checked by its home page, its pages through the sitemap and the links from the home page. A separate page as the site's main function can be added as an API check: an address under /api/ or on an api. domain («🛠 API, port or ping»).",
+    "секрета ссылок задач в этой копии нет (в присланную в Telegram копию он не кладётся) — ссылки задач станут новыми, они будут в карточках задач; оставить прежние можно, задав HEARTBEAT_SECRET в .env до восстановления.":
+        "this copy holds no task-link secret (a copy sent through Telegram never does) — the task links will be new, each in its task card; to keep the old ones, set HEARTBEAT_SECRET in .env before restoring.",
+    "📋 Все сайты": "📋 All sites",
+    # ── handlers/feedback.py: the widget screen ────────────────────────────
+    "Подключить виджет на сайт — «📩 Подключить виджет» на экране «🌍 Для посетителей».": "To put the widget on a site — «📩 Connect the widget» on the «🌍 For visitors» screen.",
+    "📩 Виджет «нашли опечатку?»": "📩 The «found a typo?» widget",
+    "Вставь на сайт перед <code>&lt;/body&gt;</code>:\n<code>{widget_snippet}</code>\n\nЛюбая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму. Язык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. После обновления бота сниппет может смениться — скажу, и его надо будет заменить на сайтах.\n\nСтрогий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией файла у себя — в начале файла {widget_url}":
+        "Paste on the site before <code>&lt;/body&gt;</code>:\n<code>{widget_snippet}</code>\n\nAny link with the <code>data-devops-feedback</code> attribute opens the form. The form's language follows the page (<code>&lt;html lang&gt;</code>): Russian or English; to pin it, <code>lang:'ru'</code> or <code>lang:'en'</code> in the settings. After a bot update the snippet may change — I will say so, and it has to be replaced on the sites.\n\nA strict Content-Security-Policy on the site? Connecting without an inline script and with your own copy of the file — at the top of {widget_url}",
+    "Сообщения посетителей приходят сюда и лежат в «📩 Сообщения». Ключ в сниппете виден любому посетителю — это не пароль, а фильтр от случайных ботов; сменить его можно здесь.": "Visitors' messages arrive here and are kept in «📩 Messages». The key in the snippet is visible to every visitor — it is not a password but a filter against stray bots; it can be replaced here.",
+    "🔑 Сменить ключ виджета": "🔑 Replace the widget key",
+    "📩 Подключить виджет": "📩 Connect the widget",
+    "🔑 Выпустить новый ключ виджета?\n\nСниппет на каждом сайте придётся заменить: со старым ключом сообщения перестанут приниматься. Делай это, если ключ попал туда, где ему не место, или виджет заваливают спамом.":
+        "🔑 Issue a new widget key?\n\nThe snippet on every site will have to be replaced: messages with the old key will no longer be accepted. Do it if the key got somewhere it should not be, or the widget is being flooded with spam.",
+    "🔑 Новый ключ виджета выпущен — замени сниппет на сайтах.\n\n": "🔑 A new widget key is out — replace the snippet on the sites.\n\n",
+    # ── handlers/about.py: where things are ────────────────────────────────
+    "<b>Где что</b>": "<b>Where things are</b>",
+    "🏠 Главная → 🌐 Сайты → карточка: проверить снова, «🔧 Я чиню», 🔎 Поиск и ИИ, ✉️ Почта, 🛡 Безопасность, ⚙️ Настройки сайта.": "🏠 Home → 🌐 Sites → a card: check again, «🔧 I'm fixing it», 🔎 Search & AI, ✉️ Mail, 🛡 Security, ⚙️ Site settings.",
+    "🏠 Главная → 🤖 Боты: задачи и боты по расписанию, внешний сторож.": "🏠 Home → 🤖 Bots: scheduled tasks and bots, the external watchdog.",
+    "⚙️ Настройки: 🔔 Когда писать · 🔕 Тишина · 👥 Помощники · 🔌 Подключения · 🌍 Для посетителей · 💾 Копия базы · 🕐 Часовой пояс.": "⚙️ Settings: 🔔 When to write · 🔕 Silence · 👥 Helpers · 🔌 Connections · 🌍 For visitors · 💾 Database copy · 🕐 Time zone.",
+    "❓ Значки (кнопка под полем ввода) — что значат 🔴 🟠 ✅ ⚠️, пять видов тишины и команды.": "❓ Icons (the button under the input field) — what 🔴 🟠 ✅ ⚠️ mean, the five kinds of silence and the commands.",
+    # ── handlers/heartbeats.py: the status JSON ────────────────────────────
+    "Бот умеет не только выходить на связь, но и рассказывать, что видит: POST на тот же адрес с JSON вида <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — строки появятся блоком на главном экране. Формат целиком — в docs/DEVELOPMENT.md, раздел «Статус от другого бота».":
+        "A bot can do more than mark in — it can tell what it sees: a POST to the same address with JSON like <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — the lines appear as a block on the main screen. The full format is in docs/DEVELOPMENT.md, the section on a status from another bot.",
+
 }
 
 # Russian singular → (English singular, English plural).
@@ -1326,4 +1430,5 @@ PLURALS: dict[str, tuple[str, str]] = {
     "открылась": ("", ""),
     "помеха": ("obstacle", "obstacles"),
     "ссылка не открывается": ("link does not open", "links do not open"),
+    "окно": ("window", "windows"),
 }

@@ -172,14 +172,14 @@ def test_confirmation_handler_is_registered_before_the_generic_one():
 async def test_the_alert_offers_to_stop_the_bot_fixing_by_itself(bot, db, hook):
     kb = actions.alert_actions_keyboard(SITE, 1, 7, hosting="cloudflare")
     labels = buttons(kb)
-    assert "⏸ Не чинить самому 2 ч" in labels and "🚀 Пересобрать сайт" in labels
+    assert "⏸ Не пересобирать сам 2 ч" in labels and "🚀 Пересобрать сайт" in labels
     assert kb.inline_keyboard[-1][0].url == "https://dash.cloudflare.com/"      # the panel stays last
     tap = FakeCall("auto:pause:2:a")
     await auto_handlers.cb_auto_pause(tap)
-    assert "Ничего не делаю сам 2 часа" in tap.message.texts[-1] and tap.message.texts[-1] != "🤖 Что я делаю сам"
+    assert "Ничего не делаю сам 2 часа" in tap.message.texts[-1] and tap.message.texts[-1] != "🤖 Что делаю сам"
     assert isinstance(await automation.paused_until(), datetime)
     await integrations.set_value("auto_redeploy", "off")
-    assert "⏸ Не чинить самому 2 ч" not in buttons(actions.alert_actions_keyboard(SITE, 1, 7, hosting="cloudflare"))
+    assert "⏸ Не пересобирать сам 2 ч" not in buttons(actions.alert_actions_keyboard(SITE, 1, 7, hosting="cloudflare"))
 
 
 @pytest.fixture
@@ -333,7 +333,7 @@ async def test_stop_and_resume_from_the_chat(bot, db, hook):
     assert await automation.paused_until() == automation.FOREVER and "выключен" in stale.message.texts[-1]
     menu = FakeCall("auto:resume")
     await auto_handlers.cb_auto_resume(menu)
-    assert await automation.paused_until() is None and "🤖 Что я делаю сам" in menu.message.texts[-1]
+    assert await automation.paused_until() is None and "🤖 Что делаю сам" in menu.message.texts[-1]
     assert "🚀 Пересобираю сайт, когда он падает — не чаще раза в час на один хук (проект Pages): вкл" in \
         menu.message.texts[-1]
     off = FakeCall("auto:off:redeploy")
@@ -351,8 +351,8 @@ async def test_stop_and_resume_from_the_chat(bot, db, hook):
 
 
 async def test_the_connections_screen_leads_to_the_switches(db, hook):
-    assert "🤖 Что бот делает сам" in buttons((await setup.render_checklist())[1])
-    assert "🤖 Что бот делает сам" in buttons(setup._cf_kb())
+    assert "🤖 Что делаю сам" in buttons((await setup.render_checklist())[1])
+    assert "🤖 Что делаю сам" in buttons(setup._cf_kb())
     assert "пересобираю сам: да, не чаще раза в час" in setup._cf_state_line()
     await integrations.set_value("auto_redeploy", "off")
     assert "пересобираю сам: нет" in setup._cf_state_line()

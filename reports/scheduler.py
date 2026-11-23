@@ -112,6 +112,7 @@ from services import (
     yandex_webmaster,
 )
 from services.actions import (
+    RECHECK,
     alert_actions_keyboard,
     deep_alert_keyboard,
     deploy_hook_for,
@@ -935,7 +936,7 @@ async def _note_flapping(r):
     sent = await notifier.send(
         t("🟠 {label} мигает: {n} {falls} за час, последнее в {time}. На каждое не звоню; когда успокоится — напишу.").format(
             label=esc(site_label(r.url)), n=n, falls=plural(n, "падение", "падения", "падений"), time=to_local(now).strftime("%H:%M")),
-        Priority.NORMAL, site_id=r.site_id)
+        Priority.NORMAL, site_id=r.site_id, reply_markup=explain_keyboard(r.incident_id, _recheck_button(r.site_id)))
     if sent:
         await set_state(f"flap_noted:{r.incident_id}", now.isoformat())
 
@@ -1131,7 +1132,7 @@ async def _note_local_network_problem(url: str, site_id: int, ups: int = 0, tota
           "сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
           "(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
           "не поднимаю; напишу, когда снова откроется.").format(label=esc(site_label(url)), where=where),
-        Priority.NORMAL, site_id=site_id)
+        Priority.NORMAL, site_id=site_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[_recheck_button(site_id)]))
     if sent:
         _ext_ok_noted.add(site_id)
 
@@ -1154,11 +1155,12 @@ async def _track_slow(r, slow_ms: int):
                             label=esc(site_label(r.url)), seconds=humanize.fmt_seconds(ms), n=SLOW_RESPONSE_STREAK,
                             checks=plural(SLOW_RESPONSE_STREAK, "проверка", "проверки", "проверок"))
                         + f"\n{expl.meaning}")
-                sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, explain_keyboard(inc_id))
+                kb = explain_keyboard(inc_id, _recheck_button(r.site_id))
+                sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, kb)
                 if isinstance(sent, Message) and _scheduler is not None:
                     _scheduler.add_job(_followup_slow, "date",
                                        run_date=datetime.now(UTC) + timedelta(minutes=5),
-                                       args=[r.url, r.site_id, sent.message_id, text, explain_keyboard(inc_id), slow_ms],
+                                       args=[r.url, r.site_id, sent.message_id, text, kb, slow_ms],
                                        id=f"followup-slow:{sent.message_id}", replace_existing=True)
         return
     _slow_streak[r.site_id] = 0
@@ -2208,7 +2210,7 @@ def _watchdog_kb() -> InlineKeyboardMarkup:
     """«onb:watchdog» answers below the message (handlers.setup): the alert
     and the digest stay as they were."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("🛡 Внешний сторож"), callback_data="onb:watchdog")]])
+        [InlineKeyboardButton(text=t("🛡 Подключить сторожа"), callback_data="onb:watchdog")]])
 
 
 @_once("retention", mark=True)
@@ -2452,6 +2454,26 @@ async def _watch_lines(morning: bool, short: bool = False) -> list[tuple[str, bo
     return lines
 
 
+def _recheck_button(site_id: int) -> list[InlineKeyboardButton]:
+    return [InlineKeyboardButton(text=t(RECHECK), callback_data=f"act:recheck:{site_id}")]
+
+
+async def _problems_row() -> list[list[InlineKeyboardButton]]:
+    """«🔴 Что не так (N)» for a digest: the list answers below it, the
+    digest stays. A navigation sentence («🏠 Главная → …») is no button."""
+    open_now = await get_active_incidents()
+    if not open_now:
+        return []
+    icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in open_now))
+    return [[InlineKeyboardButton(text=f"{icon} " + t("Что не так ({n})").format(n=len(open_now)),
+                                  callback_data="menu_incidents:a")]]
+
+
+def _with_rows(kb: InlineKeyboardMarkup | None, first: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup | None:
+    rows = [*first, *(kb.inline_keyboard if kb else [])]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 @_once("morning_report", mark=True)
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
@@ -2467,7 +2489,7 @@ async def send_morning_report(late: bool = False):
     parts = chunks(text)
     for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
-    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=kb)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(kb, await _problems_row()))
     # The evening compares against this: it comes only for what is new since.
     # The report is out: a mark the disk refuses is a database problem
     # (health says so), not a broken report.
@@ -2491,8 +2513,10 @@ async def send_evening_report():
             or (parse_sqlite_utc(i["created_at"]) or since) >= since.replace(microsecond=0)]
     if not news:
         return
-    for part in chunks(await _status_snapshot("evening", extras=False)):
+    parts = chunks(await _status_snapshot("evening", extras=False))
+    for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(None, await _problems_row()))
 
 
 @_once("weekly_report", mark=True)
