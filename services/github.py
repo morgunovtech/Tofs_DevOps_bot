@@ -31,7 +31,8 @@ import aiohttp
 from db.database import get_state, set_state
 from services import integrations, updates
 from services.integrations import Probe
-from utils.text import err_text, esc, esc_attr, plural
+from utils.i18n import plural, t
+from utils.text import err_text, esc, esc_attr
 
 logger = logging.getLogger(__name__)
 
@@ -89,22 +90,22 @@ async def _graphql(session: aiohttp.ClientSession, query: str, variables: dict |
         async with session.post(GRAPHQL, json={"query": query, "variables": variables or {}},
                                 headers=headers) as resp:
             if resp.status == 401:
-                raise GitHubError("токен не принят: истёк, отозван или скопирован не целиком", refused=True)
+                raise GitHubError(t("токен не принят: истёк, отозван или скопирован не целиком"), refused=True)
             if resp.status == 403:
-                raise GitHubError("GitHub отказал в доступе или лимит запросов исчерпан")
+                raise GitHubError(t("GitHub отказал в доступе или лимит запросов исчерпан"))
             if resp.status != 200:
-                raise GitHubError(f"GitHub ответил ошибкой {resp.status}")
+                raise GitHubError(t("GitHub ответил ошибкой {status}").format(status=resp.status))
             body = await resp.json(content_type=None)
     except GitHubError:
         raise
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
         logger.warning("GitHub GraphQL failed: %s", err_text(e))
-        raise GitHubError("GitHub не ответил") from e
+        raise GitHubError(t("GitHub не ответил")) from e
     data = body.get("data") if isinstance(body, dict) else None
     errors = body.get("errors") if isinstance(body, dict) else None
     first = errors[0].get("message") if errors and isinstance(errors[0], dict) else None
     if not data:
-        raise GitHubError(f"GitHub вернул ошибку: {first}" if first else "пустой ответ GitHub")
+        raise GitHubError(t("GitHub вернул ошибку: {first}").format(first=first) if first else t("пустой ответ GitHub"))
     if errors:
         logger.warning("GitHub GraphQL answered partially: %s", first or errors)
     return data
@@ -147,7 +148,7 @@ async def _repositories(session: aiohttp.ClientSession, fields: str,
         data = await _graphql(session, _query(fields, owner), variables)
         root = data.get("repositoryOwner" if owner else "viewer")
         if not root:
-            raise GitHubError(f"владелец «{owner}» не найден или токену не виден")
+            raise GitHubError(t("владелец «{owner}» не найден или токену не виден").format(owner=owner))
         login = root.get("login") or login
         conn = root.get("repositories") or {}
         raw = conn.get("nodes") or []
@@ -301,7 +302,7 @@ def _link(url: str, text: str) -> str:
 
 
 def _listing(items: list[str]) -> str:
-    more = f" и ещё {len(items) - LIST_LIMIT}" if len(items) > LIST_LIMIT else ""
+    more = t(" и ещё {n}").format(n=len(items) - LIST_LIMIT) if len(items) > LIST_LIMIT else ""
     return ", ".join(items[:LIST_LIMIT]) + more
 
 
@@ -311,46 +312,39 @@ def summary_lines(report: dict | None) -> list[str]:
     if not report:
         return []
     if report.get("error"):
-        return [f"⚠️ GitHub: не смог проверить — {esc(report['error'])}"]
+        return [t("⚠️ GitHub: не смог проверить — {error}").format(error=esc(report['error']))]
     owner = report.get("owner") or ""
     lines: list[str] = []
     partial = int(report.get("partial") or 0)
     if partial:
-        lines.append(f"⚠️ GitHub: {partial} {plural(partial, 'репозиторий', 'репозитория', 'репозиториев')} "
-                     f"не прочитано — токену не хватает прав (нужны Metadata, Contents, Pull requests, "
-                     f"Commit statuses).")
+        lines.append(t("⚠️ GitHub: {partial} {words} не прочитано — токену не хватает прав (нужны Metadata, Contents, Pull requests, Commit statuses).").format(partial=partial, words=plural(partial, 'репозиторий', 'репозитория', 'репозиториев')))
     gone = report.get("gone") or []
     if gone:
-        lines.append(f"🟠 Пропали с прошлой недели: {_listing([esc(_short(g, owner)) for g in gone])} — удалены, "
-                     f"переименованы или токен их больше не видит. Если это не ты — проверь доступы аккаунта.")
+        lines.append(t("🟠 Пропали с прошлой недели: {listing} — удалены, переименованы или токен их больше не видит. Если это не ты — проверь доступы аккаунта.").format(listing=_listing([esc(_short(g, owner)) for g in gone])))
     red = report.get("red_ci") or []
     if red:
         items = [_link(f"{r['url']}/actions", f"{_short(r['repo'], owner)} ({r['branch']})") for r in red]
-        lines.append(f"🟠 CI упал на основной ветке: {_listing(items)} — последний коммит не прошёл проверки, "
-                     f"открой и посмотри, что красное.")
+        lines.append(t("🟠 CI упал на основной ветке: {listing} — последний коммит не прошёл проверки, открой и посмотри, что красное.").format(listing=_listing(items)))
     stale = report.get("stale_prs") or []
     if stale:
-        items = [_link(p["url"], f"{_short(p['repo'], owner)}#{p['number']}") + f" ({p['days']} дн.)" for p in stale]
-        lines.append(f"🟠 PR висят дольше недели: {_listing(items)} — влей или закрой.")
+        items = [_link(p["url"], f"{_short(p['repo'], owner)}#{p['number']}") + t(" ({days} дн.)").format(days=p['days']) for p in stale]
+        lines.append(t("🟠 PR висят дольше недели: {listing} — влей или закрой.").format(listing=_listing(items)))
     extra = report.get("extra_branches") or []
     if extra:
         items = [_link(f"{b['url']}/branches", f"{_short(b['repo'], owner)}: {b['count']}")
                  + (f" ({esc(', '.join(b['names']))}{'…' if b['count'] > len(b['names']) else ''})"
                     if b.get("names") else "") for b in extra]
         n = sum(b["count"] for b in extra)
-        lines.append(f"🟠 {n} {plural(n, 'лишняя ветка', 'лишние ветки', 'лишних веток')} (не основная "
-                     f"и без открытого PR): {_listing(items)}. Смёрженные можно удалить.")
+        lines.append(t("🟠 {n} {words} (не основная и без открытого PR): {listing}. Смёрженные можно удалить.").format(n=n, words=plural(n, 'лишняя ветка', 'лишние ветки', 'лишних веток'), listing=_listing(items)))
     no_delete = report.get("no_auto_delete") or []
     if no_delete:
         items = [_link(f"{r['url']}/settings", _short(r["repo"], owner)) for r in no_delete]
-        lines.append(f"🟠 Ветки не удаляются после мержа: {_listing(items)} — Settings → General → "
-                     f"«Automatically delete head branches».")
+        lines.append(t("🟠 Ветки не удаляются после мержа: {listing} — Settings → General → «Automatically delete head branches».").format(listing=_listing(items)))
     vulns = report.get("vulns") or {}
     if vulns:
         items = [_link(f"https://github.com/{repo}/security/dependabot", f"{_short(repo, owner)} ({n})")
                  for repo, n in sorted(vulns.items())]
-        lines.append(f"🟠 Dependabot видит уязвимости: {_listing(items)} — вкладка Security, обычно "
-                     f"лечится обновлением пакета.")
+        lines.append(t("🟠 Dependabot видит уязвимости: {listing} — вкладка Security, обычно лечится обновлением пакета.").format(listing=_listing(items)))
     if lines:
         lines.insert(0, f"🐙 GitHub{f' · {esc(owner)}' if owner else ''}:")
     return lines

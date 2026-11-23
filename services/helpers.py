@@ -11,6 +11,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 from db.database import get_state, set_state
+from utils.i18n import t
 from utils.text import parse_iso_utc
 
 MAX_HELPERS = 3
@@ -84,7 +85,7 @@ async def accept(token: str, chat_id: int | str, name: str) -> str:
             return "already"
         if len(items) >= MAX_HELPERS:
             return "full"
-        items.append({"chat_id": str(chat_id), "name": name[:40] or "без имени"})
+        items.append({"chat_id": str(chat_id), "name": name[:40] or t("без имени")})
         await _save(items)
         await set_state("helper_invite", None)   # one link, one helper
         return "ok"

@@ -4,6 +4,8 @@ alert can say «открыть панель Cloudflare» with a real link instea
 
 from collections.abc import Mapping
 
+from utils.i18n import t
+
 # (key, human label, panel URL)
 PANELS: dict[str, tuple[str, str]] = {
     "cloudflare": ("Cloudflare", "https://dash.cloudflare.com/"),
@@ -66,4 +68,4 @@ _NS_PROVIDERS = (("cloudflare", "Cloudflare"), ("awsdns", "Amazon Route 53"), ("
 def dns_provider(ns: str) -> str:
     """«Cloudflare» for «amy.ns.cloudflare.com, bob.ns.cloudflare.com»;
     the first server's name when the provider is not known."""
-    return next((name for key, name in _NS_PROVIDERS if key in ns.lower()), ns.split(",")[0].strip())
+    return next((t(name) for key, name in _NS_PROVIDERS if key in ns.lower()), ns.split(",")[0].strip())

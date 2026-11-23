@@ -33,7 +33,8 @@ from config import config
 from db.database import get_state, set_state
 from services import integrations, notifier
 from services.notifier import Priority
-from utils.text import err_text, esc, esc_attr, fmt_date, plural
+from utils.i18n import plural, t
+from utils.text import err_text, esc, esc_attr, fmt_date
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +110,9 @@ async def report_startup_changes() -> bool:
     others = sorted(set(changed) - set(PACKAGES))
     if others:
         n = len(others)
-        lines.append(f"  • и ещё {n} {plural(n, 'вспомогательный пакет', 'вспомогательных пакета', 'вспомогательных пакетов')}: "
-                     f"{esc(', '.join(others[:5]))}{'…' if n > 5 else ''}")
+        lines.append(t("  • и ещё {n} {words}: {items}{words2}").format(n=n, words=plural(n, 'вспомогательный пакет', 'вспомогательных пакета', 'вспомогательных пакетов'), items=esc(', '.join(others[:5])), words2='…' if n > 5 else ''))
     if lines:
-        await notifier.send("🔄 Бот обновился:\n" + "\n".join(lines), Priority.NORMAL)
+        await notifier.send(t("🔄 Бот обновился:\n") + "\n".join(lines), Priority.NORMAL)
     elif new_build:
         logger.info("New build %s → %s, same Python and packages: nothing to tell the owner",
                     prev.get("commit"), current["commit"])
@@ -132,12 +132,12 @@ async def _vulnerabilities(session: aiohttp.ClientSession,
         async with session.post(OSV_BATCH, json=body) as resp:
             if resp.status != 200:
                 logger.warning("OSV answered HTTP %s", resp.status)
-                await integrations.record_result("osv", False, f"OSV ответил HTTP {resp.status}")
+                await integrations.record_result("osv", False, t("OSV ответил HTTP {status}").format(status=resp.status))
                 return None
             data = await resp.json(content_type=None)
     except Exception as e:
         logger.warning("OSV query failed: %s", err_text(e))
-        await integrations.record_result("osv", False, f"OSV не ответил ({err_text(e)})")
+        await integrations.record_result("osv", False, t("OSV не ответил ({err_text})").format(err_text=err_text(e)))
         return None
     await integrations.record_result("osv", True)
     if not isinstance(data, dict):
@@ -328,15 +328,11 @@ async def run_deploy_watch():
     await set_state("deploy:failed", json.dumps(failed) if failed else None)
     if not failed or failed["sha"] == await get_state("deploy:failed_alerted"):
         return
-    rows = [[InlineKeyboardButton(text="📄 Лог сборки", url=failed["log"])]] if failed["log"].startswith("https://") else []
+    rows = [[InlineKeyboardButton(text=t("📄 Лог сборки"), url=failed["log"])]] if failed["log"].startswith("https://") else []
     if failed["url"].startswith("https://"):
-        rows.append([InlineKeyboardButton(text="🔗 Что в этой версии", url=failed["url"])])
+        rows.append([InlineKeyboardButton(text=t("🔗 Что в этой версии"), url=failed["url"])])
     sent = await notifier.send(
-        f"🟠 Новая версия бота не запустилась\n"
-        f"Хостинг не смог собрать «{esc(failed['title'])}» ({esc(failed['sha'])}). Я работаю на прежней "
-        f"версии ({esc(config.app_commit[:7])}), но и следующие обновления не встанут, пока сборка падает.\n\n"
-        f"Что делать: открой лог сборки — обычно там видно, какой пакет не поставился. "
-        f"Быстрый выход — откатить этот коммит в GitHub (Revert).",
+        t("🟠 Новая версия бота не запустилась\nХостинг не смог собрать «{title}» ({sha}). Я работаю на прежней версии ({app_commit}), но и следующие обновления не встанут, пока сборка падает.\n\nЧто делать: открой лог сборки — обычно там видно, какой пакет не поставился. Быстрый выход — откатить этот коммит в GitHub (Revert).").format(title=esc(failed['title']), sha=esc(failed['sha']), app_commit=esc(config.app_commit[:7])),
         notifier.priority_for("warning"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows) if rows else None)
     if sent:
@@ -385,13 +381,12 @@ async def run_dependency_watch():
             for name, ids in result["vulns"].items()
         ]
         sent = await notifier.send(
-            "🛡 В зависимостях бота нашлись известные уязвимости:\n"
+            t("🛡 В зависимостях бота нашлись известные уязвимости:\n")
             + "\n".join(lines)
-            + "\n\nDependabot откроет PR с обновлением; после мержа и "
-              "редеплоя я сообщу, что обновился.", Priority.NORMAL)
+            + t("\n\nDependabot откроет PR с обновлением; после мержа и редеплоя я сообщу, что обновился."), Priority.NORMAL)
     else:
         sent = await notifier.send(
-            "✅ Уязвимых зависимостей больше нет.", Priority.NORMAL)
+            t("✅ Уязвимых зависимостей больше нет."), Priority.NORMAL)
     if sent:
         await set_state("deps:vulns_alerted", signature)
 
@@ -417,21 +412,18 @@ def summary_lines(result: dict | None) -> list[str]:
         return []
     lines: list[str] = []
     if result.get("vulns_unknown"):
-        when = f", последняя проверка {fmt_date(result['vulns_checked_at'])}" if result.get("vulns_checked_at") else ""
-        lines.append(f"⚠️ Уязвимости: база OSV не ответила{when} — повторю через неделю")
+        when = t(", последняя проверка {date}").format(date=fmt_date(result['vulns_checked_at'])) if result.get("vulns_checked_at") else ""
+        lines.append(t("⚠️ Уязвимости: база OSV не ответила{when} — повторю через неделю").format(when=when))
     if result.get("prs_unknown"):
-        lines.append("⚠️ PR Dependabot: GitHub не ответил — список прошлой недели")
+        lines.append(t("⚠️ PR Dependabot: GitHub не ответил — список прошлой недели"))
     if result.get("vulns"):
         names = ", ".join(sorted(result["vulns"]))
-        lines.append(f"🛡 Уязвимые пакеты: {esc(names)} — исправление придёт с Dependabot и встанет само")
+        lines.append(t("🛡 Уязвимые пакеты: {names} — исправление придёт с Dependabot и встанет само").format(names=esc(names)))
     prs = result.get("waiting_prs") or [{**p, "major": True} for p in result.get("major_prs") or []]
     stuck = [p for p in prs if not p.get("major")]
     major = [p for p in prs if p.get("major")]
     if stuck:
-        lines.append(f"🟠 Обновление не встало само — тесты не прошли: {_pr_links(stuck)}. "
-                     f"Открой PR и посмотри, что упало.")
+        lines.append(t("🟠 Обновление не встало само — тесты не прошли: {pr_links}. Открой PR и посмотри, что упало.").format(pr_links=_pr_links(stuck)))
     if major:
-        lines.append(f"🔀 Ждут твоего решения: {len(major)} PR — {_pr_links(major)}. "
-                     f"Такие сами не вливаются (крупная версия или базовый образ): "
-                     f"открой, прочитай «что поменялось» и нажми Merge.")
+        lines.append(t("🔀 Ждут твоего решения: {n} PR — {pr_links}. Такие сами не вливаются (крупная версия или базовый образ): открой, прочитай «что поменялось» и нажми Merge.").format(n=len(major), pr_links=_pr_links(major)))
     return lines

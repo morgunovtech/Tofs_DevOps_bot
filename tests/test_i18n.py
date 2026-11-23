@@ -45,6 +45,12 @@ from handlers import (
 from handlers import (
     seo as seo_screen,
 )
+from handlers import (
+    settings as settings_screen,
+)
+from handlers import (
+    setup as setup_screen,
+)
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
@@ -63,14 +69,18 @@ from monitors.visitor_checker import VisitorsResult
 from reports import formatter, scheduler, weekly
 from services import (
     actions,
+    github,
     heartbeats,
     humanize,
     index_status,
     maintenance,
     notifier,
+    railway,
     recommend,
     screenshots,
+    seo_fixes,
     sitestatus,
+    updates,
 )
 from services import settings as settings_service
 from utils import i18n
@@ -213,7 +223,7 @@ def test_alert_words():
     # A search finding's own title is a monitor's text: it gets its entry together with monitors/.
     assert humanize.describe_error("2 помехи в поиске, напр.: Нет карты сайта") == "2 search obstacles, e.g.: Нет карты сайта"
     assert humanize.describe_error("закрыт от поиска — Сайт закрыт от поисковиков в robots.txt") == \
-        "closed to search — Сайт закрыт от поисковиков в robots.txt"
+        "closed to search — The site is closed to search engines in robots.txt"
     assert humanize.describe_error("HTTP 502") == "the hosting answers with error 502"
     assert humanize.describe_error("SSL expires in 5 days!") == "certificate expires in 5 d"
     assert humanize.describe_error("3 broken link(s)") == "3 links do not open"
@@ -231,7 +241,7 @@ def test_alert_words():
     assert humanize.incident_headline("seo", "3 помехи в поиске, напр.: Нет карты сайта", "ex.test") == \
         "ex.test: нет карты сайта and 2 more obstacles"     # the finding's own title gets its entry with monitors/
     assert humanize.incident_headline("seo", "закрыт от поиска — Сайт закрыт от поисковиков в robots.txt", "ex.test") == \
-        "ex.test: closed to search — Сайт закрыт от поисковиков в robots.txt"
+        "ex.test: closed to search — The site is closed to search engines in robots.txt"
     for check in ("seo", "mail", "mail_auth", "exposed", "security", "visitors"):
         expl = humanize.explain(check, "закрыт от поиска — x" if check == "seo" else "x")
         english_only(expl.meaning + expl.cause + humanize.steps_block(expl))
@@ -676,3 +686,90 @@ async def test_problem_screens(bot, db, monkeypatch):
     call = FakeCall("mute:off")
     await mute.cb_mute_pick(call)
     _calls_english(call)
+
+
+async def test_settings_connections_and_wizards(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    for data, handler in (("menu_settings", "cb_settings"), ("menu_helpers", "cb_helpers"), ("helper_invite", "cb_helper_invite"),
+                          ("menu_reports", "cb_reports"), ("menu_tz", "cb_tz"), ("menu_visitors", "cb_visitors"),
+                          ("menu_statuspage", "cb_status_page"), ("sp_pub:", "cb_status_page_publish")):
+        call = FakeCall(data)
+        await getattr(settings_screen, handler)(call)
+        _calls_english(call)
+    call = FakeCall("tz_custom")
+    await settings_screen.cb_tz_custom(call, FakeState())
+    _calls_english(call)
+    for raw in ("Mars/Olympus", "Europe/Prague"):
+        msg = FakeMessage(raw)
+        await settings_screen.msg_tz(msg, FakeState())
+        english_only(msg.texts[-1])
+    for data in ("set_full", "set_ring", "set_backup", "set_tz:0"):
+        call = FakeCall(data)
+        await settings_screen.cb_settings_pick(call)
+        _calls_english(call)
+    await settings_service.set_timezone("Europe/Moscow")
+    screen_english(*await setup_screen.render_checklist())
+    call = FakeCall("setup:check")
+    await setup_screen.cb_checklist(call, FakeState())
+    _calls_english(call)
+    call = FakeCall("setup:more")
+    await setup_screen.cb_more(call)
+    _calls_english(call)
+    steps = await setup_screen.last_steps()
+    if steps:
+        screen_english(*steps)
+    english_only(t(setup_screen.RING_TEST))
+    english_only(t(setup_screen.NO_RING_HELP))
+    for data, handler in (("setup:so", "cb_second_opinion_screen"), ("setup:hb_regen", "cb_regen_heartbeat_ask"),
+                          ("setup:url", "cb_guide_url"), ("setup:docker", "cb_guide_docker"), ("setup:railway", "cb_guide_railway"),
+                          ("setup:watchdog", "cb_guide_watchdog"), ("setup:yx", "cb_guide_yandex"), ("setup:crux", "cb_guide_crux"),
+                          ("setup:gsc", "cb_guide_gsc"), ("setup:cf", "cb_guide_cf"), ("setup:gh", "cb_guide_github"),
+                          ("setup:watchdog_off", "cb_off_ask"), ("setup:yx_off", "cb_off_ask"), ("setup:cf_off", "cb_off_ask")):
+        call = FakeCall(data)
+        await getattr(setup_screen, handler)(call)
+        _calls_english(call)
+    for data, handler in (("setup:watchdog_url", "cb_watchdog_url"), ("setup:yx_token", "cb_yx_token"), ("setup:crux_key", "cb_crux_key"),
+                          ("setup:gsc_prop", "cb_gsc_prop"), ("setup:gsc_key", "cb_gsc_key"), ("setup:cf_hook", "cb_cf_hook"),
+                          ("setup:cf_token", "cb_cf_token"), ("setup:cf_zone", "cb_cf_zone"), ("setup:gh_token", "cb_gh_token"),
+                          ("setup:gh_owner", "cb_gh_owner")):
+        call = FakeCall(data)
+        await getattr(setup_screen, handler)(call, FakeState())
+        _calls_english(call)
+    for handler, raw in (("msg_watchdog_url", "http://x"), ("msg_yx_token", "short"), ("msg_crux_key", "nope"),
+                         ("msg_gsc_prop", "nope"), ("msg_cf_hook", "nope"), ("msg_cf_token", "nope"), ("msg_cf_zone", "nope"),
+                         ("msg_gh_token", "nope"), ("msg_gh_owner", "bad login!")):
+        msg = FakeMessage(raw)
+        await getattr(setup_screen, handler)(msg, FakeState())
+        for text in msg.texts:
+            english_only(text)
+    english_only(railway.reminder_text(1))
+    english_only(railway.reminder_text(5))
+    screen_english("", railway.keyboard("railway:paid"))
+    english_only(t(railway.STEP))
+    english_only(t(railway.GUIDE))
+
+    # services/seo_fixes through the screen: every finding's steps for every hosting.
+    for code in seo_fixes.FIXES:
+        english_only(seo_fixes.button_label(code))
+        for hosting in (None, *seo_fixes.FIXES[code].by_hosting):
+            english_only(seo_screen.fix_text("https://ex.test", code, {"problems": []}, hosting))
+            for label, _ in seo_fixes.links(code, hosting, "https://ex.test"):
+                english_only(label)
+    problems = [{"code": "sitemap_missing", "severity": "warning", "message": "no sitemap.xml"},
+                {"code": "no_title", "severity": "warning", "message": "/about: no <title>"}]
+    await sitestatus.update(sid, "seo", status="warning", critical=0, improve=2, pages=3, no_js_chars=500, problems=problems)
+    call = FakeCall(f"seo_site:{sid}")
+    await seo_screen.cb_seo(call)
+    _calls_english(call)
+    call = FakeCall(f"seo_fix:{sid}:sitemap_missing")
+    await seo_screen.cb_seo_fix(call)
+    _calls_english(call)
+
+    for line in updates.summary_lines({"at": "2026-11-20T10:00:00+00:00", "vulns": {}, "error": None}):
+        english_only(line)
+    for line in updates.summary_lines({"at": "2026-11-20T10:00:00+00:00", "vulns": {"aiohttp": ["GHSA-1", "GHSA-2"]}, "error": None}):
+        english_only(line)
+    for line in updates.summary_lines({"at": "2026-11-20T10:00:00+00:00", "vulns": {}, "error": "timeout"}):
+        english_only(line)
+    for line in github.summary_lines({"at": "2026-11-20T10:00:00+00:00", "error": "GitHub did not answer", "partial": 0}):
+        english_only(line)

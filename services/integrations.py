@@ -37,6 +37,7 @@ from enum import StrEnum
 
 from config import config
 from db.database import get_state, set_state
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ def gsc_credentials() -> dict | None:
             _gsc_key_problem = problem
             return None
     creds = valid_gsc_key(raw)
-    _gsc_key_problem = None if creds else "это не JSON-ключ сервис-аккаунта (нет client_email или private_key)"
+    _gsc_key_problem = None if creds else t("это не JSON-ключ сервис-аккаунта (нет client_email или private_key)")
     return creds
 
 
