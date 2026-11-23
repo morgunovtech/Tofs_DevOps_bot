@@ -9,12 +9,49 @@ TG_MESSAGE_LIMIT = 4096
 SAFE_LIMIT = TG_MESSAGE_LIMIT - 100
 
 
-def esc(value) -> str:
-    """HTML-escape a value for the text of a ParseMode.HTML message; inside
-    a tag attribute (href="…") use esc_attr."""
+# Characters that change how the rest of a line reads while staying invisible:
+# direction overrides and isolates (U+202A–U+202E, U+2066–U+2069 — «exe.png»
+# reads «gnp.exe»), zero-width and joiner marks (U+200B–U+200F, U+2060–U+2064),
+# the byte-order mark and C0 controls other than newline and tab.
+_INVISIBLE = dict.fromkeys([*range(0x202A, 0x202F), *range(0x2066, 0x206A), *range(0x200B, 0x2010),
+                            *range(0x2060, 0x2065), 0xFEFF, 0x7F,
+                            *(c for c in range(0x20) if c not in (0x09, 0x0A))])
+
+
+def clean(value) -> str:
+    """Someone else's text as it will be shown: no direction overrides, no
+    zero-width marks, no control characters. Every esc() goes through it, so a
+    page title, a widget message or a task name cannot redraw the line around it."""
     if value is None:
         return ""
-    return html.escape(str(value), quote=False)
+    return str(value).translate(_INVISIBLE)
+
+
+def esc(value) -> str:
+    """HTML-escape a value for the text of a ParseMode.HTML message; inside
+    a tag attribute (href="…") use esc_attr. Invisible direction and format
+    characters are removed first (clean)."""
+    if value is None:
+        return ""
+    return html.escape(clean(value), quote=False)
+
+
+_URL_IN_TEXT = re.compile(r"(?i)\b(https?)://([^\s<>\"'()]+)")
+_WWW_IN_TEXT = re.compile(r"(?i)(?<![\w.])www\.((?:[a-z0-9-]+\.)+[a-z]{2,})")
+
+
+def defang(value) -> str:
+    """A link inside quoted text (a widget message, a page title) must not be
+    clickable: https://evil.example/x → hxxps://evil[.]example/x. Only links
+    the bot built itself stay live."""
+    text = clean(value)
+
+    def _url(m: re.Match) -> str:
+        host, slash, rest = m.group(2).partition("/")
+        return f"{m.group(1)[0]}xx{m.group(1)[3:]}://{host.replace('.', '[.]')}{slash}{rest}"
+
+    text = _URL_IN_TEXT.sub(_url, text)
+    return _WWW_IN_TEXT.sub(lambda m: "www[.]" + m.group(1).replace(".", "[.]"), text)
 
 
 def esc_attr(value) -> str:
