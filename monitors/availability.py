@@ -18,7 +18,6 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_last_incident,
@@ -453,7 +452,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
         return r
 
     threshold = site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD
-    streak = recovery_streak(site.get("check_interval_min") or config.check_interval_minutes)
+    streak = recovery_streak(site.get("check_interval_min") or settings.check_interval_minutes())
     window = max(streak, share_window(threshold))
     if stored:
         recent = await get_recent_checks(r.site_id, "availability", limit=window, scheduled_only=True)

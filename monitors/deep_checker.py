@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from config import config
 from db.database import (
     get_or_create_site,
     get_recent_check_statuses,
@@ -18,7 +17,7 @@ from db.database import (
 )
 from monitors.base import DeepResult, gather_checks
 from monitors.sitemap import TIMEOUT, pick_sample, sitemap_urls
-from services import sitestatus
+from services import settings, sitestatus
 from utils.net import CrawlResolver, owner_connector
 from utils.urls import USER_AGENT
 
@@ -56,7 +55,7 @@ async def check_deep(url: str) -> DeepResult:
             await resolve_incident(site_id, "deep")
             await sitestatus.update(site_id, "deep", sampled=0, errors=0, pages=[])
             return r
-        sample = pick_sample(pages, config.deep_check_sample)
+        sample = pick_sample(pages, settings.deep_check_sample())
         r.sampled = len(sample)
         sem = asyncio.Semaphore(5)
 

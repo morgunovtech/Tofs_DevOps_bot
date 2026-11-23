@@ -1,8 +1,9 @@
 """⚙️ Settings: the hub for everything that is not «is it OK» — «🔔 Когда
-писать» (digests, quiet hours, mute, planned work, the test alert),
-«👥 Помощники», «🔌 Подключения», «🌍 Для посетителей» (status page,
-feedback widget) and «🕐 Часовой пояс». What is watched — sites, tasks
-and bots — is on the main screen, not here."""
+писать» (digests, the ring, the test alert), «🔕 Тишина», «👥 Помощники»,
+«🔌 Подключения», «🌍 Для посетителей» (status page, feedback widget),
+«💾 Копия базы», «🕐 Часовой пояс» and «🛠 Тонкие настройки» (the .env
+dials, handlers.tune). What is watched — sites, tasks and bots — is on the
+main screen, not here."""
 
 import secrets as _secrets
 from datetime import datetime
@@ -15,8 +16,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import config
 from db.database import count_feedback, get_all_sites
 from handlers.blocks import backup_state
-from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_int, render
+from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_int, mark, render
 from handlers.menu import mute_until_local
+from handlers.tune import hub_summary
 from monitors import region
 from reports.scheduler import reschedule_all
 from services import (
@@ -82,9 +84,9 @@ async def silence_summary() -> str:
 
 
 async def hub_text() -> str:
-    """Seven questions, each answered in one line: when to write, what is
+    """Eight questions, each answered in one line: when to write, what is
     silent, who else hears it, what is connected, what visitors see, is
-    there a copy, which clock."""
+    there a copy, which clock, which dials differ from the server."""
     ring = t("только «сайт лёг»") if settings.ring_only_down() else t("всё критичное")
     write = t("сводка {morning_hour}:00 · будить: {ring}").format(morning_hour=settings.morning_hour(), ring=ring)
     silence = await silence_summary()
@@ -108,7 +110,7 @@ async def hub_text() -> str:
     visitors = sp + (t(" · сообщений с сайтов: {feedback}").format(feedback=feedback) if feedback else "")
     helpers_now = ", ".join(h["name"] for h in await helpers.helpers()) or t("нет")
     backup = backup_state()[1] + (t(" · по воскресеньям в личку") if settings.weekly_backup() else "")
-    return (t("⚙️ Настройки\n\n🔔 Когда писать — {write}\n🔕 Тишина — {silence}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n💾 Копия базы — {backup}\n🕐 Часовой пояс — {timezone}, сейчас {time}").format(write=esc(write), silence=esc(silence), helpers_now=esc(helpers_now), connections=esc(connections), visitors=esc(visitors), backup=esc(backup), timezone=esc(settings.timezone()), time=now_local().strftime('%H:%M')))
+    return (t("⚙️ Настройки\n\n🔔 Когда писать — {write}\n🔕 Тишина — {silence}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n💾 Копия базы — {backup}\n🕐 Часовой пояс — {timezone}, сейчас {time}\n🛠 Тонкие настройки — {tune}").format(write=esc(write), silence=esc(silence), helpers_now=esc(helpers_now), connections=esc(connections), visitors=esc(visitors), backup=esc(backup), timezone=esc(settings.timezone()), time=now_local().strftime('%H:%M'), tune=esc(hub_summary())))
 
 
 def hub_kb() -> InlineKeyboardMarkup:
@@ -120,7 +122,8 @@ def hub_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=t("🌍 Для посетителей"), callback_data="menu_visitors"),
          InlineKeyboardButton(text=t("💾 Копия базы"), callback_data="menu_backup")],
         [InlineKeyboardButton(text=t("🕐 Часовой пояс"), callback_data="menu_tz"),
-         InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]])
+         InlineKeyboardButton(text=t("🛠 Тонкие настройки"), callback_data="menu_tune")],
+        [InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]])
 
 
 async def show_hub(target):
@@ -223,26 +226,21 @@ def _offered(value: str, hours: tuple[int, ...]) -> int | None:
     return int(value) if value in {str(h) for h in hours} else None
 
 
-def _mark(on: bool, text: str) -> str:
-    """✅ before the value that is current — every row says what is chosen."""
-    return f"✅ {text}" if on else text
-
-
 def _reports_kb() -> InlineKeyboardMarkup:
     ring_on = settings.ring_only_down()
     morning, evening, weekly = settings.morning_hour(), settings.evening_hour(), settings.weekly_hour()
     return InlineKeyboardMarkup(inline_keyboard=[
         # Two buttons, the current one marked — not one whose label is the state and whose tap is the opposite.
-        [InlineKeyboardButton(text=_mark(not ring_on, t("🔔 Будить: всё критичное")), callback_data="set_ring:off"),
-         InlineKeyboardButton(text=_mark(ring_on, t("🔔 Только «сайт лёг»")), callback_data="set_ring:on")],
-        [InlineKeyboardButton(text=_mark(h == morning, f"🌅 {h}:00"), callback_data=f"set_m:{h}") for h in MORNING_HOURS],
+        [InlineKeyboardButton(text=mark(not ring_on, t("🔔 Будить: всё критичное")), callback_data="set_ring:off"),
+         InlineKeyboardButton(text=mark(ring_on, t("🔔 Только «сайт лёг»")), callback_data="set_ring:on")],
+        [InlineKeyboardButton(text=mark(h == morning, f"🌅 {h}:00"), callback_data=f"set_m:{h}") for h in MORNING_HOURS],
         # The morning view: what is wrong and a count of the sites in order,
         # or the old line per site — the current one is marked.
-        [InlineKeyboardButton(text=_mark(not settings.digest_full(), t("🌅 Коротко")), callback_data="set_dg:short"),
-         InlineKeyboardButton(text=_mark(settings.digest_full(), t("🌅 Каждый сайт")), callback_data="set_dg:full")],
-        [InlineKeyboardButton(text=_mark(h == evening, f"🌙 {h}:00"), callback_data=f"set_e:{h}") for h in EVENING_HOURS]
-        + [InlineKeyboardButton(text=_mark(evening is None, t("🌙 выкл")), callback_data="set_e:off")],
-        [InlineKeyboardButton(text=_mark(h == weekly, t("📊 вс {h}:00").format(h=h)), callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
+        [InlineKeyboardButton(text=mark(not settings.digest_full(), t("🌅 Коротко")), callback_data="set_dg:short"),
+         InlineKeyboardButton(text=mark(settings.digest_full(), t("🌅 Каждый сайт")), callback_data="set_dg:full")],
+        [InlineKeyboardButton(text=mark(h == evening, f"🌙 {h}:00"), callback_data=f"set_e:{h}") for h in EVENING_HOURS]
+        + [InlineKeyboardButton(text=mark(evening is None, t("🌙 выкл")), callback_data="set_e:off")],
+        [InlineKeyboardButton(text=mark(h == weekly, t("📊 вс {h}:00").format(h=h)), callback_data=f"set_w:{h}") for h in WEEKLY_HOURS],
         # The test that the phone actually rings lives with «when».
         [InlineKeyboardButton(text=t("🔔 Пробная тревога"), callback_data="ring:test")],
         [InlineKeyboardButton(text=t("← Настройки"), callback_data="menu_settings")]])
@@ -279,9 +277,9 @@ async def quiet_kb() -> InlineKeyboardMarkup:
     quiet_now = f"{quiet[0]}-{quiet[1]}" if quiet else None
     rows = [[InlineKeyboardButton(text=t("🔔 Снять тишину") if mute else t("🔕 Помолчать…"),
                                   callback_data="mute:off" if mute else "menu_mute")],
-            [InlineKeyboardButton(text=_mark(q == quiet_now, f"🌙 {q.replace('-', '–')}"), callback_data=f"set_q:{q}")
+            [InlineKeyboardButton(text=mark(q == quiet_now, f"🌙 {q.replace('-', '–')}"), callback_data=f"set_q:{q}")
              for q in QUIET_CHOICES]
-            + [InlineKeyboardButton(text=_mark(quiet is None, t("🌙 выкл")), callback_data="set_q:off")],
+            + [InlineKeyboardButton(text=mark(quiet is None, t("🌙 выкл")), callback_data="set_q:off")],
             [InlineKeyboardButton(text=t("🗓 Плановые работы"), callback_data="menu_maint")]]
     for sid, label in await paused_sites():
         rows.append([InlineKeyboardButton(text=t("✅ Починил {label}, пиши снова").format(label=label)[:60],
@@ -313,8 +311,8 @@ def backup_kb() -> InlineKeyboardMarkup:
     weekly = settings.weekly_backup()
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("💾 Скачать копию базы"), callback_data="sys:backup")],
-        [InlineKeyboardButton(text=_mark(weekly, t("🗄 По воскресеньям: присылать")), callback_data="set_wb:on"),
-         InlineKeyboardButton(text=_mark(not weekly, t("🗄 не присылать")), callback_data="set_wb:off")],
+        [InlineKeyboardButton(text=mark(weekly, t("🗄 По воскресеньям: присылать")), callback_data="set_wb:on"),
+         InlineKeyboardButton(text=mark(not weekly, t("🗄 не присылать")), callback_data="set_wb:off")],
         [InlineKeyboardButton(text=t("← Настройки"), callback_data="menu_settings")]])
 
 
@@ -486,15 +484,17 @@ async def cb_status_page(call: CallbackQuery):
     await show_status_page(call)
 
 
-# Where the owner came from: «⚙️ → 🌐» or «🔌 Подключения → ➕ Подключить ещё».
-_SP_DOORS = {"": ("← Для посетителей", "menu_visitors"), "setup": ("← К подключениям", "setup:check")}
+# Where the owner came from: «⚙️ → 🌐», «🔌 Подключения → ➕ Подключить ещё»
+# or «📖 Что можно подключить».
+_SP_DOORS = {"": ("← Для посетителей", "menu_visitors"), "setup": ("← К подключениям", "setup:check"),
+             "about": ("← Что можно подключить", "about:modules")}
 
 
 async def publish_screen(back: str) -> tuple[str, InlineKeyboardMarkup]:
     """One confirmation for both doors (⚙️ → 🌐 and 🔌 → ➕ Подключить ещё):
     what becomes public, shown before it does. The door is carried in the
     callbacks, so the screen after publishing leads back to it."""
-    door = ":setup" if back.startswith("setup:") else ""
+    door = ":setup" if back.startswith("setup:") else ":about" if back.startswith("about:") else ""
     labels = await status_page.public_labels()
     shown = ", ".join(labels[:5]) + (t(" и ещё {n}").format(n=len(labels) - 5) if len(labels) > 5 else "")
     text = (t("🌐 Включить статус-страницу?\n\nЕё увидит любой, кто узнает адрес: {n} {words}{words2} — работают ли, аптайм и история проблем без подробностей. Порты, tcp/ping-проверки, внутренние адреса и пути API на странице не показываются.\n\nОткрытая страница живёт по адресу …/status — его легко угадать. С секретной ссылкой без секретного хвоста страница отвечает «не найдено».").format(n=len(labels), words=plural(len(labels), 'сайт', 'сайта', 'сайтов'), words2=' — ' + esc(shown) if labels else ''))

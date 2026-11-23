@@ -155,7 +155,8 @@ async def test_incidents_settings_maintenance_heartbeats_feedback_screens(bot, d
     assert "👥 Помощники — нет" in text and "🔌 Подключения — " in text and "🌍 Для посетителей — " in text
     labels = [b.text for row in call.message.reply_markup.inline_keyboard for b in row]
     assert labels == ["🔔 Когда писать", "🔕 Тишина", "👥 Помощники", "🔌 Подключения", "🌍 Для посетителей",
-                      "💾 Копия базы", "🕐 Часовой пояс", "🏠 Главная"]
+                      "💾 Копия базы", "🕐 Часовой пояс", "🛠 Тонкие настройки", "🏠 Главная"]
+    assert "🛠 Тонкие настройки — проверка раз в 5 мин · «медленно» от 3 с · напоминание через 30 мин · всё из .env" in text
     assert "🔕 Тишина — тихих часов нет" in text and "💾 Копия базы — " in text
     call = FakeCall("menu_reports")                                   # the digests, the ring and the test alert
     await settings.cb_reports(call)

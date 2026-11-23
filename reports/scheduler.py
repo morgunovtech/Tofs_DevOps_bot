@@ -212,7 +212,7 @@ def _interval_min(site: dict) -> int:
     (OverflowError in the date arithmetic)."""
     minutes = validate.int_in(site.get("check_interval_min"), *validate.CHECK_INTERVAL_MIN)
     if minutes is None:
-        minutes = validate.int_in(config.check_interval_minutes, *validate.CHECK_INTERVAL_MIN)
+        minutes = validate.int_in(settings.check_interval_minutes(), *validate.CHECK_INTERVAL_MIN)
     return minutes if minutes is not None else 5
 
 
@@ -221,7 +221,7 @@ def _slow_ms(site: dict) -> int:
     negative would call every answer slow."""
     ms = validate.int_in(site.get("slow_ms"), *validate.SLOW_MS)
     if ms is None:
-        ms = validate.int_in(config.slow_response_ms, *validate.SLOW_MS)
+        ms = validate.int_in(settings.slow_response_ms(), *validate.SLOW_MS)
     return ms if ms is not None else DEFAULT_SLOW_MS
 
 
@@ -1701,7 +1701,7 @@ async def run_host_checks():
               "следующая очистка — не раньше чем через 12 ч.").format(
                 pct=result["pct"], layers=cleaned["layers"], caches=cleaned["caches"],
                 gb=f"{cleaned['bytes'] / 1e9:.1f}", after=result["pct_after"]))
-        if result["pct_after"] < config.disk_alert_pct:
+        if result["pct_after"] < settings.disk_alert_pct():
             _disk_level_unsaved = None
             await set_state("disk_alerted", None)
             return
@@ -1730,7 +1730,7 @@ async def run_host_checks():
                     # The flag lives on the full volume: remember it here, or 🔴 rings every 30 min.
                     health.db_write_failed(e)
                     _disk_level_unsaved = level
-    elif already and result["pct"] <= config.disk_alert_pct - DISK_CLEAR_MARGIN:
+    elif already and result["pct"] <= settings.disk_alert_pct() - DISK_CLEAR_MARGIN:
         _disk_level_unsaved = None
         await set_state("disk_alerted", None)
         await notifier.send(t("✅ {disk} снова в норме: {pct}%. Ничего делать не нужно.").format(
@@ -1893,7 +1893,7 @@ async def run_escalation_watch():
     is up; a flapping site gets the hourly 🟠 instead; the helpers get the
     first reminder only; a site whose last planned check opened is not
     «лежит» — its ✅ is a check away."""
-    repeat_min = config.escalation_repeat_min
+    repeat_min = settings.escalation_repeat_min()
     if repeat_min <= 0:     # 0 = off, as .env.example promises; a negative one is not «every 5 minutes»
         return
     if await netcheck.outage_since():
@@ -2677,6 +2677,32 @@ def resume_jobs():
 _failed_jobs: list[str] = []
 
 
+def _links_trigger(start: datetime) -> IntervalTrigger:
+    return IntervalTrigger(hours=settings.links_check_interval_hours(), start_date=start, timezone=UTC)
+
+
+def reschedule_links() -> bool:
+    """Apply the interval chosen in «🛠 Тонкие настройки» to the running
+    scheduler: 0 removes the crawl, a number adds it (first run in two
+    minutes) or moves it. False when the scheduler refused."""
+    if _scheduler is None:
+        return True
+    try:
+        hours, job = settings.links_check_interval_hours(), _scheduler.get_job("links_checks")
+        if not hours:
+            if job:
+                _scheduler.remove_job("links_checks")
+        elif job:
+            _scheduler.reschedule_job("links_checks", trigger=_links_trigger(datetime.now(UTC) + timedelta(minutes=2)))
+        else:
+            _scheduler.add_job(run_links_checks, trigger=_links_trigger(datetime.now(UTC) + timedelta(minutes=2)),
+                               id="links_checks", replace_existing=True, max_instances=1, misfire_grace_time=300)
+        return True
+    except Exception:
+        logger.exception("Could not reschedule links_checks — its old schedule stays")
+        return False
+
+
 def reschedule_all() -> list[str]:
     """Apply UI-changed hours or timezone to the running scheduler. A job
     whose new trigger cannot be built keeps its old schedule and is
@@ -2731,10 +2757,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_card_pictures, lambda: _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
     job(run_card_pictures, lambda: DateTrigger(run_date=soon, timezone=UTC), "card_pictures_soon")
     # Links: first run shortly after boot, then every N hours; 0 = never.
-    if config.links_check_interval_hours:
-        job(run_links_checks,
-            lambda: IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon, timezone=UTC),
-            "links_checks", misfire_grace_time=300)
+    if settings.links_check_interval_hours():
+        job(run_links_checks, lambda: _links_trigger(soon), "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
     job(run_dns_checks, lambda: _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
     # Mail hourly, and soon after a start — so the cards show it right away.

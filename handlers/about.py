@@ -4,11 +4,10 @@ bot in one place, so the owner decides what is worth connecting."""
 
 from dataclasses import dataclass
 
-from aiogram import F, Router
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 
-from config import config
-from handlers.common import ack, render
+from handlers.common import ack, render, set_wizard_door
 from services import crux, github, gsc, heartbeats, integrations, settings, yandex_webmaster
 from utils.i18n import t
 
@@ -19,7 +18,7 @@ def _features() -> list[tuple[str, list[tuple[str, str]]]]:
     """(group, [(what I do, what you get)]) — everything that works with no setup."""
     return [
         (t("🌐 Сайт работает"), [
-            (t("Проверяю каждый сайт каждые {minutes} мин").format(minutes=config.check_interval_minutes),
+            (t("Проверяю каждый сайт каждые {minutes} мин").format(minutes=settings.check_interval_minutes()),
              t("узнаёшь, что сайт лёг, раньше клиентов — и когда он снова поднялся")),
             (t("Слежу за фразой на странице (предложу при добавлении сайта)"),
              t("ловлю «открывается, но не то»: пустую страницу, заглушку хостинга, текст ошибки")),
@@ -70,7 +69,7 @@ def features_text() -> str:
     lines += ["", t("<b>Где что</b>"),
               t("🏠 Главная → 🌐 Сайты → карточка: проверить снова, «🔧 Я чиню», 🔎 Поиск и ИИ, ✉️ Почта, 🛡 Безопасность, ⚙️ Настройки сайта."),
               t("🏠 Главная → 🤖 Боты: задачи и боты по расписанию, внешний сторож."),
-              t("⚙️ Настройки: 🔔 Когда писать · 🔕 Тишина · 👥 Помощники · 🔌 Подключения · 🌍 Для посетителей · 💾 Копия базы · 🕐 Часовой пояс."),
+              t("⚙️ Настройки: 🔔 Когда писать · 🔕 Тишина · 👥 Помощники · 🔌 Подключения · 🌍 Для посетителей · 💾 Копия базы · 🕐 Часовой пояс · 🛠 Тонкие настройки (интервал проверки, порог «медленно», напоминания, язык)."),
               t("❓ Значки (кнопка под полем ввода) — что значат 🔴 🟠 ✅ ⚠️, пять видов тишины и команды.")]
     lines += ["", t("Ещё больше — если подключить сервисы: «🔌 Что можно подключить».")]
     return "\n".join(lines)
@@ -168,7 +167,8 @@ async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
             off.append((f"⚙️ {label.split(' ', 1)[-1]}", m.button[1]))
     rows, row = [], []
     for label, data in off:
-        row.append(InlineKeyboardButton(text=label, callback_data=data))
+        # Through the door: the wizard's «←» then leads back here, not to «🔌 Подключения».
+        row.append(InlineKeyboardButton(text=label, callback_data=f"about:go:{data}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -189,3 +189,13 @@ async def cb_about(call: CallbackQuery):
 async def cb_modules(call: CallbackQuery):
     await ack(call)
     await render(call, *await modules_page())
+
+
+@router.callback_query(F.data.startswith("about:go:setup:"))
+async def cb_go(call: CallbackQuery, dispatcher: Dispatcher, bot: Bot):
+    """A wizard opened from here: the door is set, and the wizard's own
+    handler draws its screen (through the dispatcher, as «✖️ Отмена» does)
+    with «← Что можно подключить» at the end instead of «← К подключениям»."""
+    set_wizard_door("about")
+    target = call.data.partition("about:go:")[2]
+    await dispatcher.feed_update(bot, Update(update_id=0, callback_query=call.model_copy(update={"data": target})))
