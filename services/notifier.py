@@ -72,8 +72,8 @@ from db.database import (
 )
 from services import health, helpers, maintenance, runtime, settings
 from utils.clock import now_local, to_local
-from utils.i18n import t
-from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc, plural
+from utils.i18n import plural, t
+from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +168,8 @@ async def _call(method, **kwargs):
         if await runtime.move_admin_chat(e.migrate_to_chat_id) and runtime.env_chat_outdated():
             try:
                 await _bot.send_message(chat_id=runtime.admin_chat_id(), text=(
-                    "Группа стала супергруппой — теперь пишу сюда. В .env замени "
-                    f"TELEGRAM_ADMIN_CHAT_ID на <code>{runtime.admin_chat_id()}</code>."))
+                    t("Группа стала супергруппой — теперь пишу сюда. В .env замени "
+                      "TELEGRAM_ADMIN_CHAT_ID на <code>{chat_id}</code>.").format(chat_id=runtime.admin_chat_id())))
             except Exception as note_error:
                 logger.warning("Could not ask to update TELEGRAM_ADMIN_CHAT_ID: %s", note_error)
     except TelegramRetryAfter as e:
@@ -314,8 +314,9 @@ async def release_held():
         if await maintenance.is_paused(item["site_id"]):
             continue
         at = parse_iso_utc(item.get("at"))
-        note = (f"🔕 Это случилось в {to_local(at).strftime('%H:%M')}, пока про сайт было тихо "
-                f"(«🔧 Я чиню» или плановые работы), и до сих пор не прошло:\n\n") if at else ""
+        note = (t("🔕 Это случилось в {time}, пока про сайт было тихо "
+                  "(«🔧 Я чиню» или плановые работы), и до сих пор не прошло:").format(time=to_local(at).strftime("%H:%M"))
+                + "\n\n") if at else ""
         helper_text = item.get("helper_text")
         sent = await send(clip(note + item["text"]), Priority(item["priority"]),
                           reply_markup=_markup(item.get("markup")), site_id=item["site_id"],
@@ -328,14 +329,14 @@ async def release_held():
 
 
 def _maybe_note() -> str:
-    return (f"⚠️ Если это сообщение уже было — это повтор: в {now_local():%H:%M} Telegram не подтвердил "
-            "доставку.\n\n")
+    return t("⚠️ Если это сообщение уже было — это повтор: в {time} Telegram не подтвердил "
+             "доставку.").format(time=f"{now_local():%H:%M}") + "\n\n"
 
 
 def _late_note(late: datetime) -> str:
     local = to_local(late)
     at = f"{local:%H:%M}" if local.date() == now_local().date() else f"{local:%d.%m %H:%M}"
-    return f"⏳ Задержалось с {at}, отправляю сейчас:\n\n"
+    return t("⏳ Задержалось с {time}, отправляю сейчас:").format(time=at) + "\n\n"
 
 
 @dataclass
@@ -436,7 +437,8 @@ async def _tell_helpers(text: str, ring: bool = True):
     targets = await helpers.helpers()
     if not targets:
         return
-    text = clip(text, SAFE_LIMIT - len(HELPER_FOOTER)) + HELPER_FOOTER
+    footer = t(HELPER_FOOTER)
+    text = clip(text, SAFE_LIMIT - len(footer)) + footer
     results = await asyncio.gather(*(_tell_helper(h["chat_id"], text, ring) for h in targets),
                                    return_exceptions=True)
     for h, result in zip(targets, results, strict=True):
@@ -513,8 +515,8 @@ async def flush_outbox():
             _delivered_rows.add(row["id"])     # delivered: never again, even if the row stays
     lost = await _dropped()
     if lost and not _later(await _deliver(
-            f"⚠️ Пока Telegram не принимал сообщения, {lost} из них не поместились в очередь и потерялись. "
-            "Что сейчас не так — на 🏠 Главной.", None, Priority.NORMAL)):
+            t("⚠️ Пока Telegram не принимал сообщения, {n} из них не поместились в очередь и потерялись. "
+              "Что сейчас не так — на 🏠 Главной.").format(n=lost), None, Priority.NORMAL)):
         try:
             await set_state(DROPPED_KEY, None)
         except sqlite3.OperationalError as e:
@@ -552,9 +554,9 @@ async def send_document_to_owner(document, caption: str) -> str | None:
     Not through _call(): a private chat never becomes a supergroup."""
     chat_id = runtime.owner_private_chat()
     if _bot is None:
-        return "бот ещё не запущен"
+        return t("бот ещё не запущен")
     if not chat_id:
-        return "не знаю твой личный чат со мной: укажи TELEGRAM_ADMIN_USER_ID в настройках сервера"
+        return t("не знаю твой личный чат со мной: укажи TELEGRAM_ADMIN_USER_ID в настройках сервера")
     try:
         await _bot.send_document(chat_id=chat_id, document=document, caption=caption,
                                  disable_notification=True)
@@ -564,11 +566,11 @@ async def send_document_to_owner(document, caption: str) -> str | None:
         # Telegram answers 403 «bot can't initiate conversation» or 400 «chat
         # not found» [not verified against the official Bot API text].
         logger.warning("Could not send a file to the owner's private chat: %s", e)
-        return "ты ещё не открывал личный чат со мной — открой его и нажми /start"
+        return t("ты ещё не открывал личный чат со мной — открой его и нажми /start")
     except Exception as e:
         # Not str(e): aiohttp's messages can carry the API address with the bot token.
         logger.error("Failed to send a file to the owner: %r", type(e).__name__)
-        return "Telegram не принял файл (сеть или сбой на его стороне)"
+        return t("Telegram не принял файл (сеть или сбой на его стороне)")
 
 
 DIGEST_BUTTONS = 8      # «ℹ️ N» buttons under one digest message: two rows of four
@@ -611,11 +613,12 @@ async def flush_queue():
     rows = await peek_notifications()
     if not rows:
         return
-    header = "🌙 Накопилось, пока было тихо:\n\n"
+    header = t("🌙 Накопилось, пока было тихо:") + "\n\n"
     dropped = int(await get_state(PENDING_DROPPED) or 0)
     if dropped > 0:
-        header += (f"(ещё {dropped} {plural(dropped, 'старое сообщение', 'старых сообщения', 'старых сообщений')} "
-                   f"не сохранил — очередь держит последние {PENDING_MAX})\n\n")
+        header += t("(ещё {n} {messages} не сохранил — очередь держит последние {max})").format(
+            n=dropped, messages=plural(dropped, "старое сообщение", "старых сообщения", "старых сообщений"),
+            max=PENDING_MAX) + "\n\n"
     text, batch, explains = header, [], []
     for row in rows:
         stamp = _stamp(row.get("created_at"))
@@ -625,7 +628,7 @@ async def flush_queue():
             if batch:
                 if not await _deliver_batch(text, batch, _digest_kb(explains)):
                     return
-                text, batch, explains = "🌙 (продолжение)\n\n", [], []
+                text, batch, explains = t("🌙 (продолжение)") + "\n\n", [], []
             alone = f"🕒 {stamp}\n{row['text']}" if stamp and len(row["text"]) + 20 < SAFE_LIMIT else row["text"]
             if not await _deliver_batch(clip(alone), [row], markup):
                 return
@@ -634,7 +637,7 @@ async def flush_queue():
         if batch and (len(text) + len(body) + 8 > SAFE_LIMIT or (explain and len(explains) >= DIGEST_BUTTONS)):
             if not await _deliver_batch(text, batch, _digest_kb(explains)):
                 return
-            text, batch, explains = "🌙 (продолжение)\n\n", [], []
+            text, batch, explains = t("🌙 (продолжение)") + "\n\n", [], []
         batch.append(row)
         text += f"{len(batch)}. {body}\n\n"         # numbered within its message: «ℹ️ N» points at it
         if explain:
@@ -673,8 +676,8 @@ async def _deliver_batch(text: str, batch: list[dict], markup=None) -> bool:
     else:
         logger.error("Quiet queue: dropping %d message(s) Telegram will never take", len(batch))
         await delete_notifications([r["id"] for r in batch])
-        await _deliver("⚠️ Одно отложенное сообщение Telegram так и не принял — я его убрал, чтобы "
-                       "не задерживать остальные.", None, Priority.NORMAL)
+        await _deliver(t("⚠️ Одно отложенное сообщение Telegram так и не принял — я его убрал, чтобы "
+                         "не задерживать остальные."), None, Priority.NORMAL)
         return True
     await delete_notifications([r["id"] for r in batch])
     return True

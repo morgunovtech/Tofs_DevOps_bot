@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from db.database import get_all_sites, get_state, set_state
 from monitors.pagemeta import suggest_keyword
 from services import gsc, integrations, public_urls, settings, yandex_webmaster
+from utils.i18n import t
 from utils.text import esc
 from utils.urls import is_web_page, site_label
 
@@ -32,10 +33,10 @@ async def _keyword_idea(http_sites: list[dict]) -> tuple[str, str, Buttons] | No
         await set_state(f"kw_suggest:{s['id']}", phrase)   # what «✅ Да, следить» will set
         label = esc(site_label(s["url"]))
         return ("keyword",
-                f"Сейчас я проверяю только, что {label} отвечает. Если вместо сайта откроется пустая "
-                f"страница или заглушка хостинга, я этого не замечу. Могу следить, чтобы на главной была "
-                f"фраза «{esc(phrase)}», — пропадёт, напишу. Следить?",
-                [("✅ Да, следить", f"kwok:{s['id']}"), ("Не надо", f"kwno:{s['id']}")])
+                t("Сейчас я проверяю только, что {label} отвечает. Если вместо сайта откроется пустая "
+                  "страница или заглушка хостинга, я этого не замечу. Могу следить, чтобы на главной была "
+                  "фраза «{phrase}», — пропадёт, напишу. Следить?").format(label=label, phrase=esc(phrase)),
+                [(t("✅ Да, следить"), f"kwok:{s['id']}"), (t("Не надо"), f"kwno:{s['id']}")])
     return None
 
 
@@ -51,36 +52,36 @@ async def _candidates() -> list[tuple[str, str, Buttons]]:
         out.append(idea)
     if not settings.status_page_enabled() and public_urls.is_public():   # no address — no page to give
         out.append(("status_page",
-                    "Могу вести публичную страницу «всё ли работает» с аптаймом — удобно давать ссылку "
-                    "клиентам или в README.",
-                    [("🌐 Включить статус-страницу", "setup:sp_on")]))
+                    t("Могу вести публичную страницу «всё ли работает» с аптаймом — удобно давать ссылку "
+                      "клиентам или в README."),
+                    [(t("🌐 Включить статус-страницу"), "setup:sp_on")]))
     if http_sites and not gsc.available():
         out.append(("gsc",
-                    "Подключи Google Search Console — узнаю в тот же день, если сайт выпадет из поиска, "
-                    "и покажу клики за неделю.",
-                    [("🔎 Подключить Google", "setup:gsc")]))
+                    t("Подключи Google Search Console — узнаю в тот же день, если сайт выпадет из поиска, "
+                      "и покажу клики за неделю."),
+                    [(t("🔎 Подключить Google"), "setup:gsc")]))
     if not settings.heartbeat_jobs():
         out.append(("heartbeat",
-                    "Есть бэкап по расписанию или другой бот? Добавь его на главный экран — скажу, "
-                    "если он молча перестанет запускаться.",
-                    [("⏰ Добавить задачу или бота", "hb_add")]))
+                    t("Есть бэкап по расписанию или другой бот? Добавь его на главный экран — скажу, "
+                      "если он молча перестанет запускаться."),
+                    [(t("⏰ Добавить задачу или бота"), "hb_add")]))
     if http_sites and not yandex_webmaster.available():
         out.append(("yandex",
-                    "Подключи Яндекс.Вебмастер — увижу проблемы сайта глазами Яндекса.",
-                    [("🔎 Подключить Яндекс", "setup:yx")]))
+                    t("Подключи Яндекс.Вебмастер — увижу проблемы сайта глазами Яндекса."),
+                    [(t("🔎 Подключить Яндекс"), "setup:yx")]))
     # Also while the hosting is not known yet (None), so a site added this
     # week still gets the tip; not when every known hosting is another one.
     if http_sites and not integrations.deploy_hooks() and ("cloudflare" in hostings or None in hostings):
         out.append(("cloudflare",
-                    "Если сайт на Cloudflare Pages, дай мне deploy hook — при падении пересоберу сайт сам, "
-                    "не дожидаясь тебя.",
-                    [("☁️ Подключить Cloudflare", "setup:cf")]))
+                    t("Если сайт на Cloudflare Pages, дай мне deploy hook — при падении пересоберу сайт сам, "
+                      "не дожидаясь тебя."),
+                    [(t("☁️ Подключить Cloudflare"), "setup:cf")]))
     kept = []
     for key, text, buttons in out:
         if key in TIPS:
             if await get_state(f"{DECLINED}{key}"):
                 continue
-            buttons = [*buttons, ("Не предлагать", f"rec_no:{key}")]
+            buttons = [*buttons, (t("Не предлагать"), f"rec_no:{key}")]
         kept.append((key, text, buttons))
     return kept
 

@@ -11,7 +11,8 @@ from datetime import UTC, datetime, timedelta
 
 from db.database import get_state, set_state
 from utils.clock import now_local
-from utils.text import fmt_duration, parse_iso_utc
+from utils.i18n import fmt_duration, t
+from utils.text import parse_iso_utc
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ FIX_MINUTES = 60
 
 def fix_length() -> str:
     """How the texts call FIX_MINUTES: «час» for the default, else «N мин / N ч»."""
-    return "час" if FIX_MINUTES == 60 else fmt_duration(FIX_MINUTES)
+    return t("час") if FIX_MINUTES == 60 else fmt_duration(FIX_MINUTES)
 
 # [{"id": 1, "site_id": None|int, "days": [0..6] ([] = daily),
 #   "start_min": 120, "end_min": 240}, …]  (minutes since local midnight)
@@ -148,13 +149,13 @@ def fmt_window(w: dict) -> str:
     day_names = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     days = w.get("days") or []
     if not days:
-        days_txt = "ежедневно"
+        days_txt = t("ежедневно")
     elif days == [0, 1, 2, 3, 4]:
-        days_txt = "будни"
+        days_txt = t("будни")
     elif days == [5, 6]:
-        days_txt = "выходные"
+        days_txt = t("выходные")
     else:
-        days_txt = " ".join(day_names[d] for d in days if 0 <= d <= 6)
+        days_txt = " ".join(t(day_names[d]) for d in days if 0 <= d <= 6)
     s, e = w["start_min"], w["end_min"]
     return f"{days_txt} · {s // 60:02d}:{s % 60:02d}–{e // 60:02d}:{e % 60:02d}"
 

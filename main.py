@@ -168,7 +168,7 @@ async def on_startup(bot: Bot):
     # enough that its silence meant nothing («Меня не было …»).
     if runtime.db_on_persistent_disk() is False:
         logger.warning("The database is not on a persistent disk — it is wiped on every deploy")
-        await _step("volume warning", notifier.send(runtime.NO_VOLUME))
+        await _step("volume warning", notifier.send(t(runtime.NO_VOLUME)))
     await _step("update report", _report_update())
     await _step("schema copy note", _report_schema_copy())
     await _step("catch-up after restart", catch_up_after_restart())
