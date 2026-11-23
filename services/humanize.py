@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from utils.i18n import fmt_duration, plural, t
+from utils.i18n import fmt_duration, language, plural, t
 
 # ── Levels: the one dictionary behind every icon the bot draws ──────────────
 #
@@ -231,6 +231,16 @@ def describe_error(text: str | None) -> str:
     """Technical error / incident message → short human phrase in the chat
     language (Russian text that is already human passes through unchanged)."""
     return _render(_phrase(text))
+
+
+def technical(text: str | None) -> str:
+    """A monitor's stored verdict for the grey footer: the raw string as it
+    is — except that Russian words a monitor wrote («на странице нет фразы
+    …») are rendered in English when the chat is English; for a Russian
+    chat nothing changes."""
+    if not text or language() == "ru" or not _CYRILLIC.search(text):
+        return text or ""
+    return describe_error(text)
 
 
 # ── Explanations: meaning, usual cause, steps ────────────────────────────────

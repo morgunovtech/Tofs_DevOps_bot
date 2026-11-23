@@ -434,6 +434,35 @@ STRINGS: dict[str, str] = {
     "сервис снимков не ответил, попробуй через минуту": "the screenshot service did not answer, try again in a minute",
     # ── services/index_status.py ────────────────────────────────────────────
     " и ": " and ",
+    # ── services/integrations.py: HEALTH titles and losses ─────────────────
+    "Яндекс.Вебмастер": "Yandex.Webmaster",
+    "данные Google о скорости у посетителей": "Google's data on the speed for visitors",
+    "check-host.net — вторая точка проверки": "check-host.net — the second vantage point",
+    "база уязвимостей OSV": "the OSV vulnerability database",
+    "RDAP — сроки доменов": "RDAP — domain expiry dates",
+    "тревога «Google убрал сайт из поиска» и клики в воскресном отчёте не работают":
+        "the «Google removed the site from search» alert and the clicks in the Sunday report do not work",
+    "тревоги о проблемах в Вебмастере и строки Яндекса в отчёте не работают":
+        "the alerts about Webmaster problems and the Yandex lines in the report do not work",
+    "строка «у посетителей» и её 🟠 не обновляются": "the «for visitors» line and its 🟠 are not updated",
+    "воскресная проверка репозиториев не работает": "the Sunday repository check does not work",
+    "тревога «сайт лёг» уходит без перепроверки извне, замер из региона не обновляется":
+        "the «site is down» alert goes out without an external re-check, the regional timing is not updated",
+    "проверка уязвимостей в пакетах бота не работает": "the vulnerability check of the bot's packages does not work",
+    "сроки регистрации доменов не обновляются": "the domain registration dates are not updated",
+    # ── services/crux.py ────────────────────────────────────────────────────
+    "вёрстка не прыгает": "the layout does not jump",
+    "вёрстка заметно прыгает при загрузке": "the layout visibly jumps while loading",
+    "вёрстка сильно прыгает при загрузке": "the layout jumps badly while loading",
+    "страница появляется за {seconds}": "the page appears in {seconds}",
+    "кнопки откликаются за {seconds}": "the buttons respond in {seconds}",
+    " — можно быстрее": " — could be faster",
+    " — медленно": " — slow",
+    "посетители Chrome за {days} дней, данные Google": "Chrome visitors over {days} days, Google's data",
+    " (данные на {date})": " (data as of {date})",
+    "{icon} У посетителей: {values} · {source}{dated}": "{icon} For visitors: {values} · {source}{dated}",
+    "👥 У посетителей: у Google пока мало данных по сайту — так у большинства небольших сайтов":
+        "👥 For visitors: Google has little data on the site so far — as with most small sites",
     # ── services/runtime.py ─────────────────────────────────────────────────
     "🟠 Моя база не на постоянном диске Railway: при каждом обновлении я забываю сайты, настройки и тебя как "
     "хозяина. Подключи диск: в Railway правый клик по сервису → Attach Volume → Mount Path <code>/app/data</code>, "

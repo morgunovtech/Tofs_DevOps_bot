@@ -18,6 +18,7 @@ import aiohttp
 from services import humanize, integrations
 from services.integrations import Probe
 from utils.clock import to_local
+from utils.i18n import t
 from utils.text import err_text, esc, parse_iso_utc
 
 logger = logging.getLogger(__name__)
@@ -137,11 +138,11 @@ def words(key: str, value: float, judged: bool = True) -> str:
     """The number in the owner's words, with the verdict unless judged=False."""
     lvl = level(key, value)
     if key == "cls":
-        return {"good": "вёрстка не прыгает", "improve": "вёрстка заметно прыгает при загрузке",
-                "poor": "вёрстка сильно прыгает при загрузке"}[lvl]
+        return t({"good": "вёрстка не прыгает", "improve": "вёрстка заметно прыгает при загрузке",
+                  "poor": "вёрстка сильно прыгает при загрузке"}[lvl])
     seconds = humanize.fmt_seconds(int(value))
-    text = f"страница появляется за {seconds}" if key == "lcp" else f"кнопки откликаются за {seconds}"
-    return text + ({"good": "", "improve": " — можно быстрее", "poor": " — медленно"}[lvl] if judged else "")
+    text = (t("страница появляется за {seconds}") if key == "lcp" else t("кнопки откликаются за {seconds}")).format(seconds=seconds)
+    return text + (t({"good": "", "improve": " — можно быстрее", "poor": " — медленно"}[lvl]) if judged else "")
 
 
 def verdict_icon(values: dict) -> str:
@@ -161,23 +162,26 @@ def slow_parts(values: dict) -> list[str]:
     return [words(k, values[k], judged=False) for k in ("lcp", "inp", "cls") if level(k, values.get(k)) == "poor"]
 
 
-SOURCE = f"посетители Chrome за {WINDOW_DAYS} дней, данные Google"
+def source() -> str:
+    """«посетители Chrome за 28 дней, данные Google» — the footer of every CrUX line."""
+    return t("посетители Chrome за {days} дней, данные Google").format(days=WINDOW_DAYS)
 
 
 def _dated(values: dict) -> str:
     """« (данные на 07.11)» when the snapshot is older than STALE_DAYS."""
     at = parse_iso_utc(values.get("at"))
     if at and (datetime.now(UTC) - at) > timedelta(days=STALE_DAYS):
-        return f" (данные на {to_local(at).strftime('%d.%m')})"
+        return t(" (данные на {date})").format(date=to_local(at).strftime("%d.%m"))
     return ""
 
 
 def card_line(values: dict | None) -> str | None:
     """The card line once Google has answered; None before (or without a key)."""
     if has_data(values):
-        return f"{verdict_icon(values)} У посетителей: {esc(describe(values))} · {SOURCE}{_dated(values)}"
+        return t("{icon} У посетителей: {values} · {source}{dated}").format(
+            icon=verdict_icon(values), values=esc(describe(values)), source=source(), dated=_dated(values))
     if values and values.get("none"):
-        return "👥 У посетителей: у Google пока мало данных по сайту — так у большинства небольших сайтов"
+        return t("👥 У посетителей: у Google пока мало данных по сайту — так у большинства небольших сайтов")
     return None
 
 

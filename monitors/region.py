@@ -16,6 +16,7 @@ import aiohttp
 
 from monitors.second_opinion import API, TIMEOUT, endpoint_for
 from services import integrations
+from utils.i18n import t
 from utils.text import err_text
 
 logger = logging.getLogger(__name__)
@@ -63,13 +64,14 @@ def country_for_timezone(tz: str) -> str:
 
 
 def node_name(node_key: str) -> str:
-    return NODE_NAMES.get(node_key[:2].lower(), "снаружи")
+    return t(NODE_NAMES.get(node_key[:2].lower(), "снаружи"))
 
 
 def region_words(country: str) -> str:
     """«из России» for a check-host country code; a country without words
     of its own is named by its code."""
-    return NODE_NAMES.get(country[:2].lower(), f"из страны {country[:2].upper()}")
+    name = NODE_NAMES.get(country[:2].lower())
+    return t(name) if name else t("из страны {code}").format(code=country[:2].upper())
 
 
 def parse_ms(node_result) -> int | None:
