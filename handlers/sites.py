@@ -1202,9 +1202,9 @@ async def cmd_restore(message: Message, state: FSMContext):
     if reply is not None and getattr(reply, "document", None) is not None:
         await _offer_restore(message, reply.document, state)
         return
-    await message.answer("Чтобы восстановить бота, пришли мне копию базы (.db), которую я присылаю по "
-                         "воскресеньям, — просто файлом, подпись не нужна. Или ответь /restore на сообщение "
-                         "с этим файлом.")
+    await message.answer(t("Чтобы восстановить бота, пришли мне копию базы (.db), которую я присылаю по "
+                           "воскресеньям, — просто файлом, подпись не нужна. Или ответь /restore на сообщение "
+                           "с этим файлом."))
 
 
 async def _offer_restore(message: Message, doc, state: FSMContext):
