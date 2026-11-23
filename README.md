@@ -8,6 +8,12 @@
 
 Made for people who have never heard of DNS or a 502. Three buttons under the input field: **🏠 Главная** (the main screen answers «is everything OK?»), **📖 Что я умею**, **❓ Значки**; every site has its own card. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
 
+<p align="center">
+  <img src="docs/images/home.png" width="31%" alt="Main screen: sites, mail, social networks, bots — one status line and one number each">
+  <img src="docs/images/alert.png" width="31%" alt="A problem card: what happened, what it means, what it usually is, what to do — with buttons">
+  <img src="docs/images/morning.png" width="31%" alt="The morning digest: sites in order, open problems, the week in numbers">
+</p>
+
 ## What you get
 
 - **Your site is down — you know first.** A check every 5 minutes, anti-flap and a second opinion from outside before waking you, an alert ladder instead of daily nagging, downtime in minutes rather than percent.
