@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import config
 from handlers.common import ack, render
 from services import crux, github, gsc, heartbeats, integrations, settings, yandex_webmaster
+from utils.i18n import t
 
 router = Router(name="about")
 
@@ -17,63 +18,63 @@ router = Router(name="about")
 def _features() -> list[tuple[str, list[tuple[str, str]]]]:
     """(group, [(what I do, what you get)]) — everything that works with no setup."""
     return [
-        ("🌐 Сайт работает", [
-            (f"Проверяю каждый сайт каждые {config.check_interval_minutes} мин",
-             "узнаёшь, что сайт лёг, раньше клиентов — и когда он снова поднялся"),
-            ("Слежу за фразой на странице (предложу при добавлении сайта)",
-             "ловлю «открывается, но не то»: пустую страницу, заглушку хостинга, текст ошибки"),
-            ("Обхожу страницы из карты сайта и ссылки с главной",
-             "битые страницы и ссылки не теряют тебе посетителей"),
-            ("Могу проверять главную функцию — форму или API (в карточке сайта)",
-             "знаешь, что сайт не просто открывается, а работает"),
+        (t("🌐 Сайт работает"), [
+            (t("Проверяю каждый сайт каждые {minutes} мин").format(minutes=config.check_interval_minutes),
+             t("узнаёшь, что сайт лёг, раньше клиентов — и когда он снова поднялся")),
+            (t("Слежу за фразой на странице (предложу при добавлении сайта)"),
+             t("ловлю «открывается, но не то»: пустую страницу, заглушку хостинга, текст ошибки")),
+            (t("Обхожу страницы из карты сайта и ссылки с главной"),
+             t("битые страницы и ссылки не теряют тебе посетителей")),
+            (t("Могу проверять главную функцию — форму или API (в карточке сайта)"),
+             t("знаешь, что сайт не просто открывается, а работает")),
         ]),
-        ("🔒 Ничего не истечёт и не сломается тихо", [
-            ("Слежу за сроком SSL-сертификата и домена",
-             "предупрежу заранее: браузер не покажет «опасно», домен не уйдёт"),
-            ("Сравниваю настройки домена (DNS) каждый час",
-             "сразу заметишь, если их кто-то сменил"),
-            ("Проверяю почту домена",
-             "письма клиентов доходят и не уходят в спам"),
-            ("Ищу открытые наружу файлы с кодом и паролями, проверяю https и защитные заголовки",
-             "закроешь дыры раньше, чем их найдут"),
+        (t("🔒 Ничего не истечёт и не сломается тихо"), [
+            (t("Слежу за сроком SSL-сертификата и домена"),
+             t("предупрежу заранее: браузер не покажет «опасно», домен не уйдёт")),
+            (t("Сравниваю настройки домена (DNS) каждый час"),
+             t("сразу заметишь, если их кто-то сменил")),
+            (t("Проверяю почту домена"),
+             t("письма клиентов доходят и не уходят в спам")),
+            (t("Ищу открытые наружу файлы с кодом и паролями, проверяю https и защитные заголовки"),
+             t("закроешь дыры раньше, чем их найдут")),
         ]),
-        ("🔍 Тебя находят", [
-            ("Каждый день проверяю, открыт ли сайт для Google, Яндекса и ИИ-ассистентов",
-             "сайт не выпадет из поиска из-за одной строки в robots.txt"),
+        (t("🔍 Тебя находят"), [
+            (t("Каждый день проверяю, открыт ли сайт для Google, Яндекса и ИИ-ассистентов"),
+             t("сайт не выпадет из поиска из-за одной строки в robots.txt")),
         ]),
-        ("🤖 Боты и задачи", [
-            ("Слежу, чтобы бэкапы, рассылки и другие боты выходили на связь (🤖 Боты → ➕)",
-             "узнаешь, что бэкап не сделался, а не в день, когда он понадобится"),
+        (t("🤖 Боты и задачи"), [
+            (t("Слежу, чтобы бэкапы, рассылки и другие боты выходили на связь (🤖 Боты → ➕)"),
+             t("узнаешь, что бэкап не сделался, а не в день, когда он понадобится")),
         ]),
-        ("🔔 Пишу только по делу", [
-            ("Молчу, когда всё хорошо; утром — одно «всё в порядке»",
-             "не привыкаешь пропускать мои сообщения"),
-            ("В каждой тревоге — что случилось, что это значит для посетителей и что делать",
-             "не нужно быть инженером"),
-            ("Звоню, только когда сайт лёг; остальное приходит без звука" if settings.ring_only_down()
-             else "Звоню по 🔴 и когда упавший сайт снова открылся; остальное приходит без звука",
-             "не дёргаю по мелочам"),
-            ("По воскресеньям — отчёт за неделю",
-             "видишь, сколько сайт был недоступен и что стоит улучшить"),
-            ("Звоню и помощникам — до трёх человек (⚙️ Настройки → 👥)",
-             "отвечаешь за сайт не один"),
+        (t("🔔 Пишу только по делу"), [
+            (t("Молчу, когда всё хорошо; утром — одно «всё в порядке»"),
+             t("не привыкаешь пропускать мои сообщения")),
+            (t("В каждой тревоге — что случилось, что это значит для посетителей и что делать"),
+             t("не нужно быть инженером")),
+            (t("Звоню, только когда сайт лёг; остальное приходит без звука") if settings.ring_only_down()
+             else t("Звоню по 🔴 и когда упавший сайт снова открылся; остальное приходит без звука"),
+             t("не дёргаю по мелочам")),
+            (t("По воскресеньям — отчёт за неделю"),
+             t("видишь, сколько сайт был недоступен и что стоит улучшить")),
+            (t("Звоню и помощникам — до трёх человек (⚙️ Настройки → 👥)"),
+             t("отвечаешь за сайт не один")),
         ]),
     ]
 
 
 def features_text() -> str:
-    lines = ["📖 <b>Что я умею — сам, без настроек</b>"]
+    lines = [t("📖 <b>Что я умею — сам, без настроек</b>")]
     for group, items in _features():
         lines += ["", f"<b>{group}</b>"]
         lines += [f"• {what} → <i>{gain}</i>" for what, gain in items]
-    lines += ["", "Ещё больше — если подключить сервисы: «🔌 Что можно подключить»."]
+    lines += ["", t("Ещё больше — если подключить сервисы: «🔌 Что можно подключить».")]
     return "\n".join(lines)
 
 
 def features_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔌 Что можно подключить", callback_data="about:modules")],
-        [InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")]])
+        [InlineKeyboardButton(text=t("🔌 Что можно подключить"), callback_data="about:modules")],
+        [InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]])
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class Module:
     button: tuple[str, str]
 
 
+# Russian, like every constant: modules_page() translates each field as it draws it.
 MODULES = (
     ("second_opinion", Module(
         "🌐 Вторая точка проверки",
@@ -147,16 +149,18 @@ async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
     on = await _connected()
     # Connected, but its key is refused or it has not answered for a day.
     silent = {key for key in ("gsc", "yandex", "crux", "github") if on.get(key) and await integrations.broken(key)}
-    lines = ["🔌 <b>Что можно подключить</b> — всё необязательно, я работаю и без этого.",
-             "<i>Что даёт → кому нужно</i>"]
+    lines = [t("🔌 <b>Что можно подключить</b> — всё необязательно, я работаю и без этого."),
+             t("<i>Что даёт → кому нужно</i>")]
     off = []
     for key, m in MODULES:
-        mark = (" ⚠️ подключено, но не отвечает" if key in silent else " ✅ подключено") if on.get(key) else ""
-        lines += ["", f"<b>{m.title}</b>{mark}", f"{m.gives[:1].upper()}{m.gives[1:]} → <i>{m.who}</i>."]
+        mark = (t(" ⚠️ подключено, но не отвечает") if key in silent else t(" ✅ подключено")) if on.get(key) else ""
+        gives = t(m.gives)
+        lines += ["", f"<b>{t(m.title)}</b>{mark}", f"{gives[:1].upper()}{gives[1:]} → <i>{t(m.who)}</i>."]
+        label = t(m.button[0])
         if not on.get(key) or key == "second_opinion":   # its screen is where it is switched off too
-            off.append(m.button)
+            off.append((label, m.button[1]))
         elif key != "status_page":   # a connected one keeps a way into its wizard: a new key, «🗑 Отключить»
-            off.append((f"⚙️ {m.button[0].split(' ', 1)[-1]}", m.button[1]))
+            off.append((f"⚙️ {label.split(' ', 1)[-1]}", m.button[1]))
     rows, row = [], []
     for label, data in off:
         row.append(InlineKeyboardButton(text=label, callback_data=data))
@@ -165,8 +169,8 @@ async def modules_page() -> tuple[str, InlineKeyboardMarkup]:
             row = []
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="← Что я умею", callback_data="about:main"),
-                 InlineKeyboardButton(text="🏠 Главная", callback_data="menu_main")])
+    rows.append([InlineKeyboardButton(text=t("← Что я умею"), callback_data="about:main"),
+                 InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 

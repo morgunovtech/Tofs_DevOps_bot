@@ -57,7 +57,7 @@ from db.database import (  # noqa: E402
 )
 from db.migrations import StartRefused  # noqa: E402
 from handlers import router  # noqa: E402
-from handlers.common import BOTTOM, MAX_SITES, LeanMemoryStorage  # noqa: E402
+from handlers.common import MAX_SITES, LeanMemoryStorage, bottom  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
 from handlers.start import BOTTOM_SHOWN  # noqa: E402
 from monitors import parse_worker  # noqa: E402
@@ -79,6 +79,7 @@ from services import (  # noqa: E402
     settings,
     updates,
 )
+from utils.i18n import t  # noqa: E402
 from utils.urls import proxy_label, proxy_problem, site_label  # noqa: E402
 from web.webhook import start_web_server  # noqa: E402
 
@@ -97,12 +98,12 @@ class SelfCheckFailed(RuntimeError):
 
 def check_token(token: str) -> None:
     if not token:
-        raise ConfigError("TELEGRAM_BOT_TOKEN не задан — возьми токен у @BotFather и впиши его в .env")
+        raise ConfigError(t("TELEGRAM_BOT_TOKEN не задан — возьми токен у @BotFather и впиши его в .env"))
     try:
         validate_token(token)
     except TokenValidationError:
-        raise ConfigError("TELEGRAM_BOT_TOKEN не похож на токен бота (цифры, двоеточие, буквы) — "
-                          "скопируй его у @BotFather целиком") from None
+        raise ConfigError(t("TELEGRAM_BOT_TOKEN не похож на токен бота (цифры, двоеточие, буквы) — "
+                            "скопируй его у @BotFather целиком")) from None
 
 
 async def seed_sites(raw_urls: list[str]) -> list[str]:
@@ -136,8 +137,8 @@ async def whoami(bot: Bot, first_delay: float = 1.0) -> str:
         try:
             return (await bot.me()).username
         except TelegramUnauthorizedError:
-            raise ConfigError("Telegram не принял TELEGRAM_BOT_TOKEN: токен отозван или скопирован "
-                              "не целиком — возьми новый у @BotFather") from None
+            raise ConfigError(t("Telegram не принял TELEGRAM_BOT_TOKEN: токен отозван или скопирован "
+                                "не целиком — возьми новый у @BotFather")) from None
         except Exception as e:
             logger.warning("Telegram is not reachable yet (%s) — next try in %.0f s", type(e).__name__, delay)
             await asyncio.sleep(delay)
@@ -176,9 +177,9 @@ async def on_startup(bot: Bot):
 async def _report_schema_copy():
     reason = database.migrated_without_copy()
     if reason:
-        await notifier.send("🟠 Обновил схему базы без копии перед обновлением: не смог её сохранить "
-                            f"({reason}). Откат на прошлую версию потребует ночной копии из data/backups. "
-                            "Проверь место на диске с базой.")
+        await notifier.send(t("🟠 Обновил схему базы без копии перед обновлением: не смог её сохранить "
+                              "({reason}). Откат на прошлую версию потребует ночной копии из data/backups. "
+                              "Проверь место на диске с базой.").format(reason=reason))
 
 
 async def _report_update():
@@ -193,8 +194,8 @@ async def _show_bottom_buttons(bot: Bot):
     if not chat or await get_state(BOTTOM_SHOWN):
         return
     try:
-        await bot.send_message(chat, "Главные кнопки теперь всегда под полем ввода: 🏠 Главная, 📖 Что я умею "
-                                     "и ❓ Значки. Меню ☰ убрал.", reply_markup=BOTTOM)
+        await bot.send_message(chat, t("Главные кнопки теперь всегда под полем ввода: 🏠 Главная, 📖 Что я умею "
+                                       "и ❓ Значки. Меню ☰ убрал."), reply_markup=bottom())
         await set_state(BOTTOM_SHOWN, "1")
     except Exception as e:
         logger.warning("Could not show the bottom buttons: %s", e)

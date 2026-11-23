@@ -10,7 +10,7 @@ dynamic = ["dependencies"]
 
 [tool.setuptools]
 py-modules = ["main", "config"]
-packages = ["db", "handlers", "monitors", "reports", "services", "utils", "web"]
+packages = ["db", "handlers", "locales", "locales.en", "monitors", "reports", "services", "utils", "web"]
 package-data = { web = ["templates/*.html", "feedback-widget.js"] }
 
 [tool.setuptools.dynamic]
@@ -26,7 +26,7 @@ select = ["E", "F", "W", "I", "B", "UP", "PLC0415"]
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "db", "handlers", "monitors", "reports", "services", "utils", "web"]
+known-first-party = ["config", "db", "handlers", "locales", "monitors", "reports", "services", "utils", "web"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

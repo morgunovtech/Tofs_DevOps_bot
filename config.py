@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
+from utils import i18n
 from utils.parse import parse_hour_range
 from utils.validate import HOURS
 
@@ -186,7 +187,7 @@ def _choice(name: str, allowed: tuple[str, ...], default: str) -> str:
     return default
 
 
-def _timezone(name: str, default: str = "Europe/Moscow") -> str:
+def _timezone(name: str, default: str) -> str:
     raw = os.getenv(name, "").strip() or default
     try:
         ZoneInfo(raw)
@@ -196,6 +197,12 @@ def _timezone(name: str, default: str = "Europe/Moscow") -> str:
         logger.warning("Unknown %s=%r — using %s", name, raw, default)
         return default
 
+
+# The bot's own language — every screen, alert and report — ru (default) or
+# en. What visitors see has its own STATUS_PAGE_LANG. Read before the class:
+# the default timezone follows the language (Europe/Moscow for ru, UTC for en).
+_LANG = _choice("BOT_LANG", i18n.LANGUAGES, "ru")
+DEFAULT_TIMEZONE = {"ru": "Europe/Moscow", "en": "UTC"}
 
 DEFAULT_NET_CANARIES = ("1.1.1.1,8.8.8.8,9.9.9.9,2606:4700:4700::1111,2001:4860:4860::8888,"
                         "one.one.one.one,dns.google,dns.quad9.net")
@@ -233,7 +240,8 @@ class Config:
     morning_report_hour: int = _int("MORNING_REPORT_HOUR", 9, *HOURS)
     evening_report_hour: int = _int("EVENING_REPORT_HOUR", 21, *HOURS)
     weekly_report_hour: int = _int("WEEKLY_REPORT_HOUR", 11, *HOURS)
-    timezone: str = _timezone("TIMEZONE")
+    lang: str = _LANG
+    timezone: str = _timezone("TIMEZONE", DEFAULT_TIMEZONE[_LANG])
     webhook_port: int = _port("WEBHOOK_PORT", 8080)
     # Raw env values; services.secrets replaces empty/placeholder values
     # with generated ones persisted in the DB.
@@ -347,3 +355,7 @@ class Config:
 
 
 config = Config()
+# Before any handler module is imported: their constants are Russian and are
+# translated at render time, but the filters of the bottom buttons compare
+# against the translated labels.
+i18n.set_language(config.lang)

@@ -197,7 +197,7 @@ async def test_admin_text_outside_a_step_gets_an_answer(bot, db, monkeypatch):
     tg, session = await _bot()
     await DP.feed_raw_update(tg, _message(777, "https://example.com", 821))
     sent = [m for m in session.calls if isinstance(m, SendMessage)]
-    assert sent and "Не понял" in sent[-1].text and sent[-1].reply_markup == common.BOTTOM
+    assert sent and "Не понял" in sent[-1].text and sent[-1].reply_markup == common.bottom()
     monkeypatch.setattr(runtime, "_chat_id", str(GROUP["id"]))         # in the admin group: silence
     session.calls.clear()
     await DP.feed_raw_update(tg, _raw(777, "смотрю", 822, chat=GROUP))

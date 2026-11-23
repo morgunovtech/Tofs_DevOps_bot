@@ -24,6 +24,7 @@ from aiogram.types import (
 from db.database import get_site
 from handlers.filters import AdminFilter
 from services import helpers, runtime
+from utils.i18n import t
 from utils.text import clip
 
 logger = logging.getLogger(__name__)
@@ -54,16 +55,24 @@ async def forget_secret(message: Message) -> bool:
     except TelegramAPIError as e:
         logger.warning("Could not delete a message with a secret: %s", type(e).__name__)
         try:
-            await message.answer(NOT_DELETED)
+            await message.answer(t(NOT_DELETED))
         except TelegramAPIError:
             pass
         return False
 
-# The bot's three doors, always under the input field (no ☰ menu).
+# The bot's three doors, always under the input field (no ☰ menu). Russian
+# here like every constant; bottom() and the filters in handlers.bottom
+# translate them.
 HOME, ABOUT, ICONS = "🏠 Главная", "📖 Что я умею", "❓ Значки"
-BOTTOM = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=HOME), KeyboardButton(text=ABOUT), KeyboardButton(text=ICONS)]],
-    resize_keyboard=True, is_persistent=True)
+
+
+def bottom() -> ReplyKeyboardMarkup:
+    """The three buttons under the input field, in the chat language."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=t(HOME)), KeyboardButton(text=t(ABOUT)), KeyboardButton(text=t(ICONS))]],
+        resize_keyboard=True, is_persistent=True)
+
+
 MAX_SITES = 20
 # One word for one thing on every screen: the way home, a check again, a
 # way out of a step (UX-051).
@@ -73,14 +82,15 @@ NOT_UNDERSTOOD = "Не понял. Всё — кнопками под полем
 
 
 def back_button(text: str = HOME, callback: str = "menu_main") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=text, callback_data=callback)]])
+    """One button back; the label is translated here, so a caller passes its Russian source."""
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(text), callback_data=callback)]])
 
 
 def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
     """«✖️ Отмена» under an input step; back — the callback of the screen
     the step was opened from, which «Отмена» draws again (handlers.menu)."""
     data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=CANCEL, callback_data=data)]])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(CANCEL), callback_data=data)]])
 
 
 class DropInputOnNavigation(BaseMiddleware):
@@ -236,8 +246,8 @@ async def on_handler_error(event: ErrorEvent):
         logger.warning("Telegram flood control: a screen waits %s s", event.exception.retry_after)
         if call:
             try:
-                await call.answer(f"Telegram просит подождать {event.exception.retry_after} с — "
-                                  f"нажми ещё раз чуть позже", show_alert=True)
+                await call.answer(t("Telegram просит подождать {sec} с — нажми ещё раз чуть позже")
+                                  .format(sec=event.exception.retry_after), show_alert=True)
             except Exception:
                 pass   # the tap was already answered: there is nothing else to say it with
         return True
@@ -254,22 +264,22 @@ async def on_handler_error(event: ErrorEvent):
         if call and (data.startswith(("act:", "hb_how:", "hb_rm:", "hb_rm_ok:")) or data.endswith(":a")):
             # Buttons that live ON alert messages and digests — never
             # overwrite that text with an error screen; reply separately.
-            await call.message.answer("❌ Действие не удалось. Попробуй ещё раз чуть позже.")
+            await call.message.answer(t("❌ Действие не удалось. Попробуй ещё раз чуть позже."))
         elif call and call.message:
             # «во время проверки» only where a check was running: a screen
             # that failed to draw was not checking anything.
             checking = data.startswith("check_") or data.endswith("_live") or data == "setup:check" \
                 or data.split(":")[0].endswith("_live")
             await call.message.edit_text(
-                "❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже." if checking
-                else "❌ Не получилось открыть экран. Попробуй ещё раз чуть позже.",
+                t("❌ Что-то пошло не так во время проверки.\nПопробуй ещё раз чуть позже.") if checking
+                else t("❌ Не получилось открыть экран. Попробуй ещё раз чуть позже."),
                 reply_markup=back_button())
         elif update and update.message:
-            await update.message.answer("❌ Что-то пошло не так. Попробуй ещё раз чуть позже.")
+            await update.message.answer(t("❌ Что-то пошло не так. Попробуй ещё раз чуть позже."))
     except Exception:
         if call:  # message too old to edit (48h+) — at least acknowledge the tap
             try:
-                await call.answer(STALE_BUTTON, show_alert=True)
+                await call.answer(t(STALE_BUTTON), show_alert=True)
             except Exception:
                 pass
     return True
@@ -284,7 +294,7 @@ stale_router = Router(name="stale")
 async def stale_callback(call: CallbackQuery):
     """A button no handler knows any more (an old alert, a removed feature):
     say so instead of leaving the spinner hanging."""
-    await ack(call, STALE_BUTTON, show_alert=True)
+    await ack(call, t(STALE_BUTTON), show_alert=True)
 
 
 @stale_router.message(StateFilter(None), F.chat.type == "private")
@@ -293,7 +303,7 @@ async def unknown_message(message: Message):
     by handlers.setup before this): say where the buttons are, not nothing.
     In the admin group a word under an alert («смотрю») gets no answer —
     the reply keyboard would be shown to the whole group."""
-    await message.answer(NOT_UNDERSTOOD, reply_markup=BOTTOM)
+    await message.answer(t(NOT_UNDERSTOOD), reply_markup=bottom())
 
 
 # ── Non-admins ───────────────────────────────────────────────────────────────
@@ -346,11 +356,11 @@ async def deny(message: Message, text: str = DENIED) -> None:
             and not _admin_elsewhere(message)):
         return
     if text in (ELSEWHERE, NO_OWNER):
-        await message.answer(text)
+        await message.answer(t(text))
         return
     if deny_due(who):
         logger.info("Refused user %s in chat %s", who, message.chat.id)
-        await message.answer(text)
+        await message.answer(t(text))
 
 
 @deny_router.message(F.text.startswith("/"), ~AdminFilter())
@@ -364,7 +374,7 @@ async def deny_command(message: Message):
 @deny_router.callback_query(~AdminFilter())
 async def deny_callback(call: CallbackQuery):
     who = call.from_user.id if call.from_user else 0
-    text = ELSEWHERE if _admin_elsewhere(call) else "⛔ Доступ запрещён"
+    text = t(ELSEWHERE) if _admin_elsewhere(call) else t("⛔ Доступ запрещён")
     await ack(call, text if deny_due(who) else None, show_alert=True)
 
 

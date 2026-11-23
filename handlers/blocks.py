@@ -12,6 +12,7 @@ from reports.scheduler import backup_info, send_copy_to_owner
 from services import heartbeats, settings, updates
 from services.heartbeats import job_states
 from utils.clock import to_local
+from utils.i18n import t
 from utils.text import esc, fmt_duration, parse_iso_utc
 
 router = Router(name="blocks")
@@ -25,16 +26,16 @@ def backup_state() -> tuple[str, str, str]:
     is there a fresh copy."""
     backup = backup_info()
     if backup is None:
-        return "⏳", "первая — сегодня ночью", "⏳ Резервная копия базы — первую сделаю сегодня ночью."
+        return "⏳", t("первая — сегодня ночью"), t("⏳ Резервная копия базы — первую сделаю сегодня ночью.")
     age_h = (datetime.now(UTC) - backup[1]).total_seconds() / 3600
     when = to_local(backup[1]).strftime("%d.%m %H:%M")
     if age_h >= 36:
-        return ("🟠", f"последняя {when}",
-                f"🟠 Резервная копия базы — последняя {when}: ночные копии не делаются. Чаще всего "
-                f"кончилось место на диске.")
-    weekly = ("по воскресеньям присылаю тебе в личку — без ключей подключений" if settings.weekly_backup()
-              else "в Telegram не присылаю (выключено в «🔔 Когда писать»)")
-    return "✅", when, f"✅ Резервная копия базы — {when}. Делаю каждую ночь, {weekly}."
+        return ("🟠", t("последняя {when}").format(when=when),
+                t("🟠 Резервная копия базы — последняя {when}: ночные копии не делаются. Чаще всего "
+                  "кончилось место на диске.").format(when=when))
+    weekly = (t("по воскресеньям присылаю тебе в личку — без ключей подключений") if settings.weekly_backup()
+              else t("в Telegram не присылаю (выключено в «🔔 Когда писать»)"))
+    return "✅", when, t("✅ Резервная копия базы — {when}. Делаю каждую ночь, {weekly}.").format(when=when, weekly=weekly)
 
 
 async def bots_page() -> tuple[str, InlineKeyboardMarkup]:

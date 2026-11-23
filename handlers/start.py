@@ -10,12 +10,13 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import get_all_sites, get_state, set_state
-from handlers.common import BOTTOM, HELPER_NOTE, back_button, deny, refusal
+from handlers.common import HELPER_NOTE, back_button, bottom, deny, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from handlers.setup import last_steps
 from services import helpers, notifier, railway, runtime, settings
 from utils.clock import now_local
+from utils.i18n import t
 from utils.text import esc
 
 logger = logging.getLogger(__name__)
@@ -60,31 +61,33 @@ BOTTOM_NOTE = "Главные кнопки — под полем ввода: �
 def rules_of_the_game() -> str:
     """One message that removes the novice's main fear: «will it spam me?»"""
     quiet = settings.quiet_hours()
-    quiet_line = (f"Ночью с {quiet[0]}:00 до {quiet[1]}:00 не бужу — некритичное подожду до утра."
-                  if quiet else "Тихих часов нет — можно включить в ⚙️ Настройках.")
-    return ("Как я работаю:\n"
-            f"• Проверяю каждый сайт каждые {config.check_interval_minutes} мин.\n"
-            "• Пишу только если что-то сломалось, и сразу говорю, что делать.\n"
-            f"• Каждое утро в {settings.morning_hour()}:00 одно короткое «всё в порядке».\n"
+    quiet_line = (t("Ночью с {start}:00 до {end}:00 не бужу — некритичное подожду до утра.")
+                  .format(start=quiet[0], end=quiet[1])
+                  if quiet else t("Тихих часов нет — можно включить в ⚙️ Настройках."))
+    return (t("Как я работаю:") + "\n"
+            + t("• Проверяю каждый сайт каждые {minutes} мин.").format(minutes=config.check_interval_minutes) + "\n"
+            + t("• Пишу только если что-то сломалось, и сразу говорю, что делать.") + "\n"
+            + t("• Каждое утро в {hour}:00 одно короткое «всё в порядке».").format(hour=settings.morning_hour()) + "\n"
             f"• {quiet_line}\n"
             f"• {_down_line()}\n"
-            # Moscow by default: an owner in Berlin or London would get «9:00» at night otherwise.
-            f"• Время — по поясу {esc(settings.timezone())}: у меня сейчас {now_local():%H:%M}. "
-            "Если у тебя другое — ⚙️ Настройки → 🕐 Часовой пояс.")
+            # Moscow by default (UTC with BOT_LANG=en): an owner elsewhere would get «9:00» at night otherwise.
+            + t("• Время — по поясу {zone}: у меня сейчас {now}. Если у тебя другое — ⚙️ Настройки → 🕐 Часовой пояс.")
+            .format(zone=esc(settings.timezone()), now=f"{now_local():%H:%M}"))
 
 
-# Under «Как я работаю» after /start: the timezone screen (handlers.settings).
-TZ_BUTTON = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🕐 Сменить часовой пояс", callback_data="menu_tz")]])
+def tz_button() -> InlineKeyboardMarkup:
+    """Under «Как я работаю» after /start: the timezone screen (handlers.settings)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("🕐 Сменить часовой пояс"), callback_data="menu_tz")]])
 
 
 def _down_line() -> str:
     """What the escalation really does (reports.scheduler.run_escalation_watch):
     reminders at a growing pause, none at all with 0 repeats."""
     repeat = config.escalation_repeat_min
-    return ("Если сайт лёг, напишу в любое время"
-            + (f" и напомню через {repeat} мин, потом всё реже (не чаще раза в 4 ч), пока не поднимется."
-               if repeat else "."))
+    return (t("Если сайт лёг, напишу в любое время")
+            + (t(" и напомню через {repeat} мин, потом всё реже (не чаще раза в 4 ч), пока не поднимется.")
+               .format(repeat=repeat) if repeat else "."))
 
 
 _HELPER_ANSWERS = {
@@ -102,17 +105,17 @@ async def cmd_start_helper(message: Message, command: CommandObject, state: FSMC
     admin seat, whatever happens."""
     await state.clear()
     if runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer("Это приглашение для помощника — перешли ссылку тому, кто подстрахует тебя.")
+        await message.answer(t("Это приглашение для помощника — перешли ссылку тому, кто подстрахует тебя."))
         return
     if message.chat.type != "private":
-        await message.answer("Открой эту ссылку в личном чате со мной.")
+        await message.answer(t("Открой эту ссылку в личном чате со мной."))
         return
     name = message.from_user.full_name if message.from_user else ""
     result = await helpers.accept(command.args[len(helpers.PAYLOAD_PREFIX):], message.chat.id, name)
-    await message.answer(_HELPER_ANSWERS[result])
+    await message.answer(t(_HELPER_ANSWERS[result]))
     if result == "ok":
-        await notifier.send(f"👥 {esc(name)} теперь получает «сайт лёг» и «снова работает». "
-                            "Убрать — ⚙️ Настройки → 👥 Помощники.")
+        await notifier.send(t("👥 {name} теперь получает «сайт лёг» и «снова работает». "
+                              "Убрать — ⚙️ Настройки → 👥 Помощники.").format(name=esc(name)))
 
 
 @router.message(F.migrate_from_chat_id)
@@ -122,21 +125,21 @@ async def on_group_upgraded(message: Message):
     if str(message.migrate_from_chat_id) == runtime.admin_chat_id():
         await runtime.move_admin_chat(message.chat.id)
         if runtime.env_chat_outdated():
-            await message.answer(f"Группа стала супергруппой — теперь пишу сюда. В .env замени "
-                                 f"TELEGRAM_ADMIN_CHAT_ID на <code>{message.chat.id}</code>.")
+            await message.answer(t("Группа стала супергруппой — теперь пишу сюда. В .env замени "
+                                   "TELEGRAM_ADMIN_CHAT_ID на <code>{chat_id}</code>.").format(chat_id=message.chat.id))
 
 
 @router.message(Command("stop"))
 async def cmd_stop(message: Message):
     if runtime.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer(f"Ты владелец. Чтобы я помолчал — /mute 8h. {notifier.what_rings_through_mute()}")
+        await message.answer(t("Ты владелец. Чтобы я помолчал — /mute 8h.") + f" {notifier.what_rings_through_mute()}")
         return
     gone = await helpers.remove(message.chat.id)
     if not gone:
         await deny(message)
         return
-    await message.answer("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца.")
-    await notifier.send(f"👥 {esc(gone['name'])} больше не получает «сайт лёг» и «снова работает».")
+    await message.answer(t("Больше не присылаю тревоги. Вернуться можно по новой ссылке от владельца."))
+    await notifier.send(t("👥 {name} больше не получает «сайт лёг» и «снова работает».").format(name=esc(gone["name"])))
 
 
 def _claim_refusal(message: Message) -> str | None:
@@ -175,13 +178,13 @@ async def cmd_start(message: Message, state: FSMContext):
     if not runtime.has_admin() and message.from_user:
         refusal_text = _claim_refusal(message)
         if refusal_text:
-            await message.answer(refusal_text)
+            await message.answer(t(refusal_text))
             return
         claimed = await runtime.claim(message.chat.id, message.from_user.id)
         if claimed:
             await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
-            await message.answer("🔑 Ты стал администратором этого бота — все отчёты "
-                                 "и тревоги будут приходить сюда.")
+            await message.answer(t("🔑 Ты стал администратором этого бота — все отчёты "
+                                   "и тревоги будут приходить сюда."))
             if runtime.db_on_persistent_disk() is False:   # now, before the first site is typed in
                 await message.answer(runtime.NO_VOLUME)
     if not in_admin_chat(message):
@@ -189,16 +192,16 @@ async def cmd_start(message: Message, state: FSMContext):
         return
     if claimed:
         await message.answer(
-            "👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
-            "Всё под рукой — кнопки под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки.\n\n"
-            "Назван в честь Тофса — ирландского терьера, который принимает "
-            "аптайм близко к сердцу.",
-            reply_markup=BOTTOM)
+            t("👋 Привет! Я TofsDevOps — слежу за твоими сайтами, чтобы тебе не пришлось.\n"
+              "Всё под рукой — кнопки под полем ввода: 🏠 Главная, 📖 Что я умею и ❓ Значки.\n\n"
+              "Назван в честь Тофса — ирландского терьера, который принимает "
+              "аптайм близко к сердцу."),
+            reply_markup=bottom())
         await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
-        await message.answer(rules_of_the_game(), reply_markup=TZ_BUTTON)
+        await message.answer(rules_of_the_game(), reply_markup=tz_button())
         await set_state(RULES_SHOWN, "1")
     elif not await get_state(BOTTOM_SHOWN):
-        await message.answer(BOTTOM_NOTE, reply_markup=BOTTOM)
+        await message.answer(t(BOTTOM_NOTE), reply_markup=bottom())
         await set_state(BOTTOM_SHOWN, "1")
     await send_main_menu(message)
     await offer_last_steps(message)
@@ -209,4 +212,4 @@ async def cmd_help(message: Message):
     if not in_admin_chat(message):
         await deny(message, HELPER_NOTE if await helpers.is_helper(message.chat.id) else refusal(message))
         return
-    await message.answer(HELP, reply_markup=back_button())
+    await message.answer(t(HELP), reply_markup=back_button())
