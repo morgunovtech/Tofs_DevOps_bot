@@ -201,7 +201,9 @@ async def test_the_owner_hears_when_a_secret_could_not_be_deleted(bot, db):
 def test_a_token_in_the_path_never_goes_to_check_host():
     """Telegram keeps the bot token in the PATH, webhook services their key:
     a query-only rule sent the whole address to an outside service."""
-    bot_api = "https://api.telegram.org/bot123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/getMe"
+    # Shaped like a bot token (9 digits, a colon, 35 characters), assembled
+    # here so that no token-shaped literal sits in the repository.
+    bot_api = "https://api.telegram.org/bot" + "1" * 9 + ":AAF" + "x" * 32 + "/getMe"
     assert not repeatable({"url": bot_api}) and endpoint_for(bot_api) is None
     hook = "https://api.example.com/hooks/x7Kq9mPz2LwQ4rT8vB1nC6yH"
     assert not repeatable({"url": hook}) and endpoint_for(hook) is None

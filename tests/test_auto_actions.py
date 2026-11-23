@@ -423,8 +423,8 @@ def test_a_domain_typed_on_its_own_is_not_a_key():
     assert not setup.looks_like_key("my-shop-2024.example.com")
     assert not setup.looks_like_key("shop24.example.co.uk")
     assert not setup.looks_like_key("Api.Example.Com")                 # not a token either: no digit
-    assert setup.looks_like_key("AIzaSyD4ab8Xy9Qw1234567890123456789012")  # a Google key stays one
-    assert setup.looks_like_key("0123456789abcdef0123456789abcdef01234567")  # a Cloudflare token too
+    assert setup.looks_like_key("AIzaSy" + "D4ab8Xy9Qw" * 3)             # a Google key stays one (built: no literal)
+    assert setup.looks_like_key("0123456789abcdef" * 2 + "01234567")      # a Cloudflare token too
 
 
 def test_callback_numbers_are_ascii_digits_only():
