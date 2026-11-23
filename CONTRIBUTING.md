@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. This is a personal bot shared as-is; issues and pull requests are welcome. The bot speaks Russian to its owner and most of the long docs are Russian (`docs/FEATURES.md`, `docs/SETUP.md`, `docs/WHY.md`, `docs/DEVELOPMENT.md`); `docs/FEATURES.en.md` is the English inventory of everything it does.
+Thanks for looking. This is a personal bot shared as-is; issues and pull requests are welcome. The bot speaks Russian or English to its owner (`BOT_LANG`; Russian is the source language of every string, English lives in `locales/en/`) and most of the long docs are Russian (`docs/FEATURES.md`, `docs/SETUP.md`, `docs/WHY.md`, `docs/DEVELOPMENT.md`); `docs/FEATURES.en.md` is the English inventory of everything it does.
 
 ## Before you open an issue
 

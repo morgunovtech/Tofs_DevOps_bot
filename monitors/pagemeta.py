@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 
 from monitors import parse_worker
 from monitors.base import decode_body, phrase_found, read_capped
+from utils.i18n import t
 from utils.net import owner_connector
 from utils.urls import USER_AGENT, host_of, registrable_domain
 
@@ -68,13 +69,11 @@ async def alt_host_note(url: str) -> str | None:
                 if 300 <= resp.status < 400:
                     return None                       # redirects to the main version — fine
                 if resp.status == 200:
-                    return (f"ℹ️ {alt} открывается как отдельный сайт, а не перенаправляет на {host}. "
-                            f"Поисковики могут считать это двумя сайтами; обычно настраивают редирект.")
+                    return (t("ℹ️ {alt} открывается как отдельный сайт, а не перенаправляет на {host}. Поисковики могут считать это двумя сайтами; обычно настраивают редирект.").format(alt=alt, host=host))
     except aiohttp.ClientConnectorCertificateError:
         # The twin answers, but with a certificate for another name: whoever
         # types the address that way meets the browser's warning page.
-        return (f"⚠️ {alt} открывается с ошибкой сертификата — кто наберёт адрес так, увидит "
-                f"предупреждение браузера. Выпусти сертификат и на {alt} или настрой редирект на {host}.")
+        return (t("⚠️ {alt} открывается с ошибкой сертификата — кто наберёт адрес так, увидит предупреждение браузера. Выпусти сертификат и на {alt} или настрой редирект на {host}.").format(alt=alt, host=host))
     except Exception:
         return None                                   # no twin — nothing to say
     return None

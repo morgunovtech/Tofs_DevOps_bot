@@ -4,7 +4,9 @@ that drifted from its English entry falls back to Russian and shows up here.
 Russian itself is covered by every other test: with BOT_LANG=ru t() returns
 its argument."""
 
+import ast
 import dataclasses
+import glob
 import re
 from datetime import timedelta
 from types import SimpleNamespace
@@ -51,6 +53,8 @@ from handlers import (
 from handlers import (
     setup as setup_screen,
 )
+from locales.en import PLURALS, STRINGS
+from monitors import domain_checker, mail_checker, security_checker, seo_checker
 from monitors.base import (
     AvailabilityResult,
     DnsChange,
@@ -773,3 +777,56 @@ async def test_settings_connections_and_wizards(bot, db, monkeypatch):
         english_only(line)
     for line in github.summary_lines({"at": "2026-11-20T10:00:00+00:00", "error": "GitHub did not answer", "partial": 0}):
         english_only(line)
+
+
+def test_every_key_in_the_code_has_an_entry():
+    """Static: every t("…") literal and every plural() singular in the code
+    has an English entry — a key renamed in one place and not the other is
+    caught without rendering the screen."""
+    missing = []
+    for path in sorted(p for folder in ("handlers", "services", "reports", "monitors", "web", ".")
+                       for p in glob.glob(f"{folder}/*.py")):
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            if name == "t" and node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                if CYRILLIC.search(node.args[0].value) and node.args[0].value not in STRINGS:
+                    missing.append(f"{path}:{node.lineno} {node.args[0].value[:60]!r}")
+            if name == "plural" and len(node.args) == 4 and isinstance(node.args[1], ast.Constant):
+                if node.args[1].value not in PLURALS:
+                    missing.append(f"{path}:{node.lineno} plural {node.args[1].value!r}")
+    assert missing == [], "\n".join(missing)
+
+
+def test_monitor_findings_are_written_in_the_chat_language():
+    """Findings go into the snapshot as the owner will read them; the
+    verdicts humanize's rules know stay Russian keys."""
+    for f in mail_checker.assess("ex.test", ["mx.proton.me"], ["v=spf1 +all", "v=spf1 include:x ~all"], 12, set(), None,
+                                 ["v=DMARC1; p=none", "v=DMARC1"], "in the DNS at Cloudflare"):
+        for part in (f.title, f.why, f.fix, f.note):
+            english_only(part)
+    for f in mail_checker.assess("ex.test", ["mx.proton.me"], [], 0, set(), None, ["v=DMARC1"]):
+        english_only(f.title + f.why + f.fix + f.note)
+    english_only(mail_checker.summary([{"title": "No SPF record"}, {"title": "x"}]))
+    for f in security_checker.assess("https://ex.test", "cloudflare", True, True, True, ["X-Frame-Options", "Referrer-Policy"]):
+        english_only(f.title + f.why + f.fix + f.note)
+    for hosting in (None, "vercel", "netlify", "github"):
+        for f in security_checker.assess("https://ex.test", hosting, False, False, True, ["X-Frame-Options"]):
+            english_only(f.title + f.why + f.fix + f.note)
+    english_only(security_checker.summary([{"title": "The .env file is exposed"}, {"title": "x"}]))
+    html = ("<html><head><link rel=canonical href='http://other.test/'><script type='application/ld+json'>{bad</script>"
+            "</head><body>short</body></html>")
+    problems, _ = seo_checker.analyze_page(html, "https://ex.test/about", {"X-Robots-Tag": "noindex"}, is_home=False)
+    problems += seo_checker.analyze_page("<html><head><title>x</title><meta name=description content=y></head><body></body></html>",
+                                         "https://ex.test/", is_home=True)[0]
+    problems += seo_checker.analyze_robots("User-agent: *\nDisallow: /\nUser-agent: GPTBot\nDisallow: /", "https://ex.test")[0]
+    assert problems
+    for p in problems:
+        english_only(p.message)
+    message = seo_checker.incident_message(problems)
+    assert message.startswith("закрыт от поиска — ")                 # the key the rules and classify() know
+    english_only(humanize.describe_error(message))
+    for host in ("1.2.3.4", "myapp.vercel.app", "nas.local"):
+        english_only(domain_checker.no_domain_reason(host) or "")

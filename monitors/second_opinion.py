@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from services import integrations
+from utils.i18n import t
 from utils.net import is_private_target, resolves_private
 from utils.text import err_text
 from utils.urls import PAGE_METHODS, is_http_url
@@ -170,7 +171,7 @@ async def second_opinion(url: str, region: str | None = None) -> Verdict:
             return await _ask(*target, region_node(region))
     except TimeoutError:
         logger.warning("Second opinion for %s: no verdict in %s s", url, BUDGET_SEC)
-        await integrations.record_result("checkhost", False, f"нет вердикта за {BUDGET_SEC} с")
+        await integrations.record_result("checkhost", False, t("нет вердикта за {BUDGET_SEC} с").format(BUDGET_SEC=BUDGET_SEC))
     except Exception as e:
         logger.warning("Second opinion for %s failed: %s", url, err_text(e))
         await integrations.record_result("checkhost", False, err_text(e))
@@ -193,7 +194,7 @@ async def _start(session: aiohttp.ClientSession, endpoint: str, params: dict) ->
     """Begin a check; the request id to poll, None when the service refuses."""
     async with session.get(f"{API}/{endpoint}", params=params) as resp:
         if resp.status != 200:
-            await integrations.record_result("checkhost", False, f"check-host.net ответил HTTP {resp.status}")
+            await integrations.record_result("checkhost", False, t("check-host.net ответил HTTP {status}").format(status=resp.status))
             return None
         data = await resp.json()
     if not isinstance(data, dict):
@@ -280,7 +281,7 @@ async def tcp_by_node(target: str, nodes: list[str] | None = None) -> dict[str, 
                 timeout=TIMEOUT, headers={"Accept": "application/json"}) as session:
             async with session.get(f"{API}/check-tcp", params=params) as resp:
                 if resp.status != 200:
-                    await integrations.record_result("checkhost", False, f"check-host.net ответил HTTP {resp.status}")
+                    await integrations.record_result("checkhost", False, t("check-host.net ответил HTTP {status}").format(status=resp.status))
                     return {}
                 data = await resp.json()
             if not isinstance(data, dict) or not data.get("request_id"):

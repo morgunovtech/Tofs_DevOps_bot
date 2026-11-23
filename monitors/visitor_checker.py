@@ -10,6 +10,7 @@ from db.database import get_or_create_site, resolve_incident
 from monitors.base import CheckResult
 from monitors.ladder import apply_incident
 from services import crux, sitestatus
+from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ def _origin(url: str) -> str:
 
 def message(slow: list[str]) -> str:
     """«у посетителей страница появляется за 5.2 с»."""
-    return "у посетителей " + "; ".join(slow)
+    return t("у посетителей ") + "; ".join(slow)
 
 
 async def check_visitors(url: str, chrome: dict | None, fresh: bool = True) -> VisitorsResult:

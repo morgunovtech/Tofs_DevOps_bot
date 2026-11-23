@@ -40,7 +40,7 @@ from monitors.dns_checker import query, resolve
 from monitors.ladder import apply_findings, apply_incident, told_after, told_before
 from monitors.second_opinion import BUDGET_SEC, tcp_by_node
 from services import hosting, humanize, integrations, sitestatus
-from utils.text import plural
+from utils.i18n import plural, t
 from utils.urls import host_of, owned_domain, registrable_domain
 
 logger = logging.getLogger(__name__)
@@ -214,18 +214,18 @@ def merge_spf(records: list[str], provider: Provider | None) -> str:
     terms: list[str] = []
     alls = []
     for rec in records:
-        for t in _terms(rec):
-            bare = t.lstrip("+-~?").lower()
+        for term in _terms(rec):
+            bare = term.lstrip("+-~?").lower()
             if bare == "all":
-                alls.append(t[0] if t[0] in "+-~?" else "+")
+                alls.append(term[0] if term[0] in "+-~?" else "+")
                 continue
             if bare.startswith("redirect="):
-                t = "include:" + t.split("=", 1)[1]
+                term = "include:" + term.split("=", 1)[1]
             elif bare.startswith("exp="):
                 continue
-            if t.lstrip("+").lower() not in {x.lstrip("+").lower() for x in terms}:
-                terms.append(t)
-    if provider and provider.sends and not any(t.lower() == f"include:{s}" for s in provider.spf for t in terms):
+            if term.lstrip("+").lower() not in {x.lstrip("+").lower() for x in terms}:
+                terms.append(term)
+    if provider and provider.sends and not any(term.lower() == f"include:{s}" for s in provider.spf for term in terms):
         terms.insert(0, f"include:{provider.spf[0]}")
     final = "-all" if alls and all(q == "-" for q in alls) else "~all"
     return " ".join(["v=spf1", *terms, final])
@@ -237,36 +237,34 @@ def _with_include(record: str, include: str) -> str:
 
 
 def _names(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " и " + items[-1]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + t(" и ") + items[-1]
 
 
 def assess(domain: str, mx: list[str], spf: list[str], spf_lookups: int, spf_includes: set[str],
-           dkim: bool | None, dmarc: list[str], where: str = "в DNS домена") -> list[Finding]:
+           dkim: bool | None, dmarc: list[str], where: str | None = None) -> list[Finding]:
     """What makes the domain's letters land in spam or lets anyone send in
     its name — each with what to do. Pure: the lookups are done before."""
+    where = where or t("в DNS домена")
     if not mx and not sends_mail(spf):
         return []   # no mail on this domain
     provider = provider_for(mx)
     sending = provider if provider and provider.sends else None
     out: list[Finding] = []
-    spam = "письма с домена могут уходить в спам"
+    spam = t("письма с домена могут уходить в спам")
     if not spf:
         record = f"v=spf1 include:{sending.spf[0]} ~all" if sending else "v=spf1 mx ~all"
-        out.append(Finding("spf_missing", "Нет записи SPF",
-                           "почтовые сервисы не знают, кто вправе слать письма от имени домена: твои письма "
-                           "чаще попадают в спам, а подделать твой адрес проще",
-                           f"Добавь {where} запись TXT для {domain}:", record))
+        out.append(Finding("spf_missing", t("Нет записи SPF"),
+                           t("почтовые сервисы не знают, кто вправе слать письма от имени домена: твои письма чаще попадают в спам, а подделать твой адрес проще"),
+                           t("Добавь {where} запись TXT для {domain}:").format(where=where, domain=domain), record))
     elif len(spf) > 1:
         merged = merge_spf(spf, provider)
         others = list(dict.fromkeys(p.name for t in merged.split() if t.lower().startswith("include:")
                                     for p in [provider_by_include(t[len("include:"):])] if p and p != provider))
-        note = (f"Если через {_names(others)} ты больше не отправляешь почту — убери "
-                f"{'его' if len(others) == 1 else 'их'} из записи." if others else "")
+        note = (t("Если через {names} ты больше не отправляешь почту — убери {words} из записи.").format(names=_names(others), words=t("его") if len(others) == 1 else t("их")) if others else "")
         n = len(spf)
-        out.append(Finding("spf_multiple", f"{n} {plural(n, 'запись', 'записи', 'записей')} SPF вместо одной",
-                           f"почтовые сервисы считают это ошибкой и не доверяют ни одной, поэтому {spam}",
-                           f"Оставь {where} одну запись TXT, начинающуюся с v=spf1, — вот такую, а остальные "
-                           f"удали:", merged, note))
+        out.append(Finding("spf_multiple", t("{n} {words} SPF вместо одной").format(n=n, words=plural(n, 'запись', 'записи', 'записей')),
+                           t("почтовые сервисы считают это ошибкой и не доверяют ни одной, поэтому {spam}").format(spam=spam),
+                           t("Оставь {where} одну запись TXT, начинающуюся с v=spf1, — вот такую, а остальные удали:").format(where=where), merged, note))
     else:
         # One corrected record for every SPF finding: the owner pastes it
         # once, not one version per finding.
@@ -279,53 +277,47 @@ def assess(domain: str, mx: list[str], spf: list[str], spf_lookups: int, spf_inc
         if no_provider:
             fixed = _with_include(fixed, sending.spf[0])
         if open_all:
-            out.append(Finding("spf_open", "SPF разрешает слать письма от твоего имени кому угодно",
-                               "в записи стоит «+all» — подделать твой адрес может любой",
-                               f"Замени {where} запись SPF на такую:", fixed))
+            out.append(Finding("spf_open", t("SPF разрешает слать письма от твоего имени кому угодно"),
+                               t("в записи стоит «+all» — подделать твой адрес может любой"),
+                               t("Замени {where} запись SPF на такую:").format(where=where), fixed))
         if spf_lookups > SPF_LOOKUP_LIMIT:
-            out.append(Finding("spf_too_long", f"В SPF больше {SPF_LOOKUP_LIMIT} вложенных проверок",
-                               f"почтовые сервисы бросают такую запись на полпути и считают ошибкой, поэтому {spam}",
-                               "Убери из записи SPF сервисы, через которые ты больше не отправляешь почту: "
-                               "каждый include стоит одну или несколько проверок."))
+            out.append(Finding("spf_too_long", t("В SPF больше {SPF_LOOKUP_LIMIT} вложенных проверок").format(SPF_LOOKUP_LIMIT=SPF_LOOKUP_LIMIT),
+                               t("почтовые сервисы бросают такую запись на полпути и считают ошибкой, поэтому {spam}").format(spam=spam),
+                               t("Убери из записи SPF сервисы, через которые ты больше не отправляешь почту: каждый include стоит одну или несколько проверок.")))
         if no_provider:
-            out.append(Finding("spf_no_provider", f"В SPF нет {sending.name}",
-                               f"письма, которые ты отправляешь через {sending.name}, не проходят проверку, поэтому "
-                               f"могут уходить в спам",
-                               f"Запись SPF из пункта выше уже включает {sending.name} — вставь её." if open_all
-                               else f"Добавь {sending.name} в запись SPF {where} — получится так:",
+            out.append(Finding("spf_no_provider", t("В SPF нет {name}").format(name=sending.name),
+                               t("письма, которые ты отправляешь через {name}, не проходят проверку, поэтому могут уходить в спам").format(name=sending.name),
+                               t("Запись SPF из пункта выше уже включает {name} — вставь её.").format(name=sending.name) if open_all
+                               else t("Добавь {name} в запись SPF {where} — получится так:").format(name=sending.name, where=where),
                                "" if open_all else fixed))
     if sending and dkim is False:
-        out.append(Finding("dkim_missing", "Письма не подписаны (нет DKIM)",
-                           "без подписи письма с домена чаще попадают в спам, а подделку от них не отличить",
-                           f"Включи DKIM в настройках {sending.name}: он покажет одну–три записи (CNAME или TXT) "
-                           f"— добавь их {where}.", "",
-                           f"Искал по стандартным именам: {', '.join(f'{s}._domainkey' for s in sending.dkim)}."))
+        out.append(Finding("dkim_missing", t("Письма не подписаны (нет DKIM)"),
+                           t("без подписи письма с домена чаще попадают в спам, а подделку от них не отличить"),
+                           t("Включи DKIM в настройках {name}: он покажет одну–три записи (CNAME или TXT) — добавь их {where}.").format(name=sending.name, where=where), "",
+                           t("Искал по стандартным именам: {items}.").format(items=', '.join(f'{s}._domainkey' for s in sending.dkim))))
     if not dmarc:
         policy = "none" if out else "quarantine"
-        out.append(Finding("dmarc_missing", "Нет DMARC",
-                           "почтовые сервисы не знают, что делать с письмами, которые подделывают твой адрес, — "
-                           "и пропускают их",
-                           f"Добавь {where} запись TXT с именем _dmarc.{domain}:", f"v=DMARC1; p={policy}",
-                           "Когда починишь остальное, поменяй p=none на p=quarantine — тогда подделки будут "
-                           "уходить в спам." if policy == "none" else ""))
+        out.append(Finding("dmarc_missing", t("Нет DMARC"),
+                           t("почтовые сервисы не знают, что делать с письмами, которые подделывают твой адрес, — и пропускают их"),
+                           t("Добавь {where} запись TXT с именем _dmarc.{domain}:").format(where=where, domain=domain), f"v=DMARC1; p={policy}",
+                           t("Когда починишь остальное, поменяй p=none на p=quarantine — тогда подделки будут уходить в спам.") if policy == "none" else ""))
     elif len(dmarc) > 1:
         n = len(dmarc)
-        out.append(Finding("dmarc_multiple", f"{n} {plural(n, 'запись', 'записи', 'записей')} DMARC вместо одной",
-                           "почтовые сервисы считают это ошибкой и не применяют ни одну",
-                           f"Оставь {where} одну запись TXT для _dmarc.{domain} — например, эту, — а остальные "
-                           f"удали:", dmarc[0]))
+        out.append(Finding("dmarc_multiple", t("{n} {words} DMARC вместо одной").format(n=n, words=plural(n, 'запись', 'записи', 'записей')),
+                           t("почтовые сервисы считают это ошибкой и не применяют ни одну"),
+                           t("Оставь {where} одну запись TXT для _dmarc.{domain} — например, эту, — а остальные удали:").format(where=where, domain=domain), dmarc[0]))
     elif dmarc_policy(dmarc[0]) is None:
-        out.append(Finding("dmarc_invalid", "Запись DMARC с ошибкой",
-                           "в ней нет правила p=, поэтому почтовые сервисы её не применяют",
-                           f"Замени {where} запись TXT для _dmarc.{domain} на такую:", "v=DMARC1; p=quarantine"))
+        out.append(Finding("dmarc_invalid", t("Запись DMARC с ошибкой"),
+                           t("в ней нет правила p=, поэтому почтовые сервисы её не применяют"),
+                           t("Замени {where} запись TXT для _dmarc.{domain} на такую:").format(where=where, domain=domain), "v=DMARC1; p=quarantine"))
     return out
 
 
 def summary(findings: list[dict]) -> str:
     """The incident message: «почта — нет DMARC и ещё 1 помеха»."""
     rest = len(findings) - 1
-    more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest else ""
-    return f"почта — {humanize.lower_first(findings[0]['title'])}{more}"
+    more = t(" и ещё {rest} {words}").format(rest=rest, words=plural(rest, 'помеха', 'помехи', 'помех')) if rest else ""
+    return t("почта — {text}{more}").format(text=humanize.lower_first(findings[0]['title']), more=more)
 
 
 # ── Delivery ─────────────────────────────────────────────────────────────────
@@ -402,7 +394,7 @@ def carriers(urls: list[str]) -> dict[str, str]:
 async def dns_where(domain: str) -> str:
     """«в DNS у Cloudflare» — where the records are edited."""
     ns = await get_dns_record(domain, "NS")
-    return f"в DNS у {hosting.dns_provider(ns[0])}" if ns and ns[0] and ns[0] != "—" else "в DNS домена"
+    return t("в DNS у {dns_provider}").format(dns_provider=hosting.dns_provider(ns[0])) if ns and ns[0] and ns[0] != "—" else t("в DNS домена")
 
 
 async def carrier_of(url: str) -> str | None:
@@ -474,8 +466,8 @@ async def check_mail(domain: str, url: str, manage: bool = True) -> list[MailRes
 
 def down_message(reason: str | None, provider: str | None) -> str:
     if reason == "nowhere":
-        return "почта не принимает письма — записи MX ведут на сервер, которого нет"
-    return f"почта не принимает письма — {provider or 'почтовый сервер'} не отвечает"
+        return t("почта не принимает письма — записи MX ведут на сервер, которого нет")
+    return t("почта не принимает письма — {v} не отвечает").format(v=provider or t("почтовый сервер"))
 
 
 async def check_all_mail(urls: list[str], manage: bool = True) -> list[MailResult]:

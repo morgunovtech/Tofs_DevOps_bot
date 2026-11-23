@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from config import config
 from db.database import db_file, get_state, set_state
 from services import automation, docker_api
+from utils.i18n import t
 from utils.text import parse_iso_utc
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,8 @@ def _disks() -> dict[str, str]:
     """Where to look: the container's own disk and the one holding the
     database — on Railway a separate small volume that fills up unnoticed."""
     db_dir = os.path.dirname(os.path.abspath(db_file())) or "/"
-    return {"/": "Диск на сервере бота", db_dir: "Диск с базой бота"} if db_dir != "/" else {
-        "/": "Диск на сервере бота"}
+    return {"/": t("Диск на сервере бота"), db_dir: t("Диск с базой бота")} if db_dir != "/" else {
+        "/": t("Диск на сервере бота")}
 
 
 def _measure() -> dict:
@@ -96,8 +97,8 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
         return result                         # off, paused or done lately: the gate said why in the log
     await set_state("disk_pruned_at", now.isoformat())
     cleaned = await docker_api.prune()
-    await automation.finish(row, "Docker не ответил" if cleaned is None
-                            else f"освободил {cleaned['bytes'] / 1e9:.1f} GB")
+    await automation.finish(row, t("Docker не ответил") if cleaned is None
+                            else t("освободил {n:.1f} GB").format(n=cleaned['bytes'] / 1000000000.0))
     if cleaned is not None:
         result["cleaned"], result["cleaned_bytes"] = cleaned, cleaned["bytes"]
         # Measure everything again, so the alert's percent and gigabytes agree.
@@ -172,7 +173,7 @@ async def watch_containers() -> list[dict]:
         if not (unhealthy or stopped):
             events.append({"name": name, "waiting": True})      # «health: starting»: no verdict yet
             continue
-        problem = UNHEALTHY_WORDS if unhealthy else STATE_WORDS.get(c["state"], f"не запущен ({c['state']})")
+        problem = UNHEALTHY_WORDS if unhealthy else STATE_WORDS.get(c["state"], t("не запущен ({state})").format(state=c["state"]))
         history = _history(await get_state(f"restarts:{name}"))
         if len(history) >= RESTART_BUDGET:
             events.append({"name": name, "problem": problem, "gave_up": True})
@@ -193,10 +194,10 @@ async def watch_containers() -> list[dict]:
         await set_state(f"restarts:{name}", json.dumps([t.isoformat() for t in history]))
         restarted = await docker_api.restart_container(name)
         verdict = await _comes_up(name, run_deadline) if restarted else False
-        await automation.finish(row, "перезапустил, работает" if verdict
-                                else "перезапустил, вердикта пока нет" if verdict is None
-                                else "перезапустил, всё ещё нездоров" if restarted
-                                else "Docker не принял команду")
+        await automation.finish(row, t("перезапустил, работает") if verdict
+                                else t("перезапустил, вердикта пока нет") if verdict is None
+                                else t("перезапустил, всё ещё нездоров") if restarted
+                                else t("Docker не принял команду"))
         event = {"name": name, "problem": problem, "restarted": restarted, "ok_after": bool(verdict)}
         if verdict is None:
             event["unverified"] = True

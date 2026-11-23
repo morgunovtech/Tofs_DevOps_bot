@@ -27,6 +27,7 @@ import dns.exception
 import dns.resolver
 
 from db.database import get_dns_state, get_state, set_dns_state, set_state
+from utils.i18n import t
 from utils.urls import host_of, owned_domain
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,7 @@ async def _check_record(host: str, rtype: str) -> dict | None:
         if n == FAILS_TO_SAY:
             # Said once; the baseline stays — it is the last known good answer.
             return {"host": host, "rtype": rtype, "old": await get_dns_state(host, rtype) or "—",
-                    "new": "не отвечает", "critical": rtype == "NS", "failing": True}
+                    "new": t("не отвечает"), "critical": rtype == "NS", "failing": True}
         return None
     _failures.pop((host, rtype), None)
     current = ", ".join(values) if values else "—"
@@ -172,13 +173,13 @@ async def check_all_dns(urls: list[str]) -> list[dict]:
     hosts = sorted({h for h in (host_of(u) for u in urls) if h and owned_domain(h)})
     domains = {owned_domain(h) for h in hosts}
     rtypes = await asyncio.gather(*(_host_rtypes(h) for h in hosts), return_exceptions=True)
-    for h, t in zip(hosts, rtypes, strict=True):
-        if isinstance(t, BaseException):
-            logger.error("DNS CNAME lookup for %s failed: %r", h, t)
+    for h, found in zip(hosts, rtypes, strict=True):
+        if isinstance(found, BaseException):
+            logger.error("DNS CNAME lookup for %s failed: %r", h, found)
     # One host's unexpected error must not cost every other host its DNS check.
-    rtypes = [HOST_RTYPES if isinstance(t, BaseException) else t for t in rtypes]
-    pairs = [(h, t) for h, types in zip(hosts, rtypes, strict=True) for t in types]
-    pairs += [(d, t) for d in sorted(domains) for t in DOMAIN_RTYPES]
+    rtypes = [HOST_RTYPES if isinstance(found, BaseException) else found for found in rtypes]
+    pairs = [(h, rtype) for h, types in zip(hosts, rtypes, strict=True) for rtype in types]
+    pairs += [(d, rtype) for d in sorted(domains) for rtype in DOMAIN_RTYPES]
     results = await asyncio.gather(*(_check_record(n, t) for n, t in pairs), return_exceptions=True)
     changes = []
     for r in results:
