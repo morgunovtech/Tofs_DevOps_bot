@@ -9,6 +9,7 @@ what it usually is, and what to do. Pure functions, unit-tested.
 import re
 from dataclasses import dataclass
 
+from utils.i18n import t
 from utils.text import fmt_duration, plural
 
 # ── Levels: the one dictionary behind every icon the bot draws ──────────────
@@ -41,10 +42,12 @@ def worst_severity(severities) -> str | None:
 # ── Short phrases for technical error strings ────────────────────────────────
 
 def fmt_seconds(ms: int | float | None) -> str:
+    """«0.12 с» · «1.5 с» · «12 с» — the unit word follows the chat language."""
     if ms is None:
         return "—"
     s = ms / 1000
-    return f"{s:.2f} с" if s < 1 else (f"{s:.1f} с" if s < 10 else f"{s:.0f} с")
+    number = f"{s:.2f}" if s < 1 else (f"{s:.1f}" if s < 10 else f"{s:.0f}")
+    return t("{seconds} с").format(seconds=number)
 
 
 def speed(ms: int | float | None, region: str | None = None) -> str:

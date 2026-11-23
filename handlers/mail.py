@@ -13,6 +13,7 @@ from reports.formatter import finding_block
 from reports.scheduler import MAIL_RECHECK_MIN, schedule_mail_recheck
 from services import integrations, sitestatus
 from services.humanize import lower_first
+from utils.i18n import t
 from utils.text import esc, fmt_duration, plural
 from utils.urls import host_of, registrable_domain
 
@@ -25,7 +26,7 @@ def _ago(section: dict) -> str:
 
 
 def _who(mail: dict) -> str:
-    return mail.get("provider") or (mail.get("mx") or ["почтовый сервер"])[0]
+    return mail.get("provider") or (mail.get("mx") or [t("почтовый сервер")])[0]
 
 
 def _receives_line(mail: dict) -> str:
@@ -49,15 +50,15 @@ def _receives_line(mail: dict) -> str:
 def mail_brief(mail: dict | None) -> tuple[str, str]:
     """(icon, words) for the domain's line on the main screen."""
     if mail is None:
-        return "⏳", "ещё не проверял"
+        return "⏳", t("ещё не проверял")
     if not mail.get("mx") and not mail.get("sends_only"):
-        return "✅", "почты нет"
+        return "✅", t("почты нет")
     if mail.get("accepts") is False and (mail.get("fails") or 0) >= FAILS_TO_ALERT:
-        return "🔴", "не принимает письма"
+        return "🔴", t("не принимает письма")
     findings = mail.get("findings") or []
     if findings:
         rest = len(findings) - 1
-        more = f" и ещё {rest} {plural(rest, 'помеха', 'помехи', 'помех')}" if rest else ""
+        more = t(" и ещё {n} {obstacles}").format(n=rest, obstacles=plural(rest, "помеха", "помехи", "помех")) if rest else ""
         return "🟠", f"{lower_first(findings[0]['title'])}{more}"
     return "✅", _who(mail)
 

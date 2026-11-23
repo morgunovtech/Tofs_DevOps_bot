@@ -27,7 +27,8 @@ from monitors.mail_checker import MAIL_CHECKS, carriers
 from services import heartbeats, humanize, maintenance, notifier, sitestatus, updates
 from services.heartbeats import Job, Watchdog, job_states
 from utils.clock import to_local, utcnow
-from utils.text import esc, plural
+from utils.i18n import plural, t
+from utils.text import esc
 from utils.urls import is_api_check, is_web_page, site_label, ssl_applies
 
 router = Router(name="menu")
@@ -72,8 +73,8 @@ def _due(what: str, days: int) -> str:
     """«сертификат истёк» · «сертификат истекает сегодня» · «сертификат через 5 дн.» —
     short, for the main screen; the last days in words (services.humanize)."""
     if days < 0:
-        return f"{what} истёк"
-    return humanize.expires_words(what, days) if days <= 1 else f"{what} через {days} дн."
+        return t("{what} истёк").format(what=t(what))
+    return humanize.expires_words(what, days) if days <= 1 else t("{what} через {days} дн.").format(what=t(what), days=days)
 
 
 async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[str, str, float | None]:
@@ -85,10 +86,11 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
     st = await sitestatus.get(site["id"])
     avail = st.get("avail")
     if not avail:
-        return "⏳", "ждёт первой проверки", None
+        return "⏳", t("ждёт первой проверки"), None
     age = sitestatus.age_minutes(avail)
     if avail.get("status") == "unknown":
-        return humanize.UNCHECKED, f"не могу проверить: {humanize.describe_error(avail.get('error'))}", age
+        return (humanize.UNCHECKED,
+                t("не могу проверить: {why}").format(why=humanize.describe_error(avail.get("error"))), age)
     if avail.get("status") != "ok":
         return "🔴", humanize.describe_error(avail.get("error")), age
     if is_api_check(site["url"], site.get("http_method")):
@@ -111,11 +113,11 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
                       f"{n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}"))
     seo = st.get("seo") or {}
     if seo.get("status") == "critical":
-        notes.append(("seo", "critical", "закрыт от поиска"))
+        notes.append(("seo", "critical", t("закрыт от поиска")))
     elif seo.get("status") == "warning" and seo.get("improve"):
         # as many as the card lists: a kind of finding on two pages is one
         n = len(seo_screen.grouped(seo.get("problems") or [])) or seo["improve"]
-        notes.append(("seo", "warning", f"{n} {plural(n, 'помеха', 'помехи', 'помех')} в поиске"))
+        notes.append(("seo", "warning", t("{n} {obstacles} в поиске").format(n=n, obstacles=plural(n, 'помеха', 'помехи', 'помех'))))
     # The site's other open problems (slow answers, 5xx deeper in, security)
     # come from the incidents; mail has a block of its own — it is the
     # domain's, not a site's.
@@ -127,12 +129,12 @@ async def site_state(site: dict, incidents: list[dict] | None = None) -> tuple[s
             words = humanize.incident_headline(inc["check_type"], inc.get("message"), label,
                                                page=is_web_page(site["url"], site.get("http_method")))
             notes.append((inc["check_type"], inc["severity"], _without_label(words, label)))
-    paused = "чинится, " if await maintenance.is_paused(site["id"]) else ""
+    paused = t("чинится, ") if await maintenance.is_paused(site["id"]) else ""
     if notes:
         icon = humanize.level_icon(humanize.worst_severity(sev for _, sev, _ in notes))
         return icon, paused + ", ".join(words for *_, words in notes), age
     ms = best_ms(st)[0]
-    word = humanize.fmt_seconds(ms) if ms is not None else "открывается"
+    word = humanize.fmt_seconds(ms) if ms is not None else t("открывается")
     return ("🔧" if paused else "✅"), paused + word, age
 
 
@@ -155,7 +157,7 @@ async def mail_rows(sites: list[dict]) -> list[tuple[str, str, str]]:
     for domain, url in sorted(carriers(await get_active_host_urls()).items()):
         if url in by_url:
             icon, words = mail_brief((await sitestatus.get(by_url[url]["id"])).get("mail"))
-            if words != "почты нет":   # a domain without mail has nothing to watch here
+            if words != t("почты нет"):   # a domain without mail has nothing to watch here
                 out.append((icon, domain, words))
     return out
 
@@ -176,13 +178,13 @@ def checked_at(section: dict | None) -> str:
     except ValueError:
         return ""
     local, now = to_local(when), to_local(utcnow())
-    return f" · проверено в {local.strftime('%H:%M' if local.date() == now.date() else '%d.%m %H:%M')}"
+    return t(" · проверено в {time}").format(time=local.strftime("%H:%M" if local.date() == now.date() else "%d.%m %H:%M"))
 
 
 def headline(problem_icons: list[str], checked: str) -> str:
     """«✅ Всё в порядке · проверено в 17:33» / «🟠 2 проблемы · …» — the worst first."""
     if not problem_icons:
-        return f"✅ Всё в порядке{checked}"
+        return t("✅ Всё в порядке") + checked
     worst = next(i for i in ("🔴", "🟠", "⚠️") if i in problem_icons)
     n = len(problem_icons)
     return f"{worst} {n} {plural(n, 'проблема', 'проблемы', 'проблем')}{checked}"
@@ -204,14 +206,15 @@ async def system_lines(watchdog: Watchdog | None) -> list[tuple[str, str, str]]:
     tell if it died, its database backup, a deploy that did not start."""
     out = []
     if watchdog:
-        out.append((watchdog.icon, f"сторож {watchdog.name}", "" if watchdog.icon == "✅" else watchdog.state))
+        out.append((watchdog.icon, t("сторож {name}").format(name=watchdog.name),
+                    "" if watchdog.icon == "✅" else watchdog.state))
     else:
-        out.append(("", "Внешнего сторожа нет", "подключи в «🤖 Боты»"))
+        out.append(("", t("Внешнего сторожа нет"), t("подключи в «🤖 Боты»")))
     icon, words, _ = backup_state()
-    out.append((icon, "резервная копия", words))
+    out.append((icon, t("резервная копия"), words))
     deploy = await updates.deploy_problem()
     if deploy:
-        out.append(("🟠", "новая версия бота", "не запустилась, работаю на прежней"))
+        out.append(("🟠", t("новая версия бота"), t("не запустилась, работаю на прежней")))
     return out
 
 
@@ -220,11 +223,12 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     jobs, watchdog = await job_states(), await heartbeats.watchdog()
     if not sites and not jobs:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Добавить первый сайт", callback_data="site_add")],
-            [InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")]])
-        return ("👋 Пока ни за чем не слежу. Добавь первый сайт — и я начну проверять его каждые "
-                f"{config.check_interval_minutes} мин и напишу, только если что-то сломается. Там же "
-                "можно добавить бота или задачу по расписанию: скажу, если замолчит.", kb)
+            [InlineKeyboardButton(text=t("➕ Добавить первый сайт"), callback_data="site_add")],
+            [InlineKeyboardButton(text=t("⚙️ Настройки"), callback_data="menu_settings")]])
+        return (t("👋 Пока ни за чем не слежу. Добавь первый сайт — и я начну проверять его каждые "
+                  "{minutes} мин и напишу, только если что-то сломается. Там же "
+                  "можно добавить бота или задачу по расписанию: скажу, если замолчит.")
+                .format(minutes=config.check_interval_minutes), kb)
 
     incidents = await get_active_incidents()
     # Problems first (a stable sort: within a level the sites keep their
@@ -240,17 +244,18 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     lines: list[str] = []
     if states:
         shown, hidden = states[:MAIN_SITES], states[MAIN_SITES:]
-        lines += ["", "<b>Сайты</b>", *(f"{icon} {esc(site_label(s['url']))} · {esc(state)}"
-                                        for s, icon, state, _ in shown)]
+        lines += ["", t("<b>Сайты</b>"), *(f"{icon} {esc(site_label(s['url']))} · {esc(state)}"
+                                           for s, icon, state, _ in shown)]
         if hidden:
             bad = sum(1 for _, icon, _, _ in hidden if icon in PROBLEM_ICONS)
-            lines.append(f"… и ещё {len(hidden)}" + (f", из них с проблемами: {bad}" if bad else ""))
+            lines.append(t("… и ещё {n}").format(n=len(hidden))
+                         + (t(", из них с проблемами: {bad}").format(bad=bad) if bad else ""))
     if mail:
-        lines += ["", "<b>Почта</b>", *(f"{icon} {esc(domain)} · {esc(words)}" for icon, domain, words in mail)]
+        lines += ["", t("<b>Почта</b>"), *(f"{icon} {esc(domain)} · {esc(words)}" for icon, domain, words in mail)]
     for _, title, rows in reported:
         lines += ["", f"<b>{esc(plain_title(title))}</b>",
                   *(f"{icon} {esc(name)} · {esc(text)}" for icon, name, text in rows)]
-    lines += ["", "<b>Боты и системы</b>", *main_job_lines(jobs),
+    lines += ["", t("<b>Боты и системы</b>"), *main_job_lines(jobs),
               *(f"{icon} {esc(name)}{f' · {esc(state)}' if state else ''}".lstrip()
                 for icon, name, state in systems)]
 
@@ -263,7 +268,7 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     problems += [j.icon for j in jobs if j.icon in PROBLEM_ICONS]
     problems += [icon for icon, _, _ in systems if icon in PROBLEM_ICONS]
     if not newest and not any(j.ago is not None for j in jobs):
-        head = "⏳ Первая проверка через минуту" if sites else "⏳ Жду первой связи"
+        head = t("⏳ Первая проверка через минуту") if sites else t("⏳ Жду первой связи")
     else:
         head = headline(problems, checked_at(newest))
     lines = [head, *lines]
@@ -271,29 +276,29 @@ async def build_main_menu() -> tuple[str, InlineKeyboardMarkup]:
     chips = []
     mute_until = await mute_until_local()
     if mute_until:
-        chips.append(f"Тишина до {mute_until}")
+        chips.append(t("Тишина до {time}").format(time=mute_until))
     if maintenance.maintenance_now(None):
-        chips.append("плановые работы")
+        chips.append(t("плановые работы"))
     if notifier.in_quiet_hours():
-        chips.append("тихие часы")
+        chips.append(t("тихие часы"))
     if chips:
         lines += ["", " · ".join(chips)]
 
     rows = []
     if incidents:   # first: on a bad day this is the button that matters
         inc_icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in incidents))
-        rows.append([InlineKeyboardButton(text=f"{inc_icon} Что не так",
+        rows.append([InlineKeyboardButton(text=f"{inc_icon} " + t("Что не так"),
                                           callback_data="menu_incidents")])
     blocks = []
     if states:
-        blocks.append(InlineKeyboardButton(text="🌐 Сайты", callback_data="blk:sites"))
+        blocks.append(InlineKeyboardButton(text=t("🌐 Сайты"), callback_data="blk:sites"))
     else:   # tasks without sites: the way to the first site stays on the screen
-        blocks.append(InlineKeyboardButton(text="➕ Сайт", callback_data="site_add"))
+        blocks.append(InlineKeyboardButton(text=t("➕ Сайт"), callback_data="site_add"))
     blocks += [InlineKeyboardButton(text=title.split(" · ")[0], callback_data=f"blk:seen:{j.name}")
                for j, title, _ in reported if len(f"blk:seen:{j.name}".encode()) <= 64]
-    blocks.append(InlineKeyboardButton(text="🤖 Боты", callback_data="blk:bots"))
+    blocks.append(InlineKeyboardButton(text=t("🤖 Боты"), callback_data="blk:bots"))
     rows += [blocks[i:i + 3] for i in range(0, len(blocks), 3)]
-    rows.append([InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu_settings")])
+    rows.append([InlineKeyboardButton(text=t("⚙️ Настройки"), callback_data="menu_settings")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -333,9 +338,9 @@ async def cb_fsm_cancel(call: CallbackQuery, state: FSMContext, dispatcher: Disp
     await state.clear()
     back = call.data.partition(":")[2]
     if not back or back == "menu_main":
-        await ack(call, "Нечего отменять — этот шаг уже закрыт" if closed else "Отменено")
+        await ack(call, t("Нечего отменять — этот шаг уже закрыт") if closed else t("Отменено"))
         await send_main_menu(call)
         return
     if closed:
-        await ack(call, "Нечего отменять — этот шаг уже закрыт")
+        await ack(call, t("Нечего отменять — этот шаг уже закрыт"))
     await dispatcher.feed_update(bot, Update(update_id=0, callback_query=call.model_copy(update={"data": back})))

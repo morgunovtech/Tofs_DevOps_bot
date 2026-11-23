@@ -72,6 +72,7 @@ from db.database import (
 )
 from services import health, helpers, maintenance, runtime, settings
 from utils.clock import now_local, to_local
+from utils.i18n import t
 from utils.text import SAFE_LIMIT, clip, parse_iso_utc, parse_sqlite_utc, plural
 
 logger = logging.getLogger(__name__)
@@ -184,10 +185,10 @@ async def _call(method, **kwargs):
 def what_rings_through_mute() -> str:
     """What passes a /mute — exactly what send() and _defer() let through."""
     if settings.ring_only_down():
-        return "Если сайт ляжет — всё равно позвоню. Остальное пришлю сводкой, когда тишина закончится."
-    return ("Все 🔴 — сайт лёг или снова открылся, истекает сертификат, открыт .env — придут сразу, со звуком. "
-            "Остальное пришлю сводкой, когда тишина закончится. Будить только когда сайт лёг: "
-            "⚙️ Настройки → 🔔 Когда писать.")
+        return t("Если сайт ляжет — всё равно позвоню. Остальное пришлю сводкой, когда тишина закончится.")
+    return t("Все 🔴 — сайт лёг или снова открылся, истекает сертификат, открыт .env — придут сразу, со звуком. "
+             "Остальное пришлю сводкой, когда тишина закончится. Будить только когда сайт лёг: "
+             "⚙️ Настройки → 🔔 Когда писать.")
 
 
 async def send(text: str, priority: Priority = Priority.NORMAL, *,
