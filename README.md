@@ -8,6 +8,12 @@
 
 Made for people who have never heard of DNS or a 502. Three buttons under the input field: **🏠 Главная** (the main screen answers «is everything OK?»), **📖 Что я умею**, **❓ Значки**; every site has its own card. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
 
+<p align="center">
+  <img src="docs/images/home.png" width="31%" alt="Main screen: sites, mail, social networks, bots — one status line and one number each">
+  <img src="docs/images/alert.png" width="31%" alt="A problem card: what happened, what it means, what it usually is, what to do — with buttons">
+  <img src="docs/images/morning.png" width="31%" alt="The morning digest: sites in order, open problems, the week in numbers">
+</p>
+
 ## What you get
 
 - **Your site is down — you know first.** A check every 5 minutes, anti-flap and a second opinion from outside before waking you, an alert ladder instead of daily nagging, downtime in minutes rather than percent.
@@ -152,6 +158,41 @@ Addresses of your sites go to a few free public services; each line can be switc
 - A home server or a NAS: start Docker after the clock is synchronised — «The server clock» in [Public address on your own server](#public-address-on-your-own-server). The bot notices a clock step and re-arms its schedule, but a bot that started on a wrong clock has already stamped its checks with it.
 - `ping://` monitors work only where the container may open an ICMP socket: the `sysctls` line in the compose file above opens `net.ipv4.ping_group_range` for the bot's group. In rootless Docker, Podman or with userns-remap use `tcp://host:port` instead; the bot says «cannot check» once instead of ringing.
 
+## Tests
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements.txt   # exactly what the image gets
+ruff check .
+pytest -q             # no network, no Telegram
+pip-audit -r requirements.txt --strict
+```
+
+CI runs the same on Python 3.12, 3.13 and 3.14, builds and runs the image, and publishes it to ghcr.io from a green `main`. The development loop, the hashed lock and the architecture: [docs/FEATURES.en.md, «Development»](docs/FEATURES.en.md#development) and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) (RU).
+
+## What it creates outside the repo
+
+The project cannot be removed completely without this list.
+
+| Resource | Where | How to remove |
+|---|---|---|
+| The bot | [@BotFather](https://t.me/BotFather) | `/deletebot` |
+| The Railway service with its `/app/data` volume (template `lVRuwW`) | railway.com | Settings → Delete service; the volume goes with it |
+| The image `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | delete the package |
+| The external watchdog check (`SELF_HEARTBEAT_URL`) | healthchecks.io, or a heartbeat job of another bot | delete the check or the job |
+| Integration tokens: Google Search Console, Yandex.Webmaster, Cloudflare (`CLOUDFLARE_API_TOKEN`), the CrUX key, a GitHub token | the consoles of those services | revoke each token; «🔌 Подключения» disconnects them in the bot |
+| Deploy hooks (`DEPLOY_HOOKS`) and the feedback widget on your pages | Cloudflare Pages, your site | delete the hook; remove the widget snippet |
+
+## Further reading
+
+- [docs/FEATURES.en.md](docs/FEATURES.en.md) — everything it does, the screens, quick start, architecture.
+- [CHANGELOG.md](CHANGELOG.md) — what changed in each version (RU); English notes are on the [Releases](https://github.com/morgunovtech/Tofs_DevOps_bot/releases) page.
+- [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CLAUDE.md](CLAUDE.md).
+
 ## Status
 
-Personal project, shared as-is: Python 3.12–3.14 (the upper bound comes from the pinned aiogram's Requires-Python, see `requirements.in`), aiogram 3, aiohttp, APScheduler, SQLite. Named after Tofs — an Irish Terrier who takes uptime personally. Built in pair with [Claude](https://claude.com/claude-code). [MIT](LICENSE) © Semyon Morgunov.
+Personal project, shared as-is: Python 3.12–3.14 (the upper bound comes from the pinned aiogram's Requires-Python, see `requirements.in`), aiogram 3, aiohttp, APScheduler, SQLite. Named after Tofs — an Irish Terrier who takes uptime personally. [MIT](LICENSE) © Semyon Morgunov.
+
+---
+Built by [Semyon Morgunov](https://s.morgunov.tech) with Claude Code as pair programmer.

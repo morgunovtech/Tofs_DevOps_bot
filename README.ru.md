@@ -8,6 +8,12 @@
 
 Для людей, которые не знают, что такое DNS и ошибка 502. Три кнопки под полем ввода: **🏠 Главная** (главный экран отвечает «всё ли везде ок?»), **📖 Что я умею**, **❓ Значки**; у каждого сайта своя карточка. Каждый алерт говорит, что случилось, что это значит для посетителей и что делать — кнопкой на каждый шаг, под твой хостинг (Cloudflare, Vercel, Netlify, GitHub Pages или свой сервер).
 
+<p align="center">
+  <img src="docs/images/home.png" width="31%" alt="Главный экран: сайты, почта, соцсети, боты — по строке статуса и одному числу">
+  <img src="docs/images/alert.png" width="31%" alt="Карточка проблемы: что случилось, что это значит, что обычно бывает, что делать — и кнопки">
+  <img src="docs/images/morning.png" width="31%" alt="Утренняя сводка: сайты в порядке, открытые проблемы, неделя в числах">
+</p>
+
 ## Что получаешь
 
 - **Сайт лёг — узнаёшь первым.** Проверка каждые 5 минут, анти-флап и вторая точка проверки снаружи перед тем, как будить, лестница алертов вместо ежедневного нытья, простой в минутах, а не в процентах.
@@ -152,6 +158,41 @@ Railway: деплой откатывается в панели Railway (Deployme
 - Домашний сервер или NAS: запускай Docker после синхронизации времени — «Часы сервера» в разделе [Публичный адрес на своём сервере](#публичный-адрес-на-своём-сервере). Бот замечает скачок часов и перестраивает расписание, но проверки, сделанные до синхронизации, уже помечены неверным временем.
 - `ping://` работает только там, где контейнеру можно открыть ICMP-сокет: строка `sysctls` в compose выше открывает `net.ipv4.ping_group_range` для группы бота. В rootless Docker, Podman и при userns-remap используй `tcp://host:порт`; бот один раз скажет «не могу проверить», а не зазвонит.
 
+## Тесты
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements.txt   # ровно то, что в образе
+ruff check .
+pytest -q             # без сети и без Telegram
+pip-audit -r requirements.txt --strict
+```
+
+CI гоняет то же самое на Python 3.12, 3.13 и 3.14, собирает и запускает образ и публикует его в ghcr.io с зелёного `main`. Цикл разработки, lock с хешами и архитектура: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
+## Что проект создаёт снаружи
+
+Без этого списка проект не удалить целиком.
+
+| Ресурс | Где | Как удалить |
+|---|---|---|
+| Бот | [@BotFather](https://t.me/BotFather) | `/deletebot` |
+| Сервис Railway с томом `/app/data` (шаблон `lVRuwW`) | railway.com | Settings → Delete service; том удаляется вместе с ним |
+| Образ `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | удалить пакет |
+| Внешний сторож (`SELF_HEARTBEAT_URL`) | healthchecks.io или heartbeat-задача другого бота | удалить check или задачу |
+| Токены интеграций: Google Search Console, Яндекс.Вебмастер, Cloudflare (`CLOUDFLARE_API_TOKEN`), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
+| Deploy-хуки (`DEPLOY_HOOKS`) и виджет обратной связи на твоих страницах | Cloudflare Pages, твой сайт | удалить хук; убрать сниппет виджета |
+
+## Что почитать
+
+- [docs/FEATURES.md](docs/FEATURES.md) — всё, что умеет, экраны, быстрый старт, архитектура; [docs/WHY.md](docs/WHY.md) — зачем; [docs/SETUP.md](docs/SETUP.md) — установка по шагам.
+- [CHANGELOG.md](CHANGELOG.md) — что изменилось в каждой версии.
+- [SECURITY.md](SECURITY.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [CLAUDE.md](CLAUDE.md) (по-английски).
+
 ## Статус
 
-Личный проект, выложен как есть: Python 3.12–3.14 (верхнюю границу задаёт Requires-Python закреплённой версии aiogram, см. `requirements.in`), aiogram 3, aiohttp, APScheduler, SQLite. Назван в честь Тофса — ирландского терьера, который принимает аптайм близко к сердцу. Собран в паре с [Claude](https://claude.com/claude-code). [MIT](LICENSE) © Семён Моргунов.
+Личный проект, выложен как есть: Python 3.12–3.14 (верхнюю границу задаёт Requires-Python закреплённой версии aiogram, см. `requirements.in`), aiogram 3, aiohttp, APScheduler, SQLite. Назван в честь Тофса — ирландского терьера, который принимает аптайм близко к сердцу. [MIT](LICENSE) © Семён Моргунов.
+
+---
+Сделал [Семён Моргунов](https://s.morgunov.tech) в паре с Claude Code.
