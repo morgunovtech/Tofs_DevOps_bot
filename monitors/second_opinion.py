@@ -18,6 +18,7 @@ site the verdict is never True — the audience sees the same.
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -26,6 +27,7 @@ import aiohttp
 from services import integrations
 from utils.i18n import t
 from utils.net import is_private_target, resolves_private
+from utils.redact import redact
 from utils.text import err_text
 from utils.urls import PAGE_METHODS, is_http_url
 
@@ -62,14 +64,24 @@ def repeatable(site: dict) -> bool:
     return not headers
 
 
+# A path segment that looks like a key: long, letters AND digits together
+# (/bot123456:AAF…/getMe, /hooks/x7Kq…, a UUID). A version or a word is not.
+_KEY_SEGMENT = re.compile(r"[A-Za-z0-9_:~.-]{20,}")
+
+
 def _carries_secret(url: str) -> bool:
-    """A query or a user:password in the address may be a token — such an
-    address never goes to an outside service."""
+    """A query, a user:password or a key-shaped path segment in the address
+    may be a token — such an address never goes to an outside service. The
+    path matters for API monitors (the only ones that keep one): Telegram
+    puts the bot token into the path, webhook services put theirs there."""
     try:
         p = urlparse(url)
-        return bool(p.query or p.username or p.password)
     except ValueError:
         return True
+    if p.query or p.username or p.password or redact(url) != url:
+        return True
+    return any(_KEY_SEGMENT.fullmatch(seg) and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+               for seg in (p.path or "").split("/"))
 
 
 def endpoint_for(url: str) -> tuple[str, str] | None:

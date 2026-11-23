@@ -180,3 +180,17 @@ async def test_container_healthcheck_reads_the_bot_not_the_proxy(unused_tcp_port
         assert await check() == 1                            # «stale» is unhealthy
     finally:
         await runner.cleanup()
+
+
+async def test_a_failed_catch_up_run_is_told_as_the_job_it_catches_up(bot, db):
+    """catch_up_missed schedules the late run as catchup:<job>; its failure
+    is the job's failure, not a one-off follow-up nobody hears about."""
+    scheduler.setup_scheduler()
+    scheduler._on_job_event(JobExecutionEvent(EVENT_JOB_ERROR, "catchup:retention", "default", datetime.now(UTC),
+                                              exception=OSError("disk I/O error")))
+    await asyncio.gather(*scheduler._listener_tasks)
+    assert bot.sent[-1]["text"].startswith("⚠️ У меня не работает «ночная очистка базы»: OSError")
+    scheduler._on_job_event(JobExecutionEvent(EVENT_JOB_ERROR, "followup:1:2", "default", datetime.now(UTC),
+                                              exception=OSError("x")))
+    await asyncio.gather(*scheduler._listener_tasks)
+    assert len(bot.sent) == 1                                 # a follow-up's failure stays in the log

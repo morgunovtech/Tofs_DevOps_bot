@@ -177,4 +177,4 @@ async def test_deep_check_keeps_each_page_with_its_mark(db, monkeypatch):
         r = await deep_checker.check_deep(base)
     deep = (await sitestatus.get(r.site_id))["deep"]
     assert deep["sampled"] == 4 and deep["errors"] == 1
-    assert deep["pages"] == [["/", None], ["/broken", 502], ["/about?lang=en", None], [other, None]]
+    assert deep["pages"] == [["/", None], ["/broken", 502], ["/about", None], [other, None]]   # never the query

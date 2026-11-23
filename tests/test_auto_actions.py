@@ -16,6 +16,7 @@ from handlers import alerts, incidents, setup, sites
 from handlers import automation as auto_handlers
 from handlers import heartbeats as hb_handlers
 from handlers import settings as settings_screen
+from handlers.common import cb_int
 from monitors import host_checker
 from reports import scheduler
 from services import actions, automation, docker_api, integrations, maintenance, settings
@@ -400,3 +401,35 @@ async def test_a_key_without_its_wizard_is_deleted(db):
     msg = FakeMessage("ghp_" + "a1" * 20)
     await setup.msg_key_without_wizard(msg)
     assert msg.deleted and "Мастер прервался после перезапуска" in msg.texts[-1]
+
+
+async def test_a_stale_fix_tap_does_not_pause_the_site(bot, db):
+    """«🔧 Я чиню» on an alert, pressed while the bot was down: the tap comes
+    out of Telegram's queue after the restart — it must say so and change
+    nothing, not put an hour of silence on the site behind the owner's back."""
+    sid = await db.activate_or_create_site(SITE)
+    await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    stale = StaleCall(f"act:fix:{sid}")
+    await alerts.cb_alert_action(stale)
+    assert await maintenance.paused_until(sid) is None
+    assert stale.message.texts[-1].startswith("⌛ Это нажатие пришло")
+    stale = StaleCall(f"pause:{sid}:60")                             # the card's own pause button
+    await sites.cb_pause(stale)
+    assert await maintenance.paused_until(sid) is None
+    assert stale.message.texts[-1].startswith("⌛ Это нажатие пришло")
+
+
+def test_a_domain_typed_on_its_own_is_not_a_key():
+    assert not setup.looks_like_key("my-shop-2024.example.com")
+    assert not setup.looks_like_key("shop24.example.co.uk")
+    assert not setup.looks_like_key("Api.Example.Com")                 # not a token either: no digit
+    assert setup.looks_like_key("AIzaSy" + "D4ab8Xy9Qw" * 3)             # a Google key stays one (built: no literal)
+    assert setup.looks_like_key("0123456789abcdef" * 2 + "01234567")      # a Cloudflare token too
+
+
+def test_callback_numbers_are_ascii_digits_only():
+    """«²».isdigit() is True and int(«²») raises: a forged or mangled button
+    must give None, not an error screen."""
+    assert cb_int("12") == 12 and cb_int("0") == 0
+    assert cb_int("²") is None and cb_int("１２") is None and cb_int("-1") is None
+    assert cb_int(None) is None and cb_int("") is None and cb_int("12", 0, 11) is None

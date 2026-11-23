@@ -2,20 +2,22 @@
 silence the monitoring: the verdict, the alert and the undelivered messages
 live on in memory, and the owner hears that the database is in trouble."""
 
+import asyncio
 import contextlib
 import logging
 import os
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from db import database
 from db.database import outbox_peek
-from monitors import host_checker
+from monitors import base, host_checker
 from monitors.base import gather_checks
 from reports import scheduler
-from services import health, notifier
+from services import health, heartbeats, notifier
 from services.notifier import Priority
 
 _WRITES = ("INSERT", "UPDATE", "DELETE", "REPLACE")
@@ -189,3 +191,53 @@ async def test_crashed_check_is_logged_with_the_site_and_the_traceback(caplog):
     record = caplog.records[-1]
     assert "bad.test/x" in record.getMessage() and "token" not in record.getMessage()
     assert record.exc_info and record.exc_info[0] is ValueError
+
+
+async def test_a_stale_pause_key_on_a_full_disk_does_not_silence_the_alert(bot, db):
+    """«🔧 Я чиню» pressed yesterday, the pause long over, the key still in
+    the database: its clean-up is a write, and a write that fails must not
+    take the «site down» alert with it."""
+    state = {"status": 500}
+    async with await _server(state) as server:
+        url = str(server.make_url("")).rstrip("/")
+        site_id = await db.activate_or_create_site(url)
+        await db.set_state(f"paused:{site_id}", (datetime.now(UTC) - timedelta(hours=20)).isoformat())
+        with _refusing_writes():
+            for _ in range(3):
+                await _tick()
+        alerts = [m for m in bot.sent if "не открывается" in m["text"]]
+        assert len(alerts) == 1 and alerts[0]["silent"] is False
+    assert health.db_failing()                                     # said as a database problem, not swallowed
+
+
+async def test_heartbeat_silence_is_counted_while_the_database_refuses_writes(db):
+    """silence_since remembers when it first saw a job — a write on a read path."""
+    with _refusing_writes():
+        since = await heartbeats.silence_since("nightly", None)
+    assert datetime.now(UTC) - since < timedelta(minutes=1)
+
+
+async def test_a_delivered_report_is_not_called_broken_when_its_mark_fails(bot, db, monkeypatch):
+    """The morning report went out; only the last_run mark hit the full disk."""
+    async def snapshot(report_type, extras):
+        return "🌅 Доброе утро"
+    monkeypatch.setattr(scheduler, "_status_snapshot", snapshot)
+    with _refusing_writes():
+        await scheduler.send_morning_report()                        # must not raise
+    assert [m["text"] for m in bot.sent if m["text"].startswith("🌅")] == ["🌅 Доброе утро"]
+    assert health.db_failing()
+
+
+async def test_a_batch_of_checks_runs_at_most_a_handful_at_once():
+    running, peak = [0], [0]
+
+    async def check(url, **kwargs):
+        running[0] += 1
+        peak[0] = max(peak[0], running[0])
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        running[0] -= 1
+        return url
+
+    out = await gather_checks([f"https://s{i}.test" for i in range(50)], check, "availability")
+    assert len(out) == 50 and peak[0] <= base.CHECKS_AT_ONCE

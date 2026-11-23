@@ -13,7 +13,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_state
-from handlers.common import CANCEL, HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
+from handlers.common import (
+    CANCEL,
+    HEARTBEAT_SECRET_NOTE,
+    STALE_TAP,
+    ack,
+    back_button,
+    cancel_kb,
+    cb_int,
+    render,
+)
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.i18n import t
@@ -200,7 +209,7 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     name = (await state.get_data()).get("hb_name")
     await state.clear()
     arg = call.data.split(":", 1)[1]
-    mins = int(arg) if arg.isdigit() else 0
+    mins = cb_int(arg) or 0
     # The interval only from the list, and the outcome checked: «Добавил» must be true.
     if not name or mins not in {m for _, m in INTERVALS} or not await settings.add_heartbeat_job(name, mins):
         await ack(call, t("Не добавил. {again}").format(again=again), show_alert=True)
@@ -241,7 +250,7 @@ async def cb_hb_remove_here(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
     known = name in settings.heartbeat_jobs()
     if not await ack(call, t("Удалил «{name}» — больше не жду").format(name=name) if known else t("Её уже нет")):
-        await call.message.answer(STALE_TAP)    # pressed while the bot was down: nothing is deleted
+        await call.message.answer(t(STALE_TAP))    # pressed while the bot was down: nothing is deleted
         return
     removed = known and await settings.remove_heartbeat_job(name)
     if removed:
@@ -279,7 +288,7 @@ async def cb_hb_del_ok(call: CallbackQuery):
         await ack(call, t("Её уже нет"), show_alert=True)
         return
     if not await ack(call, t("Удалил")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await settings.remove_heartbeat_job(name)
     await heartbeats.forget_status(name)

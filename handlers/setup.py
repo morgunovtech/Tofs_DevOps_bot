@@ -517,6 +517,10 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
 # ── A key without its wizard ─────────────────────────────────────────────────
 
 _URL_SECRET = re.compile(r"https://\S*(deploy_hooks/|hc-ping\.com/|/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-)")
+# A host name as people type one: lowercase labels, a letters-only zone at
+# the end. No token the wizards ask for looks like this (ghp_…, y0_…, AIza…,
+# a 32–40-character hex or base64 word): a bare domain is a site, not a key.
+_HOST_NAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\.?")
 
 
 def looks_like_key(text: str | None) -> bool:
@@ -524,12 +528,15 @@ def looks_like_key(text: str | None) -> bool:
     long word of letters AND digits), a service-account JSON, a deploy hook
     or a watchdog address? The checks are the wizards' own patterns
     (yandex / crux / cloudflare / github tokens, gsc key, cf_hook,
-    watchdog_url), narrowed so that an ordinary message never matches."""
+    watchdog_url), narrowed so that an ordinary message never matches —
+    a domain typed on its own (my-shop-2024.example.com) included."""
     t = (text or "").strip()
     if "private_key" in t and "client_email" in t:
         return True
     if _URL_SECRET.search(t):
         return True
+    if _HOST_NAME.fullmatch(t):
+        return False
     return bool(re.fullmatch(r"[A-Za-z0-9_\-.]{20,255}", t) and re.search(r"\d", t) and re.search(r"[A-Za-z]", t))
 
 
@@ -593,7 +600,7 @@ async def cb_second_opinion(call: CallbackQuery):
     # while the bot was down does not give it (handlers.common.ack).
     fresh = await ack(call, t("Включено") if on else t("Выключено"))
     if on and not fresh:
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     # The same as .env says → forget the chat value, so .env is the master again.
     await integrations.set_value(key, None if on == env_value else ("on" if on else "off"))
@@ -617,7 +624,7 @@ async def cb_regen_heartbeat_ask(call: CallbackQuery):
 @router.callback_query(F.data == "setup:hb_regen:ok")
 async def cb_regen_heartbeat(call: CallbackQuery):
     if not await ack(call, t("Готово")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await secrets.regenerate("heartbeat")
     jobs = list(settings.heartbeat_jobs()) or ["backup"]
@@ -677,7 +684,7 @@ async def _switch_off(call: CallbackQuery, group: str, toast: str) -> bool:
     """The «🗑 Да, отключить» tap: ack first — a tap that waited in the queue
     while the bot was down does nothing (STALE_TAP) — then the tombstones."""
     if not await ack(call, toast, show_alert=True):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return False
     for key in _OFF[group][0]:
         await integrations.switch_off(key)
@@ -693,7 +700,7 @@ async def cb_use_env(call: CallbackQuery):
         await ack(call)
         return
     if not await ack(call, t("Снова беру из .env")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     for key in _OFF[group][0]:
         if integrations.source(key) == "off":

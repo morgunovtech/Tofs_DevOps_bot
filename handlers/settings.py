@@ -14,7 +14,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from config import config
 from db.database import count_feedback
-from handlers.common import STALE_TAP, ack, back_button, cancel_kb, render
+from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_int, render
 from handlers.menu import mute_until_local
 from monitors import region
 from reports.scheduler import reschedule_all
@@ -147,7 +147,7 @@ async def cb_helper_invite(call: CallbackQuery):
 @router.callback_query(F.data == "helper_invite_new")
 async def cb_helper_invite_new(call: CallbackQuery):
     if not await ack(call, t("Прежняя ссылка больше не сработает")):   # a stale tap kills no link
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await _show_invite(call, *await helpers.new_invite())
 
@@ -170,7 +170,7 @@ async def cb_helper_remove(call: CallbackQuery):
 @router.callback_query(F.data.startswith("helper_rm_ok:"))
 async def cb_helper_remove_ok(call: CallbackQuery):
     if not await ack(call):                     # a tap from the queue after a restart removes nobody
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     gone = await helpers.remove(call.data.split(":", 1)[1])
     if gone:
@@ -261,7 +261,7 @@ async def cb_settings_pick(call: CallbackQuery):
         await settings.set_weekly_backup(value == "on")
     elif kind == "set_dg" and value in ("short", "full"):
         await settings.set_digest_full(value == "full")
-    elif kind == "set_tz" and value.isdigit() and int(value) < len(TIMEZONES):
+    elif kind == "set_tz" and cb_int(value, 0, len(TIMEZONES) - 1) is not None:
         await settings.set_timezone(TIMEZONES[int(value)][1])
     elif kind == "set_tz" and value == "env":
         await settings.set_timezone(None)
@@ -406,7 +406,7 @@ async def cb_status_page_publish(call: CallbackQuery):
     page. «Открытой» means open — a slug the bot issued earlier is dropped,
     or /status would answer «не найдено» against the screen's words."""
     if not await ack(call):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     parts = call.data.split(":")
     action, door = parts[1], (parts[2] if len(parts) > 2 else "")
@@ -428,7 +428,7 @@ async def cb_status_page_secret(call: CallbackQuery):
     and an open page — each after a question. The result is the screen
     itself, re-rendered."""
     if not await ack(call):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     action, src = call.data.split(":", 1)[1], integrations.source("status_page_slug")
     if action == "on" and src is None:

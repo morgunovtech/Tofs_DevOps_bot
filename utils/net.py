@@ -29,7 +29,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
 
 from config import config
-from utils.urls import host_of, registrable_domain
+from utils.urls import host_of, owned_domain
 
 PRIVATE_REFUSED = "адрес во внутренней сети — туда не хожу"
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
@@ -112,12 +112,16 @@ async def resolves_private(url: str, timeout: float = 5.0) -> bool:
 
 def _same_domain(a: str, b: str) -> bool:
     """One site however it is spelled (example.com and www.example.com);
-    an IP literal is only itself."""
+    an IP literal is only itself. The domain must be the owner's
+    (utils.urls.owned_domain): under a shared one — me.duckdns.org,
+    user.github.io — a neighbour's name is a stranger's, and only the
+    monitor's exact host counts."""
     if a == b:
         return True
     if _parse_ip(a) is not None or _parse_ip(b) is not None:
         return False
-    return registrable_domain(a) == registrable_domain(b)
+    own = owned_domain(a)
+    return own is not None and own == owned_domain(b)
 
 
 class PrivateAddressError(OSError):

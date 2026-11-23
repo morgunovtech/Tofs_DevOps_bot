@@ -9,11 +9,18 @@ import logging
 import os
 import signal
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from utils.redact import RedactingFormatter
 
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+
+
+def _template_secrets(template: str) -> list[str]:
+    """The values of the screenshot template's query: a paid provider's key
+    lives there (apiflash's access_key, …), under a name the patterns may
+    not know. The {url} field and the short switches are no secret."""
+    return [value for _, value in parse_qsl(urlsplit(template).query) if "{" not in value]
 
 
 def secret_values() -> list[str]:
@@ -23,7 +30,8 @@ def secret_values() -> list[str]:
     proxy_password = urlsplit(config.telegram_proxy).password if config.telegram_proxy else None
     return [config.bot_token, proxy_password or "", secrets.webhook_secret(), secrets.heartbeat_secret(),
             integrations.self_heartbeat_url(), integrations.crux_key(), integrations.github_token(),
-            integrations.cf_api_token(), integrations.yandex_token(), *integrations.deploy_hooks().values()]
+            integrations.cf_api_token(), integrations.yandex_token(), *integrations.deploy_hooks().values(),
+            *_template_secrets(config.screenshot_template)]
 
 
 def setup_logging() -> None:

@@ -12,7 +12,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_state, set_state
-from handlers.common import CANCEL, STALE_TAP, ack, cb_args, render, site_by_cb
+from handlers.common import CANCEL, STALE_TAP, ack, cb_args, cb_int, render, site_by_cb
 from monitors.availability import check_availability
 from reports.formatter import incident_line
 from services import automation, humanize, maintenance
@@ -61,12 +61,12 @@ async def _ask(call: CallbackQuery, action: str, site: dict):
 async def cb_alert_confirmed(call: CallbackQuery):
     """act:ok:<redeploy|purge>:<site_id>:<unix time of the question>."""
     parts = (call.data or "").split(":")
-    if len(parts) != 5 or parts[2] not in _CONFIRM or not parts[3].isdigit() or not parts[4].isdigit():
+    if len(parts) != 5 or parts[2] not in _CONFIRM or cb_int(parts[3]) is None or cb_int(parts[4]) is None:
         await ack(call, t("Не понял действие"), show_alert=True)
         return
     action, sid, asked = parts[2], parts[3], int(parts[4])
     if not await ack(call, t("Запускаю…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     site = await site_by_cb(sid)
     if not site:
@@ -107,7 +107,7 @@ async def cb_alert_group(call: CallbackQuery):
     GROUP_FROM): grp:list:<id> — the sites one by one, below the alert;
     grp:fix:<id> — «🔧 Я чиню» for all of them."""
     args = cb_args(call, 2)
-    raw = await get_state(f"alert_group:{args[1]}") if args and args[1].isdigit() else None
+    raw = await get_state(f"alert_group:{args[1]}") if args and cb_int(args[1]) is not None else None
     try:
         ids = [int(i) for i in json.loads(raw)] if raw else []
     except (ValueError, TypeError):
@@ -120,7 +120,7 @@ async def cb_alert_group(call: CallbackQuery):
         return
     if args[0] == "fix":
         if not await ack(call, t("Понял, молчу {length}").format(length=maintenance.fix_length())):
-            await call.message.answer(STALE_TAP)
+            await call.message.answer(t(STALE_TAP))
             return
         for site_id in dict.fromkeys(inc["site_id"] for inc in group):
             await _quiet_hour(site_id)
@@ -170,9 +170,13 @@ async def cb_alert_action(call: CallbackQuery):
                    for i in await get_active_incidents()):
             await ack(call, t("Сайт сейчас работает — пауза не нужна. Чинишь что-то другое — поставь паузу на карточке сайта."), show_alert=True)
             return
-        await _quiet_hour(site["id"])
         length = maintenance.fix_length()
-        await ack(call, t("Понял, молчу {length}").format(length=length))
+        # ack FIRST: a tap that waited out a restart in Telegram's queue must
+        # not put an hour of silence on the site behind the owner's back.
+        if not await ack(call, t("Понял, молчу {length}").format(length=length)):
+            await call.message.answer(t(STALE_TAP))
+            return
+        await _quiet_hour(site["id"])
         await call.message.answer(t("🔧 Понял, ты чинишь {label}. {capitalize} не пишу про него, проверки продолжаются. Поднимется раньше — сразу напишу и сниму тишину.").format(label=label, capitalize=length.capitalize()))
     elif action in _CONFIRM:
         await ack(call)

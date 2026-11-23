@@ -10,7 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import config
 from db.database import get_all_sites, get_state, set_state
-from handlers.common import HELPER_NOTE, back_button, bottom, deny, refusal
+from handlers.common import HELPER_NOTE, back_button, bottom, deny, deny_due, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from handlers.setup import last_steps
@@ -112,6 +112,8 @@ async def cmd_start_helper(message: Message, command: CommandObject, state: FSMC
         return
     name = message.from_user.full_name if message.from_user else ""
     result = await helpers.accept(command.args[len(helpers.PAYLOAD_PREFIX):], message.chat.id, name)
+    if result in ("invalid", "full") and not deny_due(message.from_user.id if message.from_user else message.chat.id):
+        return          # a stranger replaying a dead link hears it once in DENY_EVERY_S, like any refusal (SEC-014)
     await message.answer(t(_HELPER_ANSWERS[result]))
     if result == "ok":
         await notifier.send(t("👥 {name} теперь получает «сайт лёг» и «снова работает». "

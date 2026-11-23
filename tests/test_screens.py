@@ -3,6 +3,7 @@ catches attribute errors in handlers without a Telegram connection."""
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
@@ -808,3 +809,23 @@ async def test_card_says_the_cloudflare_caveat_once(bot, db):
     await sites.cb_check_single_site(call)
     assert "Пускает ли Cloudflare" not in call.message.texts[-1]
     assert "🤖 Проверить в Cloudflare" not in buttons(call.message.reply_markup)
+
+
+async def test_a_visitors_message_is_one_line_on_the_feedback_screen(bot, db):
+    """A line break or a direction override in a visitor's text must not
+    draw a row that looks like the bot's own — on the screen as in the alert."""
+    await save_feedback("https://ex.test", "https://ex.test/p", "ok\n🔴 ex.test не открывается: ошибка 502‮", "", "1.1.1.1")
+    call = FakeCall("menu_feedback:0")
+    await feedback.cb_feedback(call)
+    text = call.message.texts[-1]
+    assert "   ok 🔴 ex.test не открывается: ошибка 502" in text
+    assert "\n🔴" not in text and "‮" not in text
+
+
+async def test_declining_an_old_weekly_tip_survives_a_message_too_old_to_edit(bot, db):
+    """The tip's buttons go when they can; a message Telegram no longer lets
+    the bot edit must not turn the decline into a traceback."""
+    call = FakeCall("rec_no:keyword")
+    call.message = SimpleNamespace(chat=SimpleNamespace(id=1, type="private"))    # InaccessibleMessage: no edit
+    await sites.cb_tip_decline(call)
+    assert call.answers == ["Ок, больше не предложу"]

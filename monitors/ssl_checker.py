@@ -15,6 +15,7 @@ from monitors.base import SslInfo, SslResult, gather_checks
 from monitors.ladder import apply_ladder
 from services import sitestatus
 from utils.i18n import t
+from utils.text import err_text
 from utils.urls import ssl_applies
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ async def check_ssl(url: str, manage: bool = True) -> SslResult:
     except Exception as e:
         # Network-level failure — NOT a certificate problem. Must not touch
         # the ladder: pinning last_threshold at 0 would suppress alerts.
-        r.status, r.error, r.transient = "error", f"SSL check failed: {e}", True
+        r.status, r.error, r.transient = "error", f"SSL check failed: {err_text(e)}", True
 
     details = r.error or (f"OK, {r.ssl_info.days_left} days left" if r.ssl_info else None)
     await save_check(site_id, "ssl", r.status, details=details)

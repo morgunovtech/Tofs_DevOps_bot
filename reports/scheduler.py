@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
@@ -401,9 +402,14 @@ async def _note_cannot_check(url: str, site_id: int, reason: str | None):
 # services.notifier.release_held says it after) — the re-send leaves those alone.
 
 MISSED_ALERT_MIN = 2            # a fresh incident gets this long to be alerted by its own job
+# Telegram refused the alert for good (the owner blocked the bot, no admin
+# chat yet, a text it will never take): the incident stays owed, but the
+# next try waits this long — a refusal every minute would only fill the log.
+REFUSED_RETRY_SEC = 30 * 60
 _in_flight: set[int] = set()    # incidents whose alert is queued or being sent right now
 _busy: Counter[str] = Counter()  # check types whose job is running: it alerts on its own incidents
 _sent_unrecorded: set[int] = set()  # alert went out, but the DB refused the mark (no re-send storm)
+_refused: dict[int, float] = {}  # incident → monotonic time Telegram last refused its alert
 _queue: asyncio.Queue | None = None
 _worker: asyncio.Task | None = None
 
@@ -469,7 +475,13 @@ def _once(name: str, *, mark: bool = False):
             finally:
                 _running.discard(name)
             if mark:
-                await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+                # The job is done; a mark the database refuses (a full disk)
+                # must not turn a delivered report into «сломалась».
+                try:
+                    await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+                except sqlite3.OperationalError as e:
+                    health.db_write_failed(e)
+                    logger.warning("Could not mark the run of %s: %s", name, e)
             return result
         return run
     return wrap
@@ -509,7 +521,15 @@ async def _alert_once(incident_id: int | None, site_id: int, text: str, priority
         if paused:
             return None
         if incident_id is not None:
-            await _record_alert(incident_id, True)
+            # Only a message that is out (delivered, queued or in the outbox)
+            # settles the debt: send() answers False when nothing of the kind
+            # happened — no admin yet, the bot blocked, a text Telegram will
+            # never take — and the incident stays for deliver_missed_alerts.
+            if sent:
+                await _record_alert(incident_id, True)
+                _refused.pop(incident_id, None)
+            else:
+                _refused[incident_id] = time.monotonic()
         return sent
     finally:
         if incident_id is not None:
@@ -555,6 +575,8 @@ async def deliver_missed_alerts():
     for inc in await get_unalerted_incidents(MISSED_ALERT_MIN):
         if inc["id"] in _in_flight or inc["id"] in _sent_unrecorded or _busy[inc["check_type"]] > 0:
             continue
+        if time.monotonic() - _refused.get(inc["id"], -REFUSED_RETRY_SEC) < REFUSED_RETRY_SEC:
+            continue        # Telegram refused it a moment ago: the next try waits REFUSED_RETRY_SEC
         if await get_state(f"{notifier.HELD}{inc['id']}"):
             continue        # the full alert waits for the end of the pause: release_held says it
         try:
@@ -750,6 +772,11 @@ async def _group_down(known: list[int], fresh: list, group: dict | None) -> bool
         if not await notifier.edit(group["message_id"], text, reply_markup=kb):
             return False
         message_id, at = group["message_id"], group["at"]
+        # An edit has no copy for the helpers: they hear about the sites
+        # that joined the same way they heard of the first ones — the whole
+        # list as it stands, silently (the owner's phone did not ring either).
+        if fresh:
+            await notifier.tell_helpers(helper_text, ring=False)
     else:
         sent = await notifier.send(text, Priority.CRITICAL, reply_markup=kb, always_ring=True,
                                    to_helpers=True, helper_text=helper_text)
@@ -833,8 +860,13 @@ async def _say_up(results: list):
     group = await _group_state(GROUP_UP)
     if _within_window(group, now):
         all_lines = [line for line in group.get("lines", []) if isinstance(line, str)] + lines
+        # The helpers' lines of the message so far (a message from before
+        # this version kept the owner's lines only: those stand in).
+        all_helper = ([line for line in group.get("helper", group.get("lines", [])) if isinstance(line, str)]
+                      + helper_lines)
         if await notifier.edit(group["message_id"], _up_text(all_lines)):
-            await set_state(GROUP_UP, json.dumps({**group, "lines": all_lines}))
+            await set_state(GROUP_UP, json.dumps({**group, "lines": all_lines, "helper": all_helper}))
+            await notifier.tell_helpers(_up_text(all_helper), ring=False)   # an edit has no copy of its own
             return
     # Sites said to be back one by one a few minutes ago: the same outage.
     window = timedelta(minutes=GROUP_WINDOW_MIN)
@@ -863,7 +895,8 @@ async def _say_up(results: list):
     await set_state(GROUP_UP_SAID, None)
     message_id = getattr(sent, "message_id", None)
     if message_id is not None:
-        await set_state(GROUP_UP, json.dumps({"message_id": message_id, "at": now.isoformat(), "lines": all_lines}))
+        await set_state(GROUP_UP, json.dumps({"message_id": message_id, "at": now.isoformat(),
+                                              "lines": all_lines, "helper": all_helper}))
 
 
 FLAP_WINDOW = timedelta(hours=1)
@@ -2436,7 +2469,12 @@ async def send_morning_report(late: bool = False):
         await notifier.send(part, Priority.DIGEST)
     await notifier.send(parts[-1], Priority.DIGEST, reply_markup=kb)
     # The evening compares against this: it comes only for what is new since.
-    await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
+    # The report is out: a mark the disk refuses is a database problem
+    # (health says so), not a broken report.
+    try:
+        await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
 
 
 @_once("evening_report", mark=True)
@@ -2511,7 +2549,9 @@ def _on_job_event(event):
     keeps being skipped because its last run still hangs, is told to the
     owner once per streak — the container log alone is read by nobody."""
     job_id = event.job_id
-    if ":" in job_id:                  # one-off follow-ups (followup:…): their failure is in the log
+    if job_id.startswith("catchup:"):
+        job_id = job_id.removeprefix("catchup:")    # a late daily run answers for the job it catches up
+    elif ":" in job_id:                # one-off follow-ups (followup:…): their failure is in the log
         return
     if event.code == EVENT_JOB_EXECUTED:
         _job_fails.pop(job_id, None)

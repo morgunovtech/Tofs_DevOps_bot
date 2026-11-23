@@ -71,3 +71,12 @@ def test_compose_publishes_the_web_port_on_localhost_only():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert '- "127.0.0.1:${WEBHOOK_PORT:-8080}:${WEBHOOK_PORT:-8080}"' in compose
     assert '- "8080:8080"' not in compose
+
+
+def test_the_once_an_hour_memory_has_a_ceiling():
+    """A flood of fresh Origin headers (4 KB each, no secret needed) must not
+    grow the process by the hour: past WARNED_MAX the oldest entry goes."""
+    for i in range(webhook.WARNED_MAX * 4):
+        assert webhook._once_an_hour(f"origin:https://evil-{i}.test") is True
+    assert len(webhook._warned) <= webhook.WARNED_MAX
+    assert webhook._once_an_hour("origin:https://evil-2047.test") is False     # the newest is remembered
