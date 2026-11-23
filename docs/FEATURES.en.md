@@ -1,6 +1,6 @@
 # TofsDevOps — everything it does
 
-The long version of the [README](../README.md): every monitor, every screen, quick start for Railway and Docker Compose, the architecture and the development loop. A translation by meaning of [FEATURES.md](FEATURES.md), last aligned with it on 2026-11-10 (after commit c67ba26); the Russian file is the source of truth. Russian: [FEATURES.md](FEATURES.md), [SETUP.md](SETUP.md), [WHY.md](WHY.md).
+The long version of the [README](../README.md): every monitor, every screen, quick start for Railway and Docker Compose, the architecture and the development loop. A translation by meaning of [FEATURES.md](FEATURES.md), last aligned with it on 2026-11-10 (after PR #51); the Russian file is the source of truth. Russian: [FEATURES.md](FEATURES.md), [SETUP.md](SETUP.md), [WHY.md](WHY.md).
 
 ## What it does
 

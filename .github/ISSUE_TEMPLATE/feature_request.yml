@@ -1,0 +1,11 @@
+name: Feature request
+description: A check, an alert or a report you miss
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you'd like
+      description: Say what you would want to be woken up for (🔴) and what can wait until the morning (🟠). The bot stays silent while everything is fine and never asks for more access than the check needs.
+    validations:
+      required: true
