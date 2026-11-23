@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_incident, get_site, resolve_incident_by_id, set_state
-from handlers.common import HOME, RECHECK, STALE_TAP, ack, back_button, render
+from handlers.common import HOME, RECHECK, STALE_TAP, ack, back_button, cb_int, render
 from monitors.availability import check_all, check_availability
 from reports.formatter import incident_line
 from reports.scheduler import ACK_UNTIL_UP, forget_slow_streak
@@ -106,7 +106,8 @@ async def cb_incident_explain(call: CallbackQuery):
     and for a message the bot can no longer edit (then it answers below)."""
     parts = call.data.split(":")
     arg = parts[1] if len(parts) > 1 else ""
-    inc = await get_incident(int(arg)) if arg.isdigit() else None
+    inc_id = cb_int(arg)
+    inc = await get_incident(inc_id) if inc_id is not None else None
     if not inc:
         await ack(call, t("Этой проблемы уже нет в списке"), show_alert=True)
         return
@@ -154,11 +155,11 @@ async def cb_incidents_clear_confirmed(call: CallbackQuery):
     and the ones still down stay on the list — closing them would only bring
     the same alert back, with a ring and one more rebuild."""
     stamp = call.data.rsplit(":", 1)[1]
-    if not stamp.isdigit() or time.time() - int(stamp) > CONFIRM_TTL_SEC:
+    if cb_int(stamp) is None or time.time() - int(stamp) > CONFIRM_TTL_SEC:
         await ack(call, t("Подтверждение устарело — открой список и нажми ещё раз"), show_alert=True)
         return
     if not await ack(call, t("Проверяю лежащие сайты…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     incidents = await get_active_incidents()
     down_urls = sorted({i["url"] for i in incidents if i["check_type"] == "availability"})
@@ -182,7 +183,8 @@ async def cb_incident_close(call: CallbackQuery):
     would open it again at once — with a ring and, with AUTO_REDEPLOY, one
     more rebuild. «🔧 Я чиню» is the way to make the bot keep quiet."""
     arg = call.data.split(":", 1)[1]
-    inc = await get_incident(int(arg)) if arg.isdigit() else None
+    inc_id = cb_int(arg)
+    inc = await get_incident(inc_id) if inc_id is not None else None
     if not inc or inc["resolved"]:
         await ack(call, t("Уже закрыта"))
         await render_incidents(call)
@@ -190,7 +192,7 @@ async def cb_incident_close(call: CallbackQuery):
     site = await get_site(inc["site_id"])
     live = inc["check_type"] == "availability" and bool(site and site["active"])
     if not await ack(call, t("Проверяю, открывается ли…") if live else t("Закрыл ✅")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     note = ""
     if live:
@@ -209,12 +211,13 @@ async def cb_incident_quiet(call: CallbackQuery):
     """«👀 Знаю, не напоминать» under an escalation: no more reminders about
     this incident; the «✅ поднялся» still comes. The site is NOT paused."""
     arg = call.data.split(":")[1]
-    inc = await get_incident(int(arg)) if arg.isdigit() else None
+    inc_id = cb_int(arg)
+    inc = await get_incident(inc_id) if inc_id is not None else None
     if not inc or inc.get("resolved"):
         await ack(call, t("Эта проблема уже закрыта"), show_alert=True)
         return
     if not await ack(call, t("Не напоминаю")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await set_state(f"ack:{inc['id']}", ACK_UNTIL_UP)
     await call.message.answer(t("👀 Понял: больше не напоминаю про {incident}. Когда поднимется — напишу.").format(incident=esc(incident_line(inc))))

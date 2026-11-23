@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import FakeCall, FakeMessage, FakeState, buttons
+from test_auto_actions import StaleCall
 from test_docs import _config_with
 
 import main
@@ -89,6 +90,7 @@ from services import (
 from services import settings as settings_service
 from utils import i18n
 from utils.i18n import fmt_duration, plural, t
+from utils.text import clip
 
 CYRILLIC = re.compile("[А-Яа-яЁё]")
 
@@ -830,3 +832,33 @@ def test_monitor_findings_are_written_in_the_chat_language():
     english_only(humanize.describe_error(message))
     for host in ("1.2.3.4", "myapp.vercel.app", "nas.local"):
         english_only(domain_checker.no_domain_reason(host) or "")
+
+
+async def test_a_stale_tap_is_answered_in_english(bot, db):
+    """STALE_TAP is a module constant shown through t(): twenty-two places
+    used to send the Russian source as it is."""
+    sid = await db.activate_or_create_site("https://shop.example.test")
+    await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    stale = StaleCall(f"act:fix:{sid}")
+    await alerts.cb_alert_action(stale)
+    english_only(stale.message.texts[-1])
+    assert stale.message.texts[-1].startswith("⌛ This tap arrived")
+    stale = StaleCall(f"pause:{sid}:60")
+    await sites.cb_pause(stale)
+    english_only(stale.message.texts[-1])
+
+
+def test_a_clipped_message_ends_in_english():
+    """utils.text cannot import i18n; the mark of a cut is set from set_language."""
+    english_only(clip("<b>" + "x" * 5000 + "</b>")[-60:])
+    assert clip("x" * 5000).endswith("… (truncated)")
+    i18n.set_language("ru")
+    assert clip("x" * 5000).endswith("… (обрезано)")
+
+
+def test_the_guards_refusal_and_the_crux_reasons_are_translated():
+    english_only(humanize.describe_error(
+        "Cannot connect to host 192.168.1.5:443 ssl:default [адрес во внутренней сети — туда не хожу]"))
+    english_only(humanize.technical("адрес во внутренней сети — туда не хожу"))
+    english_only(t("Google ответил HTTP {status}").format(status=403))
+    english_only(t("Google не ответил ({err_text})").format(err_text="TimeoutError"))

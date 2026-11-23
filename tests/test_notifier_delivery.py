@@ -151,3 +151,17 @@ async def test_a_queued_message_telegram_never_takes_does_not_jam_the_queue(bot,
     assert await peek_notifications() == []
     texts = [m["text"] for m in bot.sent]
     assert any("так и не принял" in t for t in texts) and any("🟠 обычное" in t for t in texts)
+
+
+async def test_buttons_telegram_refuses_are_dropped_and_the_words_still_arrive(bot, caplog):
+    """A URL button Telegram does not take fails the HTML and the plain-text
+    attempt alike: the third goes without the keyboard and says so, instead
+    of «never take this message» for a «сайт лёг»."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть", url="https://x.test/log")]])
+    bot.fail_with = [bad_request("Bad Request: BUTTON_URL_INVALID"), bad_request("Bad Request: BUTTON_URL_INVALID")]
+    assert await notifier.send("🔴 a.test не открывается", Priority.CRITICAL, reply_markup=kb)
+    assert len(bot.sent) == 1 and bot.sent[0]["reply_markup"] is None and not bot.sent[0]["silent"]
+    assert bot.sent[0]["text"].startswith("🔴 a.test не открывается\n(кнопки под сообщением Telegram не принял")
+    assert "rejected the buttons too" in caplog.text
+    bot.fail_with = [bad_request(), bad_request()]
+    assert await notifier.send("🔴 <b>x", Priority.CRITICAL) is False       # without buttons: as before

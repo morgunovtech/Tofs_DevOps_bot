@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_all_sites, get_site
-from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_args, render, site_by_cb
+from handlers.common import STALE_TAP, ack, back_button, cancel_kb, cb_args, cb_int, render, site_by_cb
 from services import maintenance
 from utils.i18n import t
 from utils.parse import parse_time_window
@@ -71,7 +71,7 @@ async def cb_mw_add(call: CallbackQuery):
 @router.callback_query(F.data.startswith("mw_scope:"))
 async def cb_mw_scope(call: CallbackQuery):
     scope = call.data.split(":", 1)[1]
-    if not scope.isdigit():
+    if cb_int(scope) is None:
         await ack(call, t("Не понял"), show_alert=True)
         return
     await ack(call)
@@ -90,7 +90,7 @@ def _fmt(m: int) -> str:
 @router.callback_query(F.data.startswith("mw_days:"))
 async def cb_mw_days(call: CallbackQuery):
     args = cb_args(call, 2)
-    if not args or not args[0].isdigit() or args[1] not in _DAYS:
+    if not args or cb_int(args[0]) is None or args[1] not in _DAYS:
         await ack(call, t("Не понял"), show_alert=True)
         return
     await ack(call)
@@ -117,10 +117,10 @@ async def _create(target, scope: str, days_key: str, start_min: int, end_min: in
 @router.callback_query(F.data.startswith("mw_time:"))
 async def cb_mw_time(call: CallbackQuery):
     args = cb_args(call, 3)
-    ok = args and args[0].isdigit() and args[1] in _DAYS and "-" in args[2]
+    ok = args and cb_int(args[0]) is not None and args[1] in _DAYS and "-" in args[2]
     if ok:
         a, _, b = args[2].partition("-")
-        ok = a.isdigit() and b.isdigit()
+        ok = cb_int(a) is not None and cb_int(b) is not None
     if not ok:
         await ack(call, t("Не понял"), show_alert=True)
         return
@@ -131,7 +131,7 @@ async def cb_mw_time(call: CallbackQuery):
 @router.callback_query(F.data.startswith("mw_custom:"))
 async def cb_mw_custom(call: CallbackQuery, state: FSMContext):
     args = cb_args(call, 2)
-    if not args or not args[0].isdigit() or args[1] not in _DAYS:
+    if not args or cb_int(args[0]) is None or args[1] not in _DAYS:
         await ack(call, t("Не понял"), show_alert=True)
         return
     await ack(call)
@@ -160,8 +160,8 @@ async def msg_mw_time(message: Message, state: FSMContext):
 async def cb_mw_del(call: CallbackQuery):
     arg = call.data.split(":", 1)[1]
     if not await ack(call, t("Удаляю…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
-    if not (arg.isdigit() and await maintenance.remove_window(int(arg))):
+    if cb_int(arg) is None or not await maintenance.remove_window(int(arg)):
         await call.message.answer(t("Уже удалено."))
     await _show(call)

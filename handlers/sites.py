@@ -57,6 +57,7 @@ from handlers.common import (
     back_button,
     cancel_kb,
     cb_args,
+    cb_int,
     forget_secret,
     render,
     site_by_cb,
@@ -642,7 +643,8 @@ async def cb_sites_block(call: CallbackQuery):
     states = [(s, (await site_state(s, incidents))[0]) for s in sites]
     states.sort(key=lambda t: _RANK.get(t[1], 9))
     pages = -(-len(states) // SITES_PAGE)
-    page = min(int(arg), pages - 1) if arg.isdigit() else 0
+    wanted = cb_int(arg)
+    page = min(wanted, pages - 1) if wanted is not None else 0
     rows = [[InlineKeyboardButton(text=f"{icon} {_short(site_label(s['url']), 26)}",
                                   callback_data=f"check_site:{s['id']}")]
             for s, icon in states[page * SITES_PAGE:(page + 1) * SITES_PAGE]]
@@ -878,7 +880,10 @@ async def cb_tip_decline(call: CallbackQuery):
     if key in recommend.TIPS:
         await set_state(f"{recommend.DECLINED}{key}", "1")
     await ack(call, t("Ок, больше не предложу"))
-    await call.message.edit_reply_markup(reply_markup=None)
+    # A weekly tip is tapped weeks later: the message may be too old to edit.
+    if call.message is not None and hasattr(call.message, "edit_reply_markup"):
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_reply_markup(reply_markup=None)
 
 
 @router.callback_query(F.data.startswith("kwok:"))
@@ -912,7 +917,7 @@ async def cb_site_del_confirm(call: CallbackQuery):
 @router.callback_query(F.data.startswith("delok:"))
 async def cb_site_del_do(call: CallbackQuery):
     if not await ack(call):                     # «🗑 Да, убрать» from the queue after a restart: no
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     site = await site_by_cb(call.data.split(":", 1)[1])
     if site and await deactivate_site(site["id"]):
@@ -939,12 +944,13 @@ async def cb_pause(call: CallbackQuery):
         return
     sid, arg = site["id"], args[1]
     # The card itself says «🔧 Режим «я чиню»» and offers «✅ Починил»: a toast and the card again.
-    if arg == "off":
-        await maintenance.pause_site(sid, None)
-        await ack(call, t("Пауза снята — снова пишу обо всём"))
-    else:
-        await maintenance.pause_site(sid, minutes)
-        await ack(call, t("🔧 {duration} не пишу про этот сайт, проверки идут").format(duration=fmt_duration(minutes)))
+    # ack FIRST: a tap that waited out a restart must not pause the site unseen.
+    toast = (t("Пауза снята — снова пишу обо всём") if arg == "off"
+             else t("🔧 {duration} не пишу про этот сайт, проверки идут").format(duration=fmt_duration(minutes)))
+    if not await ack(call, toast):
+        await call.message.answer(t(STALE_TAP))
+        return
+    await maintenance.pause_site(sid, None if arg == "off" else minutes)
     await render_card(call, site)
 
 
@@ -1004,16 +1010,16 @@ async def apply_document(doc) -> dict:
     try:
         for item in items[:_IMPORT_CAP]:
             if not isinstance(item, dict):
-                skipped.append(str(item)[:60])
+                skipped.append((site_label(item) if isinstance(item, str) else str(item))[:60])
                 continue
             url, _error = parse_site_input(str(item.get("url", "")))
             if not url:
-                skipped.append(str(item.get("url", "?"))[:60])
+                skipped.append(site_label(str(item.get("url", "?")))[:60])
                 continue
             fields, bad = _site_fields(item)
             existing = await get_all_sites()
             if len(existing) >= MAX_SITES and url not in {s["url"] for s in existing}:
-                skipped.append(t("{url} (лимит {MAX_SITES})").format(url=url, MAX_SITES=MAX_SITES))
+                skipped.append(t("{url} (лимит {MAX_SITES})").format(url=site_label(url), MAX_SITES=MAX_SITES))
                 continue
             was = url in {s["url"] for s in existing}
             site_id = await activate_or_create_site(url)
@@ -1021,7 +1027,7 @@ async def apply_document(doc) -> dict:
             if fields:
                 await update_site_settings(site_id, **fields)
             if bad:
-                skipped.append(t("{url}: {items} (неверные значения)").format(url=url, items=', '.join(bad)))
+                skipped.append(t("{url}: {items} (неверные значения)").format(url=site_label(url), items=', '.join(bad)))
             reset_site_schedule(site_id)
             counters["updated" if was else "added"] += 1
         if len(items) > _IMPORT_CAP:
@@ -1148,7 +1154,8 @@ def _clear_uploads():
 
 
 def _list(urls: list[str]) -> str:
-    return ", ".join(esc(u) for u in urls[:5]) + (t(" и ещё {n}").format(n=len(urls) - 5) if len(urls) > 5 else "")
+    # The label, never the stored address: an API monitor's query may carry a token.
+    return ", ".join(esc(site_label(u)) for u in urls[:5]) + (t(" и ещё {n}").format(n=len(urls) - 5) if len(urls) > 5 else "")
 
 
 async def _db_question(info: dict, name: str) -> str:

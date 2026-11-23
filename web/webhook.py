@@ -57,6 +57,9 @@ _bad_hits: dict[str, deque] = defaultdict(deque)
 _notified: dict[str, deque] = defaultdict(deque)
 _held: dict[str, int] = defaultdict(int)
 _warned: dict[str, float] = {}                  # log lines said at most once an hour, by key
+# Its ceiling: the keys are strangers' Origin headers (up to MAX_HEADER_BYTES
+# each), and a flood of fresh ones must not grow the process by the hour.
+WARNED_MAX = 512
 _origins: tuple[float, list[str]] | None = None  # (when fetched, site hosts); None — not yet
 WIDGET_SERVED = "widget:served"                 # the widget version sites have loaded
 _widget_noted: set[str] = set()
@@ -94,11 +97,13 @@ def _once_an_hour(key: str) -> bool:
     """True the first time `key` is seen within an hour: a log line per
     stranger, not per request — a flood must not become a flood of warnings."""
     now = time.monotonic()
-    if len(_warned) > 512:
-        for stale in [k for k, t in _warned.items() if t < now - 3600]:
-            del _warned[stale]
     if _warned.get(key, float("-inf")) > now - 3600:
         return False
+    if len(_warned) >= WARNED_MAX:
+        for stale in [k for k, t in _warned.items() if t < now - 3600]:
+            del _warned[stale]
+        while len(_warned) >= WARNED_MAX:          # still full within the hour: the oldest goes
+            del _warned[next(iter(_warned))]
     _warned[key] = now
     return True
 
@@ -297,13 +302,20 @@ def _may_notify(site_key: str) -> bool:
 
 async def send_feedback_summary():
     """Hourly: what the per-site budget held back — one quiet message per site."""
-    held = {k: n for k, n in _held.items() if n}
-    _held.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("📩 Сообщения"),
                                                                      callback_data="menu_feedback:0")]])
-    for site, n in held.items():
-        await notifier.send(t("📩 {site}: ещё {n} {words} с сайта за час. Я их сохранил, но не присылал по одному — открыть все:").format(site=esc(site), n=n, words=plural(n, 'сообщение', 'сообщения', 'сообщений')),
-                            Priority.DIGEST, reply_markup=kb)
+    for site in list(_held):
+        # Taken out one site at a time: a send that fails puts its count
+        # back, so the next hour says it instead of losing it.
+        n = _held.pop(site, 0)
+        if not n:
+            continue
+        try:
+            await notifier.send(t("📩 {site}: ещё {n} {words} с сайта за час. Я их сохранил, но не присылал по одному — открыть все:").format(site=esc(site), n=n, words=plural(n, 'сообщение', 'сообщения', 'сообщений')),
+                                Priority.DIGEST, reply_markup=kb)
+        except Exception:
+            _held[site] += n
+            raise
 
 
 async def handle_heartbeat(request: web.Request) -> web.Response:

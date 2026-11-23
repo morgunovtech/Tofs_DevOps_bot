@@ -30,11 +30,12 @@ NO_ANSWER = 0
 
 
 def _path(page: str, site_url: str) -> str:
-    """«/privacy» for a page of the site itself, the whole address otherwise."""
+    """«/privacy» for a page of the site itself, the address without its
+    query otherwise — a query string is never shown, whatever it holds."""
     p, home = urlparse(page), urlparse(site_url)
     if p.netloc.lower() != home.netloc.lower():
-        return page
-    return (p.path or "/") + (f"?{p.query}" if p.query else "")
+        return page.split("?", 1)[0]
+    return p.path or "/"
 
 
 async def check_deep(url: str) -> DeepResult:

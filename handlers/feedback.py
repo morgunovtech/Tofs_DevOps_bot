@@ -4,11 +4,11 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import count_feedback, delete_feedback, list_feedback
-from handlers.common import STALE_TAP, ack, render
+from handlers.common import STALE_TAP, ack, cb_int, render
 from services import public_urls, secrets
 from utils.clock import fmt_local
 from utils.i18n import t
-from utils.text import esc
+from utils.text import esc, one_line
 from web import widget
 
 router = Router(name="feedback")
@@ -33,7 +33,7 @@ def widget_snippet() -> str:
 async def cb_feedback(call: CallbackQuery):
     await ack(call)
     arg = call.data.split(":", 1)[1]
-    await show_feedback(call, int(arg) if arg.isdigit() else 0)
+    await show_feedback(call, cb_int(arg) or 0)
 
 
 async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
@@ -45,8 +45,11 @@ async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
     if not rows:
         lines.append(t("Пока ни одного сообщения.") if offset == 0 else t("Дальше пусто."))
     for fb in rows:
-        lines.append(f"#{fb['id']} · {fmt_local(fb['created_at'])} · {esc(fb['page_url'] or fb['site_url'])}\n"
-                     f"   {esc(fb['message'][:300])}{'…' if len(fb['message']) > 300 else ''}")
+        # A visitor's words as one line, like the alert draws them: a line
+        # break or a direction override in them must not draw a row of the bot's.
+        message = one_line(fb["message"])
+        lines.append(f"#{fb['id']} · {fmt_local(fb['created_at'])} · {one_line(fb['page_url'] or fb['site_url'])}\n"
+                     f"   {message[:300]}{'…' if len(message) > 300 else ''}")
     if not public_urls.is_public():
         lines.append(t("\n⚠️ Задай PUBLIC_BASE_URL, чтобы ссылки ниже были готовы к вставке."))
     lines.append("\n" + t("Подключение виджета на сайт (перед <code>&lt;/body&gt;</code>):\n<code>{widget_snippet}</code>\nЛюбая ссылка с атрибутом <code>data-devops-feedback</code> откроет форму.\nЯзык формы — как у страницы (<code>&lt;html lang&gt;</code>): русский или английский; закрепить — <code>lang:'ru'</code> или <code>lang:'en'</code> в настройке. После обновления бота сниппет может смениться — бот скажет, и его надо заменить на сайтах.\nСтрогий Content-Security-Policy на сайте? Подключение без inline-скрипта и с копией файла у себя — в начале файла {widget_url}").format(widget_snippet=esc(widget_snippet()), widget_url=esc(public_urls.widget_url())))
@@ -69,7 +72,7 @@ async def cb_feedback_delete(call: CallbackQuery):
     """fb_del:<max>:<min> asks; fb_del_ok:<max>:<min> deletes the messages
     with ids in that range and shows the list again (CR-613)."""
     parts = (call.data or "").split(":")
-    if len(parts) != 3 or not (parts[1].isdigit() and parts[2].isdigit()):
+    if len(parts) != 3 or cb_int(parts[1]) is None or cb_int(parts[2]) is None:
         await ack(call, t("Кнопка устарела — открой список заново"), show_alert=True)
         return
     hi, lo = int(parts[1]), int(parts[2])
@@ -81,7 +84,7 @@ async def cb_feedback_delete(call: CallbackQuery):
         await render(call, t("Удалить эти сообщения посетителей? Вернуть их будет нельзя."), kb)
         return
     if not await ack(call):           # «Да» from the queue after a restart: nothing is deleted
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     n = await delete_feedback(hi, lo)
     await show_feedback(call, 0, note=t("🗑 Удалил: {n}").format(n=n))

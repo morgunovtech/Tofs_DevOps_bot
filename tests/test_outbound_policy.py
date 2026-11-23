@@ -19,7 +19,7 @@ from monitors.sitemap import sitemap_urls
 from services import screenshots
 from services.humanize import describe_error
 from utils import net
-from utils.urls import host_of
+from utils.urls import host_of, same_site
 
 # One list for every «is it internal» predicate of the project.
 INTERNAL = ["127.0.0.1", "0.0.0.0", "10.0.0.5", "172.17.0.1", "192.168.1.1", "169.254.169.254",
@@ -291,3 +291,16 @@ def test_localhost_is_not_the_same_site_as_its_address():
     assert host_of("http://localhost:1/") == "localhost"
     assert not net._same_domain("localhost", "127.0.0.1") and net._same_domain("www.example.com", "example.com")
     assert not net._same_domain("10.0.0.1", "10.0.0.2")
+
+
+def test_a_shared_domain_trusts_only_the_monitors_own_host():
+    """me.duckdns.org and evil.duckdns.org share a registrable domain and
+    nothing else: a stranger's name under a platform's domain must not be
+    allowed inside the LAN on the monitor's account."""
+    assert net._same_domain("me.duckdns.org", "me.duckdns.org")
+    assert not net._same_domain("evil.duckdns.org", "me.duckdns.org")
+    assert not net._same_domain("evil.github.io", "shop.github.io")
+    assert net._same_domain("www.example.com", "example.com")        # the owner's domain: as before
+    assert same_site("https://me.duckdns.org/", "https://me.duckdns.org/x")
+    assert not same_site("https://a.github.io/", "https://b.github.io/x")
+    assert same_site("https://www.example.com/", "https://example.com/x")

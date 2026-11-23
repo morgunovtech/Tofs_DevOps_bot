@@ -32,7 +32,7 @@ from services.humanize import (
 )
 from utils.clock import now_local, to_local
 from utils.i18n import fmt_duration, plural, t
-from utils.text import esc, incident_start, parse_sqlite_utc
+from utils.text import BIDI_CONTROLS, esc, incident_start, one_line, parse_sqlite_utc
 from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
@@ -513,24 +513,14 @@ def incident_line(inc: dict, label: str | None = None) -> str:
                                       page=is_web_page(inc["url"], inc.get("http_method")))
 
 
-# Direction overrides and isolates (U+202A–U+202E, U+2066–U+2069) turn «exe.png» into «gnp.exe».
-_BIDI = dict.fromkeys([*range(0x202A, 0x202F), *range(0x2066, 0x206A)])
-
-
-def _one_line(value: str) -> str:
-    """A visitor's field as ONE line: no line breaks or control characters —
-    it cannot draw lines that look like the bot's own."""
-    text = "".join(ch if ch.isprintable() else " " for ch in str(value).translate(_BIDI))
-    return esc(" ".join(text.split()))
-
-
 def format_feedback(site_url: str, page_url: str, message: str,
                     feedback_id: int, ip_address: str, verified: bool = False) -> str:
-    """The visitor's words stay inside a quote; the lines around it are the bot's."""
+    """The visitor's words stay inside a quote; the lines around it are the
+    bot's (utils.text.one_line — the «📩» screen uses the same rule)."""
     note = "" if verified else t(" (не подтверждено: так написал отправитель)")
-    text = "\n".join(_one_line(line) for line in str(message).translate(_BIDI).splitlines())
+    text = "\n".join(one_line(line) for line in str(message).translate(BIDI_CONTROLS).splitlines())
     return (t("📩 Сообщение с сайта") + "\n"
-            + t("Сайт: {site}{note}").format(site=_one_line(site_url), note=note) + "\n"
-            + t("Страница: {page}").format(page=_one_line(page_url)) + "\n"
+            + t("Сайт: {site}{note}").format(site=one_line(site_url), note=note) + "\n"
+            + t("Страница: {page}").format(page=one_line(page_url)) + "\n"
             + t("Сообщение:") + f"\n<blockquote>{text}</blockquote>\n"
-            f"🆔 #{feedback_id} · 🌍 {_one_line(ip_address)}")
+            f"🆔 #{feedback_id} · 🌍 {one_line(ip_address)}")

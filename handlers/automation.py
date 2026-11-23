@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import config
-from handlers.common import STALE_BUTTON, STALE_TAP, ack, render
+from handlers.common import STALE_BUTTON, STALE_TAP, ack, cb_int, render
 from services import automation, docker_api, integrations
 from utils.clock import to_local
 from utils.i18n import t
@@ -75,7 +75,9 @@ async def cb_auto_menu(call: CallbackQuery):
 async def cb_auto_pause(call: CallbackQuery):
     """Stopping is always safe — done even for a tap that waited in the queue."""
     parts = call.data.split(":")
-    hours = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 2
+    hours = cb_int(parts[2]) if len(parts) > 2 else None
+    if hours is None:
+        hours = 2
     await automation.pause(hours or None)
     await ack(call, t("Остановил"))
     if call.data.endswith(":a"):
@@ -87,7 +89,7 @@ async def cb_auto_pause(call: CallbackQuery):
 @router.callback_query(F.data == "auto:resume")
 async def cb_auto_resume(call: CallbackQuery):
     if not await ack(call, t("Включил")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await automation.resume()
     await render(call, *await auto_screen())
@@ -97,11 +99,11 @@ async def cb_auto_resume(call: CallbackQuery):
 async def cb_auto_toggle(call: CallbackQuery):
     _, mode, kind = call.data.split(":", 2)
     if kind not in automation.KINDS:
-        await ack(call, STALE_BUTTON, show_alert=True)
+        await ack(call, t(STALE_BUTTON), show_alert=True)
         return
     fresh = await ack(call, t("Готово"))
     if mode == "on" and not fresh:          # switching ON waits for a fresh tap
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await integrations.set_value(f"auto_{kind}", mode)
     await render(call, *await auto_screen())

@@ -42,6 +42,9 @@ def set_language(lang: str) -> None:
         _strings, _plurals = STRINGS, PLURALS
     else:
         _strings, _plurals = {}, {}
+    # utils.text cannot import this module (it is imported by it): the one
+    # string it shows, the mark of a clipped message, is set from here.
+    _text.CLIP_SUFFIX = "\n" + t(_text.CLIPPED)
 
 
 def language() -> str:

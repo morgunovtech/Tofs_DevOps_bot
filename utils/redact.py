@@ -11,7 +11,9 @@ from collections.abc import Callable, Iterable
 _PATTERNS = (
     (re.compile(r"(/bot)\d+:[A-Za-z0-9_-]+"), r"\1<token>"),                    # Bot API, /file/bot… too
     (re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}"), "<token>"),                 # a bare bot token
-    (re.compile(r"([?&](?:token|key|api_key|apikey|secret|access_token|sig|signature|password)=)"
+    # Any query parameter whose name ENDS in a secret word: key, api_key,
+    # access_key (apiflash), auth_token, x_api_key, signature, password…
+    (re.compile(r"([?&][a-z0-9_-]*(?:key|token|secret|password|sig|signature|auth)=)"
                 r"[^&\s'\"]+", re.I), r"\1<redacted>"),
     (re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@", re.I), r"\1<user>:<pass>@"),
 )

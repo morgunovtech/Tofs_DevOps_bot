@@ -7,9 +7,11 @@ code path asks one question: is_paused(site_id)."""
 
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from db.database import get_state, set_state
+from services import health
 from utils.clock import now_local
 from utils.i18n import fmt_duration, t
 from utils.text import parse_iso_utc
@@ -176,7 +178,13 @@ async def paused_until(site_id: int) -> datetime | None:
     if not deadline:
         return None
     if deadline <= datetime.now(UTC):
-        await set_state(f"paused:{site_id}", None)  # expired — clean up
+        # Expired — clean up. A read that every alert passes through must
+        # not die on a write: on a full disk the stale key stays until the
+        # next time and the alert goes out (the pause is over either way).
+        try:
+            await set_state(f"paused:{site_id}", None)
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)
         return None
     return deadline
 

@@ -73,7 +73,7 @@ async def cb_backup_now(call: CallbackQuery):
     tokens and secrets (reports.scheduler.send_copy_to_owner). A double tap
     is safe: the copies are made one after another."""
     if not await ack(call, t("Делаю копию…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     problem = await send_copy_to_owner(
         t("💾 Копия базы бота на {time}: сайты, настройки, история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.").format(time=to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')))

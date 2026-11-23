@@ -7,6 +7,10 @@ from datetime import UTC, datetime
 
 TG_MESSAGE_LIMIT = 4096
 SAFE_LIMIT = TG_MESSAGE_LIMIT - 100
+# What clip() writes after a cut. This module has no project imports, so the
+# chat language sets it from utils.i18n.set_language (the Russian source here).
+CLIPPED = "… (обрезано)"
+CLIP_SUFFIX = "\n" + CLIPPED
 
 
 def esc(value) -> str:
@@ -26,6 +30,19 @@ def esc_attr(value) -> str:
 def err_text(e: BaseException) -> str:
     """Never empty: TimeoutError() and friends stringify to ''."""
     return str(e) or type(e).__name__
+
+
+# Direction overrides and isolates (U+202A–U+202E, U+2066–U+2069) turn «exe.png» into «gnp.exe».
+BIDI_CONTROLS = dict.fromkeys([*range(0x202A, 0x202F), *range(0x2066, 0x206A)])
+
+
+def one_line(value) -> str:
+    """A stranger's text (a visitor's message, a page address) as ONE
+    escaped line: no line breaks, control characters or direction
+    overrides — it cannot draw lines that look like the bot's own, in an
+    alert or on a screen alike."""
+    text = "".join(ch if ch.isprintable() else " " for ch in str(value).translate(BIDI_CONTROLS))
+    return esc(" ".join(text.split()))
 
 
 _TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
@@ -50,7 +67,7 @@ def clip(text: str, limit: int = SAFE_LIMIT) -> str:
             open_tags.append(name)
         elif name in open_tags:
             del open_tags[len(open_tags) - 1 - open_tags[::-1].index(name)]
-    return cut.rstrip() + "".join(f"</{t}>" for t in reversed(open_tags)) + "\n… (обрезано)"
+    return cut.rstrip() + "".join(f"</{t}>" for t in reversed(open_tags)) + CLIP_SUFFIX
 
 
 def chunks(text: str, limit: int = SAFE_LIMIT) -> list[str]:

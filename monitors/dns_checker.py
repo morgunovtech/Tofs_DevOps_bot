@@ -118,9 +118,13 @@ async def _pool_moved(host: str, rtype: str, values: list[str], previous: str) -
     outside = not set(values) & set(seen)
     strikes = (pool.get("strikes") or 0) + 1 if outside else 0
     moved = strikes >= POOL_CHECKS
-    if not outside or moved:
+    if not outside:
         seen.update(dict.fromkeys(values, today.isoformat()))
-        strikes = 0
+    # A move does NOT enter the pool here: the new addresses join it through
+    # the baseline, once the scheduler has committed it — after the alert
+    # went out. Added here, a move whose alert failed would look like the
+    # pool on the next check and never be said; left out, it keeps striking
+    # and is said again the next hour.
     new = json.dumps({"seen": dict(sorted(seen.items())), "strikes": strikes})
     if new != raw:
         await set_state(key, new)      # at most once a day for a steady answer

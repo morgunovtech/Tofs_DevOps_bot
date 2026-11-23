@@ -305,6 +305,7 @@ STRINGS: dict[str, str] = {
     "⏳ Задержалось с {time}, отправляю сейчас:": "⏳ Delayed since {time}, sending now:",
     "\n\n👥 Это копия для помощника: управляет ботом владелец, кнопки — у него.":
         "\n\n👥 This is a helper's copy: the owner runs the bot and has the buttons.",
+    "(кнопки под сообщением Telegram не принял — отправил без них)": "(Telegram did not take the buttons under the message — sent without them)",
     "⚠️ Пока Telegram не принимал сообщения, {n} из них не поместились в очередь и потерялись. Что сейчас не так — на 🏠 Главной.":
         "⚠️ While Telegram was not accepting messages, {n} of them did not fit in the queue and were lost. What is wrong now is on 🏠 Home.",
     "бот ещё не запущен": "the bot is not started yet",
@@ -539,6 +540,9 @@ STRINGS: dict[str, str] = {
     "ключ не подходит ({err_text})": "the key does not fit ({err_text})",
     "Google не принял ключ ({v})": "Google rejected the key ({v})",
     "Google не ответил ({err_text})": "Google did not answer ({err_text})",
+    "Google ответил HTTP {status}": "Google answered HTTP {status}",
+    # ── utils/text.py: the mark of a clipped message (set through utils.i18n) ──
+    "… (обрезано)": "… (truncated)",
     "Search Console ответил HTTP {status}": "Search Console answered HTTP {status}",
     "токен не принят (HTTP {status})": "the token was rejected (HTTP {status})",
     "Вебмастер не ответил": "Webmaster did not answer",

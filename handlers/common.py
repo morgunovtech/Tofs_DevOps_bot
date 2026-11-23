@@ -24,6 +24,7 @@ from aiogram.types import (
 from db.database import get_site
 from handlers.filters import AdminFilter
 from services import helpers, runtime
+from utils import validate
 from utils.i18n import t
 from utils.text import clip
 
@@ -195,11 +196,18 @@ def cb_args(call: CallbackQuery, n: int) -> list[str] | None:
     return parts[1:] if len(parts) == n + 1 else None
 
 
+def cb_int(arg: str | None, lo: int = 0, hi: int = 10**12) -> int | None:
+    """A number out of callback_data, or None. ASCII digits only: «²».isdigit()
+    is True and int(«²») raises — an error screen for a tap the owner made."""
+    return validate.int_in(arg, lo, hi) if isinstance(arg, str) else None
+
+
 async def site_by_cb(arg: str | None) -> dict | None:
     """Resolve a callback site id back to an active site row."""
-    if not arg or not arg.isdigit():
+    site_id = cb_int(arg)
+    if site_id is None:
         return None
-    site = await get_site(int(arg))
+    site = await get_site(site_id)
     return site if site and site["active"] else None
 
 
@@ -276,6 +284,11 @@ async def on_handler_error(event: ErrorEvent):
                 reply_markup=back_button())
         elif update and update.message:
             await update.message.answer(t("❌ Что-то пошло не так. Попробуй ещё раз чуть позже."))
+        if call:
+            # The handler died before its own ack: the button would spin until
+            # Telegram's timeout. Answering a second time is harmless.
+            with contextlib.suppress(Exception):
+                await call.answer()
     except Exception:
         if call:  # message too old to edit (48h+) — at least acknowledge the tap
             try:

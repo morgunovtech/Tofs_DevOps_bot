@@ -407,3 +407,9 @@ async def test_the_lifted_ban_is_said_once_and_quietly(bot, db, monkeypatch):
     assert texts == ["✅ ex.test: запрет для поисковиков снят — сайт снова открыт для поиска. "
                      "Мелкие помехи остались, они в «🔎 Поиск и ИИ»."]
     assert bot.sent[0]["silent"]
+
+
+def test_a_sampled_page_is_shown_without_its_query():
+    assert deep_checker._path("https://ex.test/p?from=1&to=99", "https://ex.test") == "/p"
+    assert deep_checker._path("https://ex.test/", "https://ex.test") == "/"
+    assert deep_checker._path("https://cdn.ex.test/sitemap.xml?sig=abc", "https://ex.test") == "https://cdn.ex.test/sitemap.xml"
