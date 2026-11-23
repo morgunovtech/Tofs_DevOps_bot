@@ -31,13 +31,14 @@ from services.humanize import (
     worst_severity,
 )
 from utils.clock import now_local, to_local
-from utils.text import esc, fmt_duration, incident_start, parse_sqlite_utc, plural
+from utils.i18n import fmt_duration, plural, t
+from utils.text import esc, incident_start, parse_sqlite_utc
 from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
 def _tech(*parts) -> str:
     """Grey technical footer: '<i>HTTP 502 · 0.81 с</i>'."""
-    bits = [str(p) for p in parts if p not in (None, "", "—")]
+    bits = [humanize.technical(str(p)) for p in parts if p not in (None, "", "—")]
     return f"\n<i>{esc(' · '.join(bits))}</i>" if bits else ""
 
 
@@ -56,44 +57,47 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
         return ""
     label = esc(label or site_label(r.url))
     expl = explain("availability", r.error)
-    when = f" с {to_local(since).strftime('%H:%M')}" if since else ""
+    when = t(" с {time}").format(time=to_local(since).strftime("%H:%M")) if since else ""
     if r.keyword_failed:
-        header = f"🔴 {label} {'отвечает' if r.api else 'открывается'}, но показывает не то{when}"
+        header = (t("🔴 {label} отвечает, но показывает не то{when}") if r.api
+                  else t("🔴 {label} открывается, но показывает не то{when}")).format(label=label, when=when)
         what = esc(describe_error(r.error))
-        situation = f"{expl.meaning} Сейчас {what}."
+        situation = t("{meaning} Сейчас {what}.").format(meaning=expl.meaning, what=what)
     else:
-        noun = "не открывается" if is_http_url(r.url) and not r.api else "не отвечает"
-        header = f"🔴 {label} {noun}{when}: {esc(describe_error(r.error))}"
+        page = is_http_url(r.url) and not r.api
+        header = (t("🔴 {label} не открывается{when}: {what}") if page
+                  else t("🔴 {label} не отвечает{when}: {what}")).format(label=label, when=when,
+                                                                        what=esc(describe_error(r.error)))
         situation = expl.meaning
         if r.failed_of:
-            how = f"Сбой в {r.failed_of[0]} из {r.failed_of[1]} последних проверок"
+            how = t("Сбой в {n} из {total} последних проверок").format(n=r.failed_of[0], total=r.failed_of[1])
         else:
-            how = f"Проверил {humanize.times_in_a_row(threshold)}"
+            how = t("Проверил {times}").format(times=humanize.times_in_a_row(threshold))
         if r.cert_failed:
-            situation += (f" {how}: сервер отвечает, но его сертификат не принимается — "
-                          f"так его видят и посетители.")
+            situation += t(" {how}: сервер отвечает, но его сертификат не принимается — "
+                           "так его видят и посетители.").format(how=how)
         elif r.external_ok is False:
-            situation += f" {how} и с внешних серверов: не открывается ни у кого."
+            situation += t(" {how} и с внешних серверов: не открывается ни у кого.").format(how=how)
         elif r.external_region and r.external_ups:
-            situation += (f" {how}; снаружи открывается (с {r.external_ups} из "
-                          f"{r.external_total} серверов), но не {region_words(r.external_region)} — "
-                          f"посетители оттуда его тоже не видят.")
+            situation += t(" {how}; снаружи открывается (с {ups} из {total} серверов), но не {region} — "
+                           "посетители оттуда его тоже не видят.").format(
+                how=how, ups=r.external_ups, total=r.external_total, region=region_words(r.external_region))
         elif r.external_region:
-            situation += (f" {how}; {region_words(r.external_region)} тоже не открывается, "
-                          f"остальные внешние серверы не успели ответить.")
+            situation += t(" {how}; {region} тоже не открывается, остальные внешние серверы не успели ответить.").format(
+                how=how, region=region_words(r.external_region))
         elif r.external_ups and r.external_total >= 2:
-            situation += (f" {how}; снаружи открывается только с {r.external_ups} из "
-                          f"{r.external_total} серверов — похоже, сайт лежит не везде.")
+            situation += t(" {how}; снаружи открывается только с {ups} из {total} серверов — похоже, сайт лежит "
+                           "не везде.").format(how=how, ups=r.external_ups, total=r.external_total)
         elif second_opinion:
-            situation += f" {how}; снаружи проверить не удалось — возможно, проблема на моей стороне."
+            situation += t(" {how}; снаружи проверить не удалось — возможно, проблема на моей стороне.").format(how=how)
         else:
             situation += f" {how}."
     # A phrase verdict is about a site that opens: «поднимется» would send
     # the owner to the server instead of the page.
-    back = (f"когда {'в ответе' if r.api else 'на странице'} снова будет как надо" if r.keyword_failed
-            else "когда поднимется")
-    return (f"{header}\n{situation}\nПродолжаю проверять {humanize.every_minutes(interval_min)} "
-            f"и напишу, {back}."
+    back = ((t("когда в ответе снова будет как надо") if r.api else t("когда на странице снова будет как надо"))
+            if r.keyword_failed else t("когда поднимется"))
+    return (f"{header}\n{situation}\n"
+            + t("Продолжаю проверять {every} и напишу, {back}.").format(every=humanize.every_minutes(interval_min), back=back)
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
 
@@ -112,8 +116,9 @@ def incident_duration_line(incident: dict | None) -> str | None:
     span = f"{to_local(started).strftime(fmt)}–{to_local(ended).strftime(fmt)}"
     unseen = parse_sqlite_utc(incident.get("unseen_until"))
     if unseen:
-        return (f"не меньше {fmt_duration(minutes)} ({span}); когда именно поднялся — не знаю: "
-                f"с {to_local(ended).strftime(fmt)} до {to_local(unseen).strftime(fmt)} я его не проверял")
+        return t("не меньше {duration} ({span}); когда именно поднялся — не знаю: "
+                 "с {start} до {end} я его не проверял").format(
+            duration=fmt_duration(minutes), span=span, start=to_local(ended).strftime(fmt), end=to_local(unseen).strftime(fmt))
     return f"{fmt_duration(minutes)} ({span})"
 
 
@@ -123,16 +128,16 @@ def format_recovery_alert(r: AvailabilityResult, *, label: str | None = None) ->
     message = (r.resolved_incident or {}).get("message") or ""
     content = message.startswith("Bad content: ")    # the site opened all along; its text was wrong
     if content:
-        lines = [f"✅ {label}: снова всё как надо"]
+        lines = [t("✅ {label}: снова всё как надо").format(label=label)]
     else:
-        verb = "снова открывается" if is_http_url(r.url) and not r.api else "снова отвечает"
-        lines = [f"✅ {label} {verb}"]
+        lines = [(t("✅ {label} снова открывается") if is_http_url(r.url) and not r.api
+                  else t("✅ {label} снова отвечает")).format(label=label)]
     duration = incident_duration_line(r.resolved_incident)
     cause = describe_error(message)
     if duration:
-        lines.append(f"{'Было не так' if content else 'Лежал'} {duration}"
-                     + (f", {esc(cause)}." if cause and cause != "неизвестная ошибка" else "."))
-    lines.append("Ничего делать не нужно.")
+        lines.append((t("Было не так {duration}") if content else t("Лежал {duration}")).format(duration=duration)
+                     + (f", {esc(cause)}." if cause and cause != t("неизвестная ошибка") else "."))
+    lines.append(t("Ничего делать не нужно."))
     return "\n".join(lines) + _tech(f"HTTP {r.status_code}" if r.status_code else None,
                                     fmt_seconds(r.response_time_ms) if r.response_time_ms else None)
 
@@ -147,9 +152,9 @@ def format_ssl_alert(r: SslResult) -> str:
     icon = level_icon(r.severity)
     what = esc(describe_error(r.error))
     header = f"{icon} {label}: {what}"
-    note = " Автопродление не сработало: сертификат не менялся, хотя срок уже близко." if r.renewal_note else ""
+    note = t(" Автопродление не сработало: сертификат не менялся, хотя срок уже близко.") if r.renewal_note else ""
     return (f"{header}\n{expl.meaning}{note}"
-            + _tech(r.error, f"выдан {r.ssl_info.issuer}" if r.ssl_info and r.ssl_info.issuer else None))
+            + _tech(r.error, t("выдан {issuer}").format(issuer=r.ssl_info.issuer) if r.ssl_info and r.ssl_info.issuer else None))
 
 
 def format_domain_alert(r: DomainResult) -> str:
@@ -159,7 +164,7 @@ def format_domain_alert(r: DomainResult) -> str:
     expl = explain("domain", r.error)
     icon = level_icon(r.severity)
     registrar = r.domain_info.registrar if r.domain_info and r.domain_info.registrar not in ("", "Unknown") else ""
-    where = f" Продлевается у регистратора: {esc(registrar)}." if registrar else ""
+    where = t(" Продлевается у регистратора: {registrar}.").format(registrar=esc(registrar)) if registrar else ""
     return (f"{icon} {label}: {esc(describe_error(r.error))}\n{expl.meaning}{where}"
             + _tech(r.error))
 
@@ -167,14 +172,14 @@ def format_domain_alert(r: DomainResult) -> str:
 # ── Links / deep / SEO / DNS ─────────────────────────────────────────────────
 
 LINK_FIX = ("Что сделать: если страница переехала — поставь новый адрес; пропала — убери ссылку "
-            "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")
+            "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")   # via t()
 
 
 def link_lines(links: list, limit: int = 10) -> list[str]:
     """«• url — why» for each link, own site or not alike."""
     lines = [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in links[:limit]]
     if len(links) > limit:
-        lines.append(f"… и ещё {len(links) - limit}")
+        lines.append(t("… и ещё {n}").format(n=len(links) - limit))
     return lines
 
 
@@ -184,21 +189,23 @@ def format_links_report(r: LinksResult) -> str:
     if not r.broken:
         return ""
     n = len(r.broken)
-    lines = [f"🟠 На {esc(site_label(r.url))} {n} {plural(n, 'ссылка не открывается', 'ссылки не открываются', 'ссылок не открываются')}",
-             explain("links", "").meaning, *link_lines(r.broken), LINK_FIX]
+    lines = [t("🟠 На {label} {n} {links}").format(
+                 label=esc(site_label(r.url)), n=n,
+                 links=plural(n, "ссылка не открывается", "ссылки не открываются", "ссылок не открываются")),
+             explain("links", "").meaning, *link_lines(r.broken), t(LINK_FIX)]
     return "\n".join(lines)
 
 
 def pending_note(pending: list) -> str:
     n = len(pending)
-    return (f"⚠️ Ещё {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} не {plural(n, 'открылась', 'открылись', 'открылись')} "
-            f"с первого раза (таймаут или ошибка сервера) — перепроверю при следующем обходе и скажу, "
-            f"если так и останется.")
+    return t("⚠️ Ещё {n} {links} не {opened} с первого раза (таймаут или ошибка сервера) — перепроверю при "
+             "следующем обходе и скажу, если так и останется.").format(
+        n=n, links=plural(n, "ссылка", "ссылки", "ссылок"), opened=plural(n, "открылась", "открылись", "открылись"))
 
 
 def _deep_page_error(code: int) -> str:
     """A 5xx by its words; code 0 is a page that did not answer at all."""
-    return describe_error(f"HTTP {code}") if code else "не ответила за 15 секунд"
+    return describe_error(f"HTTP {code}") if code else t("не ответила за 15 секунд")
 
 
 def format_deep_alert(r) -> str:
@@ -213,15 +220,15 @@ def format_seo_alert(r: SeoResult) -> str:
     critical = [p for p in r.problems if p.severity == "critical"]
     if not critical:
         return ""
-    lines = [f"🔴 {esc(site_label(r.url))} исчезает из поиска",
-             "Google и Яндекс уберут сайт при следующем обходе — переходы из поиска пропадут.", ""]
+    lines = [t("🔴 {label} исчезает из поиска").format(label=esc(site_label(r.url))),
+             t("Google и Яндекс уберут сайт при следующем обходе — переходы из поиска пропадут."), ""]
     seen: set[str] = set()
     for p in critical[:6]:
         f = seo_fixes.fix(p.code)
-        head = f"  • <b>{esc(f.title)}</b>" if p.code not in seen else "  •"
+        head = f"  • <b>{esc(t(f.title))}</b>" if p.code not in seen else "  •"
         seen.add(p.code)
-        lines.append(f"{head} — {esc(p.message)}")
-    lines += ["", "Нажми кнопку под сообщением: там шаги для твоего хостинга."]
+        lines.append(f"{head} — {esc(t(p.message))}")
+    lines += ["", t("Нажми кнопку под сообщением: там шаги для твоего хостинга.")]
     return "\n".join(lines)
 
 
@@ -231,17 +238,18 @@ def format_dns_failing(change: DnsChange) -> str:
     n = FAILS_TO_SAY
     icon = level_icon("critical" if change["critical"] else "warning")
     rtype = change["rtype"]
-    hint = ("Так бывает, когда перестали работать NS-серверы домена (не оплачен хостинг DNS, "
-            "удалили зону) или после смены NS не обновили DNSSEC (запись DS у регистратора): "
-            "браузеры тоже не находят сайт." if rtype == "NS" else
-            "Так бывает, когда у DNS-серверов домена сбой или сломана зона: посетители могут не найти сайт.")
-    steps = ("1. Открыть сайт в браузере: если не открывается — виноват DNS, а не хостинг.\n"
-             "2. Проверить домен на dnschecker.org: отвечают ли его NS-серверы.\n"
-             "3. Если DNSSEC включён у регистратора, а зона переехала — снять или обновить запись DS.")
-    return (f"{icon} {esc(change['host'])}: DNS не отвечает на запрос {esc(rtype)} уже "
-            f"{n} {plural(n, 'проверку', 'проверки', 'проверок')} подряд ({n} ч). "
-            f"Другие имена при этом отвечают — дело не в моей сети.\n{hint}\n\n"
-            f"Последний известный ответ: {esc(change['old'])}\n\n{steps}")
+    hint = (t("Так бывает, когда перестали работать NS-серверы домена (не оплачен хостинг DNS, "
+              "удалили зону) или после смены NS не обновили DNSSEC (запись DS у регистратора): "
+              "браузеры тоже не находят сайт.") if rtype == "NS" else
+            t("Так бывает, когда у DNS-серверов домена сбой или сломана зона: посетители могут не найти сайт."))
+    steps = t("1. Открыть сайт в браузере: если не открывается — виноват DNS, а не хостинг.\n"
+              "2. Проверить домен на dnschecker.org: отвечают ли его NS-серверы.\n"
+              "3. Если DNSSEC включён у регистратора, а зона переехала — снять или обновить запись DS.")
+    return (t("{icon} {host}: DNS не отвечает на запрос {rtype} уже {n} {checks} подряд ({n} ч). "
+              "Другие имена при этом отвечают — дело не в моей сети.").format(
+                icon=icon, host=esc(change["host"]), rtype=esc(rtype), n=n,
+                checks=plural(n, "проверку", "проверки", "проверок"))
+            + f"\n{hint}\n\n" + t("Последний известный ответ: {old}").format(old=esc(change["old"])) + f"\n\n{steps}")
 
 
 # (what, «changed», «gone») — the verb agrees with the noun, and a record that
@@ -259,13 +267,16 @@ def format_dns_change(change: DnsChange) -> str:
     gone = change["new"] == "—"
     key = {"NS": "ns_change", "MX": "mx_gone" if gone else "mx_change"}.get(
         change["rtype"], "addr_gone" if gone else "dns_change")
-    expl = humanize.EXPLANATIONS[key]
+    expl = humanize.explanation(key)
     icon = level_icon("critical" if change["critical"] else "warning")
     what, changed, vanished = _DNS_KINDS.get(change["rtype"],
-                                             (f"запись {change['rtype']}", "изменилась", "пропала"))
-    return (f"{icon} У {esc(change['host'])} {vanished if gone else changed} {what}\n{expl.meaning}\n\n"
-            f"Было: {esc(change['old'])}\nСтало: {esc(change['new'])}\n\n"
-            f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
+                                             ("запись {rtype}", "изменилась", "пропала"))
+    what = t(what).format(rtype=change["rtype"])
+    return (t("{icon} У {host} {verb} {what}").format(icon=icon, host=esc(change["host"]),
+                                                      verb=t(vanished if gone else changed), what=what)
+            + f"\n{expl.meaning}\n\n"
+            + t("Было: {old}").format(old=esc(change["old"])) + "\n" + t("Стало: {new}").format(new=esc(change["new"]))
+            + "\n\n" + t("Что это обычно значит: {cause}.").format(cause=esc(expl.cause)) + f"\n\n{esc(steps_block(expl))}")
 
 
 # ── Mail ─────────────────────────────────────────────────────────────────────
@@ -273,12 +284,12 @@ def format_dns_change(change: DnsChange) -> str:
 def finding_block(n: int, f: dict) -> str:
     """One finding (monitors.base.Finding): what, why, what to do, the
     record to paste — a block of lines as <pre>, one line as <code>."""
-    lines = [f"{n}. <b>{esc(f['title'])}</b> — {esc(f['why'])}.", esc(f["fix"])]
+    lines = [f"{n}. <b>{esc(t(f['title']))}</b> — {esc(t(f['why']))}.", esc(t(f["fix"]))]
     record = f.get("record")
     if record:
         lines.append(f"<pre>{esc(record)}</pre>" if "\n" in record else f"<code>{esc(record)}</code>")
     if f.get("note"):
-        lines.append(esc(f["note"]))
+        lines.append(esc(t(f["note"])))
     return "\n".join(lines)
 
 
@@ -286,42 +297,42 @@ def format_mail_alert(r: MailResult) -> str:
     domain = esc(r.domain)
     if r.kind == "mail":
         if r.delivery.reason == "nowhere":
-            what = ("Записи MX домена ведут на сервер, которого нет. Письма тебе не доходят — "
-                    "отправители получают ошибку.")
+            what = t("Записи MX домена ведут на сервер, которого нет. Письма тебе не доходят — "
+                     "отправители получают ошибку.")
         else:
-            who = esc(r.provider) if r.provider else "Почтовый сервер"
-            what = (f"{who} не отвечает уже две проверки подряд — проверял из нескольких стран. Письма тебе "
-                    f"сейчас не доходят: серверы отправителей будут пробовать ещё несколько дней, потом вернут "
-                    f"письмо с ошибкой.")
-        steps = ([f"Открыть страницу статуса {esc(r.provider)} (кнопка ниже): если сбой у них — ждать, я "
-                  f"напишу, когда почта заработает."] if r.status_page else [])
-        steps.append("Если у почтового сервиса всё в порядке — проверить записи MX в DNS: они должны вести на "
-                     "него, точные значения есть в его настройках.")
-        return "\n".join([f"🔴 Почта на {domain} не принимает письма", what, "", "Что делать:",
+            who = esc(r.provider) if r.provider else t("Почтовый сервер")
+            what = t("{who} не отвечает уже две проверки подряд — проверял из нескольких стран. Письма тебе "
+                     "сейчас не доходят: серверы отправителей будут пробовать ещё несколько дней, потом вернут "
+                     "письмо с ошибкой.").format(who=who)
+        steps = ([t("Открыть страницу статуса {provider} (кнопка ниже): если сбой у них — ждать, я "
+                    "напишу, когда почта заработает.").format(provider=esc(r.provider))] if r.status_page else [])
+        steps.append(t("Если у почтового сервиса всё в порядке — проверить записи MX в DNS: они должны вести на "
+                       "него, точные значения есть в его настройках."))
+        return "\n".join([t("🔴 Почта на {domain} не принимает письма").format(domain=domain), what, "", t("Что делать:"),
                           *(f"{i}. {s}" for i, s in enumerate(steps, 1))])
     n = len(r.findings)
-    head = (f"🟠 Почта на {domain} настроена не до конца — письма могут попадать в спам, а подделать "
-            f"твой адрес проще")
-    lines = [head, "Что исправить в DNS:" if n == 1 else
-             f"{n} {plural(n, 'помеха', 'помехи', 'помех')}, у каждой — что исправить в DNS:", ""]
+    head = t("🟠 Почта на {domain} настроена не до конца — письма могут попадать в спам, а подделать "
+             "твой адрес проще").format(domain=domain)
+    lines = [head, t("Что исправить в DNS:") if n == 1 else
+             t("{n} {obstacles}, у каждой — что исправить в DNS:").format(n=n, obstacles=plural(n, "помеха", "помехи", "помех")), ""]
     lines += ["\n\n".join(finding_block(i, f) for i, f in enumerate(r.findings, 1)), "",
-              "Изменения в DNS доходят за 5–30 минут. Я перепроверяю каждый час и напишу, когда всё будет "
-              "в порядке."]
+              t("Изменения в DNS доходят за 5–30 минут. Я перепроверяю каждый час и напишу, когда всё будет "
+                "в порядке.")]
     return "\n".join(lines)
 
 
 def format_mail_recovery(r: MailResult) -> str:
     domain = esc(r.domain)
     if r.kind == "mail_auth":
-        return f"✅ Почта на {domain}: настройки в порядке, письмам ничего не мешает."
+        return t("✅ Почта на {domain}: настройки в порядке, письмам ничего не мешает.").format(domain=domain)
     started = incident_start(r.resolved_incident)
     how_long = ""
     if started:
         ended = parse_sqlite_utc((r.resolved_incident or {}).get("resolved_at")) or datetime.now(UTC)
         minutes = max(1, round((ended - started).total_seconds() / 60))
-        how_long = f" (не принимала около {fmt_duration(minutes)})"
-    return (f"✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
-            f"обычно доходят сами: серверы отправителей повторяют попытки.")
+        how_long = t(" (не принимала около {duration})").format(duration=fmt_duration(minutes))
+    return t("✅ Почта на {domain} снова принимает письма{how_long}. Письма, которые слали в это время, "
+             "обычно доходят сами: серверы отправителей повторяют попытки.").format(domain=domain, how_long=how_long)
 
 
 # ── Security ─────────────────────────────────────────────────────────────────
@@ -330,12 +341,13 @@ def format_security_alert(r: SecurityResult) -> str:
     label = esc(site_label(r.url))
     n = len(r.findings)
     if r.kind == "exposed":
-        head = f"🔴 На {label} наружу видны служебные файлы — их может скачать любой"
-        tail = "Убрал — нажми «🔄 Проверить снова» на карточке сайта, я скажу, что их больше не видно."
+        head = t("🔴 На {label} наружу видны служебные файлы — их может скачать любой").format(label=label)
+        tail = t("Убрал — нажми «🔄 Проверить снова» на карточке сайта, я скажу, что их больше не видно.")
     else:
-        head = f"🟠 {label}: защиту сайта стоит усилить"
-        tail = "Я перепроверяю каждые 6 часов и напишу, когда всё будет в порядке."
-    lines = [head, "Что сделать:" if n == 1 else f"{n} {plural(n, 'помеха', 'помехи', 'помех')}, у каждой — что сделать:",
+        head = t("🟠 {label}: защиту сайта стоит усилить").format(label=label)
+        tail = t("Я перепроверяю каждые 6 часов и напишу, когда всё будет в порядке.")
+    lines = [head, t("Что сделать:") if n == 1 else
+             t("{n} {obstacles}, у каждой — что сделать:").format(n=n, obstacles=plural(n, "помеха", "помехи", "помех")),
              "", "\n\n".join(finding_block(i, f) for i, f in enumerate(r.findings, 1)), "", tail]
     return "\n".join(lines)
 
@@ -343,23 +355,25 @@ def format_security_alert(r: SecurityResult) -> str:
 def format_security_recovery(r: SecurityResult) -> str:
     label = esc(site_label(r.url))
     if r.kind == "exposed":
-        return (f"✅ На {label} служебные файлы больше не видны снаружи. Если в них были пароли или ключи — "
-                f"смени их, если ещё не сменил.")
-    return f"✅ {label}: защита сайта в порядке."
+        return t("✅ На {label} служебные файлы больше не видны снаружи. Если в них были пароли или ключи — "
+                 "смени их, если ещё не сменил.").format(label=label)
+    return t("✅ {label}: защита сайта в порядке.").format(label=label)
 
 
 # ── Real visitors' speed ─────────────────────────────────────────────────────
 
 def format_visitors_alert(r: VisitorsResult) -> str:
     expl = explain("visitors", r.error)
-    return (f"🟠 {esc(site_label(r.url))}: медленно у настоящих посетителей\n"
-            f"{esc(crux.describe(r.values))} — так у 3 из 4 посетителей, у остальных ещё дольше "
-            f"({crux.SOURCE}).\n{esc(expl.meaning)}\n\n"
-            f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(steps_block(expl))}")
+    return (t("🟠 {label}: медленно у настоящих посетителей").format(label=esc(site_label(r.url))) + "\n"
+            + t("{values} — так у 3 из 4 посетителей, у остальных ещё дольше ({source}).").format(
+                values=esc(crux.describe(r.values)), source=crux.source())
+            + f"\n{esc(expl.meaning)}\n\n"
+            + t("Что это обычно значит: {cause}.").format(cause=esc(expl.cause)) + f"\n\n{esc(steps_block(expl))}")
 
 
 def format_visitors_recovery(r: VisitorsResult) -> str:
-    return f"✅ {esc(site_label(r.url))}: у посетителей снова не медленно — {esc(crux.describe(r.values))}."
+    return t("✅ {label}: у посетителей снова не медленно — {values}.").format(
+        label=esc(site_label(r.url)), values=esc(crux.describe(r.values)))
 
 
 # ── Status report (one line per site) ────────────────────────────────────────
@@ -369,32 +383,32 @@ def _site_line(r: AvailabilityResult, ssl: SslResult | None, dom: DomainResult |
     the SSL and domain ladders, ⚠️ when something could not be checked."""
     label = esc(site_label(r.url))
     if r.status == "unknown":
-        return f"{UNCHECKED} {label} — не могу проверить: {esc(describe_error(r.error))}", False
+        return f"{UNCHECKED} {label} — " + t("не могу проверить: {why}").format(why=esc(describe_error(r.error))), False
     if not r.ok:
         return f"🔴 {label} — {esc(describe_error(r.error))}", False
     notes: list[tuple[str | None, str]] = []   # (severity or None = unchecked, words)
     if ssl is not None:
         if not ssl.ssl_info:
-            notes.append((None, "сертификат не удалось проверить"))
+            notes.append((None, t("сертификат не удалось проверить")))
         elif ssl.ssl_info.days_left < 0:
-            notes.append(("critical", f"сертификат истёк {abs(ssl.ssl_info.days_left)} дн. назад"))
+            notes.append(("critical", t("сертификат истёк {days} дн. назад").format(days=abs(ssl.ssl_info.days_left))))
         elif ssl.ssl_info.days_left <= ssl_checker.WARN_DAYS:
             notes.append(("critical" if ssl.ssl_info.days_left <= ssl_checker.CRITICAL_DAYS else "warning",
                           humanize.expires_words("сертификат", ssl.ssl_info.days_left)))
     if dom is not None and not dom.unsupported:
         if not dom.domain_info or dom.domain_info.days_left is None:
-            notes.append((None, "срок домена не удалось проверить"))
+            notes.append((None, t("срок домена не удалось проверить")))
         elif dom.domain_info.days_left < 0:
-            notes.append(("critical", f"домен истёк {abs(dom.domain_info.days_left)} дн. назад"))
+            notes.append(("critical", t("домен истёк {days} дн. назад").format(days=abs(dom.domain_info.days_left))))
         elif dom.domain_info.days_left <= domain_checker.WARN_DAYS:
             notes.append(("critical" if dom.domain_info.days_left <= domain_checker.CRITICAL_DAYS else "warning",
                           humanize.expires_words("домен", dom.domain_info.days_left)))
     if notes:
         worst = worst_severity(s for s, _ in notes)
         icon = level_icon(worst) if worst else UNCHECKED
-        verb = "открывается" if is_http_url(r.url) and not r.api else "отвечает"
-        return f"{icon} {label} — {verb}, но {'; '.join(w for _, w in notes)}", False
-    verb = "открывается" if is_http_url(r.url) and not r.api else "отвечает"
+        verb = t("открывается") if is_http_url(r.url) and not r.api else t("отвечает")
+        return f"{icon} {label} — " + t("{verb}, но {notes}").format(verb=verb, notes="; ".join(w for _, w in notes)), False
+    verb = t("открывается") if is_http_url(r.url) and not r.api else t("отвечает")
     return f"✅ {label} — {verb} {humanize.speed(r.response_time_ms)}", True
 
 
@@ -457,9 +471,9 @@ def format_compact_status_report(availability: list[AvailabilityResult],
     wrong, and the sites in order as one count — the daily screen of the
     same «всё хорошо» teaches to scroll past the day with a 🔴 in it."""
     now = now_local().strftime("%d.%m %H:%M")
-    header = {"morning": f"🌅 Доброе утро · {now}",
-              "morning_late": f"🌅 Утренняя сводка, с опозданием: утром меня не было · {now}",
-              "evening": f"🌙 Вечер · {now}"}.get(report_type, f"🔎 Проверка · {now}")
+    header = {"morning": t("🌅 Доброе утро · {now}"),
+              "morning_late": t("🌅 Утренняя сводка, с опозданием: утром меня не было · {now}"),
+              "evening": t("🌙 Вечер · {now}")}.get(report_type, t("🔎 Проверка · {now}")).format(now=now)
     site_lines = _site_lines(availability, ssl_results, domain_results)
     lines: list[str] = [header, ""]
     all_ok = all(ok for _, _, ok in site_lines)
@@ -468,7 +482,7 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         good = len(site_lines) - len(bad)
         lines += bad
         if good:
-            lines.append(f"✅ {'Остальные' if bad else 'Сайты'} в порядке: {good}")
+            lines.append((t("✅ Остальные в порядке: {n}") if bad else t("✅ Сайты в порядке: {n}")).format(n=good))
     else:
         lines += [line for _, line, _ in site_lines]
     if watch:
@@ -478,15 +492,15 @@ def format_compact_status_report(availability: list[AvailabilityResult],
         worst = worst_severity(i.get("severity") for i in incidents)
         said = {url for url, _, ok in site_lines if not ok}
         shown, more = digest_incidents(incidents, said)
-        head = f"{level_icon(worst)} Открытых проблем: {len(incidents)}"
-        lines += ["", head if shown else f"{head} — в строках сайтов выше"]
+        head = t("{icon} Открытых проблем: {n}").format(icon=level_icon(worst), n=len(incidents))
+        lines += ["", head if shown else t("{head} — в строках сайтов выше").format(head=head)]
         # No leading spaces: Telegram wraps a long line back to column 0,
         # and the indent only makes the wrap look crooked.
         lines += [f"{level_icon(inc.get('severity'))} {esc(incident_line(inc))}" for inc in shown]
         if more:
-            lines.append(f"… и ещё {more} — весь список: 🏠 Главная → «Что не так»")
+            lines.append(t("… и ещё {n} — весь список: 🏠 Главная → «Что не так»").format(n=more))
     elif all_ok:
-        lines += ["", "Всё спокойно 🐕"]
+        lines += ["", t("Всё спокойно 🐕")]
     if extras:
         lines += ["", *extras]
     return "\n".join(lines)
@@ -513,9 +527,10 @@ def _one_line(value: str) -> str:
 def format_feedback(site_url: str, page_url: str, message: str,
                     feedback_id: int, ip_address: str, verified: bool = False) -> str:
     """The visitor's words stay inside a quote; the lines around it are the bot's."""
-    note = "" if verified else " (не подтверждено: так написал отправитель)"
+    note = "" if verified else t(" (не подтверждено: так написал отправитель)")
     text = "\n".join(_one_line(line) for line in str(message).translate(_BIDI).splitlines())
-    return (f"📩 Сообщение с сайта\n"
-            f"Сайт: {_one_line(site_url)}{note}\nСтраница: {_one_line(page_url)}\n"
-            f"Сообщение:\n<blockquote>{text}</blockquote>\n"
+    return (t("📩 Сообщение с сайта") + "\n"
+            + t("Сайт: {site}{note}").format(site=_one_line(site_url), note=note) + "\n"
+            + t("Страница: {page}").format(page=_one_line(page_url)) + "\n"
+            + t("Сообщение:") + f"\n<blockquote>{text}</blockquote>\n"
             f"🆔 #{feedback_id} · 🌍 {_one_line(ip_address)}")

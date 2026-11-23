@@ -14,8 +14,24 @@ from conftest import FakeMessage, FakeState, buttons
 from test_docs import _config_with
 
 import main
-from db.database import heartbeat_ping, queue_notification
+from db.database import heartbeat_ping, queue_notification, save_incident
 from handlers import about, blocks, common, menu, start
+from monitors.base import (
+    AvailabilityResult,
+    DnsChange,
+    DomainInfo,
+    DomainResult,
+    LinkCheck,
+    LinksResult,
+    SeoProblem,
+    SeoResult,
+    SslInfo,
+    SslResult,
+)
+from monitors.mail_checker import Delivery, MailResult
+from monitors.security_checker import SecurityResult
+from monitors.visitor_checker import VisitorsResult
+from reports import formatter, scheduler, weekly
 from services import (
     actions,
     heartbeats,
@@ -274,3 +290,166 @@ async def test_jobs_watchdog_and_small_services(db, monkeypatch):
 
 async def _no_phrase(url):
     return None
+
+
+# Monitors' own texts (a finding's title, a search problem's message) get
+# their entries together with monitors/; here they are English stand-ins.
+_FINDING = {"code": "spf", "title": "Two SPF records", "why": "mail may land in spam", "fix": "Keep one record",
+            "record": "v=spf1 include:_spf.google.com ~all", "note": "Wait for DNS"}
+
+
+def _avail(**kw) -> AvailabilityResult:
+    return AvailabilityResult(url="https://ex.test", site_id=1, **kw)
+
+
+def test_alert_texts():
+    """reports/formatter: every alert, recovery and digest line in English."""
+    incident = {"started_at": "2026-11-20 10:00:00", "created_at": "2026-11-20 10:05:00",
+                "resolved_at": "2026-11-20 10:17:00", "message": "Site down: HTTP 502"}
+    down = [
+        _avail(status="error", error="HTTP 502", failed_of=(3, 5)),
+        _avail(status="error", error="Timeout (15s)", external_ok=False),
+        _avail(status="error", error="HTTP 503", external_region="us", external_ups=2, external_total=3),
+        _avail(status="error", error="HTTP 503", external_region="de"),
+        _avail(status="error", error="HTTP 503", external_ups=1, external_total=3),
+        _avail(status="error", error="Cannot connect to host x [certificate has expired]", cert_failed=True),
+        _avail(status="error", error="Bad content: на странице нет фразы «Cart»", keyword_failed=True),
+        AvailabilityResult(url="tcp://ex.test:25", site_id=2, status="error", error="Connection refused", api=True),
+    ]
+    for r in down:
+        english_only(formatter.format_availability_alert(r, since=scheduler.datetime.now(scheduler.UTC)))
+        english_only(formatter.format_availability_alert(r, second_opinion=False))
+    up = _avail(status_code=200, response_time_ms=90, resolved_incident=incident)
+    english_only(formatter.format_recovery_alert(up))
+    english_only(formatter.format_recovery_alert(_avail(resolved_incident={**incident, "message": "Bad content: x",
+                                                                            "unseen_until": "2026-11-20 10:20:00"})))
+    english_only(formatter.format_recovery_alert(AvailabilityResult(url="tcp://ex.test:25", site_id=2, api=True)))
+    assert formatter.incident_duration_line(incident).startswith("17 min (")
+
+    info = SslInfo("ex.test", "Let's Encrypt", "", "", 5, "1")
+    english_only(formatter.format_ssl_alert(SslResult(url="https://ex.test", site_id=1, status="warning",
+                                                      error="SSL expires in 5 days!", ssl_info=info, renewal_note="x")))
+    dom = DomainInfo("ex.test", "Cloudflare", None, None, 12, [])
+    english_only(formatter.format_domain_alert(DomainResult(url="https://ex.test", site_id=1, status="warning",
+                                                            error="Domain expires in 12 days", domain="ex.test", domain_info=dom)))
+    broken = [LinkCheck("https://ex.test/a", 404, False), LinkCheck("https://github.com/a/b", 404, False),
+              LinkCheck("https://ex.test/c", None, False, "timeout")]
+    english_only(formatter.format_links_report(LinksResult(url="https://ex.test", site_id=1, broken=broken * 4)))
+    english_only(formatter.pending_note(broken))
+    english_only(formatter.pending_note(broken[:1]))
+    deep = SimpleNamespace(url="https://ex.test", error="5xx на 3 из 10 проверенных страниц",
+                           errors=[("https://ex.test/p", 502), ("https://ex.test/q", 0)])
+    english_only(formatter.format_deep_alert(deep))
+    seo = SeoResult(url="https://ex.test", site_id=1, status="critical",
+                    problems=[SeoProblem("noindex", "critical", "the homepage carries noindex")])
+    english_only(formatter.format_seo_alert(seo).replace(seo.problems[0].message, "")
+                 .replace(formatter.seo_fixes.fix("noindex").title, ""))   # the fix title: services/seo_fixes, next PR
+    for rtype, old, new in (("A", "1.1.1.1", "2.2.2.2"), ("A", "1.1.1.1", "—"), ("NS", "a", "b"), ("MX", "a", "—"),
+                            ("CNAME", "a", "b"), ("TXT", "a", "b")):
+        english_only(formatter.format_dns_change(DnsChange(host="ex.test", rtype=rtype, old=old, new=new, critical=False)))
+    for rtype in ("A", "NS"):
+        english_only(formatter.format_dns_failing(DnsChange(host="ex.test", rtype=rtype, old="1.1.1.1", new="—",
+                                                            critical=True, failing=True)))
+    for mail in (MailResult(url="https://ex.test", site_id=1, domain="ex.test", delivery=Delivery(ok=False, reason="nowhere")),
+                 MailResult(url="https://ex.test", site_id=1, domain="ex.test", provider="Google Workspace",
+                            status_page="https://status.example", delivery=Delivery(ok=False, reason="silent")),
+                 MailResult(url="https://ex.test", site_id=1, domain="ex.test", kind="mail_auth", findings=[_FINDING]),
+                 MailResult(url="https://ex.test", site_id=1, domain="ex.test", kind="mail_auth", findings=[_FINDING, _FINDING])):
+        english_only(formatter.format_mail_alert(mail))
+        english_only(formatter.format_mail_recovery(MailResult(url="https://ex.test", site_id=1, domain="ex.test",
+                                                               kind=mail.kind, resolved_incident=incident)))
+    for kind, n in (("exposed", 1), ("security", 2)):
+        sec = SecurityResult(url="https://ex.test", site_id=1, kind=kind, findings=[_FINDING] * n)
+        english_only(formatter.format_security_alert(sec))
+        english_only(formatter.format_security_recovery(sec))
+    vis = VisitorsResult(url="https://ex.test", site_id=1, values={"lcp": 5200, "inp": 650, "cls": 0.3})
+    english_only(formatter.format_visitors_alert(vis))
+    english_only(formatter.format_visitors_recovery(VisitorsResult(url="https://ex.test", site_id=1,
+                                                                   values={"lcp": 1800, "inp": 120, "cls": 0.02})))
+    english_only(formatter.format_feedback("https://ex.test", "https://ex.test/p", "hello", 7, "1.2.3.4"))
+
+    avail = [_avail(response_time_ms=95, status_code=200), AvailabilityResult(url="tcp://ex.test:25", site_id=2, api=True,
+                                                                                response_time_ms=12),
+             AvailabilityResult(url="https://down.test", site_id=3, status="error", error="HTTP 502"),
+             AvailabilityResult(url="https://odd.test", site_id=4, status="unknown", error="no socket")]
+    ssl = [SslResult(url="https://ex.test", site_id=1, ssl_info=SslInfo("ex.test", "LE", "", "", 3, "1")),
+           SslResult(url="https://down.test", site_id=3)]
+    doms = [DomainResult(url="https://ex.test", site_id=1, domain="ex.test", domain_info=DomainInfo("ex.test", "R", None, None, -2, []))]
+    incidents = [{"id": 1, "url": "https://down.test", "check_type": "availability", "message": "Site down: HTTP 502", "severity": "critical"},
+                 {"id": 2, "url": "https://ex.test", "check_type": "links", "message": "2 broken link(s)", "severity": "warning"}]
+    for report_type in ("morning", "morning_late", "evening", "status"):
+        for short in (False, True):
+            english_only(formatter.format_compact_status_report(avail, incidents, ssl, doms, report_type=report_type,
+                                                                extras=["x"], watch=[("✅ job", True)], short=short))
+    english_only(formatter.format_compact_status_report(avail[:1], [], None, None, watch=[("✅ job", True)]))
+    english_only(formatter.format_compact_status_report(avail[:1], incidents[1:], None, None))
+
+
+async def test_digests_and_the_weekly_report(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    await db.save_check(sid, "availability", "ok", response_time_ms=100)
+    await sitestatus.update(sid, "avail", status="ok", ms=100, error=None)
+    await save_incident(sid, "links", "2 broken link(s)", "warning")
+    old_id, _ = await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    await db.resolve_incident_by_id(old_id)
+    await sitestatus.update(sid, "ssl", days_left=80, issuer="LE", not_after=None, error=None,
+                            renewed_at=scheduler.datetime.now(scheduler.UTC).isoformat(timespec="seconds"))
+
+    async def _const(value):
+        return value
+
+    monkeypatch.setattr(scheduler, "check_all", lambda urls, manage=True: _const(
+        [AvailabilityResult(url=u, site_id=sid, response_time_ms=100, status_code=200) for u in urls]))
+    monkeypatch.setattr(scheduler, "check_all_ssl", lambda urls, manage=True: _const([]))
+    monkeypatch.setattr(scheduler, "check_all_domains", lambda urls, manage=True: _const([]))
+    monkeypatch.setattr(scheduler, "check_disk", lambda auto_cleanup=True: _const({"over_threshold": False, "pct": 41}))
+    for report_type in ("morning", "evening"):
+        english_only(await scheduler._status_snapshot(report_type, extras=True))
+    await settings_service.set_digest_full(True)
+    english_only(await scheduler._status_snapshot("morning", extras=True))
+    text, speed = await weekly.build_weekly_report()
+    english_only(text)
+    for line in speed:
+        english_only(line)
+    english_only("\n".join(weekly.speed_lines({"a": [{"avg_ms": 100}] * 3, "b": [{"avg_ms": 100}, {"avg_ms": 900}, {"avg_ms": 100}]},
+                                               {"a": 3000, "b": 3000})))
+
+
+async def test_scheduler_messages(bot, db):
+    now = scheduler.datetime.now(scheduler.UTC)
+    inc = {"id": 1, "site_id": 1, "url": "https://ex.test", "check_type": "availability", "message": "Site down: HTTP 502",
+           "severity": "critical", "created_at": "2026-11-20 10:05:00", "started_at": "2026-11-20 10:00:00"}
+    content = {**inc, "message": "Bad content: на странице нет фразы «x»"}
+    api = {**inc, "url": "https://api.ex.test/api/v1", "http_method": "POST"}
+    english_only(scheduler._missed_alert_text(inc))
+    english_only(scheduler._missed_alert_text(inc, scheduler.helper_label("https://ex.test/secret?token=1")))
+    english_only(scheduler.helper_label("tcp://10.0.0.1:25"))
+    text, helper = scheduler._group_down_texts([inc, content], ["🤖 redeploy"])
+    english_only(text)
+    english_only(helper)
+    english_only(scheduler._up_text([scheduler._up_line(_avail(resolved_incident={**inc, "resolved_at": "2026-11-20 10:17:00"})),
+                                     scheduler._up_line(_avail(resolved_incident=content))]))
+    for incident in (inc, content, api):
+        english_only(scheduler._escalation_head(incident, 95.0, "every 5 min"))
+        english_only(scheduler._still_down(incident, now))
+    for error in ("database or disk is full", "database is locked", "disk I/O error"):
+        english_only(scheduler._db_failure_text(error))
+    english_only(scheduler._down_cause(content))
+    await scheduler._report_downtime(now - scheduler.timedelta(hours=3), now)
+    english_only(bot.sent[-1]["text"])
+    sid = await db.activate_or_create_site("https://ex.test")
+    await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    await scheduler._report_downtime(now - scheduler.timedelta(hours=3), now)
+    english_only(bot.sent[-1]["text"])
+    await scheduler._tell_job_broken(t(scheduler._JOB_TITLES["morning_report"]), t("прошлый запуск ещё не закончился"))
+    english_only(bot.sent[-1]["text"])
+    english_only(scheduler._links_recovered(SimpleNamespace(url="https://ex.test", pending=[])))
+    english_only(scheduler._links_recovered(SimpleNamespace(url="https://ex.test", pending=[1])))
+    english_only(scheduler._links_recovered(SimpleNamespace(url="https://ex.test", pending=[1, 2])))
+    english_only(scheduler._container_steps("web"))
+    screen_english("", scheduler._mail_keyboard(SimpleNamespace(kind="mail", status_page="https://s.test", provider="Google",
+                                                                site_id=1, incident_id=1)))
+    screen_english("", scheduler._security_keyboard(SimpleNamespace(site_id=1, incident_id=1)))
+    screen_english("", scheduler._visitors_keyboard(SimpleNamespace(site_id=1, incident_id=1, url="https://ex.test")))
+    screen_english("", scheduler._watchdog_kb())
+    screen_english("", scheduler._index_keyboard(1, "↗️ Search Console", "https://x.test"))

@@ -20,7 +20,8 @@ from db.database import (
 )
 from services import github, gsc, humanize, index_status, integrations, sitestatus, updates, yandex_webmaster
 from utils.clock import to_local
-from utils.text import esc, parse_iso_utc, parse_sqlite_utc, plural, sparkline
+from utils.i18n import plural, t
+from utils.text import esc, parse_iso_utc, parse_sqlite_utc, sparkline
 from utils.urls import is_http_url, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ SPEED_JUMP = 1.3
 
 def _pct_change(cur: int, prev: int) -> str:
     if prev <= 0:
-        return "с нуля" if cur else "0"
+        return t("с нуля") if cur else "0"
     delta = round((cur - prev) / prev * 100)
     return f"+{delta}%" if delta >= 0 else f"{delta}%"
 
@@ -58,7 +59,7 @@ def speed_lines(series: dict[str, list[dict]], slow_ms: dict[str, int]) -> list[
         else:
             steady.append(round(mid))
     if moved and steady:
-        moved.append(f"Ровно у остальных {len(steady)}: {_range(steady)}")
+        moved.append(t("Ровно у остальных {n}: {range}").format(n=len(steady), range=_range(steady)))
     return moved
 
 
@@ -86,46 +87,47 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
             clicks = f"{cur['clicks']} {plural(cur['clicks'], 'клик', 'клика', 'кликов')}"
             shows = f"{cur['impressions']} {plural(cur['impressions'], 'показ', 'показа', 'показов')}"
             if prev is None:
-                g_lines.append(f"  {esc(short_host(url))}: {clicks}, {shows} (с прошлой неделей сравнить не удалось)")
+                g_lines.append(f"  {esc(short_host(url))}: {clicks}, {shows} " + t("(с прошлой неделей сравнить не удалось)"))
             else:
                 g_lines.append(f"  {esc(short_host(url))}: {clicks} ({_pct_change(cur['clicks'], prev['clicks'])}), "
                                f"{shows} ({_pct_change(cur['impressions'], prev['impressions'])})")
         if g_lines:
-            lines += ["🔎 Google (неделя к неделе):", *g_lines]
+            lines += [t("🔎 Google (неделя к неделе):"), *g_lines]
         elif covered:
-            lines.append(f"⚠️ Google Search Console: не смог получить данные — {esc(await _reason('gsc'))}")
+            lines.append(t("⚠️ Google Search Console: не смог получить данные — {why}").format(why=esc(await _reason("gsc"))))
     if yandex_webmaster.available():
         summaries = await yandex_webmaster.get_summaries()
         if summaries is None:
-            lines.append(f"⚠️ Яндекс.Вебмастер: не смог получить данные — {esc(await _reason('yandex'))}")
+            lines.append(t("⚠️ Яндекс.Вебмастер: не смог получить данные — {why}").format(why=esc(await _reason("yandex"))))
         y_lines = []
         for host, s in (summaries or {}).items():
             chunks = []
             if s.get("searchable_pages") is not None:
-                chunks.append(f"{s['searchable_pages']} стр. в поиске")
+                chunks.append(t("{n} стр. в поиске").format(n=s["searchable_pages"]))
             if s.get("sqi") is not None:
-                chunks.append(f"ИКС {s['sqi']}")
+                chunks.append(t("ИКС {sqi}").format(sqi=s["sqi"]))
             if s["alert_problems"]:
                 icon = humanize.level_icon(index_status.yandex_problem_level(s["alert_problems"]))
                 n = index_status.yandex_problem_count(s["alert_problems"])
-                chunks.append(f"{icon} {n} {plural(n, 'проблема', 'проблемы', 'проблем')} в Вебмастере")
+                chunks.append(t("{icon} {n} {problems} в Вебмастере").format(
+                    icon=icon, n=n, problems=plural(n, "проблема", "проблемы", "проблем")))
             if chunks:
                 y_lines.append(f"  {esc(host)}: " + ", ".join(chunks))
         if y_lines:
-            lines += ["🔎 Яндекс:", *y_lines]
+            lines += [t("🔎 Яндекс:"), *y_lines]
     return lines
 
 
 async def _reason(name: str) -> str:
     """Why the service gave nothing, from its health record."""
-    return (await integrations.health(name)).get("reason") or "не ответил"
+    return t((await integrations.health(name)).get("reason") or "не ответил")
 
 
 async def build_weekly_report() -> tuple[str, list[str]]:
     """(summary text, speed lines) — the speed goes out as a separate
     message so a long one never pushes the summary past the limit."""
     sites = await get_all_sites()
-    lines = ["📊 Итоги недели\n"]
+    lines = [t("📊 Итоги недели") + "\n"]
     series: dict[str, list[dict]] = {}
     slow: dict[str, int] = {}
     clean: list[int | None] = []   # the answer times of the sites without an outage
@@ -136,7 +138,7 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         slow[label] = s.get("slow_ms") or config.slow_response_ms
         total = sum(r["total"] for r in rows)
         if not total:
-            lines.append(f"⏳ {esc(label)} — нет данных")
+            lines.append(f"⏳ {esc(label)} — " + t("нет данных"))
             continue
         week = await get_uptime_over_days(s["id"], 7)
         month = await get_uptime_over_days(s["id"], 30)
@@ -151,13 +153,13 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         icon = "📉" if week["down_min"] else "✅"
         week_txt = humanize.downtime(week)
         month_txt = humanize.downtime(month)
-        verb = "Открывается" if is_web_page(s["url"], s.get("http_method")) else "Отвечает"
-        lines.append(f"{icon} {esc(label)}: за неделю {week_txt}, за месяц {month_txt}. "
-                     f"{verb} {humanize.speed(avg_ms)}.")
+        verb = t("Открывается") if is_web_page(s["url"], s.get("http_method")) else t("Отвечает")
+        lines.append(t("{icon} {label}: за неделю {week}, за месяц {month}. {verb} {speed}.").format(
+            icon=icon, label=esc(label), week=week_txt, month=month_txt, verb=verb, speed=humanize.speed(avg_ms)))
     if clean:
         n, ms = len(clean), [v for v in clean if v]
-        lines.append(f"✅ {n} {plural(n, 'сайт', 'сайта', 'сайтов')} — без сбоев за неделю и за месяц"
-                     + (f", {'отвечает' if n == 1 else 'отвечают'} за {_range(ms)}" if ms else ""))
+        lines.append(t("✅ {n} {sites} — без сбоев за неделю и за месяц").format(n=n, sites=plural(n, "сайт", "сайта", "сайтов"))
+                     + ((t(", отвечает за {range}") if n == 1 else t(", отвечают за {range}")).format(range=_range(ms)) if ms else ""))
 
     chart = speed_lines(series, slow)
 
@@ -186,7 +188,7 @@ async def _section(name: str, make) -> list[str]:
         return await make()
     except Exception:
         logger.exception("Weekly report: section %s failed", name)
-        return ["", f"⚠️ {name}: не смог собрать — подробности в логе бота"]
+        return ["", t("⚠️ {section}: не смог собрать — подробности в логе бота").format(section=t(name))]
 
 
 def _day(sqlite_dt: str | None) -> str:
@@ -212,16 +214,16 @@ async def incidents_block() -> list[str]:
     solved = [i for i in await get_incidents_since(days=7) if i["resolved"]]
     lines: list[str] = []
     if active:
-        lines.append(f"\nОткрыто сейчас ({len(active)}):")
-        lines += [f"{humanize.level_icon(inc['severity'])} {_headline(inc)} — с {_day(inc['created_at'])}"
+        lines.append("\n" + t("Открыто сейчас ({n}):").format(n=len(active)))
+        lines += [f"{humanize.level_icon(inc['severity'])} {_headline(inc)} — " + t("с {day}").format(day=_day(inc["created_at"]))
                   for inc in active]
     if solved:
-        lines.append(f"\nРешено за неделю: {len(solved)}")
+        lines.append("\n" + t("Решено за неделю: {n}").format(n=len(solved)))
         lines += [f"✓ {_day(inc.get('resolved_at') or inc['created_at'])} {_headline(inc)}" for inc in solved[:5]]
         if len(solved) > 5:
-            lines.append(f"… и ещё {len(solved) - 5}")
+            lines.append(t("… и ещё {n}").format(n=len(solved) - 5))
     if not active and not solved:
-        lines.append("\n🎉 За неделю ни одной проблемы")
+        lines.append("\n" + t("🎉 За неделю ни одной проблемы"))
     return lines
 
 
@@ -237,4 +239,4 @@ async def renewals_block(sites: list[dict]) -> list[str]:
         at = parse_iso_utc(ssl.get("renewed_at"))
         if at and at >= since:
             chips.setdefault(short_host(s["url"]), f"{esc(short_host(s['url']))} ({to_local(at).strftime('%d.%m')})")
-    return ["\n🔒 Сертификаты продлились сами: " + ", ".join(chips.values())] if chips else []
+    return ["\n" + t("🔒 Сертификаты продлились сами: {chips}").format(chips=", ".join(chips.values()))] if chips else []

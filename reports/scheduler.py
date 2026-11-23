@@ -123,16 +123,15 @@ from services.actions import (
 from services.notifier import Priority
 from utils import validate
 from utils.clock import local_tz, now_local, to_local
+from utils.i18n import fmt_duration, plural, t
 from utils.net import is_private_target
 from utils.text import (
     chunks,
     clip,
     esc,
-    fmt_duration,
     incident_start,
     parse_iso_utc,
     parse_sqlite_utc,
-    plural,
 )
 from utils.urls import (
     host_of,
@@ -171,7 +170,7 @@ _next_avail_check: dict[int, datetime] = {}
 
 
 def _tech_line(text: str | None) -> str:
-    return f"\n<i>{esc(text)}</i>" if text else ""
+    return f"\n<i>{esc(humanize.technical(text))}</i>" if text else ""
 
 
 def reset_site_schedule(site_id: int):
@@ -333,23 +332,24 @@ async def _remind_long_outage(now: datetime):
         return
     await set_state("net_outage_reminded", now.isoformat())
     _enqueue(notifier.send,
-             f"⚠️ Уже {fmt_duration((now - since).total_seconds() / 60)} сервер бота считает, что у него нет сети: "
-             f"не отвечают адреса из NET_CANARIES. Всё это время сайт без ответа я считаю сбоем своей сети и "
-             f"тревогу не поднимаю. Если сеть на самом деле есть — впиши в NET_CANARIES адреса, которые сервер "
-             f"пропускает, или оставь переменную пустой.", Priority.NORMAL)
+             t("⚠️ Уже {duration} сервер бота считает, что у него нет сети: "
+               "не отвечают адреса из NET_CANARIES. Всё это время сайт без ответа я считаю сбоем своей сети и "
+               "тревогу не поднимаю. Если сеть на самом деле есть — впиши в NET_CANARIES адреса, которые сервер "
+               "пропускает, или оставь переменную пустой.").format(duration=fmt_duration((now - since).total_seconds() / 60)),
+             Priority.NORMAL)
 
 
 async def _report_own_outage(since: datetime, until: datetime, results: list):
     """ONE message for the whole episode instead of an alert per site."""
     minutes = (until - since).total_seconds() / 60
     fmt = "%H:%M" if minutes < 20 * 60 else "%d.%m %H:%M"
-    lines = [f"⚠️ С {to_local(since).strftime(fmt)} до {to_local(until).strftime(fmt)} у сервера бота "
-             f"не было сети или не работал DNS: проверить сайты было нельзя, тревоги о них я не поднимал."]
+    lines = [t("⚠️ С {start} до {end} у сервера бота не было сети или не работал DNS: проверить сайты было нельзя, "
+               "тревоги о них я не поднимал.").format(start=to_local(since).strftime(fmt), end=to_local(until).strftime(fmt))]
     down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
     if down:
-        lines.append(f"Сейчас не открываются: {', '.join(down)}. Если не поднимутся — пришлю обычную тревогу.")
+        lines.append(t("Сейчас не открываются: {sites}. Если не поднимутся — пришлю обычную тревогу.").format(sites=", ".join(down)))
     elif results:
-        lines.append("Сейчас всё открывается.")
+        lines.append(t("Сейчас всё открывается."))
     await notifier.send("\n".join(lines), Priority.NORMAL)
 
 
@@ -365,18 +365,18 @@ async def check_own_network_at_start():
         await _say_fail_open()
         return
     await notifier.send(
-        "⚠️ Не проходит проверка сети сервера бота: не отвечают адреса из NET_CANARIES "
-        "(по умолчанию 1.1.1.1, 8.8.8.8, 9.9.9.9 и имена DNS-сервисов). Пока так, сайт без ответа я "
-        "посчитаю сбоем своей сети и тревогу не подниму. Если сервер за файрволом — впиши в NET_CANARIES "
-        "адреса, которые он пропускает, или оставь переменную пустой, чтобы выключить проверку.",
+        t("⚠️ Не проходит проверка сети сервера бота: не отвечают адреса из NET_CANARIES "
+          "(по умолчанию 1.1.1.1, 8.8.8.8, 9.9.9.9 и имена DNS-сервисов). Пока так, сайт без ответа я "
+          "посчитаю сбоем своей сети и тревогу не подниму. Если сервер за файрволом — впиши в NET_CANARIES "
+          "адреса, которые он пропускает, или оставь переменную пустой, чтобы выключить проверку."),
         Priority.NORMAL)
 
 
 async def _say_fail_open():
     await notifier.send(
-        "⚠️ Адреса из NET_CANARIES не отвечают, а сайты отвечают — похоже, сервер за файрволом. Самопроверку "
-        "сети я выключил до перезапуска: сайт без ответа снова считается сбоем сайта. Чтобы она работала, "
-        "впиши в NET_CANARIES адреса, которые сервер пропускает.", Priority.NORMAL)
+        t("⚠️ Адреса из NET_CANARIES не отвечают, а сайты отвечают — похоже, сервер за файрволом. Самопроверку "
+          "сети я выключил до перезапуска: сайт без ответа снова считается сбоем сайта. Чтобы она работала, "
+          "впиши в NET_CANARIES адреса, которые сервер пропускает."), Priority.NORMAL)
 
 
 async def _note_cannot_check(url: str, site_id: int, reason: str | None):
@@ -385,8 +385,8 @@ async def _note_cannot_check(url: str, site_id: int, reason: str | None):
     if site_id in _cannot_check_noted:
         return
     sent = await notifier.send(
-        f"⚠️ {esc(site_label(url))}: не могу проверить — {esc(reason or 'неизвестная причина')}. "
-        f"Тревоги по нему не будет, пока это не исправить.", Priority.NORMAL, site_id=site_id)
+        t("⚠️ {label}: не могу проверить — {why}. Тревоги по нему не будет, пока это не исправить.").format(
+            label=esc(site_label(url)), why=esc(reason or t("неизвестная причина"))), Priority.NORMAL, site_id=site_id)
     if sent:
         _cannot_check_noted.add(site_id)
 
@@ -530,9 +530,9 @@ async def _record_alert(incident_id: int, alerted: bool):
 
 def _missed_alert_text(inc: dict, label: str | None = None) -> str:
     since = parse_sqlite_utc(inc.get("created_at"))
-    when = f" с {to_local(since).strftime('%d.%m %H:%M')}" if since else ""
+    when = t(" с {time}").format(time=to_local(since).strftime("%d.%m %H:%M")) if since else ""
     return (f"{humanize.level_icon(inc['severity'])} {esc(incident_line(inc, label))}\n"
-            f"⏳ Тревога об этом не ушла вовремя — проблема открыта{when}. Проверки продолжаются.")
+            + t("⏳ Тревога об этом не ушла вовремя — проблема открыта{when}. Проверки продолжаются.").format(when=when))
 
 
 def helper_label(url: str, method: str | None = None, *, api: bool = False) -> str:
@@ -544,7 +544,7 @@ def helper_label(url: str, method: str | None = None, *, api: bool = False) -> s
     method is not at hand."""
     label = public_label(url, method)
     if label is None:
-        return "Один из сайтов" if is_http_url(url) else "Один из серверов"
+        return t("Один из сайтов") if is_http_url(url) else t("Один из серверов")
     return f"{label} · API" if api and not label.endswith(" · API") else label
 
 
@@ -617,7 +617,7 @@ async def _send_recovery(r):
         # «🔧 Я чиню» promised «напишу, когда поднимется»: the fix ends the silence.
         # A pause set before an unannounced fall stays — send() drops the ✅ then.
         await maintenance.pause_site(r.site_id, None)
-        text += "\n\n🔧 Тишину снял — снова пишу обо всём."
+        text += "\n\n" + t("🔧 Тишину снял — снова пишу обо всём.")
     flapped = inc_id is not None and await _flapped_recently(inc_id, datetime.now(UTC))
     await notifier.send(text, Priority.NORMAL if flapped else Priority.CRITICAL, site_id=r.site_id,
                         resolves=inc_id, to_helpers=True, helper_text=helper_text)
@@ -667,7 +667,7 @@ def _sites_n(n: int) -> str:
 def _down_cause(inc: dict) -> str:
     message = inc.get("message") or ""
     if message.startswith("Bad content: "):
-        return "открывается, но на странице не то"
+        return t("открывается, но на странице не то")
     return humanize.describe_error(message.removeprefix("Site down: "))
 
 
@@ -723,10 +723,10 @@ def _group_down_texts(down: list[dict], redeploys: list[str]) -> tuple[str, str]
         lines = []
         for inc in down:
             since = incident_start(inc)
-            when = f", с {to_local(since).strftime('%H:%M')}" if since else ""
+            when = t(", с {time}").format(time=to_local(since).strftime("%H:%M")) if since else ""
             lines.append(f"• {esc(label(inc))} — {esc(_down_cause(inc))}{when}")
-        return (f"🔴 Не открываются сразу {_sites_n(len(down))} — похоже на общий сбой хостинга или сети:\n"
-                + "\n".join(lines) + "\nПродолжаю проверять и напишу, когда поднимутся.")
+        return (t("🔴 Не открываются сразу {sites} — похоже на общий сбой хостинга или сети:").format(sites=_sites_n(len(down)))
+                + "\n" + "\n".join(lines) + "\n" + t("Продолжаю проверять и напишу, когда поднимутся."))
     text = body(lambda inc: site_label(inc["url"]))
     if redeploys:
         text += "\n\n" + "\n".join(redeploys)
@@ -790,12 +790,13 @@ async def _group_down(known: list[int], fresh: list, group: dict | None) -> bool
 def _up_line(r, label: str | None = None) -> str:
     inc = r.resolved_incident or {}
     duration = incident_duration_line(inc)
-    was = "было не так" if (inc.get("message") or "").startswith("Bad content: ") else "лежал"
+    was = t("было не так") if (inc.get("message") or "").startswith("Bad content: ") else t("лежал")
     return f"• {esc(label or site_label(r.url))}" + (f" — {was} {duration}" if duration else "")
 
 
 def _up_text(lines: list[str]) -> str:
-    return clip(f"✅ Снова открываются {_sites_n(len(lines))}:\n" + "\n".join(lines) + "\nНичего делать не нужно.")
+    return clip(t("✅ Снова открываются {sites}:").format(sites=_sites_n(len(lines))) + "\n" + "\n".join(lines)
+                + "\n" + t("Ничего делать не нужно."))
 
 
 async def _recover_one(r):
@@ -899,8 +900,8 @@ async def _note_flapping(r):
         return
     n = len(times) + 1          # the first fall opened the incident itself
     sent = await notifier.send(
-        f"🟠 {esc(site_label(r.url))} мигает: {n} {plural(n, 'падение', 'падения', 'падений')} за час, "
-        f"последнее в {to_local(now).strftime('%H:%M')}. На каждое не звоню; когда успокоится — напишу.",
+        t("🟠 {label} мигает: {n} {falls} за час, последнее в {time}. На каждое не звоню; когда успокоится — напишу.").format(
+            label=esc(site_label(r.url)), n=n, falls=plural(n, "падение", "падения", "падений"), time=to_local(now).strftime("%H:%M")),
         Priority.NORMAL, site_id=r.site_id)
     if sent:
         await set_state(f"flap_noted:{r.incident_id}", now.isoformat())
@@ -909,7 +910,7 @@ async def _note_flapping(r):
 async def _site_is_up(r, slow_ms: int):
     if r.site_id in _ext_ok_noted:
         _ext_ok_noted.discard(r.site_id)
-        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается и с моего сервера.",
+        await notifier.send(t("✅ {label} снова открывается и с моего сервера.").format(label=esc(site_label(r.url))),
                             Priority.NORMAL, site_id=r.site_id)
     await _track_slow(r, slow_ms)
 
@@ -985,16 +986,16 @@ async def _settle_alerts(incident: dict | None):
     duration = incident_duration_line(incident)
     when = f"{now_local():%H:%M}"
     if (incident.get("message") or "").startswith("Bad content: "):
-        head = f"✅ Снова как надо в {when}" + (f", было не так {duration}" if duration else "")
+        head = t("✅ Снова как надо в {time}").format(time=when) + (t(", было не так {duration}").format(duration=duration) if duration else "")
     else:
-        head = f"✅ Поднялся в {when}" + (f", лежал {duration}" if duration else "")
+        head = t("✅ Поднялся в {time}").format(time=when) + (t(", лежал {duration}").format(duration=duration) if duration else "")
     for message_id, text in known:
         if _scheduler is not None:
             for minutes in FOLLOWUP_MINUTES:
                 job = _scheduler.get_job(f"followup:{message_id}:{minutes}")
                 if job:
                     job.remove()
-        await notifier.edit(message_id, clip(f"{head}. Было:\n{text}"), reply_markup=explain_keyboard(incident["id"]))
+        await notifier.edit(message_id, clip(f"{head}. " + t("Было:") + f"\n{text}"), reply_markup=explain_keyboard(incident["id"]))
     await set_state(key, None)
 
 
@@ -1021,16 +1022,17 @@ async def _followup(url: str, site_id: int, message_id: int, text: str, kb, minu
         return
     r = await check_availability(url, manage=False)
     if r.ok:
-        line = f"\n\n🔁 Через {minutes} мин: уже открывается. Подтвержу отдельным сообщением."
+        line = "\n\n" + t("🔁 Через {minutes} мин: уже открывается. Подтвержу отдельным сообщением.").format(minutes=minutes)
         for other in FOLLOWUP_MINUTES:
             if other > minutes and _scheduler is not None:
                 job = _scheduler.get_job(f"followup:{message_id}:{other}")
                 if job:
                     job.remove()
     elif r.transient:
-        line = f"\n\n🔁 Через {minutes} мин: проверить не смог — {esc(r.error)}."
+        line = "\n\n" + t("🔁 Через {minutes} мин: проверить не смог — {why}.").format(minutes=minutes, why=esc(r.error))
     else:
-        line = f"\n\n🔁 Через {minutes} мин: всё ещё не открывается ({esc(humanize.describe_error(r.error))})."
+        line = "\n\n" + t("🔁 Через {minutes} мин: всё ещё не открывается ({why}).").format(
+            minutes=minutes, why=esc(humanize.describe_error(r.error)))
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
@@ -1058,15 +1060,15 @@ async def _group_followup(urls: list[str], message_id: int, text: str, kb, minut
     down = [esc(site_label(r.url)) for r in results if not r.ok and not r.transient]
     unknown = [esc(site_label(r.url)) for r in results if not r.ok and r.transient]
     if not down and not unknown:
-        line = f"\n\n🔁 Через {minutes} мин: все уже открываются. Подтвержу отдельным сообщением."
+        line = "\n\n" + t("🔁 Через {minutes} мин: все уже открываются. Подтвержу отдельным сообщением.").format(minutes=minutes)
         for other in FOLLOWUP_MINUTES:
             if other > minutes and _scheduler is not None and (job := _scheduler.get_job(f"followup:{message_id}:{other}")):
                 job.remove()
     else:
-        parts = ([f"уже открываются: {', '.join(up)}"] if up else []) \
-            + ([f"всё ещё не открываются: {', '.join(down)}"] if down else []) \
-            + ([f"проверить не смог: {', '.join(unknown)}"] if unknown else [])
-        line = f"\n\n🔁 Через {minutes} мин: " + "; ".join(parts) + "."
+        parts = ([t("уже открываются: {sites}").format(sites=", ".join(up))] if up else []) \
+            + ([t("всё ещё не открываются: {sites}").format(sites=", ".join(down))] if down else []) \
+            + ([t("проверить не смог: {sites}").format(sites=", ".join(unknown))] if unknown else [])
+        line = "\n\n" + t("🔁 Через {minutes} мин: ").format(minutes=minutes) + "; ".join(parts) + "."
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
@@ -1076,11 +1078,11 @@ async def _followup_slow(url: str, site_id: int, message_id: int, text: str, kb,
     r = await check_availability(url, manage=False)
     ms = r.response_time_ms or 0
     if r.ok and ms < slow_ms:
-        line = f"\n\n🔁 Через 5 мин: {humanize.fmt_seconds(ms)}, уже нормально."
+        line = "\n\n" + t("🔁 Через 5 мин: {seconds}, уже нормально.").format(seconds=humanize.fmt_seconds(ms))
     elif r.ok:
-        line = f"\n\n🔁 Через 5 мин: всё ещё медленно ({humanize.fmt_seconds(ms)})."
+        line = "\n\n" + t("🔁 Через 5 мин: всё ещё медленно ({seconds}).").format(seconds=humanize.fmt_seconds(ms))
     else:
-        line = "\n\n🔁 Через 5 мин: теперь вообще не открывается — напишу отдельно."
+        line = "\n\n" + t("🔁 Через 5 мин: теперь вообще не открывается — напишу отдельно.")
     await notifier.edit(message_id, clip(text + line), reply_markup=kb)
 
 
@@ -1090,12 +1092,12 @@ async def _note_local_network_problem(url: str, site_id: int, ups: int = 0, tota
     region (a block, a provider, a CDN node): the owner knows which."""
     if site_id in _ext_ok_noted:
         return
-    where = f"с {ups} из {total} внешних серверов" if total else "с внешних серверов"
+    where = t("с {ups} из {total} внешних серверов").format(ups=ups, total=total) if total else t("с внешних серверов")
     sent = await notifier.send(
-        f"🟠 {esc(site_label(url))} не открылся с моего сервера, но открывается {where}. Если посетители "
-        f"сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
-        f"(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
-        f"не поднимаю; напишу, когда снова откроется.",
+        t("🟠 {label} не открылся с моего сервера, но открывается {where}. Если посетители "
+          "сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
+          "(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
+          "не поднимаю; напишу, когда снова откроется.").format(label=esc(site_label(url)), where=where),
         Priority.NORMAL, site_id=site_id)
     if sent:
         _ext_ok_noted.add(site_id)
@@ -1114,11 +1116,11 @@ async def _track_slow(r, slow_ms: int):
             inc_id, is_new = await save_incident(r.site_id, "performance",
                                                  f"Slow responses: ~{ms}ms", severity="warning")
             if is_new:
-                expl = humanize.EXPLANATIONS["slow"]
-                text = (f"🟠 {esc(site_label(r.url))} открывается медленно: {humanize.fmt_seconds(ms)} "
-                        f"вместо обычных долей секунды, {SLOW_RESPONSE_STREAK} "
-                        f"{plural(SLOW_RESPONSE_STREAK, 'проверка', 'проверки', 'проверок')} подряд.\n"
-                        f"{expl.meaning}")
+                expl = humanize.explanation("slow")
+                text = (t("🟠 {label} открывается медленно: {seconds} вместо обычных долей секунды, {n} {checks} подряд.").format(
+                            label=esc(site_label(r.url)), seconds=humanize.fmt_seconds(ms), n=SLOW_RESPONSE_STREAK,
+                            checks=plural(SLOW_RESPONSE_STREAK, "проверка", "проверки", "проверок"))
+                        + f"\n{expl.meaning}")
                 sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, explain_keyboard(inc_id))
                 if isinstance(sent, Message) and _scheduler is not None:
                     _scheduler.add_job(_followup_slow, "date",
@@ -1135,9 +1137,9 @@ async def _track_slow(r, slow_ms: int):
         return
     resolved = await resolve_incident(r.site_id, "performance")
     if resolved:
-        await notifier.send(f"✅ {esc(site_label(r.url))} снова открывается за {humanize.fmt_seconds(ms)}. "
-                            f"Ничего делать не нужно.", Priority.NORMAL, site_id=r.site_id,
-                            resolves=resolved["id"])
+        await notifier.send(t("✅ {label} снова открывается за {seconds}. Ничего делать не нужно.").format(
+                                label=esc(site_label(r.url)), seconds=humanize.fmt_seconds(ms)),
+                            Priority.NORMAL, site_id=r.site_id, resolves=resolved["id"])
 
 
 # ── Generic "alert on transition" for the daily/hourly monitors ──────────────
@@ -1189,7 +1191,7 @@ async def run_ssl_checks():
     await close_inapplicable(("ssl",), urls)
     await _notify_transitions(
         await check_all_ssl(urls), format_ssl_alert,
-        lambda r: f"✅ Сертификат {esc(site_label(r.url))} обновлён, всё в порядке. Ничего делать не нужно.",
+        lambda r: t("✅ Сертификат {label} обновлён, всё в порядке. Ничего делать не нужно.").format(label=esc(site_label(r.url))),
         priority=_by_level)
 
 
@@ -1203,7 +1205,7 @@ async def run_domain_checks():
     await close_inapplicable(("domain",), [g[0] for g in domain_groups(urls).values()])
     await _notify_transitions(
         await check_all_domains(urls), format_domain_alert,
-        lambda r: f"✅ Домен {esc(r.domain or r.url)} продлён, всё в порядке. Ничего делать не нужно.",
+        lambda r: t("✅ Домен {domain} продлён, всё в порядке. Ничего делать не нужно.").format(domain=esc(r.domain or r.url)),
         priority=_by_level,
         keyboard=lambda r: domain_keyboard(r.domain_info.registrar if r.domain_info else None, r.incident_id))
 
@@ -1220,12 +1222,13 @@ def _links_recovered(r) -> str:
     than «всё работает» next to a link that does not open right now."""
     label = esc(site_label(r.url))
     if not r.pending:
-        return f"✅ На {label} все ссылки снова работают."
+        return t("✅ На {label} все ссылки снова работают.").format(label=label)
     n = len(r.pending)
-    return (f"✅ На {label} снимаю тревогу по ссылкам: {n} {plural(n, 'ссылка', 'ссылки', 'ссылок')} "
-            f"сейчас не {'открывается' if n == 1 else 'открываются'}, но это похоже на временный сбой на той "
-            f"стороне. Перепроверю через несколько часов и напишу, только если "
-            f"{'она не откроется' if n == 1 else 'они не откроются'} и тогда.")
+    return (t("✅ На {label} снимаю тревогу по ссылкам: {n} {links} сейчас {open}, но это похоже на временный сбой на той "
+              "стороне. Перепроверю через несколько часов и напишу, только если {still} и тогда.").format(
+        label=label, n=n, links=plural(n, "ссылка", "ссылки", "ссылок"),
+        open=t("не открывается") if n == 1 else t("не открываются"),
+        still=t("она не откроется") if n == 1 else t("они не откроются")))
 
 
 @_alerts_on("deep")
@@ -1234,7 +1237,7 @@ async def run_deep_checks():
     await close_inapplicable(("deep",), urls)
     await _notify_transitions(
         await check_all_deep(urls), format_deep_alert,
-        lambda r: f"✅ На {esc(site_label(r.url))} все страницы снова отвечают без ошибок.",
+        lambda r: t("✅ На {label} все страницы снова отвечают без ошибок.").format(label=esc(site_label(r.url))),
         keyboard=lambda r: deep_alert_keyboard(r.url, r.site_id, r.incident_id))
 
 
@@ -1272,7 +1275,7 @@ async def run_seo_checks():
         results, format_seo_alert,
         # The closed incident may have been a 🟠 «нет sitemap», not a closed
         # site — the recovery line must be true for both levels.
-        lambda r: f"✅ {esc(site_label(r.url))}: поисковикам больше ничего не мешает. Ничего делать не нужно.",
+        lambda r: t("✅ {label}: поисковикам больше ничего не мешает. Ничего делать не нужно.").format(label=esc(site_label(r.url))),
         priority=lambda r: Priority.CRITICAL,
         keyboard=lambda r: seo_fix_keyboard(
             r.site_id, list(dict.fromkeys(p.code for p in r.problems if p.severity == "critical")), on_alert=True))
@@ -1283,8 +1286,8 @@ async def run_seo_checks():
         if r.downgraded:
             with _isolated(f"Search ban lifted for {site_label(r.url)}"):
                 await notifier.send(
-                    f"✅ {esc(site_label(r.url))}: запрет для поисковиков снят — сайт снова открыт для поиска. "
-                    "Мелкие помехи остались, они в «🔎 Поиск и ИИ».",
+                    t("✅ {label}: запрет для поисковиков снят — сайт снова открыт для поиска. "
+                      "Мелкие помехи остались, они в «🔎 Поиск и ИИ».").format(label=esc(site_label(r.url))),
                     Priority.NORMAL, site_id=r.site_id)
 
 
@@ -1330,9 +1333,9 @@ def next_run_words(job_id: str) -> str | None:
     if when is None:
         return None
     local, today = to_local(when), now_local().date()
-    day = ("сегодня" if local.date() == today else "завтра" if local.date() == today + timedelta(days=1)
+    day = (t("сегодня") if local.date() == today else t("завтра") if local.date() == today + timedelta(days=1)
            else local.strftime("%d.%m"))
-    return f"{day} в {local:%H:%M}"
+    return t("{day} в {time}").format(day=day, time=f"{local:%H:%M}")
 
 
 REGION_PAUSE = 2.0   # seconds between sites: be polite to check-host.net
@@ -1415,9 +1418,9 @@ def schedule_mail_recheck():
 
 
 def _mail_keyboard(r):
-    status = ([InlineKeyboardButton(text=f"↗️ Статус {r.provider}", url=r.status_page)]
+    status = ([InlineKeyboardButton(text=t("↗️ Статус {provider}").format(provider=r.provider), url=r.status_page)]
               if r.kind == "mail" and r.status_page else [])
-    mail = [InlineKeyboardButton(text="✉️ Почта", callback_data=f"mail:{r.site_id}:a")]
+    mail = [InlineKeyboardButton(text=t("✉️ Почта"), callback_data=f"mail:{r.site_id}:a")]
     return explain_keyboard(r.incident_id, status, mail)
 
 
@@ -1435,7 +1438,7 @@ async def run_security_checks():
 
 
 def _security_keyboard(r):
-    return explain_keyboard(r.incident_id, [InlineKeyboardButton(text="🛡 Безопасность",
+    return explain_keyboard(r.incident_id, [InlineKeyboardButton(text=t("🛡 Безопасность"),
                                                                  callback_data=f"sec:{r.site_id}:a")])
 
 
@@ -1454,7 +1457,7 @@ async def run_visitor_checks():
 def _visitors_keyboard(r):
     return explain_keyboard(r.incident_id,
                             [InlineKeyboardButton(text="↗️ PageSpeed Insights", url=crux.pagespeed_url(r.url))],
-                            [InlineKeyboardButton(text="👥 Скорость у посетителей", callback_data=f"spd:{r.site_id}:a")])
+                            [InlineKeyboardButton(text=t("👥 Скорость у посетителей"), callback_data=f"spd:{r.site_id}:a")])
 
 
 @_once("index_checks", mark=True)
@@ -1494,7 +1497,7 @@ def _google_state(raw: str | None) -> dict | None:
 
 def _index_keyboard(site_id: int, label: str, url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔎 Поиск и ИИ", callback_data=f"seo_site:{site_id}"),
+        InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{site_id}"),
         InlineKeyboardButton(text=label, url=url)]])
 
 
@@ -1515,24 +1518,24 @@ async def _google_change(site: dict, google: dict):
     state = {"verdict": verdict, "coverage": google["coverage"], "told": bool(prev and prev.get("told"))}
     label = esc(site_label(url))
     kb = _index_keyboard(site_id, "↗️ Search Console", "https://search.google.com/search-console")
-    advice = ("Люди больше не найдут сайт через Google.\n\n"
-              "Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
-              "написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
-              "проверь «🔎 Поиск и ИИ» в боте." + _tech_line(google["coverage"]))
+    advice = (t("Люди больше не найдут сайт через Google.\n\n"
+                "Что делать:\n• Открыть Google Search Console → Проверка URL для главной: там будет "
+                "написана причина.\n• Чаще всего это noindex на странице или запрет в robots.txt — "
+                "проверь «🔎 Поиск и ИИ» в боте.") + _tech_line(google["coverage"]))
     sent = True
     if prev is None:
         if verdict == "FAIL":
-            sent = await notifier.send(f"🔴 Google не показывает {label} в поиске\n{advice}", Priority.CRITICAL,
-                                       reply_markup=kb, site_id=site_id)
+            sent = await notifier.send(t("🔴 Google не показывает {label} в поиске").format(label=label) + f"\n{advice}",
+                                       Priority.CRITICAL, reply_markup=kb, site_id=site_id)
             state["told"] = True
     elif verdict == "PASS":
         if prev.get("told"):
             sent = await notifier.send(
-                f"✅ Google снова показывает {label} в поиске. Ничего делать не нужно."
+                t("✅ Google снова показывает {label} в поиске. Ничего делать не нужно.").format(label=label)
                 + _tech_line(google["coverage"]), site_id=site_id)
             state["told"] = False
     elif prev.get("verdict") == "PASS":
-        sent = await notifier.send(f"🔴 Google убрал {label} из поиска\n{advice}", Priority.CRITICAL,
+        sent = await notifier.send(t("🔴 Google убрал {label} из поиска").format(label=label) + f"\n{advice}", Priority.CRITICAL,
                                    reply_markup=kb, site_id=site_id)
         state["told"] = True
     if sent and state != prev:
@@ -1553,16 +1556,17 @@ async def _yandex_change(site: dict, yandex: dict):
     sent = True
     if current:
         level = index_status.yandex_problem_level(problems)
-        fatal = ("\nКритическая — по классификации Яндекса сайт недоступен для робота или под санкциями."
+        fatal = ("\n" + t("Критическая — по классификации Яндекса сайт недоступен для робота или под санкциями.")
                  if level == "critical" else "")
         sent = await notifier.send(
-            f"{humanize.level_icon(level)} Яндекс.Вебмастер: {esc(index_status.yandex_problems_words(problems))} "
-            f"на {esc(host)}{fatal}\n\n"
-            f"Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема "
-            f"с инструкцией.", notifier.priority_for(level), site_id=site_id,
-            reply_markup=_index_keyboard(site_id, "↗️ Вебмастер", "https://webmaster.yandex.ru/"))
+            t("{icon} Яндекс.Вебмастер: {problems} на {host}").format(
+                icon=humanize.level_icon(level), problems=esc(index_status.yandex_problems_words(problems)), host=esc(host))
+            + f"{fatal}\n\n"
+            + t("Что делать: открыть Яндекс.Вебмастер → Диагностика сайта, там каждая проблема с инструкцией."),
+            notifier.priority_for(level), site_id=site_id,
+            reply_markup=_index_keyboard(site_id, t("↗️ Вебмастер"), "https://webmaster.yandex.ru/"))
     elif prev:
-        sent = await notifier.send(f"✅ Яндекс больше не видит проблем на {esc(host)}. Ничего делать не нужно.",
+        sent = await notifier.send(t("✅ Яндекс больше не видит проблем на {host}. Ничего делать не нужно.").format(host=esc(host)),
                                    site_id=site_id)
     if sent:
         await set_state(key, current)
@@ -1584,16 +1588,17 @@ async def run_integration_health():
                 await integrations.set_told(name, False)     # switched off: nothing to say any more
             continue
         if integrations.is_broken(h) and not h.get("told"):
-            kb = (InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔌 Проверить подключение",
+            kb = (InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t("🔌 Проверить подключение"),
                                                                               callback_data=setup)]])
                   if setup else None)
-            why = f" — {esc(h['reason'])}" if h.get("reason") else ""
-            sent = await notifier.send(f"🟠 {esc(title)}: не работает{why}.\nПока это не починить, {esc(loss)}.",
+            why = f" — {esc(t(h['reason']))}" if h.get("reason") else ""
+            sent = await notifier.send(t("🟠 {title}: не работает{why}.\nПока это не починить, {loss}.").format(
+                                           title=esc(t(title)), why=why, loss=esc(t(loss))),
                                        Priority.NORMAL, reply_markup=kb)
             if sent:
                 await integrations.set_told(name, True)
         elif h.get("told") and not h.get("fail_since"):
-            if await notifier.send(f"✅ {esc(title)}: снова работает.", Priority.NORMAL):
+            if await notifier.send(t("✅ {title}: снова работает.").format(title=esc(t(title))), Priority.NORMAL):
                 await integrations.set_told(name, False)
 
 
@@ -1613,24 +1618,25 @@ async def run_heartbeat_watch():
             silence_min = await heartbeats.silent_minutes(job, last, now)
             if last:
                 overdue = heartbeats.is_late(interval_min, silence_min)
-                detail = f"последний раз на связи {fmt_duration((now - last).total_seconds() / 60)} назад"
+                detail = t("последний раз на связи {duration} назад").format(duration=fmt_duration((now - last).total_seconds() / 60))
             else:
-                overdue, detail = silence_min > interval_min, "на связь так и не выходит"
+                overdue, detail = silence_min > interval_min, t("на связь так и не выходит")
             alerted = await get_state(f"hb_alerted:{job}")
             if overdue and not alerted:
-                expl = humanize.EXPLANATIONS["heartbeat"]
+                expl = humanize.explanation("heartbeat")
                 if last:
-                    text = (f"🟠 «{esc(job)}» молчит: {detail}, а выходит на связь "
-                            f"{heartbeats.every(interval_min)}.\n{expl.meaning}\n\n"
-                            f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}")
+                    text = (t("🟠 «{job}» молчит: {detail}, а выходит на связь {rhythm}.").format(
+                                job=esc(job), detail=detail, rhythm=heartbeats.every(interval_min))
+                            + f"\n{expl.meaning}\n\n"
+                            + t("Что это обычно значит: {cause}.").format(cause=esc(expl.cause))
+                            + f"\n\n{esc(humanize.steps_block(expl))}")
                 else:
                     # Never marked at all: the task was added but not connected —
                     # nothing failed, so no «крон упал»; the fix is one tap.
-                    text = (f"⚠️ «{esc(job)}» так и не выходит на связь — похоже, не подключили.\n"
-                            f"Жду связи {heartbeats.every(interval_min)}, но её ещё не было, и я не могу сказать, "
-                            f"работает ли «{esc(job)}».\n\n"
-                            f"Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
-                            f"Нет — «Удалить».")
+                    text = t("⚠️ «{job}» так и не выходит на связь — похоже, не подключили.\n"
+                             "Жду связи {rhythm}, но её ещё не было, и я не могу сказать, работает ли «{job}».\n\n"
+                             "Такой бот или задача есть — нажми «Подключить», там всё по шагам. "
+                             "Нет — «Удалить».").format(job=esc(job), rhythm=heartbeats.every(interval_min))
                 sent = await notifier.send(text, reply_markup=heartbeat_keyboard([job], seen={job} if last else set()))
                 if sent:
                     await set_state(f"hb_alerted:{job}", now.isoformat())
@@ -1655,10 +1661,11 @@ async def run_host_checks():
     if cleaned and cleaned["bytes"]:
         # Every prune is said, with what it removed — never a silent deletion.
         await notifier.send(
-            f"💾 Диск был заполнен на {result['pct']}% — удалил в docker висячие слои образов "
-            f"({cleaned['layers']}) и кэш сборки старше суток ({cleaned['caches']}): "
-            f"−{cleaned['bytes'] / 1e9:.1f} GB, сейчас {result['pct_after']}%. Остановленные контейнеры "
-            f"и образы с тегами не трогаю; следующая очистка — не раньше чем через 12 ч.")
+            t("💾 Диск был заполнен на {pct}% — удалил в docker висячие слои образов ({layers}) и кэш сборки старше "
+              "суток ({caches}): −{gb} GB, сейчас {after}%. Остановленные контейнеры и образы с тегами не трогаю; "
+              "следующая очистка — не раньше чем через 12 ч.").format(
+                pct=result["pct"], layers=cleaned["layers"], caches=cleaned["caches"],
+                gb=f"{cleaned['bytes'] / 1e9:.1f}", after=result["pct_after"]))
         if result["pct_after"] < config.disk_alert_pct:
             _disk_level_unsaved = None
             await set_state("disk_alerted", None)
@@ -1667,16 +1674,18 @@ async def run_host_checks():
         # 🟠 at the threshold, 🔴 when writes are about to fail: a rise is a new message.
         level = "critical" if result["pct_after"] >= DISK_CRITICAL_PCT else "warning"
         if _DISK_RANK[level] > _DISK_RANK.get(already or "", 0):
-            expl = humanize.EXPLANATIONS["disk"]
-            useless = ("\n\nПочистить docker было нечего: место занимают не образы — смотри тома и логи "
-                       "(docker system df)." if cleaned is not None and not cleaned["bytes"] else "")
+            expl = humanize.explanation("disk")
+            useless = ("\n\n" + t("Почистить docker было нечего: место занимают не образы — смотри тома и логи "
+                                   "(docker system df).") if cleaned is not None and not cleaned["bytes"] else "")
             # Percent and gigabytes are both measured after the prune, so they agree.
             sent = await notifier.send(
-                f"{humanize.level_icon(level)} {result['label']} заполнен на {result['pct_after']}% "
-                f"({result['used_gb_after']} из {result['total_gb']} GB)."
-                + (" Почистить docker сам не смог: Docker не отвечает." if result.get("cleanup_failed") else "")
+                t("{icon} {disk} заполнен на {pct}% ({used} из {total} GB).").format(
+                    icon=humanize.level_icon(level), disk=t(result["label"]), pct=result["pct_after"],
+                    used=result["used_gb_after"], total=result["total_gb"])
+                + (t(" Почистить docker сам не смог: Docker не отвечает.") if result.get("cleanup_failed") else "")
                 + f"\n{expl.meaning}\n\n"
-                f"Что это обычно значит: {esc(expl.cause)}.\n\n{esc(humanize.steps_block(expl))}" + useless,
+                + t("Что это обычно значит: {cause}.").format(cause=esc(expl.cause))
+                + f"\n\n{esc(humanize.steps_block(expl))}" + useless,
                 notifier.priority_for(level))
             if sent:
                 try:
@@ -1689,7 +1698,8 @@ async def run_host_checks():
     elif already and result["pct"] <= config.disk_alert_pct - DISK_CLEAR_MARGIN:
         _disk_level_unsaved = None
         await set_state("disk_alerted", None)
-        await notifier.send(f"✅ {result['label']} снова в норме: {result['pct']}%. Ничего делать не нужно.")
+        await notifier.send(t("✅ {disk} снова в норме: {pct}%. Ничего делать не нужно.").format(
+            disk=t(result["label"]), pct=result["pct"]))
 
 
 async def run_container_watch():
@@ -1702,26 +1712,26 @@ async def run_container_watch():
     for e in await watch_containers():
         with _isolated(f"Container alert for {e.get('name', 'docker')}"):
             if e.get("api_down"):
-                await _container_note("docker_api_down", True, (
+                await _container_note("docker_api_down", True, t(
                     "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
                     "диска сейчас не работают: сокет Docker принадлежит группе root: нужна "
                     "<code>ALLOW_ROOT_GROUP_SOCKET=1</code> в .env или отфильтрованный доступ через "
                     "socket-proxy (docs/SETUP.md).")
-                    if e["mounted"] and config.docker_socket_root_group else (
+                    if e["mounted"] and config.docker_socket_root_group else t(
                     "🟠 Не могу достучаться до Docker на сервере бота — автоперезапуск контейнеров и очистка "
                     "диска сейчас не работают. Обычно помогает перезапуск контейнера бота: "
                     "<code>docker compose up -d</code> (сокет смонтируется заново).")
-                    if e["mounted"] else (
+                    if e["mounted"] else t(
                     "🟠 AUTORESTART_CONTAINERS задан, но сокет Docker в контейнер бота не смонтирован — "
                     "автоперезапуск не работает. Как подключить: «🔌 Подключения» → «🐳 Docker на хосте»."))
                 return
-            await _container_note("docker_api_down", False, "✅ Docker на сервере бота снова отвечает.")
+            await _container_note("docker_api_down", False, t("✅ Docker на сервере бота снова отвечает."))
             name = e["name"]
             label = esc(name)
             if e.get("missing"):
-                await _container_note(f"container_missing:{name}", True, (
-                    f"🟠 Сервис «{label}» из AUTORESTART_CONTAINERS не найден в Docker: проверь имя "
-                    f"(<code>docker ps -a</code>) — контейнер могли переименовать или удалить."))
+                await _container_note(f"container_missing:{name}", True, t(
+                    "🟠 Сервис «{label}» из AUTORESTART_CONTAINERS не найден в Docker: проверь имя "
+                    "(<code>docker ps -a</code>) — контейнер могли переименовать или удалить.").format(label=label))
                 continue
             await _container_note(f"container_missing:{name}", False, None)
             key = f"container_alerted:{name}"
@@ -1729,14 +1739,14 @@ async def run_container_watch():
             if e.get("healthy"):
                 # The verdict the last run could not wait for: the container came up.
                 await _container_note(unverified_key, False,
-                                      f"✅ Сервис «{label}» на сервере бота заработал после перезапуска. "
-                                      f"Ничего делать не нужно.")
+                                      t("✅ Сервис «{label}» на сервере бота заработал после перезапуска. "
+                                        "Ничего делать не нужно.").format(label=label))
                 if e["healthy_for"] >= HEALTHY_RESET:
                     await set_state(f"container_gave_up:{name}", None)
                     if await get_state(key):
                         await set_state(key, None)
-                        await notifier.send(f"✅ Сервис «{label}» на сервере бота снова работает. "
-                                            f"Ничего делать не нужно.")
+                        await notifier.send(t("✅ Сервис «{label}» на сервере бота снова работает. "
+                                              "Ничего делать не нужно.").format(label=label))
                 continue
             if e.get("waiting"):
                 continue
@@ -1746,9 +1756,10 @@ async def run_container_watch():
                     # Rings only if this episode has not rung yet (every restart «helped» for a while).
                     paged = await get_state(key)
                     sent = await notifier.send(
-                        f"{'🟠' if paged else '🔴'} Сервис «{label}» на сервере бота {esc(e['problem'])}. "
-                        f"Перезапускал его {RESTART_BUDGET} раза — не помогает, больше сам не трогаю: нужен "
-                        f"человек.\n\n{_container_steps(name)}",
+                        t("{icon} Сервис «{label}» на сервере бота {problem}. Перезапускал его {n} раза — не помогает, "
+                          "больше сам не трогаю: нужен человек.").format(
+                            icon="🟠" if paged else "🔴", label=label, problem=esc(t(e["problem"])), n=RESTART_BUDGET)
+                        + f"\n\n{_container_steps(name)}",
                         Priority.NORMAL if paged else Priority.CRITICAL)
                     if sent:
                         await set_state(f"container_gave_up:{name}", "1")
@@ -1757,26 +1768,27 @@ async def run_container_watch():
             if e.get("unverified"):
                 # Restarted, but the run's budget ran out while the container was still
                 # starting: not «still broken» — «no verdict yet», the next look tells.
-                await _container_note(unverified_key, True, (
-                    f"🟠 Сервис «{label}» на сервере бота {esc(e['problem'])}. Перезапустил его, но дождаться, "
-                    f"заработал ли он, в этот раз не успел — он ещё запускается. Посмотрю через 10 минут "
-                    f"и скажу, чем кончилось."))
+                await _container_note(unverified_key, True, t(
+                    "🟠 Сервис «{label}» на сервере бота {problem}. Перезапустил его, но дождаться, "
+                    "заработал ли он, в этот раз не успел — он ещё запускается. Посмотрю через 10 минут "
+                    "и скажу, чем кончилось.").format(label=label, problem=esc(t(e["problem"]))))
                 continue
             await _container_note(unverified_key, False, None)
             if e["restarted"] and e["ok_after"]:
                 await set_state(key, None)
-                await notifier.send(f"✅ Сервис «{label}» на сервере бота снова работает — перезапустил его сам "
-                                    f"(было: {esc(e['problem'])}). Ничего делать не нужно.")
+                await notifier.send(t("✅ Сервис «{label}» на сервере бота снова работает — перезапустил его сам "
+                                      "(было: {problem}). Ничего делать не нужно.").format(label=label, problem=esc(t(e["problem"]))))
             elif not await get_state(key):
-                expl = humanize.EXPLANATIONS["container"]
+                expl = humanize.explanation("container")
                 # Not restarted because the owner said so (the «🔁» switch, the pause): the
                 # container is still down, and the owner hears that — and why nothing was done.
-                verdict = ("Перезапустил, но он всё ещё нездоров." if e["restarted"]
-                           else f"Сам больше не перезапускаю: {esc(e['skipped'])}. Нужен человек."
-                           if e.get("skipped") else "Перезапустить не удалось.")
+                verdict = (t("Перезапустил, но он всё ещё нездоров.") if e["restarted"]
+                           else t("Сам больше не перезапускаю: {why}. Нужен человек.").format(why=esc(t(e["skipped"])))
+                           if e.get("skipped") else t("Перезапустить не удалось."))
                 sent = await notifier.send(
-                    f"🔴 Сервис «{label}» на сервере бота {esc(e['problem'])}. {verdict}"
-                    f"\n{expl.meaning}\n\n{_container_steps(name)}",
+                    t("🔴 Сервис «{label}» на сервере бота {problem}. {verdict}").format(
+                        label=label, problem=esc(t(e["problem"])), verdict=verdict)
+                    + f"\n{expl.meaning}\n\n{_container_steps(name)}",
                     Priority.CRITICAL)
                 if sent:
                     await set_state(key, "1")
@@ -1797,10 +1809,10 @@ async def _container_note(key: str, on: bool, text: str | None):
 
 def _container_steps(name: str) -> str:
     """«Что делать» with commands ready to copy: the real name instead of «<имя>»."""
-    steps = (re.sub(r"docker (\w+) &lt;имя&gt;",
+    steps = (re.sub(r"docker (\w+) &lt;(?:имя|name)&gt;",
                     lambda m: f"<code>docker {m.group(1)} {esc(name)}</code>", esc(s))
-             for s in humanize.EXPLANATIONS["container"].steps)
-    return "Что делать:\n" + "\n".join(f"• {s}" for s in steps)
+             for s in humanize.explanation("container").steps)
+    return t("Что делать:") + "\n" + "\n".join(f"• {s}" for s in steps)
 
 
 # ── Escalation ───────────────────────────────────────────────────────────────
@@ -1817,7 +1829,7 @@ def escalation_step(sent: int, repeat_min: int) -> int:
 
 
 def _quiet_button(incident_id: int) -> list[InlineKeyboardButton]:
-    return [InlineKeyboardButton(text="👀 Знаю, не напоминать", callback_data=f"inc_quiet:{incident_id}:a")]
+    return [InlineKeyboardButton(text=t("👀 Знаю, не напоминать"), callback_data=f"inc_quiet:{incident_id}:a")]
 
 
 def _escalation_head(inc: dict, age_min: float, every: str, label: str | None = None) -> str:
@@ -1825,12 +1837,15 @@ def _escalation_head(inc: dict, age_min: float, every: str, label: str | None = 
     the site instead of site_label (the helpers' copy)."""
     if (inc.get("message") or "").startswith("Bad content: "):
         # The site opens; its text is wrong — not «лежит», not «поднимется».
-        where = "в ответе" if is_api_check(inc["url"], inc.get("http_method")) else "на странице"
-        return (f"🔴 {esc(incident_line(inc, label))}\nТак уже {fmt_duration(age_min)}. "
-                f"Проверяю {every} и напишу, когда {where} снова будет как надо.")
+        api = is_api_check(inc["url"], inc.get("http_method"))
+        return (f"🔴 {esc(incident_line(inc, label))}\n"
+                + (t("Так уже {duration}. Проверяю {every} и напишу, когда в ответе снова будет как надо.") if api
+                   else t("Так уже {duration}. Проверяю {every} и напишу, когда на странице снова будет как надо.")).format(
+                    duration=fmt_duration(age_min), every=every))
     cause = humanize.describe_error((inc.get("message") or "").removeprefix("Site down: "))
-    return (f"🔴 {esc(label or site_label(inc['url']))} лежит уже {fmt_duration(age_min)}: {esc(cause)}\n"
-            f"Проверяю {every} и напишу, как только поднимется.")
+    return (t("🔴 {label} лежит уже {duration}: {cause}").format(
+                label=esc(label or site_label(inc["url"])), duration=fmt_duration(age_min), cause=esc(cause))
+            + "\n" + t("Проверяю {every} и напишу, как только поднимется.").format(every=every))
 
 
 async def run_escalation_watch():
@@ -1896,16 +1911,17 @@ async def _escalate_one(inc: dict, sent_n: int, now: datetime):
     age_min = (now - (incident_start(inc) or parse_sqlite_utc(inc["created_at"]) or now)).total_seconds() / 60
     api = is_api_check(inc["url"], inc.get("http_method"))
     content = (inc.get("message") or "").startswith("Bad content: ")
-    where = "в ответе" if api else "на странице"
-    back = f"«✅ {where} снова как надо»" if content else "«✅ поднялся»"
+    back = ((t("«✅ в ответе снова как надо»") if api else t("«✅ на странице снова как надо»")) if content
+            else t("«✅ поднялся»"))
     kb = alert_actions_keyboard(inc["url"], inc["site_id"], inc["id"],
                                 hosting=await get_state(f"hosting:{inc['site_id']}"), api=api)
     kb = InlineKeyboardMarkup(inline_keyboard=[*kb.inline_keyboard, _quiet_button(inc["id"])])
     # The helpers get the first reminder only (it is still «сайт лёг»):
     # the public name of the site and no talk of buttons they do not have.
     text = (f"{_escalation_head(inc, age_min, every)}\n\n"
-            f"Чинишь — «🔧 Я чиню», замолчу на {maintenance.fix_length()}. "
-            f"Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.")
+            + t("Чинишь — «🔧 Я чиню», замолчу на {length}. "
+                "Знаешь и ждёшь — «👀 Знаю, не напоминать»: следующее сообщение будет {back}.").format(
+                length=maintenance.fix_length(), back=back))
     sent = await notifier.send(
         text, Priority.CRITICAL, site_id=inc["site_id"], always_ring=True, reply_markup=kb,
         to_helpers=sent_n == 0,
@@ -1919,7 +1935,7 @@ async def _escalate_one(inc: dict, sent_n: int, now: datetime):
 def _still_down(inc: dict, now: datetime) -> str:
     age = fmt_duration((now - (incident_start(inc) or now)).total_seconds() / 60)
     content = (inc.get("message") or "").startswith("Bad content: ")
-    return f"так уже {age}" if content else f"лежит уже {age}"
+    return (t("так уже {duration}") if content else t("лежит уже {duration}")).format(duration=age)
 
 
 async def _escalate_group(due: list[tuple[dict, int]], now: datetime):
@@ -1933,10 +1949,10 @@ async def _escalate_group(due: list[tuple[dict, int]], now: datetime):
 
     def body(label) -> str:
         lines = [f"• {esc(label(inc))} — {_still_down(inc, now)}" for inc in incs]
-        return (f"🔴 Всё ещё не открываются {_sites_n(len(incs))}:\n" + "\n".join(lines)
-                + "\nПродолжаю проверять и напишу, как только поднимутся.")
+        return (t("🔴 Всё ещё не открываются {sites}:").format(sites=_sites_n(len(incs))) + "\n" + "\n".join(lines)
+                + "\n" + t("Продолжаю проверять и напишу, как только поднимутся."))
     sent = await notifier.send(
-        clip(body(lambda inc: site_label(inc["url"])) + "\n\nЕсли ты уже чинишь — нажми «🔧 Я чиню все»."),
+        clip(body(lambda inc: site_label(inc["url"])) + "\n\n" + t("Если ты уже чинишь — нажми «🔧 Я чиню все».")),
         Priority.CRITICAL, always_ring=True, reply_markup=group_keyboard(gid),
         to_helpers=any(n == 0 for _, n in due),
         helper_text=clip(body(lambda inc: helper_label(inc["url"], inc.get("http_method")))))
@@ -1966,18 +1982,18 @@ async def run_alive():
 def _db_failure_text(error: str) -> str:
     low = error.lower()
     if "full" in low:
-        why, fix = ("на диске с базой кончилось место",
-                    "освободи место на этом диске (например, старые копии в data/backups) или увеличь его")
+        why, fix = (t("на диске с базой кончилось место"),
+                    t("освободи место на этом диске (например, старые копии в data/backups) или увеличь его"))
     elif "locked" in low:
-        why, fix = ("базу держит другая программа",
-                    "закрой программу, которая открыла файл базы (sqlite3, второй экземпляр бота), "
-                    "или перезапусти бота")
+        why, fix = (t("базу держит другая программа"),
+                    t("закрой программу, которая открыла файл базы (sqlite3, второй экземпляр бота), "
+                      "или перезапусти бота"))
     else:
-        why, fix = "база не принимает запись", "посмотри логи бота и место на диске"
-    return (f"🔴 Не могу записать в базу: {why}.\n"
-            f"Проверки идут и тревоги приходят, но история не сохраняется, а то, что Telegram "
-            f"не принял, держу только в памяти до перезапуска.\n\n"
-            f"Что сделать: {fix}." + _tech_line(error))
+        why, fix = t("база не принимает запись"), t("посмотри логи бота и место на диске")
+    return (t("🔴 Не могу записать в базу: {why}.\n"
+              "Проверки идут и тревоги приходят, но история не сохраняется, а то, что Telegram "
+              "не принял, держу только в памяти до перезапуска.\n\n"
+              "Что сделать: {fix}.").format(why=why, fix=fix) + _tech_line(error))
 
 
 async def report_db_health():
@@ -1987,8 +2003,8 @@ async def report_db_health():
         if await notifier.send_direct(_db_failure_text(health.db_error())):
             health.mark_db_alerted()
     elif health.db_recovery_due() and await notifier.send(
-            "✅ База снова записывается: история проверок и очередь сообщений работают. "
-            "Ничего делать не нужно."):
+            t("✅ База снова записывается: история проверок и очередь сообщений работают. "
+              "Ничего делать не нужно.")):
         health.mark_db_recovery_said()
 
 
@@ -2082,8 +2098,8 @@ async def catch_up_after_restart():
     «всё в порядке» — a pause longer than a redeploy is said out loud, and
     the daily jobs that fell into it run late rather than not at all."""
     if _failed_jobs:
-        await notifier.send(f"⚠️ Не смог запустить по расписанию: {esc(', '.join(_failed_jobs))}. "
-                            "Остальное работает. Подробности — в логе бота.")
+        await notifier.send(t("⚠️ Не смог запустить по расписанию: {jobs}. Остальное работает. Подробности — в логе бота.").format(
+            jobs=esc(", ".join(_failed_jobs))))
     last = parse_iso_utc(await get_state("alive_at"))
     now = datetime.now(UTC)
     # The gap is taken out of the tasks' silence: the bot heard nothing in it.
@@ -2101,9 +2117,9 @@ async def catch_up_after_restart():
 async def _report_downtime(start: datetime, end: datetime):
     minutes = (end - start).total_seconds() / 60
     fmt = "%H:%M" if minutes < 20 * 60 else "%d.%m %H:%M"
-    lines = [f"⏸ Меня не было {fmt_duration(minutes)} ({to_local(start).strftime(fmt)}–"
-             f"{to_local(end).strftime(fmt)}): всё это время я не следил за сайтами и не смог бы "
-             f"ничего сообщить. Сейчас снова на посту."]
+    lines = [t("⏸ Меня не было {duration} ({start}–{end}): всё это время я не следил за сайтами и не смог бы "
+               "ничего сообщить. Сейчас снова на посту.").format(
+        duration=fmt_duration(minutes), start=to_local(start).strftime(fmt), end=to_local(end).strftime(fmt))]
     sites = await get_all_sites()
     if sites:
         # The monitor's own verdict (threshold, second opinion), not one more
@@ -2113,12 +2129,12 @@ async def _report_downtime(start: datetime, end: datetime):
         unsure = [esc(site_label(s["url"])) for s in sites if s["id"] not in down_ids
                   and ((await get_last_check(s["id"], "availability")) or {}).get("status") not in (None, "ok")]
         if down:
-            lines.append(f"🔴 Сейчас недоступно: {', '.join(down)}.")
+            lines.append(t("🔴 Сейчас недоступно: {sites}.").format(sites=", ".join(down)))
         if unsure:
-            lines.append(f"⚠️ С первой попытки не открылись: {', '.join(unsure)} — перепроверяю, "
-                         f"напишу, если не поднимутся.")
+            lines.append(t("⚠️ С первой попытки не открылись: {sites} — перепроверяю, напишу, если не поднимутся.").format(
+                sites=", ".join(unsure)))
         if not down and not unsure:
-            lines.append(f"✅ Сейчас всё работает: {len(sites)} из {len(sites)}.")
+            lines.append(t("✅ Сейчас всё работает: {n} из {total}.").format(n=len(sites), total=len(sites)))
     await notifier.send("\n".join(lines), Priority.NORMAL)
 
 
@@ -2144,21 +2160,22 @@ async def run_self_heartbeat():
     alerted = await get_state("watchdog_alerted")
     if failing >= heartbeats.WATCHDOG_ALERT_MIN and not alerted:
         sent = await notifier.send(
-            f"🟠 Сторож {name} не на связи уже {fmt_duration(failing)}: {esc(rec.get('error'))}. "
-            f"Пока так, если я упаду, тебе никто не напишет.\n\n"
-            f"Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
-            f"вставь новую: кнопка ниже.", reply_markup=_WATCHDOG_KB)
+            t("🟠 Сторож {name} не на связи уже {duration}: {why}. Пока так, если я упаду, тебе никто не напишет.\n\n"
+              "Что делать: открой {name} и проверь, что check на месте. Удалил его или ссылка поменялась — "
+              "вставь новую: кнопка ниже.").format(name=name, duration=fmt_duration(failing), why=esc(rec.get("error"))),
+            reply_markup=_watchdog_kb())
         if sent:
             await set_state("watchdog_alerted", "1")
     elif not failing and alerted:
         await set_state("watchdog_alerted", None)
-        await notifier.send(f"✅ Сторож {name} снова на связи. Ничего делать не нужно.")
+        await notifier.send(t("✅ Сторож {name} снова на связи. Ничего делать не нужно.").format(name=name))
 
 
-# «onb:watchdog» answers below the message (handlers.setup): the alert and
-# the digest stay as they were.
-_WATCHDOG_KB = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="🛡 Внешний сторож", callback_data="onb:watchdog")]])
+def _watchdog_kb() -> InlineKeyboardMarkup:
+    """«onb:watchdog» answers below the message (handlers.setup): the alert
+    and the digest stay as they were."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("🛡 Внешний сторож"), callback_data="onb:watchdog")]])
 
 
 @_once("retention", mark=True)
@@ -2209,7 +2226,7 @@ async def run_db_backup() -> bool:
         return True
     except Exception as e:
         logger.exception("DB backup failed")
-        await notifier.send("🟠 Не удалось сохранить резервную копию базы бота. Проверь место на диске."
+        await notifier.send(t("🟠 Не удалось сохранить резервную копию базы бота. Проверь место на диске.")
                             + _tech_line(str(e)))
         return False
 
@@ -2237,16 +2254,16 @@ async def send_copy_to_owner(caption: str) -> str | None:
             await shareable_copy(path)
             size = os.path.getsize(path)
             if size > TG_SEND_LIMIT:
-                return (f"копия весит {size / 1e6:.0f} МБ, а Telegram принимает от бота файлы до 50 МБ. "
-                        f"Полные ночные копии лежат на сервере: {_backups_dir()}")
+                return t("копия весит {mb} МБ, а Telegram принимает от бота файлы до 50 МБ. "
+                         "Полные ночные копии лежат на сервере: {dir}").format(mb=f"{size / 1e6:.0f}", dir=_backups_dir())
             if size > TG_DOWNLOAD_LIMIT:
-                caption += (f"\n\nФайл {size / 1e6:.0f} МБ — больше 20 МБ, которые я могу скачать: прислать "
-                            f"его мне обратно не получится. Восстановить можно на сервере: останови бота и "
-                            f"положи файл на место bot.db.")
+                caption += "\n\n" + t("Файл {mb} МБ — больше 20 МБ, которые я могу скачать: прислать "
+                                       "его мне обратно не получится. Восстановить можно на сервере: останови бота и "
+                                       "положи файл на место bot.db.").format(mb=f"{size / 1e6:.0f}")
             return await notifier.send_document_to_owner(FSInputFile(path), caption)
         except Exception as e:
             logger.exception("Copy for the owner failed")
-            return f"не получилось сделать копию ({type(e).__name__}) — чаще всего кончилось место на диске"
+            return t("не получилось сделать копию ({error}) — чаще всего кончилось место на диске").format(error=type(e).__name__)
         finally:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(path)
@@ -2259,13 +2276,13 @@ async def send_db_backup_to_telegram():
     if not settings.weekly_backup():
         return
     problem = await send_copy_to_owner(
-        "🗄 Еженедельная копия базы бота: сайты, настройки, история. Ключей подключений и секретов в ней "
-        "нет — после восстановления на новом сервере подключения нужно будет ввести заново. Чтобы "
-        "восстановить — пришли мне этот файл.")
+        t("🗄 Еженедельная копия базы бота: сайты, настройки, история. Ключей подключений и секретов в ней "
+          "нет — после восстановления на новом сервере подключения нужно будет ввести заново. Чтобы "
+          "восстановить — пришли мне этот файл."))
     if problem:
-        await notifier.send(f"🟠 Еженедельную копию базы не прислал: {esc(problem)}.\n"
-                            f"Ночные копии на сервере целы. Попробовать ещё раз — 🏠 Главная → «🤖 Боты» → "
-                            f"«💾 Скачать копию базы».")
+        await notifier.send(t("🟠 Еженедельную копию базы не прислал: {why}.\n"
+                              "Ночные копии на сервере целы. Попробовать ещё раз — 🏠 Главная → «🤖 Боты» → "
+                              "«💾 Скачать копию базы».").format(why=esc(problem)))
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────
@@ -2284,18 +2301,18 @@ async def _morning_extras(domain_results, incidents: list[dict]) -> list[str]:
             continue
         down.append(f"• {esc(site_label(s['url']))} — {humanize.downtime(stats)}")
     if down:
-        extras.append("📈 За неделю:\n" + "\n".join(down) + ("\n• остальные — без сбоев" if clean else ""))
+        extras.append(t("📈 За неделю:") + "\n" + "\n".join(down) + ("\n" + t("• остальные — без сбоев") if clean else ""))
     elif clean:
-        extras.append("📈 За неделю: " + ("все сайты без сбоев" if clean > 1 else "без сбоев"))
+        extras.append(t("📈 За неделю: ") + (t("все сайты без сбоев") if clean > 1 else t("без сбоев")))
 
     # A certificate within 14 days and a domain within 30 are already on the
     # site line above; this line is only the early heads-up for domains.
-    expiring = [f"домен {esc(r.domain)} через {r.domain_info.days_left} дн."
+    expiring = [t("домен {domain} через {days} дн.").format(domain=esc(r.domain), days=r.domain_info.days_left)
                 for r in domain_results
                 if r.domain_info and r.domain_info.days_left is not None
                 and 30 < r.domain_info.days_left <= 60]
     if expiring:
-        extras.append("🔜 Истекает: " + "; ".join(expiring))
+        extras.append(t("🔜 Истекает: ") + "; ".join(expiring))
 
     # Search findings are open incidents and already listed above. This line
     # says only what that list cannot: all clear, or which audits failed.
@@ -2315,24 +2332,24 @@ async def _morning_extras(domain_results, incidents: list[dict]) -> list[str]:
         if s["id"] not in listed:
             seo_chips.append(f"{esc(short_host(s['url']))} {_seo_chip(last['status'], await sitestatus.get(s['id']))}")
     if seo_chips:
-        extras.append("🔎 Поиск и ИИ: " + " · ".join(seo_chips))
+        extras.append(t("🔎 Поиск и ИИ: ") + " · ".join(seo_chips))
     elif audited and all_clear:
-        extras.append("🔎 Поиск и ИИ: помех нет")
+        extras.append(t("🔎 Поиск и ИИ: помех нет"))
     for s in first_audit:
         last = await get_last_check(s["id"], "seo")
         if last:
             n = ((await sitestatus.get(s["id"])).get("seo") or {}).get("improve") or 0
-            verdict = ("помех нет" if last["status"] == "ok" else
+            verdict = (t("помех нет") if last["status"] == "ok" else
                        f"🟠 {n} {plural(n, 'помеха', 'помехи', 'помех')}" if last["status"] == "warning" else
-                       "🔴 сайт закрыт от поиска" if last["status"] == "critical" else "⚠️ не смог проверить")
-            extras.append(f"🔎 Первый аудит {esc(site_label(s['url']))} для поиска и ИИ: {verdict} — "
-                          f"подробности в «🔎 Поиск и ИИ»")
+                       t("🔴 сайт закрыт от поиска") if last["status"] == "critical" else t("⚠️ не смог проверить"))
+            extras.append(t("🔎 Первый аудит {label} для поиска и ИИ: {verdict} — подробности в «🔎 Поиск и ИИ»").format(
+                label=esc(site_label(s["url"])), verdict=verdict))
             await set_state(f"seo_first_audit:{s['id']}", None)      # said once
 
     try:
         disk = await check_disk(auto_cleanup=False)
         icon = "✅" if not disk["over_threshold"] else humanize.level_icon("critical" if disk["pct"] >= DISK_CRITICAL_PCT else "warning")
-        extras.append(f"💾 Диск сервера: {icon} занято {disk['pct']}%")
+        extras.append(t("💾 Диск сервера: {icon} занято {pct}%").format(icon=icon, pct=disk["pct"]))
     except Exception as e:
         logger.warning("Disk stat for morning report failed: %s", e)
     return extras
@@ -2413,7 +2430,7 @@ async def send_morning_report(late: bool = False):
     if await heartbeats.watchdog() is None and _watchdog_nag(not settings.digest_full()):
         # The digest says there is no watchdog: the way to one is a tap away.
         kb = InlineKeyboardMarkup(inline_keyboard=[*(kb.inline_keyboard if kb else []),
-                                                  *_WATCHDOG_KB.inline_keyboard])
+                                                  *_watchdog_kb().inline_keyboard])
     parts = chunks(text)
     for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
@@ -2461,7 +2478,7 @@ async def send_weekly_report():
         for part in chunks(text):
             await notifier.send(part, Priority.DIGEST)
         if speed:   # only the sites whose speed moved; nothing when none did
-            for msg in chunks("\n".join(["⏱ Скорость за неделю — где она менялась:", *speed])):
+            for msg in chunks("\n".join([t("⏱ Скорость за неделю — где она менялась:"), *speed])):
                 await notifier.send(msg, Priority.DIGEST)
         tip = await recommend.weekly_recommendation()
         if tip:
@@ -2505,16 +2522,16 @@ def _on_job_event(event):
         return
     _job_told.add(job_id)
     exc = getattr(event, "exception", None)
-    why = type(exc).__name__ if exc else "прошлый запуск ещё не закончился"
-    task = asyncio.get_running_loop().create_task(_tell_job_broken(_JOB_TITLES.get(job_id, job_id), why))
+    why = type(exc).__name__ if exc else t("прошлый запуск ещё не закончился")
+    task = asyncio.get_running_loop().create_task(_tell_job_broken(t(_JOB_TITLES.get(job_id, job_id)), why))
     _listener_tasks.add(task)
     task.add_done_callback(_listener_tasks.discard)
 
 
 async def _tell_job_broken(title: str, why: str):
     try:
-        await notifier.send(f"⚠️ У меня не работает «{esc(title)}»: {esc(why)}. Остальное идёт как обычно; "
-                            f"подробности — в логе бота.")
+        await notifier.send(t("⚠️ У меня не работает «{title}»: {why}. Остальное идёт как обычно; "
+                              "подробности — в логе бота.").format(title=esc(title), why=esc(why)))
     except Exception:
         logger.exception("Could not tell the owner about the broken job %s", title)
 
