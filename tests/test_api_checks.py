@@ -16,8 +16,8 @@ from reports.formatter import format_compact_status_report
 from services import integrations, sitestatus
 from utils.urls import is_api_check, is_api_url, is_web_page, site_label
 
-GOOD_PASS = "https://good-pass.pages.dev"
-ANALYZE = "https://good-pass.pages.dev/api/v1/analyze"
+GOOD_PASS = "https://good-pass.morgunov.tech"
+ANALYZE = "https://good-pass.morgunov.tech/api/v1/analyze"
 WHOAMI = "https://fingerprint-api.example.workers.dev/api/whoami"
 
 
@@ -33,13 +33,13 @@ def test_the_rule():
     assert not is_web_page("https://example.com", "POST") and not is_web_page("tcp://example.com:25")
     assert is_api_url(ANALYZE) and not is_api_url("https://example.com/")
     # The endpoint must not look like its site; a query (maybe a token) is never shown.
-    assert site_label(ANALYZE) == "good-pass.pages.dev/api/v1/analyze"
+    assert site_label(ANALYZE) == "good-pass.morgunov.tech/api/v1/analyze"
     assert site_label("https://ex.com/api/x?key=secret") == "ex.com/api/x" and site_label("https://ex.com/") == "ex.com"
 
 
 def test_add_keeps_the_api_path_and_drops_a_page_path():
     parse = sites.parse_site_input
-    assert parse("good-pass.pages.dev/api/v1/analyze") == (ANALYZE, None)
+    assert parse("good-pass.morgunov.tech/api/v1/analyze") == (ANALYZE, None)
     assert parse("HTTPS://Fingerprint-API.example.com/api/WhoAmI?x=1") == \
         ("https://fingerprint-api.example.com/api/WhoAmI?x=1", None)    # paths are case-sensitive
     assert parse("api.example.com/") == ("https://api.example.com", None)
@@ -153,7 +153,7 @@ async def test_card_menu_and_report_show_an_api_check_as_one(bot, db):
     await sites.cb_check_single_site(call)
     card = call.message.texts[-1]
     assert "API-проверка: POST, в ответе должно быть «scoreLabel»" in card and "✅ Отвечает за 0.12 с" in card
-    assert "Сертификат и домен — на карточке good-pass.pages.dev" in card
+    assert "Сертификат и домен — на карточке good-pass.morgunov.tech" in card
     assert "Поиск и ИИ" not in card and "Сертификат действует" not in card
     assert "🔎 Поиск и ИИ" not in buttons(call.message.reply_markup)
     icon, state, _ = await menu.site_state(await db.get_site(api))
@@ -178,7 +178,7 @@ async def test_card_menu_and_report_show_an_api_check_as_one(bot, db):
     r_page = availability.AvailabilityResult(url=GOOD_PASS, site_id=page, response_time_ms=100)
     r_api = availability.AvailabilityResult(url=ANALYZE, site_id=api, response_time_ms=100, api=True)
     report = format_compact_status_report([r_page, r_api], [], ssl_results=[], domain_results=[])
-    assert "✅ good-pass.pages.dev/api/v1/analyze — отвечает за 0.10 с" in report
+    assert "✅ good-pass.morgunov.tech/api/v1/analyze — отвечает за 0.10 с" in report
 
 
 async def test_adding_an_api_address_says_what_is_watched(bot, db):
