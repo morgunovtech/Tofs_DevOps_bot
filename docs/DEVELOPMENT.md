@@ -160,7 +160,7 @@ pip-audit -r requirements.txt --strict
 
 ### Зависимости
 
-Прямые версии живут в `requirements.in` (9 пинов `==`). `requirements.txt` —
+Прямые версии живут в `requirements.in` (10 пинов `==`). `requirements.txt` —
 сгенерированный lock: все 30 пакетов, включая транзитивные, с хешами, собранный
 под Python 3.12 (младшая версия матрицы CI). Образ и CI ставят ровно его
 (`pip install --require-hashes --no-deps`); тест `test_the_lock_is_compiled_from_requirements_in`
