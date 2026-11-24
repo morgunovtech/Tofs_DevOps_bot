@@ -105,6 +105,7 @@ from services import (
     integrations,
     maintenance,
     notifier,
+    published,
     railway,
     recommend,
     runtime,
@@ -1619,7 +1620,8 @@ async def run_integration_health():
     works again (services.integrations.record_result keeps the record)."""
     used = {"gsc": gsc.available(), "yandex": yandex_webmaster.available(), "crux": crux.available(),
             "github": github.available(), "checkhost": integrations.second_opinion_enabled(),
-            "osv": config.dependency_watch, "rdap": True, "cf_audit": cloudflare.configured()}
+            "osv": config.dependency_watch, "rdap": True, "cf_audit": cloudflare.configured(),
+            "cf_zone": cloudflare.configured()}
     for name, (title, loss, setup) in integrations.HEALTH.items():
         h = await integrations.health(name)
         if not used.get(name):
@@ -2546,6 +2548,10 @@ async def send_weekly_report():
         await github.run_watch()
     except Exception:
         logger.exception("GitHub hygiene check failed")
+    try:
+        await published.run()
+    except Exception:
+        logger.exception("What is published but not watched: the read failed")
     failed = None
     try:
         text, speed = await build_weekly_report()
@@ -2556,6 +2562,9 @@ async def send_weekly_report():
         if speed:   # only the sites whose speed moved; nothing when none did
             for msg in chunks("\n".join([t("⏱ Скорость за неделю — где она менялась:"), *speed])):
                 await notifier.send(msg, Priority.DIGEST)
+        unwatched = await published.sunday_message()
+        if unwatched:
+            await notifier.send(unwatched[0], Priority.DIGEST, reply_markup=unwatched[1])
         tip = await recommend.weekly_recommendation()
         if tip:
             await notifier.send(tip[0], Priority.DIGEST, reply_markup=tip[1])
@@ -2806,6 +2815,9 @@ def setup_scheduler() -> AsyncIOScheduler:
     # The Cloudflare account's audit log: a dangerous change rings within a quarter hour.
     job(cf_audit.run, lambda: IntervalTrigger(minutes=15, start_date=soon, timezone=UTC), "cf_audit",
         misfire_grace_time=300)
+    # What is published but not watched, and the zone's records anyone could take over.
+    job(published.run, lambda: IntervalTrigger(hours=24, start_date=soon + timedelta(minutes=5), timezone=UTC),
+        "published", misfire_grace_time=3600)
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:

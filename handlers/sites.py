@@ -818,15 +818,23 @@ async def cb_site_add_advanced(call: CallbackQuery, state: FSMContext):
 
 @router.message(AddSiteForm.url)
 async def msg_site_add(message: Message, state: FSMContext):
-    url, error = parse_site_input(message.text or "")
-    path = dropped_path(message.text or "", url) if url else None
+    await add_site(message, message.text or "", state)
+
+
+async def add_site(message: Message, raw_text: str, state: FSMContext):
+    """Add what raw_text names and answer with the first check — the typed
+    address of «➕ Добавить», or one the bot found itself (services.published:
+    «➕ Следить» under the Sunday report; message is then the report, and
+    the answer comes below it)."""
+    url, error = parse_site_input(raw_text)
+    path = dropped_path(raw_text, url) if url else None
     if path:
         await message.answer(t("ℹ️ Путь «{path}» не сохранил: сайт проверяю по главной, а его страницы — по карте сайта и ссылкам с главной. Отдельную страницу как главную функцию можно добавить API-проверкой: адрес под /api/ или на api.-домене («🛠 API, порт или ping»).").format(path=esc(path)))
     if not url:
         await message.answer(error, reply_markup=_add_kb())
         return
     await state.clear()
-    raw = urlparse((message.text or "").strip())
+    raw = urlparse(raw_text.strip())
     if urlparse(url).query or raw.password or "@" in raw.netloc:
         await forget_secret(message)        # an API address with ?token=… or user:pass@ in it
     if await _limit_reached(url):            # the form may have been opened before the limit was reached

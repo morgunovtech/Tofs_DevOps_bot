@@ -64,21 +64,25 @@ class Provider:
     dkim: tuple[str, ...] = ()   # selectors it publishes; () = owner-chosen, not checked
     sends: bool = True           # False: forwarding only, sends nothing in the domain's name
     status: str | None = None    # its status page
+    verify: tuple[str, ...] = ()  # TXT proof of ownership it asks for (lowercase prefix); () = none of its own
 
 
 PROVIDERS: tuple[Provider, ...] = (
     Provider("Proton", ("protonmail.ch", "proton.me"), ("_spf.protonmail.ch",),
-             ("protonmail", "protonmail2", "protonmail3"), status="https://status.proton.me"),
+             ("protonmail", "protonmail2", "protonmail3"), status="https://status.proton.me",
+             verify=("protonmail-verification=",)),
     Provider("Google Workspace", ("google.com", "googlemail.com"), ("_spf.google.com",), ("google",),
              status="https://www.google.com/appsstatus/dashboard/"),
     Provider("Microsoft 365", ("mail.protection.outlook.com",), ("spf.protection.outlook.com",),
-             ("selector1", "selector2"), status="https://status.cloud.microsoft"),
+             ("selector1", "selector2"), status="https://status.cloud.microsoft", verify=("ms=ms",)),
     Provider("Яндекс 360", ("yandex.net", "yandex.ru"), ("_spf.yandex.net",), ("mail",)),
-    Provider("VK WorkMail", ("mail.ru",), ("_spf.mail.ru",), ("mailru",)),
+    Provider("VK WorkMail", ("mail.ru",), ("_spf.mail.ru",), ("mailru",),
+             verify=("mailru-verification", "mailru-domain:")),
     Provider("Zoho Mail", ("zoho.com", "zoho.eu", "zoho.in", "zohomail.com"),
-             ("zohomail.com", "zoho.com", "zoho.eu", "zoho.in", "zohomail.eu"), status="https://status.zoho.com"),
+             ("zohomail.com", "zoho.com", "zoho.eu", "zoho.in", "zohomail.eu"), status="https://status.zoho.com",
+             verify=("zoho-verification=",)),
     Provider("iCloud", ("mail.icloud.com",), ("icloud.com",), ("sig1",),
-             status="https://www.apple.com/support/systemstatus/"),
+             status="https://www.apple.com/support/systemstatus/", verify=("apple-domain=",)),
     Provider("Fastmail", ("messagingengine.com",), ("spf.messagingengine.com",), ("fm1", "fm2", "fm3"),
              status="https://fastmailstatus.com"),
     Provider("Cloudflare Email Routing", ("mx.cloudflare.net",), ("_spf.mx.cloudflare.net",), sends=False,
