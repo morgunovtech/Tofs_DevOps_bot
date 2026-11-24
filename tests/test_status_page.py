@@ -125,6 +125,10 @@ async def test_the_badge_has_its_own_address_without_the_page_slug(bot, db, cfg)
         r = await c.get(url.removeprefix(public_urls.base_url()))
         assert r.status == 200 and 'fill="#1a1a1a">100.0%' in await r.text()   # dark text on green
         assert (await c.get(f"/badge/{sid}-{'0' * 16}.svg")).status == 404
+        # The pre-3.0 addresses are gone, the secret one included: only the signed one serves.
+        for old in (f"/status/badge/{sid}.svg", f"/status/s3cret-slug/badge/{sid}.svg"):
+            assert (await c.get(old)).status == 404, old
+        assert (await c.get("/status/s3cret-slug")).status == 200       # the page itself still serves
         await settings.set_status_page(False)
         assert (await c.get(url.removeprefix(public_urls.base_url()))).status == 404   # page off — badge off
     # Dark text on every fill: white on the red one reads at 3.6:1, below AA.

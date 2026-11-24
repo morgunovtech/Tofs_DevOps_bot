@@ -149,7 +149,7 @@ Addresses of your sites go to a few free public services; each line can be switc
 | GitHub GraphQL, Google Search Console, Yandex.Webmaster, Cloudflare | your repositories (two paginated queries, Sundays); the sites of the property; the deploy hook and the cache purge | only when connected | disconnect in «🔌 Подключения» |
 | the external watchdog (`SELF_HEARTBEAT_URL`, e.g. healthchecks.io) | an empty GET | every 5 min, while the checks run and Telegram answers | remove the link |
 | Telegram | every message; visitors' widget messages with their IP; the pictures; the Sunday copy of the database | | the copy: «💾 Копия базы» |
-| your sites, and every link on their home pages | the bot's address and User-Agent (`… TofsDevOps/2.0`); the home page asked again with the GPTBot, ClaudeBot and PerplexityBot signatures; probes of `/.git/HEAD`, `/.env` and `/__devopsbot-404-probe` | every check; the signatures and the 404 probe daily; `.git`/`.env` every 6 h; the links every 6 h | `LINKS_CHECK_INTERVAL_HOURS=0` stops the crawl |
+| your sites, and every link on their home pages | the bot's address and User-Agent (`… TofsDevOps/3.0`); the home page asked again with the GPTBot, ClaudeBot and PerplexityBot signatures; probes of `/.git/HEAD`, `/.env` and `/__devopsbot-404-probe` | every check; the signatures and the 404 probe daily; `.git`/`.env` every 6 h; the links every 6 h | `LINKS_CHECK_INTERVAL_HOURS=0` stops the crawl |
 | the host's DNS resolver | the names of your hosts, NS and MX of your domains, `_dmarc` and the DKIM selectors of known mail providers | hourly | — |
 
 ## Where to keep the database
@@ -195,7 +195,7 @@ The project cannot be removed completely without this list.
 
 ## Status
 
-Personal project, shared as-is: Python 3.12–3.14 (the upper bound comes from the pinned aiogram's Requires-Python, see `requirements.in`), aiogram 3, aiohttp, APScheduler, SQLite. Named after Tofs — an Irish Terrier who takes uptime personally. [MIT](LICENSE) © Semyon Morgunov.
+Personal project, shared as-is: Python 3.12–3.14 (the upper bound comes from the locked pydantic-core, which has no Python 3.15 wheels yet, see `pyproject.toml`), aiogram 3, aiohttp, APScheduler, SQLite. Named after Tofs — an Irish Terrier who takes uptime personally. [MIT](LICENSE) © Semyon Morgunov.
 
 ---
 Built by [Semyon Morgunov](https://s.morgunov.tech) with Claude Code as pair programmer.

@@ -14,7 +14,7 @@ from conftest import FakeMessage, FakeState
 from db.database import resolve_incident, save_incident
 from handlers import settings as settings_screens
 from handlers import start
-from services import runtime, settings
+from services import public_urls, runtime, settings
 from web import status_page
 from web.webhook import create_app
 
@@ -34,7 +34,7 @@ async def test_status_page_speaks_english_when_asked(bot, db, cfg, monkeypatch):
         async with TestClient(TestServer(create_app())) as c:
             page = await (await c.get("/status")).text()
             data = await (await c.get("/status.json")).json()
-            badge = await (await c.get(f"/status/badge/{sid}.svg")).text()
+            badge = await (await c.get(public_urls.badge_url(sid).removeprefix(public_urls.base_url()))).text()
     finally:
         await settings.set_status_page(False)
     assert '<html lang="en">' in page and "<title>Acme status</title>" in page
