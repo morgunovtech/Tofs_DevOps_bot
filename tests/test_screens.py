@@ -576,7 +576,11 @@ async def test_a_clean_manual_link_check_closes_the_links_alert(bot, db, monkeyp
     async def link(session, url):
         return LinkCheck(url, 404 if "gone" in url else 200, "gone" not in url)
 
+    async def no_llms(session, url):
+        return []
+
     monkeypatch.setattr(links_checker, "_fetch_page", fetch)
+    monkeypatch.setattr(links_checker, "_fetch_llms", no_llms)
     monkeypatch.setattr(links_checker, "_check_link", link)
     await links_checker.check_links("https://ex.test")                       # the crawl opens it
     assert [i["check_type"] for i in await get_active_incidents()] == ["links"]

@@ -177,6 +177,10 @@ STRINGS: dict[str, str] = {
     "адрес записан с ошибкой": "the address is malformed",
     # ── utils/net.py: the guard's refusal, kept as a verdict in the history ──
     "адрес во внутренней сети — туда не хожу": "an address inside a private network — I do not go there",
+    # ── monitors/seo_checker.py: proofs of ownership ────────────────────────
+    "{page}: подтверждение {service} с заглушкой «{value}» — в {service} сайт не подтверждён":
+        "{page}: the {service} verification tag holds a placeholder «{value}» — the site is not verified in {service}",
+    "{page}: {n} разных кода подтверждения {service}": "{page}: {n} different {service} verification codes",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {

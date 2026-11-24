@@ -1509,8 +1509,12 @@ async def run_index_checks():
     asked once for all sites; «did not answer» stays «did not answer»."""
     if not gsc.available() and not yandex_webmaster.available():
         return
+    yandex_webmaster.last_hosts.clear()
     yx = await yandex_webmaster.get_summaries() if yandex_webmaster.available() else None
     for site in await get_all_sites():
+        if is_web_page(site["url"], site.get("http_method")):
+            with _isolated(f"Yandex rights of {site_label(site['url'])}"):
+                await _yandex_rights(site)
         with _isolated(f"Index check of {site_label(site['url'])}"):
             url = site["url"]
             if not is_web_page(url, site.get("http_method")):
@@ -1581,6 +1585,31 @@ async def _google_change(site: dict, google: dict):
         state["told"] = True
     if sent and state != prev:
         await set_state(key, json.dumps(state, ensure_ascii=False))
+
+
+async def _yandex_rights(site: dict):
+    """A site in Webmaster that Yandex does not confirm as the owner's: once,
+    and once more when it is confirmed again. No read of the list — no word."""
+    hosts = yandex_webmaster.last_hosts
+    host = short_host(site["url"])
+    if not hosts or (host not in hosts["unverified"] and host not in hosts["verified"]):
+        return
+    key = f"yx_unverified:{host}"
+    told = bool(await get_state(key))
+    if host in hosts["unverified"] and not told:
+        sent = await notifier.send(
+            t("🟠 Яндекс.Вебмастер: {host} не подтверждён — Яндекс не показывает по нему статистику и ошибки и не "
+              "даёт запросить переобход.").format(host=esc(host)) + "\n\n"
+            + t("Что делать: Вебмастер → сайт → «Права доступа» → подтвердить метатегом, файлом или записью DNS. "
+                "Если метатег был и пропал после редизайна — верни его в код главной."),
+            Priority.NORMAL, site_id=site["id"],
+            reply_markup=_index_keyboard(site["id"], t("↗️ Вебмастер"), "https://webmaster.yandex.ru/"))
+        if sent:
+            await set_state(key, "1")
+    elif host in hosts["verified"] and told:
+        if await notifier.send(t("✅ Яндекс.Вебмастер: {host} снова подтверждён.").format(host=esc(host)),
+                               Priority.NORMAL, site_id=site["id"]):
+            await set_state(key, None)
 
 
 async def _yandex_change(site: dict, yandex: dict):

@@ -145,6 +145,7 @@ class LinksResult(CheckResult):
     checked: int = 0                                          # this crawl's share of total_links
     broken: list[LinkCheck] = field(default_factory=list)    # a problem: own or other site alike
     pending: list[LinkCheck] = field(default_factory=list)   # failed once (timeout/5xx), rechecking
+    from_llms: set[str] = field(default_factory=set)         # links read from /llms.txt, not the page
 
 
 @dataclass

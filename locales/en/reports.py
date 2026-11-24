@@ -444,6 +444,13 @@ STRINGS: dict[str, str] = {
     "прошлый запуск ещё не закончился": "the previous run has not finished yet",
     "⚠️ У меня не работает «{title}»: {why}. Остальное идёт как обычно; подробности — в логе бота.":
         "⚠️ «{title}» is not working for me: {why}. The rest goes on as usual; details in the bot's log.",
+    # ── reports/scheduler.py: Yandex rights, llms.txt ──────────────────────
+    "🟠 Яндекс.Вебмастер: {host} не подтверждён — Яндекс не показывает по нему статистику и ошибки и не даёт запросить переобход.":
+        "🟠 Yandex.Webmaster: {host} is not verified — Yandex shows no statistics or errors for it and will not take a recrawl request.",
+    "Что делать: Вебмастер → сайт → «Права доступа» → подтвердить метатегом, файлом или записью DNS. Если метатег был и пропал после редизайна — верни его в код главной.":
+        "What to do: Webmaster → the site → «Access rights» → verify with a meta tag, a file or a DNS record. If the meta tag was there and disappeared in a redesign, put it back into the homepage code.",
+    "✅ Яндекс.Вебмастер: {host} снова подтверждён.": "✅ Yandex.Webmaster: {host} is verified again.",
+    " (в llms.txt)": " (in llms.txt)",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {

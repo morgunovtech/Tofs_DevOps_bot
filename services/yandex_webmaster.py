@@ -25,6 +25,9 @@ BASE = "https://api.webmaster.yandex.net/v4"
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 PARALLEL = 4            # host summaries asked at once
 TOTAL_BUDGET_SEC = 60   # the whole walk over the hosts
+# The hosts of the last read of the account's list: {"verified": …, "unverified": …}
+# (main hosts only, mirrors left out). Empty until a read succeeded: no read, no verdict.
+last_hosts: dict[str, set[str]] = {}
 
 # Problem severities worth alerting about (docs: FATAL > CRITICAL >
 # POSSIBLE_PROBLEM > RECOMMENDATION).
@@ -110,6 +113,19 @@ def _main_hosts(hosts: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _remember_hosts(hosts: list, verified: set[str]):
+    """Which of the account's sites Yandex no longer (or never) confirmed as
+    the owner's: a verification meta tag lost in a redesign looks like this."""
+    unverified = set()
+    for h in hosts:
+        if isinstance(h, dict) and not h.get("verified") and not h.get("main_mirror"):
+            host = urlparse(h.get("ascii_host_url", "")).hostname or ""
+            if host:
+                unverified.add(host)
+    last_hosts.clear()
+    last_hosts.update(verified=verified, unverified=unverified - verified)
+
+
 async def get_summaries(only: set[str] | None = None) -> dict[str, dict] | None:
     """{host (e.g. 'app.example.com'): summary} for every verified main
     host — or for the hosts in `only`. None when Webmaster itself could not
@@ -131,6 +147,7 @@ async def get_summaries(only: set[str] | None = None) -> dict[str, dict] | None:
                 await integrations.record_result("yandex", False, t("Вебмастер не ответил"))
                 return None
             wanted = _main_hosts(hosts_data.get("hosts") or [])
+            _remember_hosts(hosts_data.get("hosts") or [], set(wanted))
             if only is not None:
                 wanted = {host: h for host, h in wanted.items() if host in only}
             sem = asyncio.Semaphore(PARALLEL)

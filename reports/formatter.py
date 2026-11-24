@@ -180,9 +180,11 @@ LINK_FIX = ("Что сделать: если страница переехала
             "или дай копию из web.archive.org; закрытый репозиторий — открой его или убери ссылку.")   # via t()
 
 
-def link_lines(links: list, limit: int = 10) -> list[str]:
-    """«• url — why» for each link, own site or not alike."""
-    lines = [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}" for b in links[:limit]]
+def link_lines(links: list, limit: int = 10, from_llms: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """«• url — why» for each link, own site or not alike; a link read from
+    /llms.txt says so — it is not on the page."""
+    lines = [f"• {esc(b.url)} — {esc(link_reason(b.status_code, b.error, b.url))}"
+             + (t(" (в llms.txt)") if b.url in from_llms else "") for b in links[:limit]]
     if len(links) > limit:
         lines.append(t("… и ещё {n}").format(n=len(links) - limit))
     return lines
@@ -197,7 +199,7 @@ def format_links_report(r: LinksResult) -> str:
     lines = [t("🟠 На {label} {n} {links}").format(
                  label=esc(site_label(r.url)), n=n,
                  links=plural(n, "ссылка не открывается", "ссылки не открываются", "ссылок не открываются")),
-             explain("links", "").meaning, *link_lines(r.broken), t(LINK_FIX)]
+             explain("links", "").meaning, *link_lines(r.broken, from_llms=r.from_llms), t(LINK_FIX)]
     return "\n".join(lines)
 
 
