@@ -112,7 +112,7 @@ async def test_the_helpers_copy_names_the_site_without_its_path(bot, db, monkeyp
 
 
 async def test_helper_hears_the_recovery_even_when_only_the_fall_rings(bot, db, monkeypatch):
-    """«🔔 Будить: только «сайт лёг»» and quiet hours are the owner's: the
+    """«🔔 Только «сайт лёг»» and quiet hours are the owner's: the
     helper still gets «снова открывается» — silently, right away."""
     await _join(555)
     monkeypatch.setattr(settings_service, "ring_only_down", lambda: True)

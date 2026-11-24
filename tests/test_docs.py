@@ -37,6 +37,7 @@ STALE = {
     "No external monitoring dependencies": "check-host, microlink and others are used",
     "https://your-server:8080": "port 8080 is plain HTTP",
     "export/import": "there is no export",
+    "Будить: только": "the button is «🔔 Только «сайт лёг»», next to «🔔 Будить: всё критичное»",
 }
 
 
