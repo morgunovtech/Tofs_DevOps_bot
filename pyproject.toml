@@ -1,6 +1,6 @@
 [project]
 name = "tofsdevops"
-version = "2.1.0"
+version = "2.2.0"
 description = "Personal DevOps in Telegram (Russian or English UI): monitoring, SEO/GEO visibility, self-healing"
 # <3.15: aiogram 3.31 allows Python below 3.15 only, and pydantic-core of
 # pydantic 2.13 has no 3.15 wheels — lift once aiogram allows both.
