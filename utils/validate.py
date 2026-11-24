@@ -12,6 +12,16 @@ HOURS = (0, 23)
 CHECK_INTERVAL_MIN = (1, 1440)     # minutes between two checks of a site
 FAIL_THRESHOLD = (1, 10)           # failed checks in a row before an alert
 SLOW_MS = (100, 120_000)           # «slow» threshold, milliseconds
+# The dials that used to live only in .env and are set in the chat too
+# («🛠 Тонкие настройки»): config.py reads the .env value through the same
+# bound, so a value is refused the same way whichever door it comes through.
+ESCALATION_REPEAT_MIN = (0, 1440)  # first reminder about a down site; 0 = none
+SSL_RENEW_WARN_DAYS = (0, 60)      # «auto-renewal looks broken» this close to expiry; 0 = off
+DISK_ALERT_PCT = (50, 99)          # below 50 a prune would fire on a near-empty disk
+LINKS_INTERVAL_HOURS = (0, 168)    # between two link crawls; 0 = no crawl
+DEEP_SAMPLE = (0, 100)             # pages from the sitemap in the deep 5xx probe; 0 = off
+SEO_PAGES = (1, 50)                # pages besides the home page in the search audit
+SEO_MIN_TEXT = (0, 100_000)        # characters of text below which a page is «thin»; 0 = off
 HB_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-_")
 
 

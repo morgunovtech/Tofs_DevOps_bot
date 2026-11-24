@@ -175,6 +175,8 @@ STRINGS: dict[str, str] = {
     "Автопродление, похоже, не сработало: до истечения {days} дн., а сертификат не менялся.": "Auto-renewal seems not to have happened: {days} d to expiry, and the certificate has not changed.",
     "у посетителей ": "for visitors ",
     "адрес записан с ошибкой": "the address is malformed",
+    # ── utils/net.py: the guard's refusal, kept as a verdict in the history ──
+    "адрес во внутренней сети — туда не хожу": "an address inside a private network — I do not go there",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {

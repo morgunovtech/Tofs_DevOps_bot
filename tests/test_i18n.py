@@ -5,7 +5,6 @@ Russian itself is covered by every other test: with BOT_LANG=ru t() returns
 its argument."""
 
 import ast
-import dataclasses
 import glob
 import re
 from datetime import timedelta
@@ -13,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from conftest import FakeCall, FakeMessage, FakeState, buttons
+from test_auto_actions import StaleCall
 from test_docs import _config_with
 
 import main
@@ -53,6 +53,9 @@ from handlers import (
 from handlers import (
     setup as setup_screen,
 )
+from handlers import (
+    tune as tune_screen,
+)
 from locales.en import PLURALS, STRINGS
 from monitors import domain_checker, mail_checker, security_checker, seo_checker
 from monitors.base import (
@@ -89,6 +92,7 @@ from services import (
 from services import settings as settings_service
 from utils import i18n
 from utils.i18n import fmt_duration, plural, t
+from utils.text import clip
 
 CYRILLIC = re.compile("[А-Яа-яЁё]")
 
@@ -150,14 +154,14 @@ def test_bottom_buttons_and_common_texts():
     assert buttons(start.tz_button()) == ["🕐 Change the time zone"]
 
 
-async def test_start_and_help(bot, db, monkeypatch):
+async def test_start_and_help(bot, db, cfg):
     msg = FakeMessage("/start")
     msg.from_user, msg.chat = SimpleNamespace(id=777, is_bot=False), SimpleNamespace(id=777, type="private")
     await start.cmd_start(msg, FakeState())
     for text, kb in zip(msg.texts, msg.markups, strict=True):
         screen_english(text, kb if kb is not None and hasattr(kb, "inline_keyboard") else None)
     english_only(start.rules_of_the_game())
-    monkeypatch.setattr(start, "config", dataclasses.replace(start.config, escalation_repeat_min=0))
+    cfg(escalation_repeat_min=0)
     english_only(start._down_line())
     help_msg = FakeMessage("/help")
     help_msg.from_user, help_msg.chat = msg.from_user, msg.chat
@@ -660,6 +664,12 @@ async def test_problem_screens(bot, db, monkeypatch):
     call = FakeCall("menu_feedback:0")
     await feedback.cb_feedback(call)
     _calls_english(call)
+    call = FakeCall("menu_widget")
+    await feedback.cb_widget(call)
+    _calls_english(call)
+    call = FakeCall("fb_secret")
+    await feedback.cb_widget_secret(call)
+    _calls_english(call)
 
     monkeypatch.setattr(automation.integrations, "deploy_hooks", lambda: {"ex.test": "https://hook.test"})
     screen_english(*await automation.auto_screen())
@@ -695,7 +705,8 @@ async def test_problem_screens(bot, db, monkeypatch):
 async def test_settings_connections_and_wizards(bot, db, monkeypatch):
     sid = await db.activate_or_create_site("https://ex.test")
     for data, handler in (("menu_settings", "cb_settings"), ("menu_helpers", "cb_helpers"), ("helper_invite", "cb_helper_invite"),
-                          ("menu_reports", "cb_reports"), ("menu_tz", "cb_tz"), ("menu_visitors", "cb_visitors"),
+                          ("menu_reports", "cb_reports"), ("menu_quiet", "cb_quiet"), ("menu_backup", "cb_backup"),
+                          ("menu_tz", "cb_tz"), ("menu_visitors", "cb_visitors"),
                           ("menu_statuspage", "cb_status_page"), ("sp_pub:", "cb_status_page_publish")):
         call = FakeCall(data)
         await getattr(settings_screen, handler)(call)
@@ -711,6 +722,26 @@ async def test_settings_connections_and_wizards(bot, db, monkeypatch):
         call = FakeCall(data)
         await settings_screen.cb_settings_pick(call)
         _calls_english(call)
+    call = FakeCall("menu_tune")                                   # «🛠 Тонкие настройки» and every dial
+    await tune_screen.cb_tune(call)
+    _calls_english(call)
+    for row in tune_screen.ROWS:
+        call = FakeCall(f"tune:{row.key}")
+        await tune_screen.cb_dial(call)
+        _calls_english(call)
+    for data in ("tune:status_page", "tune:sp_env"):
+        call = FakeCall(data)
+        await tune_screen.cb_status_page(call)
+        _calls_english(call)
+    call = FakeCall("tune:sp_title")
+    await tune_screen.cb_status_page_title(call, FakeState())
+    _calls_english(call)
+    msg = FakeMessage("x" * 80)
+    await tune_screen.msg_status_page_title(msg, FakeState())
+    english_only(msg.texts[-1])
+    call = FakeCall("tune:lang")
+    await tune_screen.cb_lang(call)
+    _calls_english(call)
     await settings_service.set_timezone("Europe/Moscow")
     screen_english(*await setup_screen.render_checklist())
     call = FakeCall("setup:check")
@@ -830,3 +861,33 @@ def test_monitor_findings_are_written_in_the_chat_language():
     english_only(humanize.describe_error(message))
     for host in ("1.2.3.4", "myapp.vercel.app", "nas.local"):
         english_only(domain_checker.no_domain_reason(host) or "")
+
+
+async def test_a_stale_tap_is_answered_in_english(bot, db):
+    """STALE_TAP is a module constant shown through t(): twenty-two places
+    used to send the Russian source as it is."""
+    sid = await db.activate_or_create_site("https://shop.example.test")
+    await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    stale = StaleCall(f"act:fix:{sid}")
+    await alerts.cb_alert_action(stale)
+    english_only(stale.message.texts[-1])
+    assert stale.message.texts[-1].startswith("⌛ This tap arrived")
+    stale = StaleCall(f"pause:{sid}:60")
+    await sites.cb_pause(stale)
+    english_only(stale.message.texts[-1])
+
+
+def test_a_clipped_message_ends_in_english():
+    """utils.text cannot import i18n; the mark of a cut is set from set_language."""
+    english_only(clip("<b>" + "x" * 5000 + "</b>")[-60:])
+    assert clip("x" * 5000).endswith("… (truncated)")
+    i18n.set_language("ru")
+    assert clip("x" * 5000).endswith("… (обрезано)")
+
+
+def test_the_guards_refusal_and_the_crux_reasons_are_translated():
+    english_only(humanize.describe_error(
+        "Cannot connect to host 192.168.1.5:443 ssl:default [адрес во внутренней сети — туда не хожу]"))
+    english_only(humanize.technical("адрес во внутренней сети — туда не хожу"))
+    english_only(t("Google ответил HTTP {status}").format(status=403))
+    english_only(t("Google не ответил ({err_text})").format(err_text="TimeoutError"))

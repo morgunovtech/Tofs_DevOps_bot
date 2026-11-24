@@ -13,7 +13,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db.database import get_state
-from handlers.common import CANCEL, HEARTBEAT_SECRET_NOTE, STALE_TAP, ack, back_button, cancel_kb, render
+from handlers.common import (
+    CANCEL,
+    HEARTBEAT_SECRET_NOTE,
+    STALE_TAP,
+    ack,
+    back_button,
+    cancel_kb,
+    cb_int,
+    render,
+)
 from services import heartbeats, public_urls, settings
 from services.heartbeats import INTERVALS, every, job_states
 from utils.i18n import t
@@ -124,7 +133,8 @@ async def cb_hb_bot(call: CallbackQuery):
     if await _job_gone(call, name):
         return
     await ack(call)
-    await render(call, t("🤖 Подключить «{name}»\n\n{not_public_note}Дай этому боту адрес — нажми на него, он скопируется:\n{url_line}\n\nБот должен открывать его каждый раз, когда удачно поработал. В его настройках такое поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> или «Ping URL».\n\n{HEARTBEAT_SECRET_NOTE}\n\nКак только связь появится, строка на главном экране станет ✅.").format(name=esc(name), not_public_note=_not_public_note(), url_line=_url_line(name), HEARTBEAT_SECRET_NOTE=t(HEARTBEAT_SECRET_NOTE)), _connect_kb(name))
+    await render(call, t("🤖 Подключить «{name}»\n\n{not_public_note}Дай этому боту адрес — нажми на него, он скопируется:\n{url_line}\n\nБот должен открывать его каждый раз, когда удачно поработал. В его настройках такое поле обычно называется <code>HEALTHCHECK_URL</code>, <code>HEARTBEAT_URL</code> или «Ping URL».\n\n{HEARTBEAT_SECRET_NOTE}\n\nКак только связь появится, строка на главном экране станет ✅.").format(name=esc(name), not_public_note=_not_public_note(), url_line=_url_line(name), HEARTBEAT_SECRET_NOTE=t(HEARTBEAT_SECRET_NOTE))
+                 + "\n\n" + t("Бот умеет не только выходить на связь, но и рассказывать, что видит: POST на тот же адрес с JSON вида <code>{\"items\": [{\"name\": \"…\", \"level\": \"ok\", \"text\": \"…\"}]}</code> — строки появятся блоком на главном экране. Формат целиком — в docs/DEVELOPMENT.md, раздел «Статус от другого бота»."), _connect_kb(name))
 
 
 @router.callback_query(F.data.startswith("hb_cron:"))
@@ -200,7 +210,7 @@ async def cb_hb_interval(call: CallbackQuery, state: FSMContext):
     name = (await state.get_data()).get("hb_name")
     await state.clear()
     arg = call.data.split(":", 1)[1]
-    mins = int(arg) if arg.isdigit() else 0
+    mins = cb_int(arg) or 0
     # The interval only from the list, and the outcome checked: «Добавил» must be true.
     if not name or mins not in {m for _, m in INTERVALS} or not await settings.add_heartbeat_job(name, mins):
         await ack(call, t("Не добавил. {again}").format(again=again), show_alert=True)
@@ -241,7 +251,7 @@ async def cb_hb_remove_here(call: CallbackQuery):
     name = call.data.split(":", 1)[1]
     known = name in settings.heartbeat_jobs()
     if not await ack(call, t("Удалил «{name}» — больше не жду").format(name=name) if known else t("Её уже нет")):
-        await call.message.answer(STALE_TAP)    # pressed while the bot was down: nothing is deleted
+        await call.message.answer(t(STALE_TAP))    # pressed while the bot was down: nothing is deleted
         return
     removed = known and await settings.remove_heartbeat_job(name)
     if removed:
@@ -279,7 +289,7 @@ async def cb_hb_del_ok(call: CallbackQuery):
         await ack(call, t("Её уже нет"), show_alert=True)
         return
     if not await ack(call, t("Удалил")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await settings.remove_heartbeat_job(name)
     await heartbeats.forget_status(name)

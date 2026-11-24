@@ -105,7 +105,12 @@ async def test_the_status_page_windows_match_the_single_queries(db):
         await _check(db, sid, days_ago * 24 * 60 + 30, status, 100 if status == "ok" else None)
     windows = await db.get_uptime_windows(sid, (7, 30, 90))
     for days in (7, 30, 90):
-        assert windows[days] == await db.get_uptime_over_days(sid, days)
+        # The newest check speaks until «now», and each query reads its own
+        # datetime('now'): a few seconds between them on a slow runner moved
+        # the percentage across a rounding step (83.33 vs 83.34, CI #174).
+        single = await db.get_uptime_over_days(sid, days)
+        assert abs(windows[days].pop("uptime_pct") - single.pop("uptime_pct")) <= 0.02
+        assert windows[days] == single
     assert windows[7]["total_checks"] == 2 and windows[30]["total_checks"] == 4 and windows[90]["total_checks"] == 6
 
 

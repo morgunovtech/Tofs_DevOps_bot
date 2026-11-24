@@ -411,9 +411,24 @@ async def relabel_recent_failures(site_id: int, limit: int):
 # longer silence the check has no series — it speaks for the interval now.
 # LEAD/LAG need SQLite ≥ 3.25 (2018).
 
+# The interval of a site that has none of its own: CHECK_INTERVAL_MINUTES
+# from .env, or the one chosen in «🛠 Тонкие настройки» — pushed here by
+# services.settings, which this module cannot import (it is built on this one).
+_default_interval_min: int | None = None
+
+
+def set_default_interval_min(minutes: int | None) -> None:
+    global _default_interval_min
+    _default_interval_min = minutes
+
+
+def default_interval_min() -> int:
+    return _default_interval_min if _default_interval_min is not None else config.check_interval_minutes
+
+
 def span_cap_sec(interval_min: int | None) -> float:
     """How long one check may speak for at the site's interval, in seconds."""
-    return (max(1, interval_min or config.check_interval_minutes) + 1) * 60.0
+    return (max(1, interval_min or default_interval_min()) + 1) * 60.0
 
 
 _MAX_CAP_SEC = span_cap_sec(CHECK_INTERVAL_MIN[1])
@@ -510,7 +525,7 @@ def _window_start(days: int) -> str:
 async def _daily_rows(site_id: int, days: int) -> list:
     db = await get_db()
     interval = await _interval_min(site_id)
-    legacy_sec = max(1, interval or config.check_interval_minutes) * 60.0
+    legacy_sec = max(1, interval or default_interval_min()) * 60.0
     since = _window_start(days)
     cursor = await db.execute(_DAILY, (site_id, since, span_cap_sec(interval), since,
                                        legacy_sec, legacy_sec, site_id, since))
@@ -1040,7 +1055,7 @@ async def _rollup(db: aiosqlite.Connection, cutoff: str):
              sum_ms = sum_ms + excluded.sum_ms,
              down_sec = COALESCE(down_sec, 0) + excluded.down_sec,
              seen_sec = COALESCE(seen_sec, 0) + excluded.seen_sec""",
-        (config.check_interval_minutes, cutoff, cutoff))
+        (default_interval_min(), cutoff, cutoff))
     await db.execute(
         """INSERT INTO checks_daily (site_id, check_type, day, total, ok, sum_ms)
            SELECT site_id, check_type, date(checked_at), COUNT(*),

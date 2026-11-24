@@ -6,6 +6,8 @@ import asyncio
 import sqlite3
 import time
 
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.methods import SendMessage
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
@@ -215,3 +217,25 @@ async def test_a_ladder_step_reopened_after_close_is_not_a_lost_alert(bot, db):
     await _age(db, r3.incident_id)
     await scheduler.deliver_missed_alerts()
     assert bot.sent == [] and await _alerted(r3.incident_id)
+
+
+async def test_an_alert_telegram_refused_stays_owed_and_is_retried_later(bot, db, monkeypatch):
+    """The owner blocked the bot (or there is no admin chat yet): send()
+    answers False and nothing went out — the incident must not be marked
+    as alerted, and the re-send waits REFUSED_RETRY_SEC instead of knocking
+    every minute."""
+    sid = await db.activate_or_create_site("https://blocked.test")
+    inc_id, _ = await save_incident(sid, "availability", "Site down: HTTP 502", "critical")
+    await _age(db, inc_id)
+    now = [1000.0]
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: now[0])
+    bot.fail_with = [TelegramForbiddenError(method=SendMessage(chat_id=1, text="x"),
+                                            message="Forbidden: bot was blocked by the user")]
+    await scheduler.deliver_missed_alerts()
+    assert bot.sent == [] and not await _alerted(inc_id)           # refused — still owed
+    await scheduler.deliver_missed_alerts()
+    assert bot.sent == []                                          # not every minute
+    now[0] += scheduler.REFUSED_RETRY_SEC + 1
+    await scheduler.deliver_missed_alerts()
+    assert len(bot.sent) == 1 and "blocked.test" in bot.sent[0]["text"]
+    assert await _alerted(inc_id)

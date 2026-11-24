@@ -22,7 +22,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from string import Template
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_all_sites,
@@ -34,7 +33,7 @@ from db.database import (
     get_uptime_stats,
     get_uptime_windows,
 )
-from services import maintenance
+from services import maintenance, settings
 from utils.clock import to_local, zone_label
 from utils.net import is_private_target
 from utils.text import fmt_duration, incident_start, parse_iso_utc, parse_sqlite_utc
@@ -138,7 +137,7 @@ async def public_labels() -> list[str]:
 
 
 def _t() -> dict:
-    return _TEXTS.get(config.status_page_lang, _TEXTS["ru"])
+    return _TEXTS.get(settings.status_page_lang(), _TEXTS["ru"])
 
 
 def _fmt(dt: datetime | None, fmt: str = "%d.%m %H:%M") -> str:
@@ -173,7 +172,7 @@ async def build_payload() -> dict:
         last = await get_last_check(s["id"], "availability")
         checked = parse_sqlite_utc((last or {}).get("checked_at"))
         age_min = (now - checked).total_seconds() / 60 if checked else None
-        interval = s.get("check_interval_min") or config.check_interval_minutes
+        interval = s.get("check_interval_min") or settings.check_interval_minutes()
         incidents = open_inc.get(s["id"], {})
         down_since = incident_start(incidents["availability"]) if "availability" in incidents else None
         if maintenance.maintenance_now(s["id"]):
@@ -335,9 +334,9 @@ def render(p: dict) -> str:
     checked = (t["checked_ago"].format(ago=fmt_duration(max(1, ago), t["units"])) if ago else
                t["checked_now"] if ago == 0 else t["checked_none"])
     # The owner's name for the page goes in as text, above the banner — not a second <h1>.
-    heading = (f'<p class="page-title">{html.escape(config.status_page_title)}</p>'
-               if config.status_page_title else "")
-    return _TEMPLATE.substitute(lang=t["html_lang"], title=html.escape(config.status_page_title or t["title"]),
+    page_title = settings.status_page_title()
+    heading = f'<p class="page-title">{html.escape(page_title)}</p>' if page_title else ""
+    return _TEMPLATE.substitute(lang=t["html_lang"], title=html.escape(page_title or t["title"]),
                                 heading=heading, banner_cls=banner_cls, banner=banner,
                                 sites_html="".join(rows), incidents_html=incidents_html,
                                 checked=html.escape(checked),

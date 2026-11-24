@@ -10,7 +10,6 @@ import logging
 import statistics
 from datetime import UTC, date, datetime, timedelta
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_all_sites,
@@ -18,7 +17,17 @@ from db.database import (
     get_incidents_since,
     get_uptime_over_days,
 )
-from services import github, gsc, humanize, index_status, integrations, sitestatus, updates, yandex_webmaster
+from services import (
+    github,
+    gsc,
+    humanize,
+    index_status,
+    integrations,
+    settings,
+    sitestatus,
+    updates,
+    yandex_webmaster,
+)
 from utils.clock import to_local
 from utils.i18n import plural, t
 from utils.text import esc, parse_iso_utc, parse_sqlite_utc, sparkline
@@ -54,7 +63,7 @@ def speed_lines(series: dict[str, list[dict]], slow_ms: dict[str, int]) -> list[
         if len(vals) < 3:
             continue
         mid = statistics.median(vals)
-        if max(vals) >= SPEED_JUMP * mid or max(vals) >= slow_ms.get(label, config.slow_response_ms):
+        if max(vals) >= SPEED_JUMP * mid or max(vals) >= slow_ms.get(label, settings.slow_response_ms()):
             moved.append(f"{sparkline(vals, min_rel_range=0.3)} {humanize.fmt_seconds(mid)} · {esc(label)}")
         else:
             steady.append(round(mid))
@@ -135,7 +144,7 @@ async def build_weekly_report() -> tuple[str, list[str]]:
         rows = await get_daily_availability(s["id"], days=7)
         label = site_label(s["url"])   # tcp://example.com:25 ≠ example.com
         series[label] = rows
-        slow[label] = s.get("slow_ms") or config.slow_response_ms
+        slow[label] = s.get("slow_ms") or settings.slow_response_ms()
         total = sum(r["total"] for r in rows)
         if not total:
             lines.append(f"⏳ {esc(label)} — " + t("нет данных"))

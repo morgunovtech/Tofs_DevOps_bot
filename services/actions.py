@@ -109,7 +109,7 @@ def alert_actions_keyboard(url: str, site_id: int, incident_id: int | None = Non
     if http and deploy_hook_for(url) and integrations.auto_enabled("redeploy"):
         # The bot will rebuild this site by itself (services.automation): one tap to stop that
         # for a while — the owner may be rolling back by hand. The panel link stays last.
-        rows.append([InlineKeyboardButton(text=t("⏸ Не чинить самому 2 ч"), callback_data="auto:pause:2:a")])
+        rows.append([InlineKeyboardButton(text=t("⏸ Не пересобирать сам 2 ч"), callback_data="auto:pause:2:a")])
     panel = hosting_svc.panel_url(hosting)
     if panel:
         rows.append([InlineKeyboardButton(text=t("🔗 Открыть панель {panel}").format(panel=hosting_svc.label(hosting)),

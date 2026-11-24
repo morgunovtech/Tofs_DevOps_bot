@@ -24,6 +24,7 @@ from aiogram.types import (
 from db.database import get_site
 from handlers.filters import AdminFilter
 from services import helpers, runtime
+from utils import validate
 from utils.i18n import t
 from utils.text import clip
 
@@ -81,6 +82,11 @@ STALE_BUTTON = "Кнопка устарела — нажми «🏠 Главна
 NOT_UNDERSTOOD = "Не понял. Всё — кнопками под полем ввода: 🏠 Главная, 📖 Что я умею, ❓ Значки."
 
 
+def mark(on: bool, text: str) -> str:
+    """✅ before the value that is current — every row says what is chosen."""
+    return f"✅ {text}" if on else text
+
+
 def back_button(text: str = HOME, callback: str = "menu_main") -> InlineKeyboardMarkup:
     """One button back; the label is translated here, so a caller passes its Russian source."""
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(text), callback_data=callback)]])
@@ -91,6 +97,45 @@ def cancel_kb(back: str = "menu_main") -> InlineKeyboardMarkup:
     the step was opened from, which «Отмена» draws again (handlers.menu)."""
     data = "fsm_cancel" if back == "menu_main" else f"fsm_cancel:{back}"
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=t(CANCEL), callback_data=data)]])
+
+
+# ── Where a connection wizard was opened from ────────────────────────────────
+# «🔌 Подключения» by default; «📖 Что можно подключить» sets the door
+# (handlers.about, about:go:…) and the «←» at the end of every wizard —
+# and «✖️ Отмена» under its steps — leads back there. One owner and one
+# chat, so a module variable is enough: a restart forgets it, and the
+# wizard then leads to «🔌 Подключения» — never wrong, only one tap longer.
+WIZARD_DOORS = {"": ("← К подключениям", "setup:check"), "about": ("← Что можно подключить", "about:modules")}
+_wizard_door = ""
+# The buttons that keep the door: a wizard's own (setup:…), «✖️ Отмена»
+# inside it and the door itself. Any other tap leaves the wizard.
+WIZARD_KEEP = ("setup:", "fsm_cancel:setup:", "about:go:")
+
+
+def set_wizard_door(door: str) -> None:
+    global _wizard_door
+    _wizard_door = door if door in WIZARD_DOORS else ""
+
+
+def wizard_door() -> str:
+    return _wizard_door
+
+
+def wizard_back() -> tuple[str, str]:
+    """(Russian label, callback) of the way out of a connection wizard —
+    the label is a t() key, translated where the button is drawn."""
+    return WIZARD_DOORS[_wizard_door]
+
+
+class ForgetWizardDoor(BaseMiddleware):
+    """A tap outside a wizard (the checklist, a settings screen, the main
+    screen) closes the door opened from «📖»: the next wizard, wherever it
+    is opened from, leads back to «🔌 Подключения» again unless «📖» opens it."""
+
+    async def __call__(self, handler, event, data):
+        if not (event.data or "").startswith(WIZARD_KEEP):
+            set_wizard_door("")
+        return await handler(event, data)
 
 
 class DropInputOnNavigation(BaseMiddleware):
@@ -195,11 +240,18 @@ def cb_args(call: CallbackQuery, n: int) -> list[str] | None:
     return parts[1:] if len(parts) == n + 1 else None
 
 
+def cb_int(arg: str | None, lo: int = 0, hi: int = 10**12) -> int | None:
+    """A number out of callback_data, or None. ASCII digits only: «²».isdigit()
+    is True and int(«²») raises — an error screen for a tap the owner made."""
+    return validate.int_in(arg, lo, hi) if isinstance(arg, str) else None
+
+
 async def site_by_cb(arg: str | None) -> dict | None:
     """Resolve a callback site id back to an active site row."""
-    if not arg or not arg.isdigit():
+    site_id = cb_int(arg)
+    if site_id is None:
         return None
-    site = await get_site(int(arg))
+    site = await get_site(site_id)
     return site if site and site["active"] else None
 
 
@@ -276,6 +328,11 @@ async def on_handler_error(event: ErrorEvent):
                 reply_markup=back_button())
         elif update and update.message:
             await update.message.answer(t("❌ Что-то пошло не так. Попробуй ещё раз чуть позже."))
+        if call:
+            # The handler died before its own ack: the button would spin until
+            # Telegram's timeout. Answering a second time is harmless.
+            with contextlib.suppress(Exception):
+                await call.answer()
     except Exception:
         if call:  # message too old to edit (48h+) — at least acknowledge the tap
             try:

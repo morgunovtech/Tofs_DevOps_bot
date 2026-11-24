@@ -15,6 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import FakeMessage, FakeState
 
+import main
 from db import database
 from handlers import common, setup, sites
 from monitors.availability import check_availability
@@ -195,3 +196,36 @@ async def test_the_owner_hears_when_a_secret_could_not_be_deleted(bot, db):
     message.delete = refuse
     assert await common.forget_secret(message) is False
     assert message.texts[-1] == common.NOT_DELETED
+
+
+def test_a_token_in_the_path_never_goes_to_check_host():
+    """Telegram keeps the bot token in the PATH, webhook services their key:
+    a query-only rule sent the whole address to an outside service."""
+    # Shaped like a bot token (9 digits, a colon, 35 characters), assembled
+    # here so that no token-shaped literal sits in the repository.
+    bot_api = "https://api.telegram.org/bot" + "1" * 9 + ":AAF" + "x" * 32 + "/getMe"
+    assert not repeatable({"url": bot_api}) and endpoint_for(bot_api) is None
+    hook = "https://api.example.com/hooks/x7Kq9mPz2LwQ4rT8vB1nC6yH"
+    assert not repeatable({"url": hook}) and endpoint_for(hook) is None
+    uuid = "https://api.example.com/v1/3f2504e0-4f89-11d3-9a0c-0305e82c3301/status"
+    assert endpoint_for(uuid) is None
+    plain = "https://api.example.com/v1/health/deep-check"           # words and a version: no key
+    assert repeatable({"url": plain}) and endpoint_for(plain) == ("check-http", plain)
+
+
+def test_redact_knows_a_key_under_any_name():
+    """access_key (apiflash), auth_token, x_api_key: the parameter's name ends
+    in the word, and the value is a secret whatever stands before it."""
+    line = ("https://api.apiflash.com/v1/urltoimage?access_key=ABCDEF1234567890&url=x "
+            "https://h.test/?auth_token=SECRET12345678 https://h.test/?x_api_key=ABCDEFGH1234 "
+            "https://h.test/?design=modern&page=2")
+    out = redact(line)
+    for secret in ("ABCDEF1234567890", "SECRET12345678", "ABCDEFGH1234"):
+        assert secret not in out
+    assert "design=modern" in out and "page=2" in out and "url=x" in out
+
+
+def test_the_screenshot_providers_key_is_among_the_masked_values(cfg):
+    cfg(screenshot_template="https://api.shots.test/?token_value=KEY0123456789&url={url}&full=true")
+    assert "KEY0123456789" in main.secret_values()
+    assert "{url}" not in main.secret_values()           # the field is no secret; short switches are filtered by redact

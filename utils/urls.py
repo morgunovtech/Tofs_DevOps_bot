@@ -193,8 +193,16 @@ def owned_domain(host: str) -> str | None:
 
 
 def same_site(url_a: str, url_b: str) -> bool:
+    """The same site however it is spelled (www. or not) — by the owner's
+    domain. On a shared domain (user.github.io, nas.synology.me) only the
+    very same host is the same site: the neighbour is somebody else."""
     a, b = host_of(url_a), host_of(url_b)
-    return bool(a and b) and registrable_domain(a) == registrable_domain(b)
+    if not (a and b):
+        return False
+    if a == b:
+        return True
+    own = owned_domain(a)
+    return own is not None and own == owned_domain(b)
 
 
 # ── Proxy for Telegram (TELEGRAM_PROXY) ──────────────────────────────────────

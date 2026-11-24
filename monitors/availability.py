@@ -18,7 +18,6 @@ from urllib.parse import urljoin, urlparse
 
 import aiohttp
 
-from config import config
 from db.database import (
     get_active_incidents,
     get_last_incident,
@@ -42,7 +41,7 @@ from utils.net import PRIVATE_REFUSED, owner_connector, refused_private
 from utils.parse import parse_accepted_codes
 from utils.redact import without_query
 from utils.text import parse_iso_utc, parse_sqlite_utc
-from utils.urls import USER_AGENT, host_of, is_api_check
+from utils.urls import USER_AGENT, host_of, is_api_check, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -379,13 +378,13 @@ async def _probe_ping(url: str, r: AvailabilityResult):
         r.error = t("хост не резолвится (DNS)")
     elif proc.returncode == 2 and any(s in low for s in _PING_NO_SOCKET):
         # The bot's environment, not the host: no incident, no second opinion.
-        logger.warning("%s: ping cannot open an ICMP socket: %s", url, out_text.strip()[:200])
+        logger.warning("%s: ping cannot open an ICMP socket: %s", site_label(url), out_text.strip()[:200])
         r.status, r.transient = "unknown", True
         r.error = (t("ping на сервере бота не может открыть ICMP-сокет (нужен net.ipv4.ping_group_range) — используй tcp://host:порт"))
     elif "address family for hostname" in low:
         # iputils on an IPv6 address from a container without an IPv6 route:
         # the bot's environment again, not the host.
-        logger.warning("%s: no IPv6 on the bot's server: %s", url, out_text.strip()[:200])
+        logger.warning("%s: no IPv6 on the bot's server: %s", site_label(url), out_text.strip()[:200])
         r.status, r.transient = "unknown", True
         r.error = t("у сервера бота нет IPv6 — до IPv6-адреса ping отсюда не дойдёт")
     else:
@@ -408,13 +407,13 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
     except ValueError as e:
         # The request could not even be built (a header with a line break, a
         # host IDNA cannot encode): our settings, not the site.
-        logger.warning("%s: request settings rejected: %s", url, e)
+        logger.warning("%s: request settings rejected: %s", site_label(url), e)
         r.status, r.transient = "unknown", True
         r.error = t("настройки запроса не принимаются: {e}").format(e=e)
     except Exception as e:
         # Anything else must degrade to ONE failed check, not escape into the
         # batch — but loudly: a bug here would read as «all sites are down».
-        logger.exception("Availability probe crashed for %s", url)
+        logger.exception("Availability probe crashed for %s", site_label(url))
         r.status, r.error = "error", str(e) or type(e).__name__
 
     if r.ok or r.status_code is not None:
@@ -423,7 +422,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
             and not await netcheck.own_network_ok()):
         # No answer at all, and the bot's own network is down: nothing is known
         # about the site. No incident, no downtime; one summary when it is back.
-        logger.info("%s: %s — the bot's own network is down", url, r.error)
+        logger.info("%s: %s — the bot's own network is down", site_label(url), r.error)
         await netcheck.mark_outage()
         r.status, r.transient, r.own_outage = "unknown", True, True
         r.error = t("у сервера бота нет сети")
@@ -453,7 +452,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
         return r
 
     threshold = site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD
-    streak = recovery_streak(site.get("check_interval_min") or config.check_interval_minutes)
+    streak = recovery_streak(site.get("check_interval_min") or settings.check_interval_minutes())
     window = max(streak, share_window(threshold))
     if stored:
         recent = await get_recent_checks(r.site_id, "availability", limit=window, scheduled_only=True)
@@ -504,7 +503,7 @@ async def check_availability(url: str, manage: bool = True, site: dict | None = 
         if verdict.region_down:
             r.external_region = country
     if r.external_ok is True:
-        logger.warning("%s: down from here but UP externally — skipping incident", url)
+        logger.warning("%s: down from here but UP externally — skipping incident", site_label(url))
         await _write(set_state(f"ext_ok:{r.site_id}", datetime.now(UTC).isoformat()))
         await _outside_is_up(r, threshold)
         return r

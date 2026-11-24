@@ -10,7 +10,7 @@ from web import widget
 
 PLACEHOLDER_HOST = "YOUR_SERVER"
 NOT_PUBLIC = ("⚠️ У бота нет публичного адреса, поэтому ссылка ниже не заработает: вместо YOUR_SERVER "
-              "нужен адрес сервера бота. Задай PUBLIC_BASE_URL (https://…) — кнопка «🌍 Как задать адрес».")
+              "нужен адрес сервера бота — нажми «🌍 Как задать адрес» (на своём сервере это PUBLIC_BASE_URL в .env).")
 
 
 def base_url() -> str:

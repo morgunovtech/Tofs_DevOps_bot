@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
-from utils import i18n
+from utils import i18n, validate
 from utils.parse import parse_hour_range
 from utils.validate import HOURS
 
@@ -235,8 +235,13 @@ class Config:
     telegram_proxy: str = os.getenv("TELEGRAM_PROXY", "").strip()
     # First-run seed only; afterwards the DB is the source of truth.
     sites: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("SITES")))
-    check_interval_minutes: int = _int("CHECK_INTERVAL_MINUTES", 5, 1, 1440)
-    links_check_interval_hours: int = _int("LINKS_CHECK_INTERVAL_HOURS", 6, 0, 168)   # 0 = no link crawl
+    # The .env defaults of the dials «🛠 Тонкие настройки» overrides (check
+    # interval, «slow», reminders, SSL renewal, disk, links, deep probe, the
+    # search audit, the status page's language and title, the bot's language):
+    # readers ask services.settings.<name>(), which answers the chat's value
+    # when one was chosen and these otherwise.
+    check_interval_minutes: int = _int("CHECK_INTERVAL_MINUTES", 5, *validate.CHECK_INTERVAL_MIN)
+    links_check_interval_hours: int = _int("LINKS_CHECK_INTERVAL_HOURS", 6, *validate.LINKS_INTERVAL_HOURS)   # 0 = no link crawl
     morning_report_hour: int = _int("MORNING_REPORT_HOUR", 9, *HOURS)
     evening_report_hour: int = _int("EVENING_REPORT_HOUR", 21, *HOURS)
     weekly_report_hour: int = _int("WEEKLY_REPORT_HOUR", 11, *HOURS)
@@ -269,7 +274,7 @@ class Config:
     region_speed: bool = _bool("REGION_SPEED", "0")
 
     # ── Deep 5xx probe (sitemap sampling) ────────────────────────────────────
-    deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10, 0, 100)
+    deep_check_sample: int = _int("DEEP_CHECK_SAMPLE", 10, *validate.DEEP_SAMPLE)
 
     # ── Index status APIs (optional) ─────────────────────────────────────────
     gsc_service_account_file: str = os.getenv("GSC_SERVICE_ACCOUNT_FILE", "").strip()
@@ -285,8 +290,8 @@ class Config:
     github_owner: str = os.getenv("GITHUB_OWNER", "").strip().lstrip("@")
 
     # ── SEO/GEO monitor ──────────────────────────────────────────────────────
-    seo_pages_sample: int = _int("SEO_PAGES_SAMPLE", 5, 1, 50)
-    seo_min_text_chars: int = _int("SEO_MIN_TEXT_CHARS", 400, 0, 100_000)
+    seo_pages_sample: int = _int("SEO_PAGES_SAMPLE", 5, *validate.SEO_PAGES)
+    seo_min_text_chars: int = _int("SEO_MIN_TEXT_CHARS", 400, *validate.SEO_MIN_TEXT)
 
     # ── Cloudflare Pages actions ─────────────────────────────────────────────
     deploy_hooks: dict[str, str] = field(default_factory=lambda: _hooks("DEPLOY_HOOKS"))
@@ -303,7 +308,7 @@ class Config:
     docker_socket_root_group: bool = _bool("DOCKER_SOCKET_ROOT_GROUP", "0")
     autorestart_containers: tuple[str, ...] = field(
         default_factory=lambda: tuple(_csv("AUTORESTART_CONTAINERS")))
-    disk_alert_pct: int = _int("DISK_ALERT_PCT", 85, 50, 99)   # below 50 prune would fire on a near-empty disk
+    disk_alert_pct: int = _int("DISK_ALERT_PCT", 85, *validate.DISK_ALERT_PCT)
     # Off by default: removes dangling docker images and old build cache on the
     # whole host when the disk is full (services.docker_api.prune).
     auto_cleanup: bool = _bool("AUTO_CLEANUP", "0")
@@ -317,12 +322,12 @@ class Config:
     allow_private_targets: bool = _bool("ALLOW_PRIVATE_TARGETS", "1")
 
     # ── SSL renewal watch ────────────────────────────────────────────────────
-    ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10, 0, 60)
+    ssl_renew_warn_days: int = _int("SSL_RENEW_WARN_DAYS", 10, *validate.SSL_RENEW_WARN_DAYS)
 
     # ── Notifications ────────────────────────────────────────────────────────
     quiet_hours: tuple[int, int] | None = field(default_factory=lambda: _quiet("QUIET_HOURS"))
-    escalation_repeat_min: int = _int("ESCALATION_REPEAT_MIN", 30, 0, 1440)   # 0 = no repeats
-    slow_response_ms: int = _int("SLOW_RESPONSE_MS", 3000, 100, 120_000)
+    escalation_repeat_min: int = _int("ESCALATION_REPEAT_MIN", 30, *validate.ESCALATION_REPEAT_MIN)   # 0 = no repeats
+    slow_response_ms: int = _int("SLOW_RESPONSE_MS", 3000, *validate.SLOW_MS)
 
     # ── Page screenshots ─────────────────────────────────────────────────────
     screenshot_template: str = _template(

@@ -12,10 +12,10 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from db.database import get_active_incidents, get_state, set_state
-from handlers.common import CANCEL, STALE_TAP, ack, cb_args, render, site_by_cb
+from handlers.common import CANCEL, STALE_TAP, ack, cb_args, cb_int, render, site_by_cb
 from monitors.availability import check_availability
 from reports.formatter import incident_line
-from services import automation, humanize, maintenance
+from services import automation, humanize, maintenance, settings
 from services.actions import purge_cf_cache, trigger_redeploy
 from services.screenshots import fetch_screenshot
 from utils.clock import now_local
@@ -61,12 +61,12 @@ async def _ask(call: CallbackQuery, action: str, site: dict):
 async def cb_alert_confirmed(call: CallbackQuery):
     """act:ok:<redeploy|purge>:<site_id>:<unix time of the question>."""
     parts = (call.data or "").split(":")
-    if len(parts) != 5 or parts[2] not in _CONFIRM or not parts[3].isdigit() or not parts[4].isdigit():
+    if len(parts) != 5 or parts[2] not in _CONFIRM or cb_int(parts[3]) is None or cb_int(parts[4]) is None:
         await ack(call, t("Не понял действие"), show_alert=True)
         return
     action, sid, asked = parts[2], parts[3], int(parts[4])
     if not await ack(call, t("Запускаю…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     site = await site_by_cb(sid)
     if not site:
@@ -91,6 +91,24 @@ async def cb_alert_confirmed(call: CallbackQuery):
     await status.edit_text(text)
 
 
+def _until_morning_min() -> int:
+    """Minutes from now to the next morning digest (the pause's ceiling is a day)."""
+    now = now_local()
+    target = now.replace(hour=settings.morning_hour(), minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1, min(24 * 60, int((target - now).total_seconds() // 60) + 1))
+
+
+def fix_more_kb(site_id: int) -> InlineKeyboardMarkup:
+    """Under «🔧 Понял, ты чинишь …»: an hour is the default, not the only
+    length — a longer pause, or the end of it, without the site card."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("🔧 2 часа"), callback_data=f"pause:{site_id}:120"),
+         InlineKeyboardButton(text=t("🔧 До утра"), callback_data=f"pause:{site_id}:{_until_morning_min()}"),
+         InlineKeyboardButton(text=t("✅ Починил"), callback_data=f"pause:{site_id}:off")]])
+
+
 async def _quiet_hour(site_id: int):
     """«🔧 Я чиню»: FIX_MINUTES without messages about the site and without
     escalation reminders; the checks go on, the ✅ ends the silence."""
@@ -107,7 +125,7 @@ async def cb_alert_group(call: CallbackQuery):
     GROUP_FROM): grp:list:<id> — the sites one by one, below the alert;
     grp:fix:<id> — «🔧 Я чиню» for all of them."""
     args = cb_args(call, 2)
-    raw = await get_state(f"alert_group:{args[1]}") if args and args[1].isdigit() else None
+    raw = await get_state(f"alert_group:{args[1]}") if args and cb_int(args[1]) is not None else None
     try:
         ids = [int(i) for i in json.loads(raw)] if raw else []
     except (ValueError, TypeError):
@@ -120,7 +138,7 @@ async def cb_alert_group(call: CallbackQuery):
         return
     if args[0] == "fix":
         if not await ack(call, t("Понял, молчу {length}").format(length=maintenance.fix_length())):
-            await call.message.answer(STALE_TAP)
+            await call.message.answer(t(STALE_TAP))
             return
         for site_id in dict.fromkeys(inc["site_id"] for inc in group):
             await _quiet_hour(site_id)
@@ -129,13 +147,29 @@ async def cb_alert_group(call: CallbackQuery):
         return
     await ack(call)
     lines = [f"{n}. 🔴 {esc(incident_line(inc))}" for n, inc in enumerate(group, 1)]
-    buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a")
-               for n, inc in enumerate(group, 1)]
-    await call.message.answer("\n".join(lines) + t("\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», «🔄 Проверить снова», «✓ Закрыть»."),
-                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[buttons[i:i + 4]
-                                                                                 for i in range(0, len(buttons), 4)]))
+    if len(group) <= GROUP_ROWS_MAX:
+        # A row per site with the alert's own actions: what the single
+        # alert gives in one tap, the group used to hide behind «ℹ️».
+        rows = []
+        for n, inc in enumerate(group, 1):
+            row = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a"),
+                   InlineKeyboardButton(text=f"🔄 {n}", callback_data=f"act:recheck:{inc['site_id']}")]
+            if is_web_page(inc["url"], inc.get("http_method")):
+                row.append(InlineKeyboardButton(text=f"📸 {n}", callback_data=f"act:shot:{inc['site_id']}"))
+            row.append(InlineKeyboardButton(text=f"🔧 {n}", callback_data=f"act:fix:{inc['site_id']}"))
+            rows.append(row)
+        note = t("\n\nПо номеру: ℹ️ что это и что делать, 🔄 проверить снова, 📸 как выглядит сайт, 🔧 я чиню — {length} тишины.").format(length=maintenance.fix_length())
+    else:
+        buttons = [InlineKeyboardButton(text=f"ℹ️ {n}", callback_data=f"inc_explain:{inc['id']}:a")
+                   for n, inc in enumerate(group, 1)]
+        rows = [buttons[i:i + 4] for i in range(0, len(buttons), 4)]
+        note = t("\n\nНомер — что делать с этим сайтом: «🔧 Я чиню», «🔄 Проверить снова», «✓ Закрыть».")
+    await call.message.answer("\n".join(lines) + note, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 
+# A group list gets a row of actions per site up to this many sites; past
+# it, only the «ℹ️» buttons — 12 rows of four is a screen, not a keyboard.
+GROUP_ROWS_MAX = 12
 # Long buttons under way, by (action, site id): a second tap while the
 # first is still running gets a toast, not a second run.
 _busy: set[tuple[str, int]] = set()
@@ -170,10 +204,15 @@ async def cb_alert_action(call: CallbackQuery):
                    for i in await get_active_incidents()):
             await ack(call, t("Сайт сейчас работает — пауза не нужна. Чинишь что-то другое — поставь паузу на карточке сайта."), show_alert=True)
             return
-        await _quiet_hour(site["id"])
         length = maintenance.fix_length()
-        await ack(call, t("Понял, молчу {length}").format(length=length))
-        await call.message.answer(t("🔧 Понял, ты чинишь {label}. {capitalize} не пишу про него, проверки продолжаются. Поднимется раньше — сразу напишу и сниму тишину.").format(label=label, capitalize=length.capitalize()))
+        # ack FIRST: a tap that waited out a restart in Telegram's queue must
+        # not put an hour of silence on the site behind the owner's back.
+        if not await ack(call, t("Понял, молчу {length}").format(length=length)):
+            await call.message.answer(t(STALE_TAP))
+            return
+        await _quiet_hour(site["id"])
+        await call.message.answer(t("🔧 Понял, ты чинишь {label}. {capitalize} не пишу про него, проверки продолжаются. Поднимется раньше — сразу напишу и сниму тишину.").format(label=label, capitalize=length.capitalize()),
+                                  reply_markup=fix_more_kb(site["id"]))
     elif action in _CONFIRM:
         await ack(call)
         await _ask(call, action, site)

@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
@@ -111,6 +112,7 @@ from services import (
     yandex_webmaster,
 )
 from services.actions import (
+    RECHECK,
     alert_actions_keyboard,
     deep_alert_keyboard,
     deploy_hook_for,
@@ -210,7 +212,7 @@ def _interval_min(site: dict) -> int:
     (OverflowError in the date arithmetic)."""
     minutes = validate.int_in(site.get("check_interval_min"), *validate.CHECK_INTERVAL_MIN)
     if minutes is None:
-        minutes = validate.int_in(config.check_interval_minutes, *validate.CHECK_INTERVAL_MIN)
+        minutes = validate.int_in(settings.check_interval_minutes(), *validate.CHECK_INTERVAL_MIN)
     return minutes if minutes is not None else 5
 
 
@@ -219,7 +221,7 @@ def _slow_ms(site: dict) -> int:
     negative would call every answer slow."""
     ms = validate.int_in(site.get("slow_ms"), *validate.SLOW_MS)
     if ms is None:
-        ms = validate.int_in(config.slow_response_ms, *validate.SLOW_MS)
+        ms = validate.int_in(settings.slow_response_ms(), *validate.SLOW_MS)
     return ms if ms is not None else DEFAULT_SLOW_MS
 
 
@@ -401,9 +403,14 @@ async def _note_cannot_check(url: str, site_id: int, reason: str | None):
 # services.notifier.release_held says it after) — the re-send leaves those alone.
 
 MISSED_ALERT_MIN = 2            # a fresh incident gets this long to be alerted by its own job
+# Telegram refused the alert for good (the owner blocked the bot, no admin
+# chat yet, a text it will never take): the incident stays owed, but the
+# next try waits this long — a refusal every minute would only fill the log.
+REFUSED_RETRY_SEC = 30 * 60
 _in_flight: set[int] = set()    # incidents whose alert is queued or being sent right now
 _busy: Counter[str] = Counter()  # check types whose job is running: it alerts on its own incidents
 _sent_unrecorded: set[int] = set()  # alert went out, but the DB refused the mark (no re-send storm)
+_refused: dict[int, float] = {}  # incident → monotonic time Telegram last refused its alert
 _queue: asyncio.Queue | None = None
 _worker: asyncio.Task | None = None
 
@@ -469,7 +476,13 @@ def _once(name: str, *, mark: bool = False):
             finally:
                 _running.discard(name)
             if mark:
-                await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+                # The job is done; a mark the database refuses (a full disk)
+                # must not turn a delivered report into «сломалась».
+                try:
+                    await set_state(f"last_run:{name}", datetime.now(UTC).isoformat())
+                except sqlite3.OperationalError as e:
+                    health.db_write_failed(e)
+                    logger.warning("Could not mark the run of %s: %s", name, e)
             return result
         return run
     return wrap
@@ -509,7 +522,15 @@ async def _alert_once(incident_id: int | None, site_id: int, text: str, priority
         if paused:
             return None
         if incident_id is not None:
-            await _record_alert(incident_id, True)
+            # Only a message that is out (delivered, queued or in the outbox)
+            # settles the debt: send() answers False when nothing of the kind
+            # happened — no admin yet, the bot blocked, a text Telegram will
+            # never take — and the incident stays for deliver_missed_alerts.
+            if sent:
+                await _record_alert(incident_id, True)
+                _refused.pop(incident_id, None)
+            else:
+                _refused[incident_id] = time.monotonic()
         return sent
     finally:
         if incident_id is not None:
@@ -555,6 +576,8 @@ async def deliver_missed_alerts():
     for inc in await get_unalerted_incidents(MISSED_ALERT_MIN):
         if inc["id"] in _in_flight or inc["id"] in _sent_unrecorded or _busy[inc["check_type"]] > 0:
             continue
+        if time.monotonic() - _refused.get(inc["id"], -REFUSED_RETRY_SEC) < REFUSED_RETRY_SEC:
+            continue        # Telegram refused it a moment ago: the next try waits REFUSED_RETRY_SEC
         if await get_state(f"{notifier.HELD}{inc['id']}"):
             continue        # the full alert waits for the end of the pause: release_held says it
         try:
@@ -750,6 +773,11 @@ async def _group_down(known: list[int], fresh: list, group: dict | None) -> bool
         if not await notifier.edit(group["message_id"], text, reply_markup=kb):
             return False
         message_id, at = group["message_id"], group["at"]
+        # An edit has no copy for the helpers: they hear about the sites
+        # that joined the same way they heard of the first ones — the whole
+        # list as it stands, silently (the owner's phone did not ring either).
+        if fresh:
+            await notifier.tell_helpers(helper_text, ring=False)
     else:
         sent = await notifier.send(text, Priority.CRITICAL, reply_markup=kb, always_ring=True,
                                    to_helpers=True, helper_text=helper_text)
@@ -833,8 +861,13 @@ async def _say_up(results: list):
     group = await _group_state(GROUP_UP)
     if _within_window(group, now):
         all_lines = [line for line in group.get("lines", []) if isinstance(line, str)] + lines
+        # The helpers' lines of the message so far (a message from before
+        # this version kept the owner's lines only: those stand in).
+        all_helper = ([line for line in group.get("helper", group.get("lines", [])) if isinstance(line, str)]
+                      + helper_lines)
         if await notifier.edit(group["message_id"], _up_text(all_lines)):
-            await set_state(GROUP_UP, json.dumps({**group, "lines": all_lines}))
+            await set_state(GROUP_UP, json.dumps({**group, "lines": all_lines, "helper": all_helper}))
+            await notifier.tell_helpers(_up_text(all_helper), ring=False)   # an edit has no copy of its own
             return
     # Sites said to be back one by one a few minutes ago: the same outage.
     window = timedelta(minutes=GROUP_WINDOW_MIN)
@@ -863,7 +896,8 @@ async def _say_up(results: list):
     await set_state(GROUP_UP_SAID, None)
     message_id = getattr(sent, "message_id", None)
     if message_id is not None:
-        await set_state(GROUP_UP, json.dumps({"message_id": message_id, "at": now.isoformat(), "lines": all_lines}))
+        await set_state(GROUP_UP, json.dumps({"message_id": message_id, "at": now.isoformat(),
+                                              "lines": all_lines, "helper": all_helper}))
 
 
 FLAP_WINDOW = timedelta(hours=1)
@@ -902,7 +936,7 @@ async def _note_flapping(r):
     sent = await notifier.send(
         t("🟠 {label} мигает: {n} {falls} за час, последнее в {time}. На каждое не звоню; когда успокоится — напишу.").format(
             label=esc(site_label(r.url)), n=n, falls=plural(n, "падение", "падения", "падений"), time=to_local(now).strftime("%H:%M")),
-        Priority.NORMAL, site_id=r.site_id)
+        Priority.NORMAL, site_id=r.site_id, reply_markup=explain_keyboard(r.incident_id, _recheck_button(r.site_id)))
     if sent:
         await set_state(f"flap_noted:{r.incident_id}", now.isoformat())
 
@@ -1098,7 +1132,7 @@ async def _note_local_network_problem(url: str, site_id: int, ups: int = 0, tota
           "сайта в том же регионе, что и мой сервер, у них он, скорее всего, тоже не открывается "
           "(блокировка, сбой у провайдера или CDN); если нет — дело в сети моего сервера. Тревогу со звонком "
           "не поднимаю; напишу, когда снова откроется.").format(label=esc(site_label(url)), where=where),
-        Priority.NORMAL, site_id=site_id)
+        Priority.NORMAL, site_id=site_id, reply_markup=InlineKeyboardMarkup(inline_keyboard=[_recheck_button(site_id)]))
     if sent:
         _ext_ok_noted.add(site_id)
 
@@ -1121,11 +1155,12 @@ async def _track_slow(r, slow_ms: int):
                             label=esc(site_label(r.url)), seconds=humanize.fmt_seconds(ms), n=SLOW_RESPONSE_STREAK,
                             checks=plural(SLOW_RESPONSE_STREAK, "проверка", "проверки", "проверок"))
                         + f"\n{expl.meaning}")
-                sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, explain_keyboard(inc_id))
+                kb = explain_keyboard(inc_id, _recheck_button(r.site_id))
+                sent = await _alert_once(inc_id, r.site_id, text, Priority.NORMAL, kb)
                 if isinstance(sent, Message) and _scheduler is not None:
                     _scheduler.add_job(_followup_slow, "date",
                                        run_date=datetime.now(UTC) + timedelta(minutes=5),
-                                       args=[r.url, r.site_id, sent.message_id, text, explain_keyboard(inc_id), slow_ms],
+                                       args=[r.url, r.site_id, sent.message_id, text, kb, slow_ms],
                                        id=f"followup-slow:{sent.message_id}", replace_existing=True)
         return
     _slow_streak[r.site_id] = 0
@@ -1666,7 +1701,7 @@ async def run_host_checks():
               "следующая очистка — не раньше чем через 12 ч.").format(
                 pct=result["pct"], layers=cleaned["layers"], caches=cleaned["caches"],
                 gb=f"{cleaned['bytes'] / 1e9:.1f}", after=result["pct_after"]))
-        if result["pct_after"] < config.disk_alert_pct:
+        if result["pct_after"] < settings.disk_alert_pct():
             _disk_level_unsaved = None
             await set_state("disk_alerted", None)
             return
@@ -1695,7 +1730,7 @@ async def run_host_checks():
                     # The flag lives on the full volume: remember it here, or 🔴 rings every 30 min.
                     health.db_write_failed(e)
                     _disk_level_unsaved = level
-    elif already and result["pct"] <= config.disk_alert_pct - DISK_CLEAR_MARGIN:
+    elif already and result["pct"] <= settings.disk_alert_pct() - DISK_CLEAR_MARGIN:
         _disk_level_unsaved = None
         await set_state("disk_alerted", None)
         await notifier.send(t("✅ {disk} снова в норме: {pct}%. Ничего делать не нужно.").format(
@@ -1858,7 +1893,7 @@ async def run_escalation_watch():
     is up; a flapping site gets the hourly 🟠 instead; the helpers get the
     first reminder only; a site whose last planned check opened is not
     «лежит» — its ✅ is a check away."""
-    repeat_min = config.escalation_repeat_min
+    repeat_min = settings.escalation_repeat_min()
     if repeat_min <= 0:     # 0 = off, as .env.example promises; a negative one is not «every 5 minutes»
         return
     if await netcheck.outage_since():
@@ -2175,7 +2210,7 @@ def _watchdog_kb() -> InlineKeyboardMarkup:
     """«onb:watchdog» answers below the message (handlers.setup): the alert
     and the digest stay as they were."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("🛡 Внешний сторож"), callback_data="onb:watchdog")]])
+        [InlineKeyboardButton(text=t("🛡 Подключить сторожа"), callback_data="onb:watchdog")]])
 
 
 @_once("retention", mark=True)
@@ -2419,6 +2454,26 @@ async def _watch_lines(morning: bool, short: bool = False) -> list[tuple[str, bo
     return lines
 
 
+def _recheck_button(site_id: int) -> list[InlineKeyboardButton]:
+    return [InlineKeyboardButton(text=t(RECHECK), callback_data=f"act:recheck:{site_id}")]
+
+
+async def _problems_row() -> list[list[InlineKeyboardButton]]:
+    """«🔴 Что не так (N)» for a digest: the list answers below it, the
+    digest stays. A navigation sentence («🏠 Главная → …») is no button."""
+    open_now = await get_active_incidents()
+    if not open_now:
+        return []
+    icon = humanize.level_icon(humanize.worst_severity(i["severity"] for i in open_now))
+    return [[InlineKeyboardButton(text=f"{icon} " + t("Что не так ({n})").format(n=len(open_now)),
+                                  callback_data="menu_incidents:a")]]
+
+
+def _with_rows(kb: InlineKeyboardMarkup | None, first: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup | None:
+    rows = [*first, *(kb.inline_keyboard if kb else [])]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 @_once("morning_report", mark=True)
 async def send_morning_report(late: bool = False):
     # The morning report IS the daily digest — it must arrive even when its
@@ -2434,9 +2489,14 @@ async def send_morning_report(late: bool = False):
     parts = chunks(text)
     for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
-    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=kb)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(kb, await _problems_row()))
     # The evening compares against this: it comes only for what is new since.
-    await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
+    # The report is out: a mark the disk refuses is a database problem
+    # (health says so), not a broken report.
+    try:
+        await set_state("morning_sent_at", datetime.now(UTC).isoformat(timespec="seconds"))
+    except sqlite3.OperationalError as e:
+        health.db_write_failed(e)
 
 
 @_once("evening_report", mark=True)
@@ -2453,8 +2513,10 @@ async def send_evening_report():
             or (parse_sqlite_utc(i["created_at"]) or since) >= since.replace(microsecond=0)]
     if not news:
         return
-    for part in chunks(await _status_snapshot("evening", extras=False)):
+    parts = chunks(await _status_snapshot("evening", extras=False))
+    for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(None, await _problems_row()))
 
 
 @_once("weekly_report", mark=True)
@@ -2511,7 +2573,9 @@ def _on_job_event(event):
     keeps being skipped because its last run still hangs, is told to the
     owner once per streak — the container log alone is read by nobody."""
     job_id = event.job_id
-    if ":" in job_id:                  # one-off follow-ups (followup:…): their failure is in the log
+    if job_id.startswith("catchup:"):
+        job_id = job_id.removeprefix("catchup:")    # a late daily run answers for the job it catches up
+    elif ":" in job_id:                # one-off follow-ups (followup:…): their failure is in the log
         return
     if event.code == EVENT_JOB_EXECUTED:
         _job_fails.pop(job_id, None)
@@ -2613,6 +2677,32 @@ def resume_jobs():
 _failed_jobs: list[str] = []
 
 
+def _links_trigger(start: datetime) -> IntervalTrigger:
+    return IntervalTrigger(hours=settings.links_check_interval_hours(), start_date=start, timezone=UTC)
+
+
+def reschedule_links() -> bool:
+    """Apply the interval chosen in «🛠 Тонкие настройки» to the running
+    scheduler: 0 removes the crawl, a number adds it (first run in two
+    minutes) or moves it. False when the scheduler refused."""
+    if _scheduler is None:
+        return True
+    try:
+        hours, job = settings.links_check_interval_hours(), _scheduler.get_job("links_checks")
+        if not hours:
+            if job:
+                _scheduler.remove_job("links_checks")
+        elif job:
+            _scheduler.reschedule_job("links_checks", trigger=_links_trigger(datetime.now(UTC) + timedelta(minutes=2)))
+        else:
+            _scheduler.add_job(run_links_checks, trigger=_links_trigger(datetime.now(UTC) + timedelta(minutes=2)),
+                               id="links_checks", replace_existing=True, max_instances=1, misfire_grace_time=300)
+        return True
+    except Exception:
+        logger.exception("Could not reschedule links_checks — its old schedule stays")
+        return False
+
+
 def reschedule_all() -> list[str]:
     """Apply UI-changed hours or timezone to the running scheduler. A job
     whose new trigger cannot be built keeps its old schedule and is
@@ -2667,10 +2757,8 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(run_card_pictures, lambda: _cron(**specs["card_pictures"]), "card_pictures", misfire_grace_time=3600)
     job(run_card_pictures, lambda: DateTrigger(run_date=soon, timezone=UTC), "card_pictures_soon")
     # Links: first run shortly after boot, then every N hours; 0 = never.
-    if config.links_check_interval_hours:
-        job(run_links_checks,
-            lambda: IntervalTrigger(hours=config.links_check_interval_hours, start_date=soon, timezone=UTC),
-            "links_checks", misfire_grace_time=300)
+    if settings.links_check_interval_hours():
+        job(run_links_checks, lambda: _links_trigger(soon), "links_checks", misfire_grace_time=300)
     # DNS + deep 5xx probe hourly (offset so they don't pile up).
     job(run_dns_checks, lambda: _cron(**specs["dns_checks"]), "dns_checks", misfire_grace_time=300)
     # Mail hourly, and soon after a start — so the cards show it right away.

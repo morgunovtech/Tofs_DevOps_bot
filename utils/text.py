@@ -7,6 +7,10 @@ from datetime import UTC, datetime
 
 TG_MESSAGE_LIMIT = 4096
 SAFE_LIMIT = TG_MESSAGE_LIMIT - 100
+# What clip() writes after a cut. This module has no project imports, so the
+# chat language sets it from utils.i18n.set_language (the Russian source here).
+CLIPPED = "… (обрезано)"
+CLIP_SUFFIX = "\n" + CLIPPED
 
 
 # Characters that change how the rest of a line reads while staying invisible:
@@ -65,6 +69,15 @@ def err_text(e: BaseException) -> str:
     return str(e) or type(e).__name__
 
 
+def one_line(value) -> str:
+    """A stranger's text (a visitor's message, a page address) as ONE
+    escaped line: no line breaks, control, direction or zero-width
+    characters (clean) — it cannot draw lines that look like the bot's own,
+    in an alert or on a screen alike."""
+    text = "".join(ch if ch.isprintable() else " " for ch in clean(value))
+    return esc(" ".join(text.split()))
+
+
 _TAG = re.compile(r"<(/?)([a-zA-Z][\w-]*)[^>]*>")
 
 
@@ -87,7 +100,7 @@ def clip(text: str, limit: int = SAFE_LIMIT) -> str:
             open_tags.append(name)
         elif name in open_tags:
             del open_tags[len(open_tags) - 1 - open_tags[::-1].index(name)]
-    return cut.rstrip() + "".join(f"</{t}>" for t in reversed(open_tags)) + "\n… (обрезано)"
+    return cut.rstrip() + "".join(f"</{t}>" for t in reversed(open_tags)) + CLIP_SUFFIX
 
 
 def chunks(text: str, limit: int = SAFE_LIMIT) -> list[str]:

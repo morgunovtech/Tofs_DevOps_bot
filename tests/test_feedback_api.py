@@ -4,10 +4,12 @@ of chat messages, CORS only for the owner's sites, no 500 on garbage."""
 
 import asyncio
 import logging
+import sqlite3
 
+import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from services import settings
+from services import notifier, settings
 from web import webhook
 from web.webhook import create_app
 
@@ -279,3 +281,23 @@ async def test_no_versions_and_safe_headers(bot, db):
         r = await c.get("/health")
         assert "Content-Security-Policy" not in r.headers
     await settings.set_status_page(False)
+
+
+async def test_feedback_summary_keeps_what_it_could_not_say(bot, db, monkeypatch):
+    """Two sites held messages back; the first summary line fails to send:
+    neither count is lost — both are said the next hour."""
+    webhook._held.update({"a.test": 2, "b.test": 3})
+    real_send, calls = notifier.send, []
+
+    async def flaky_send(text, *args, **kwargs):
+        calls.append(text)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database or disk is full")
+        return await real_send(text, *args, **kwargs)
+    monkeypatch.setattr(notifier, "send", flaky_send)
+    with pytest.raises(sqlite3.OperationalError):
+        await webhook.send_feedback_summary()
+    assert sum(webhook._held.values()) == 5
+    await webhook.send_feedback_summary()
+    assert sum(webhook._held.values()) == 0
+    assert len([m for m in bot.sent if "ещё" in m["text"] and "с сайта за час" in m["text"]]) == 2

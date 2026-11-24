@@ -367,7 +367,7 @@ def _fresh_module_state(monkeypatch):
     common._denied.clear()
     site_handlers._live_running.clear()
     monkeypatch.setattr(scheduler, "_disk_level_unsaved", None)
-    for state in (scheduler._in_flight, scheduler._busy, scheduler._sent_unrecorded):
+    for state in (scheduler._in_flight, scheduler._busy, scheduler._sent_unrecorded, scheduler._refused):
         state.clear()
     monkeypatch.setattr(scheduler, "_queue", None)
     monkeypatch.setattr(scheduler, "_worker", None)

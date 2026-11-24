@@ -18,6 +18,7 @@ from monitors.second_opinion import API, TIMEOUT, endpoint_for
 from services import integrations
 from utils.i18n import t
 from utils.text import err_text
+from utils.urls import site_label
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,6 @@ async def measure(url: str, country: str) -> tuple[int, str] | None:
                         return (ms, node_name(node)) if ms is not None else None
                 return None
     except Exception as e:
-        logger.warning("Region timing via check-host failed for %s: %s", url, err_text(e))
+        logger.warning("Region timing via check-host failed for %s: %s", site_label(url), err_text(e))
         await integrations.record_result("checkhost", False, err_text(e))
     return None

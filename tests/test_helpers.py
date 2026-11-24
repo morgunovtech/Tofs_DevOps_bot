@@ -232,7 +232,7 @@ async def test_owner_manages_helpers_and_a_helper_can_leave(bot, db):
     call = FakeCall("helper_rm:556")
     await settings_screen.cb_helper_remove(call)
     assert await helpers.helpers() and call.message.texts[-1].startswith("Убрать Боря?")   # nothing yet
-    assert buttons(call.message.reply_markup) == ["🗑 Да, убрать", "Отмена"]
+    assert buttons(call.message.reply_markup) == ["🗑 Да, убрать", "✖️ Отмена"]
     call = FakeCall("helper_rm_ok:556")
     await settings_screen.cb_helper_remove_ok(call)
     assert not await helpers.helpers() and bot.sent[-1]["chat_id"] == "556"
@@ -247,3 +247,20 @@ def test_help_promises_what_the_code_does(cfg):
     assert "напомню" not in start.rules_of_the_game()
     cfg(escalation_repeat_min=30)
     assert "через 30 мин, потом всё реже" in start.rules_of_the_game()
+
+
+async def test_a_dead_invite_link_is_answered_once_in_ten_minutes(bot, db):
+    """/start helper_<anything> is on the public router: a stranger replaying
+    it must not get an answer per message (SEC-014), like /help."""
+    stranger = _visitor(999)
+    args = CommandObject(prefix="/", command="start", args="helper_nosuchtoken")
+    await start.cmd_start_helper(stranger, args, FakeState())
+    assert stranger.texts[-1].startswith("Ссылка не сработала")
+    for _ in range(3):
+        await start.cmd_start_helper(stranger, args, FakeState())
+    assert len(stranger.texts) == 1                                  # said once; the rest is silence
+    common._denied.clear()
+    await start.cmd_start_helper(stranger, args, FakeState())
+    assert len(stranger.texts) == 2
+    msg = await _join(555)                                           # a real link still works at once
+    assert msg.texts[-1].startswith("✅ Готово")

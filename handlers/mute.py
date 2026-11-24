@@ -50,8 +50,10 @@ def _mute_menu() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text=t("4 часа"), callback_data="mute:4h"),
          InlineKeyboardButton(text=t("8 часов"), callback_data="mute:8h")],
         [InlineKeyboardButton(text=t("1 день"), callback_data="mute:1d"),
-         InlineKeyboardButton(text=t("🔔 Снять тишину"), callback_data="mute:off")],
-        [InlineKeyboardButton(text=t("← Когда писать"), callback_data="menu_reports")]])
+         InlineKeyboardButton(text=t("3 дня"), callback_data="mute:3d"),
+         InlineKeyboardButton(text=t("7 дней"), callback_data="mute:7d")],
+        [InlineKeyboardButton(text=t("🔔 Снять тишину"), callback_data="mute:off")],
+        _back()])
 
 
 @router.callback_query(F.data == "menu_mute")
@@ -64,7 +66,10 @@ async def cb_mute_menu(call: CallbackQuery):
 
 
 def _back() -> list[InlineKeyboardButton]:
-    return [InlineKeyboardButton(text=t("← Когда писать"), callback_data="menu_reports")]
+    """The way back: the silence screen this one belongs to, and home — the
+    main screen has its own «🔕 Помолчать…» button."""
+    return [InlineKeyboardButton(text=t("← Тишина"), callback_data="menu_quiet"),
+            InlineKeyboardButton(text=t("🏠 Главная"), callback_data="menu_main")]
 
 
 @router.callback_query(F.data.startswith("mute:"))

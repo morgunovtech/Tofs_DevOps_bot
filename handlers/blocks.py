@@ -35,7 +35,7 @@ def backup_state() -> tuple[str, str, str]:
                 t("🟠 Резервная копия базы — последняя {when}: ночные копии не делаются. Чаще всего "
                   "кончилось место на диске.").format(when=when))
     weekly = (t("по воскресеньям присылаю тебе в личку — без ключей подключений") if settings.weekly_backup()
-              else t("в Telegram не присылаю (выключено в «🔔 Когда писать»)"))
+              else t("в Telegram не присылаю (включить — «⚙️ Настройки → 💾 Копия базы»)"))
     return "✅", when, t("✅ Резервная копия базы — {when}. Делаю каждую ночь, {weekly}.").format(when=when, weekly=weekly)
 
 
@@ -73,7 +73,7 @@ async def cb_backup_now(call: CallbackQuery):
     tokens and secrets (reports.scheduler.send_copy_to_owner). A double tap
     is safe: the copies are made one after another."""
     if not await ack(call, t("Делаю копию…")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     problem = await send_copy_to_owner(
         t("💾 Копия базы бота на {time}: сайты, настройки, история. Ключей подключений и секретов в ней нет. Чтобы восстановить — пришли мне этот файл.").format(time=to_local(datetime.now(UTC)).strftime('%d.%m %H:%M')))

@@ -9,6 +9,7 @@ healthchecks.io answers a check that does not exist with HTTP 200 and
 
 import json
 import logging
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 from urllib.parse import urlsplit
@@ -16,7 +17,7 @@ from urllib.parse import urlsplit
 import aiohttp
 
 from db.database import get_heartbeats, get_state, set_state
-from services import humanize, integrations, settings
+from services import health, humanize, integrations, settings
 from utils.i18n import fmt_duration, t
 from utils.text import esc, parse_iso_utc, parse_sqlite_utc
 
@@ -75,7 +76,12 @@ async def silence_since(name: str, last: datetime | None) -> datetime:
     added = parse_iso_utc(await get_state(f"hb_added:{name}"))
     if added is None:
         added = last or datetime.now(UTC)
-        await set_state(f"hb_added:{name}", added.isoformat(timespec="seconds"))
+        # A read path (the watch, the main screen): a database that refuses
+        # the mark must not take the screen or the «молчит» alert with it.
+        try:
+            await set_state(f"hb_added:{name}", added.isoformat(timespec="seconds"))
+        except sqlite3.OperationalError as e:
+            health.db_write_failed(e)
     return max(t for t in (last, added) if t)
 
 

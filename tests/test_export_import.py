@@ -1,6 +1,7 @@
 """Restore what a person configured: an old JSON export, and the whole
 database from a copy sent to the chat."""
 
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from conftest import FakeCall, FakeMessage, FakeState
 
 from db import database, migrations
 from handlers import sites
+from handlers.common import MAX_SITES
 from services import integrations, maintenance, settings
 
 
@@ -92,7 +94,7 @@ async def test_sending_the_copy_to_the_chat_restores_after_a_yes(bot, db, tmp_pa
     state = FakeState()
     await sites.msg_backup_file(msg, state)
     assert msg.texts[-1].startswith("💾 «bot-copy.db» — копия базы бота") and "restore:yes" in str(msg.reply_markup)
-    assert "Пропадут: https://later.test" in msg.texts[-1]          # said BEFORE the button
+    assert "Пропадут: later.test" in msg.texts[-1]                  # said BEFORE the button, by label
     call = FakeCall("restore:yes")
     call.bot = fake_bot
     await sites.cb_restore(call, state)
@@ -256,6 +258,29 @@ async def test_an_old_copy_is_caught_up_by_migrations_that_change_data(bot, db, 
     conn = await database.get_db()
     rows = await (await conn.execute("SELECT note FROM incidents")).fetchall()
     assert n == 1 and [r[0] for r in rows] == ["filled"]
+
+
+async def test_the_import_summary_never_shows_a_query_string(bot, db):
+    """An API monitor keeps its query (a token may live there): the lines
+    that name a skipped site, and the restore question, show the label."""
+    secret_url = "https://api.ex.test/api/health?token=SECRET123"
+    doc = {"version": 2, "sites": [{"url": f"https://s{i}.test"} for i in range(MAX_SITES)]
+           + [{"url": secret_url}, {"url": "https://api.ex2.test/api/x?key=KEY456", "slow_ms": "fast"}]}
+    text = await sites._restore_bytes(json.dumps(doc).encode())
+    assert "Пропущено" in text and "api.ex.test/api/health" in text
+    assert "SECRET123" not in text and "KEY456" not in text
+    assert "SECRET123" not in sites._list([secret_url]) and "api.ex.test/api/health" in sites._list([secret_url])
+
+
+async def test_the_restore_question_says_whether_the_copy_holds_the_task_secret(bot, db):
+    """A copy sent through Telegram carries no heartbeat secret: on an empty
+    install the question must not promise that the old task links keep working."""
+    info = {"urls": ["https://a.test"], "state": {}, "version": 1}
+    text = await sites._db_question(info, "bot-copy.db")
+    assert "секрета ссылок задач в этой копии нет" in text and "HEARTBEAT_SECRET" in text
+    info["state"]["secret:heartbeat"] = "x"
+    text = await sites._db_question(info, "bot-copy.db")
+    assert "секреты ссылок возьму из копии" in text
 
 
 async def test_restore_as_a_reply_to_the_copy_is_the_same_as_sending_it(bot, db, tmp_path):

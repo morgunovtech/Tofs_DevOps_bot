@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 from config import config
 from db.database import db_file, get_state, set_state
-from services import automation, docker_api
+from services import automation, docker_api, settings
 from utils.i18n import t
 from utils.text import parse_iso_utc
 
@@ -78,7 +78,7 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
     pct, used_gb, total_gb = m["pct"], m["used_gb"], m["total_gb"]
     result = {"path": m["path"], "label": m["label"],
               "pct": pct, "used_gb": round(used_gb, 1), "total_gb": round(total_gb, 1),
-              "over_threshold": pct >= config.disk_alert_pct,
+              "over_threshold": pct >= settings.disk_alert_pct(),
               "cleaned": None, "cleaned_bytes": None, "cleanup_failed": False,
               "pct_after": pct, "used_gb_after": round(used_gb, 1)}
     if not result["over_threshold"]:
@@ -86,7 +86,7 @@ async def check_disk(auto_cleanup: bool | None = None) -> dict:
             await set_state("disk_prune_useless", None)   # a new full-disk episode may prune again
         return result
     # A prune frees the root disk only: a full database volume gains nothing from it.
-    if look_only or m["root_pct"] < config.disk_alert_pct or await get_state("disk_prune_useless"):
+    if look_only or m["root_pct"] < settings.disk_alert_pct() or await get_state("disk_prune_useless"):
         return result
     now = datetime.now(UTC)
     last = parse_iso_utc(await get_state("disk_pruned_at"))

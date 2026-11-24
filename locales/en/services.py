@@ -305,6 +305,7 @@ STRINGS: dict[str, str] = {
     "⏳ Задержалось с {time}, отправляю сейчас:": "⏳ Delayed since {time}, sending now:",
     "\n\n👥 Это копия для помощника: управляет ботом владелец, кнопки — у него.":
         "\n\n👥 This is a helper's copy: the owner runs the bot and has the buttons.",
+    "(кнопки под сообщением Telegram не принял — отправил без них)": "(Telegram did not take the buttons under the message — sent without them)",
     "⚠️ Пока Telegram не принимал сообщения, {n} из них не поместились в очередь и потерялись. Что сейчас не так — на 🏠 Главной.":
         "⚠️ While Telegram was not accepting messages, {n} of them did not fit in the queue and were lost. What is wrong now is on 🏠 Home.",
     "бот ещё не запущен": "the bot is not started yet",
@@ -326,7 +327,7 @@ STRINGS: dict[str, str] = {
     "ℹ️ Что делать": "ℹ️ What to do",
     "🚀 Пересобрать сайт": "🚀 Rebuild the site",
     "🧹 Сбросить кэш": "🧹 Purge the cache",
-    "⏸ Не чинить самому 2 ч": "⏸ Don't self-fix for 2 h",
+    "⏸ Не пересобирать сам 2 ч": "⏸ Don't rebuild by myself for 2 h",
     "🔗 Открыть панель {panel}": "🔗 Open the {panel} panel",
     "🔗 Открыть панель {label}": "🔗 Open the {label} panel",
     "📋 Показать по сайтам": "📋 Show per site",
@@ -489,9 +490,9 @@ STRINGS: dict[str, str] = {
         "<code>/app/data</code>, and the variable <code>DB_PATH=/app/data/bot.db</code>.",
     # ── services/public_urls.py ─────────────────────────────────────────────
     "⚠️ У бота нет публичного адреса, поэтому ссылка ниже не заработает: вместо YOUR_SERVER нужен адрес сервера "
-    "бота. Задай PUBLIC_BASE_URL (https://…) — кнопка «🌍 Как задать адрес».":
+    "бота — нажми «🌍 Как задать адрес» (на своём сервере это PUBLIC_BASE_URL в .env).":
         "⚠️ The bot has no public address, so the link below will not work: YOUR_SERVER must be the bot server's "
-        "address. Set PUBLIC_BASE_URL (https://…) — the «🌍 How to set the address» button.",
+        "address — tap «🌍 How to set the address» (on your own server that is PUBLIC_BASE_URL in .env).",
     # ── services/github.py ──────────────────────────────────────────────────
     "токен не принят: истёк, отозван или скопирован не целиком": "the token was rejected: expired, revoked or not copied whole",
     "GitHub отказал в доступе или лимит запросов исчерпан": "GitHub refused access or the request limit is used up",
@@ -539,6 +540,9 @@ STRINGS: dict[str, str] = {
     "ключ не подходит ({err_text})": "the key does not fit ({err_text})",
     "Google не принял ключ ({v})": "Google rejected the key ({v})",
     "Google не ответил ({err_text})": "Google did not answer ({err_text})",
+    "Google ответил HTTP {status}": "Google answered HTTP {status}",
+    # ── utils/text.py: the mark of a clipped message (set through utils.i18n) ──
+    "… (обрезано)": "… (truncated)",
     "Search Console ответил HTTP {status}": "Search Console answered HTTP {status}",
     "токен не принят (HTTP {status})": "the token was rejected (HTTP {status})",
     "Вебмастер не ответил": "Webmaster did not answer",

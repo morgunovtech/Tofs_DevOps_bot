@@ -250,12 +250,25 @@ async def read_capped(resp: aiohttp.ClientResponse, limit: int) -> bytes:
     return b"".join(chunks)
 
 
+# Checks of one batch in flight at once. A handful of sites never reaches
+# it; with dozens the first tick and the digests used to open every
+# connection together — against the same 1024 descriptors as the web server.
+CHECKS_AT_ONCE = 16
+
+
 async def gather_checks(urls, check, label: str, **kwargs) -> list:
-    """Run `check(url, **kwargs)` for every url concurrently. One site's
-    unexpected exception is logged with the site and the traceback and
-    dropped instead of killing the whole batch; a shutdown is not swallowed."""
+    """Run `check(url, **kwargs)` for every url, CHECKS_AT_ONCE at a time.
+    One site's unexpected exception is logged with the site and the
+    traceback and dropped instead of killing the whole batch; a shutdown
+    is not swallowed."""
     urls = list(urls)
-    results = await asyncio.gather(*(check(u, **kwargs) for u in urls), return_exceptions=True)
+    slots = asyncio.Semaphore(CHECKS_AT_ONCE)
+
+    async def one(url):
+        async with slots:
+            return await check(url, **kwargs)
+
+    results = await asyncio.gather(*(one(u) for u in urls), return_exceptions=True)
     out = []
     for url, r in zip(urls, results, strict=True):
         if isinstance(r, asyncio.CancelledError):

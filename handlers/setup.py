@@ -33,6 +33,8 @@ from handlers.common import (
     cancel_kb,
     forget_secret,
     render,
+    set_wizard_door,
+    wizard_back,
 )
 from handlers.settings import publish_screen
 from reports.scheduler import rerun_visitors_soon
@@ -138,6 +140,13 @@ def forget_probes():
     _probes.clear()
 
 
+def _back_button() -> InlineKeyboardButton:
+    """The way out of a wizard: «← К подключениям», or «← Что можно
+    подключить» when the wizard was opened from «📖» (handlers.common)."""
+    label, data = wizard_back()
+    return InlineKeyboardButton(text=t(label), callback_data=data)
+
+
 async def _probe_all() -> dict[str, object]:
     """{web: bool, gsc: bool, yandex: Probe, github: (Probe, login)} for
     what is configured; None for a probe that raised or ran out of time."""
@@ -234,7 +243,7 @@ async def build_items(probe: bool = True) -> list[Item]:
     else:
         # A screen with what goes where, not a one-tap switch: the service
         # learns the sites' addresses, and that is the owner's choice.
-        items.append(Item("second_opinion", "off", t("🌐 Вторая точка проверки"),
+        items.append(Item("second_opinion", "off", t("🌐 Вторая точка"),
                           t("перед тревогой «сайт лежит» перепроверка с серверов check-host.net — им уходят адреса сайтов"),
                           (t("🌐 Вторая точка"), "setup:so")))
 
@@ -389,7 +398,7 @@ async def render_checklist() -> tuple[str, InlineKeyboardMarkup]:
     if warn:
         rows.append([InlineKeyboardButton(text=t(RECHECK), callback_data="setup:recheck")])
     if integrations.deploy_hooks() or docker_api.docker_available():
-        rows.append([InlineKeyboardButton(text=t("🤖 Что бот делает сам"), callback_data="auto:menu")])
+        rows.append([InlineKeyboardButton(text=t("🤖 Что делаю сам"), callback_data="auto:menu")])
     if off:
         rows.append([InlineKeyboardButton(text=t("➕ Подключить ещё ({n})").format(n=len(off)), callback_data="setup:more")])
     rows.append([InlineKeyboardButton(text=t("← Настройки"), callback_data="menu_settings")])
@@ -402,12 +411,12 @@ async def cb_more(call: CallbackQuery):
     await ack(call)
     off = [i for i in await build_items(probe=False) if i.status == "off"]
     if not off:
-        await render(call, t("Всё уже подключено."), back_button(t("← К подключениям"), "setup:check"))
+        await render(call, t("Всё уже подключено."), back_button(*wizard_back()))
         return
     lines = [t("➕ Можно подключить — всё необязательно:\n")]
     lines += [f"• {esc(i.title)} — {esc(i.detail)}" for i in off]
     rows = _button_rows(off)
-    rows.append([InlineKeyboardButton(text=t("← К подключениям"), callback_data="setup:check")])
+    rows.append([_back_button()])
     await render(call, "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows))
 
 
@@ -422,6 +431,7 @@ async def cb_checklist(call: CallbackQuery, state: FSMContext):
     back from a wizard (setup:check) reuses the answers of the last minutes."""
     await ack(call)
     await state.clear()
+    set_wizard_door("")   # from here every wizard leads back here
     if call.data == "setup:recheck":
         forget_probes()
     await render(call, t("▱▱▱ Проверяю сам себя..."))
@@ -517,6 +527,10 @@ async def last_steps() -> tuple[str, InlineKeyboardMarkup] | None:
 # ── A key without its wizard ─────────────────────────────────────────────────
 
 _URL_SECRET = re.compile(r"https://\S*(deploy_hooks/|hc-ping\.com/|/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-)")
+# A host name as people type one: lowercase labels, a letters-only zone at
+# the end. No token the wizards ask for looks like this (ghp_…, y0_…, AIza…,
+# a 32–40-character hex or base64 word): a bare domain is a site, not a key.
+_HOST_NAME = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\.?")
 
 
 def looks_like_key(text: str | None) -> bool:
@@ -524,12 +538,15 @@ def looks_like_key(text: str | None) -> bool:
     long word of letters AND digits), a service-account JSON, a deploy hook
     or a watchdog address? The checks are the wizards' own patterns
     (yandex / crux / cloudflare / github tokens, gsc key, cf_hook,
-    watchdog_url), narrowed so that an ordinary message never matches."""
+    watchdog_url), narrowed so that an ordinary message never matches —
+    a domain typed on its own (my-shop-2024.example.com) included."""
     t = (text or "").strip()
     if "private_key" in t and "client_email" in t:
         return True
     if _URL_SECRET.search(t):
         return True
+    if _HOST_NAME.fullmatch(t):
+        return False
     return bool(re.fullmatch(r"[A-Za-z0-9_\-.]{20,255}", t) and re.search(r"\d", t) and re.search(r"[A-Za-z]", t))
 
 
@@ -541,7 +558,7 @@ async def msg_key_without_wizard(message: Message):
     way, and the owner is told to start the wizard again."""
     await forget_secret(message)
     await message.answer(t("⌛ Мастер прервался после перезапуска — начни заново: ⚙️ Настройки → 🔌 Подключения."),
-                         reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                         reply_markup=back_button(*wizard_back()))
 
 
 # ── One-tap fixes ────────────────────────────────────────────────────────────
@@ -551,7 +568,7 @@ async def cb_status_page_on(call: CallbackQuery):
     """Not one tap: the same question as in ⚙️ — what becomes public, and a
     secret link; the screen after publishing leads back here."""
     await ack(call)
-    await render(call, *await publish_screen(back="setup:check"))
+    await render(call, *await publish_screen(back=wizard_back()[1]))
 
 
 def _switch_source(key: str, env_name: str, env_value: bool) -> str:
@@ -568,13 +585,13 @@ def second_opinion_screen() -> tuple[str, InlineKeyboardMarkup]:
     turning the service on is a choice made on this screen, not one tap."""
     so_on = integrations.second_opinion_enabled()
     rs_on = integrations.region_speed_enabled()
-    text = (t("🌐 Вторая точка проверки — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.").format(words=t("включена") if so_on else t("выключена"), switch_source=esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion)), words2=t("включена") if rs_on else t("выключена"), switch_source2=esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))))
+    text = (t("🌐 Вторая точка — бесплатный сервис check-host.net\n\n• Перепроверка перед тревогой «сайт лёг»: адрес сайта уходит на check-host.net, его серверы в других странах пробуют открыть сайт. Открывается у них — значит, сбой у меня, и я тебя не бужу. Туда же уходят почтовые серверы домена — проверить порт 25.\n• Скорость из региона: раз в 6 часов адрес главной каждого сайта уходит туда же — для строки «из России, 0.8 с» в карточке.\n\nВнутренние адреса (192.168.x, 10.x, .local, .lan) туда не уходят никогда.\n\nПерепроверка: {words} — {switch_source}.\nСкорость из региона: {words2} — {switch_source2}.").format(words=t("включена") if so_on else t("выключена"), switch_source=esc(_switch_source('second_opinion', 'SECOND_OPINION', config.second_opinion)), words2=t("включена") if rs_on else t("выключена"), switch_source2=esc(_switch_source('region_speed', 'REGION_SPEED', config.region_speed))))
     rows = [[InlineKeyboardButton(text=t("🌐 Перепроверку выключить") if so_on else t("🌐 Перепроверку включить"),
                                   callback_data="setup:so:off" if so_on else "setup:so:on")],
             [InlineKeyboardButton(text=t("⏱ Скорость из региона выключить") if rs_on
                                   else t("⏱ Скорость из региона включить"),
                                   callback_data="setup:rs:off" if rs_on else "setup:rs:on")],
-            [InlineKeyboardButton(text=t("← К подключениям"), callback_data="setup:check")]]
+            [_back_button()]]
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -593,7 +610,7 @@ async def cb_second_opinion(call: CallbackQuery):
     # while the bot was down does not give it (handlers.common.ack).
     fresh = await ack(call, t("Включено") if on else t("Выключено"))
     if on and not fresh:
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     # The same as .env says → forget the chat value, so .env is the master again.
     await integrations.set_value(key, None if on == env_value else ("on" if on else "off"))
@@ -611,13 +628,13 @@ async def cb_regen_heartbeat_ask(call: CallbackQuery):
     await render(call, t("🔑 Выпустить новый ключ ссылок для задач?\n\n{who} Делай это, если ссылка могла попасть в чужие руки — например, лежала в файле репозитория.").format(who=who),
                  InlineKeyboardMarkup(inline_keyboard=[
                      [InlineKeyboardButton(text=t("🔑 Да, выпустить"), callback_data="setup:hb_regen:ok"),
-                      InlineKeyboardButton(text=t("← Назад"), callback_data="setup:check")]]))
+                      InlineKeyboardButton(text=t("✖️ Отмена"), callback_data="setup:check")]]))
 
 
 @router.callback_query(F.data == "setup:hb_regen:ok")
 async def cb_regen_heartbeat(call: CallbackQuery):
     if not await ack(call, t("Готово")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     await secrets.regenerate("heartbeat")
     jobs = list(settings.heartbeat_jobs()) or ["backup"]
@@ -625,7 +642,7 @@ async def cb_regen_heartbeat(call: CallbackQuery):
     note = (t("\n\nHEARTBEAT_SECRET в окружении больше не используется — удали переменную.")
             if config.heartbeat_secret_env else "")
     await render(call, t("🔑 Новый ключ выпущен. Вставь каждой задаче и боту её новую ссылку (они есть и в карточке задачи, «🔗 Как подключена»):\n{links}\n\n{HEARTBEAT_SECRET_NOTE}{note}").format(links=links, HEARTBEAT_SECRET_NOTE=HEARTBEAT_SECRET_NOTE, note=note),
-                 back_button(t("← К подключениям"), "setup:check"))
+                 back_button(*wizard_back()))
 
 
 # ── «🗑 Отключить» asks first ────────────────────────────────────────────────
@@ -670,14 +687,14 @@ async def cb_off_ask(call: CallbackQuery):
     await ack(call)
     await render(call, text, InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=t("🗑 Да, отключить"), callback_data=f"{call.data}:ok"),
-         InlineKeyboardButton(text=t("← Назад"), callback_data=f"setup:{group}")]]))
+         InlineKeyboardButton(text=t("✖️ Отмена"), callback_data=f"setup:{group}")]]))
 
 
 async def _switch_off(call: CallbackQuery, group: str, toast: str) -> bool:
     """The «🗑 Да, отключить» tap: ack first — a tap that waited in the queue
     while the bot was down does nothing (STALE_TAP) — then the tombstones."""
     if not await ack(call, toast, show_alert=True):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return False
     for key in _OFF[group][0]:
         await integrations.switch_off(key)
@@ -693,7 +710,7 @@ async def cb_use_env(call: CallbackQuery):
         await ack(call)
         return
     if not await ack(call, t("Снова беру из .env")):
-        await call.message.answer(STALE_TAP)
+        await call.message.answer(t(STALE_TAP))
         return
     for key in _OFF[group][0]:
         if integrations.source(key) == "off":
@@ -711,7 +728,7 @@ def _guide_kb(*buttons: tuple[str, str], recheck: bool = False) -> InlineKeyboar
     button is here, not only on the checklist."""
     rows = [[InlineKeyboardButton(text=t, callback_data=c)] for t, c in buttons]
     rows.append([InlineKeyboardButton(text=t(RECHECK), callback_data="setup:recheck")] if recheck
-                else [InlineKeyboardButton(text=t("← К подключениям"), callback_data="setup:check")])
+                else [_back_button()])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -800,7 +817,7 @@ async def msg_watchdog_url(message: Message, state: FSMContext):
     await heartbeats.forget_watchdog()   # the old link's failures are not this one's
     await heartbeats.record_watchdog(None)
     await message.answer(t("✅ Сторож подключён и на связи. Дальше выхожу с ним на связь каждые 5 минут."),
-                         reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                         reply_markup=back_button(*wizard_back()))
 
 
 @router.callback_query(F.data == "setup:watchdog_off:ok")
@@ -858,12 +875,12 @@ async def msg_yx_token(message: Message, state: FSMContext):
     forget_probes()
     if answer is Probe.UNREACHABLE:
         await message.answer(t(UNCHECKED_NOTE).format(service=t("Яндекс")),
-                             reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                             reply_markup=back_button(*wizard_back()))
         return
     hosts = await _yandex_probe()
     counted = t(": верифицированных хостов {hosts}").format(hosts=hosts) if hosts is not None else ""
     await message.answer(t("✅ Яндекс.Вебмастер подключён{counted}.").format(counted=counted),
-                         reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                         reply_markup=back_button(*wizard_back()))
 
 
 @router.callback_query(F.data == "setup:yx_off:ok")
@@ -916,10 +933,10 @@ async def msg_crux_key(message: Message, state: FSMContext):
     rerun_visitors_soon()
     if answer is Probe.UNREACHABLE:
         await message.answer(t(UNCHECKED_NOTE).format(service="Google"),
-                             reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                             reply_markup=back_button(*wizard_back()))
         return
     await message.answer(t("✅ Данные Google о скорости подключены. Спрошу про твои сайты в ближайшие минуты, дальше — каждое утро; числа появятся на карточках."),
-                         reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                         reply_markup=back_button(*wizard_back()))
 
 
 @router.callback_query(F.data == "setup:crux_off:ok")
@@ -1011,9 +1028,9 @@ async def msg_gsc_key(message: Message, state: FSMContext):
         return
     if await _gsc_probe():
         await message.answer(t("✅ Google Search Console подключён, API отвечает."),
-                             reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                             reply_markup=back_button(*wizard_back()))
     else:
-        await message.answer(t("Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан шаг 3: добавь <code>{client_email}</code> в пользователи ресурса в Search Console и нажми «← К подключениям».").format(client_email=esc(creds.get('client_email', ''))),
+        await message.answer(t("Ключ сохранён, но API пока отвечает ошибкой. Чаще всего не сделан шаг 3: добавь <code>{client_email}</code> в пользователи ресурса в Search Console и нажми «{back}».").format(client_email=esc(creds.get('client_email', '')), back=t(wizard_back()[0])),
                              reply_markup=_gsc_kb())
 
 
@@ -1032,7 +1049,7 @@ def _cf_kb() -> InlineKeyboardMarkup:
                (t("🧹 Токен для сброса кэша"), "setup:cf_token"),
                ("🆔 Zone ID", "setup:cf_zone")]
     if integrations.deploy_hooks():
-        buttons.append((t("🤖 Что бот делает сам"), "auto:menu"))
+        buttons.append((t("🤖 Что делаю сам"), "auto:menu"))
     if off := _off_button("cf"):
         buttons.append(off)
     return _guide_kb(*buttons)
@@ -1191,10 +1208,10 @@ async def msg_gh_token(message: Message, state: FSMContext):
     await integrations.set_value("github_token", token)
     if answer is Probe.UNREACHABLE:
         await message.answer(t(UNCHECKED_NOTE).format(service="GitHub"),
-                             reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                             reply_markup=back_button(*wizard_back()))
         return
     await message.answer(t("✅ GitHub подключён: аккаунт {login}. Первый раздел придёт в воскресном отчёте — если будет что прибрать.").format(login=esc(login)),
-                         reply_markup=back_button(t("← К подключениям"), "setup:check"))
+                         reply_markup=back_button(*wizard_back()))
 
 
 @router.callback_query(F.data == "setup:gh_owner")

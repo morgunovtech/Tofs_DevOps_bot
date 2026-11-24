@@ -421,6 +421,9 @@ async def send_to(chat_id: str, text: str) -> bool:
 
 # At the end: at the start it would replace «🔴 …» in the phone's notification.
 HELPER_FOOTER = "\n\n👥 Это копия для помощника: управляет ботом владелец, кнопки — у него."
+# The last resort of _deliver: Telegram took neither the HTML nor the plain
+# text with the buttons — the words go without them, and say so.
+NO_BUTTONS_NOTE = "(кнопки под сообщением Telegram не принял — отправил без них)"
 
 
 async def _tell_helper(chat_id: str, text: str, ring: bool):
@@ -430,6 +433,13 @@ async def _tell_helper(chat_id: str, text: str, ring: bool):
     except TelegramBadRequest:
         await _bot.send_message(chat_id=chat_id, text=text, parse_mode=None, disable_notification=not ring,
                                 request_timeout=HELPER_TIMEOUT)
+
+
+async def tell_helpers(text: str, ring: bool = True):
+    """The helpers' copy on its own — for a message the owner got as an
+    EDIT of an earlier one (a group alert that took more sites), which has
+    no send() to ride on. The same text rules as the copy send() makes."""
+    await _tell_helpers(text, ring)
 
 
 async def _tell_helpers(text: str, ring: bool = True):
@@ -469,8 +479,18 @@ async def _deliver(text: str, reply_markup, priority: Priority) -> Message | boo
         except TelegramBadRequest as e:
             # Our own markup Telegram cannot parse: plain text still says what happened.
             logger.error("Telegram rejected a message (%s) — sending it as plain text", e)
-            sent = await _call(_bot.send_message, text=text, reply_markup=reply_markup, parse_mode=None,
-                               disable_notification=silent)
+            try:
+                sent = await _call(_bot.send_message, text=text, reply_markup=reply_markup, parse_mode=None,
+                                   disable_notification=silent)
+            except TelegramBadRequest as e2:
+                if reply_markup is None:
+                    raise
+                # Plain text refused too: the buttons are the problem (a URL
+                # Telegram does not take). The words still get through —
+                # a «сайт лёг» without its buttons beats no «сайт лёг».
+                logger.error("Telegram rejected the buttons too (%s) — sending without them", e2)
+                sent = await _call(_bot.send_message, text=text + "\n" + t(NO_BUTTONS_NOTE), reply_markup=None,
+                                   parse_mode=None, disable_notification=silent)
         health.delivery_ok()
         return sent
     except (TelegramBadRequest, TelegramForbiddenError) as e:

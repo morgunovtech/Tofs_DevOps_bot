@@ -86,7 +86,7 @@ async def query(origin: str, key: str | None = None) -> dict | None:
                     logger.warning("CrUX for %s: HTTP %s", origin, resp.status)
                     refused = resp.status in (400, 401, 403)
                     if not probe:
-                        await integrations.record_result("crux", False, f"Google ответил HTTP {resp.status}",
+                        await integrations.record_result("crux", False, t("Google ответил HTTP {status}").format(status=resp.status),
                                                          refused=refused)
                     if refused:
                         raise KeyRejected(f"HTTP {resp.status}")
@@ -97,7 +97,7 @@ async def query(origin: str, key: str | None = None) -> dict | None:
     except (aiohttp.ClientError, TimeoutError, ValueError) as e:
         logger.warning("CrUX for %s failed: %s", origin, err_text(e))
         if not probe:
-            await integrations.record_result("crux", False, f"Google не ответил ({err_text(e)})")
+            await integrations.record_result("crux", False, t("Google не ответил ({err_text})").format(err_text=err_text(e)))
         return None
     if not probe:
         await integrations.record_result("crux", True)

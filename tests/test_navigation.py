@@ -13,7 +13,7 @@ from conftest import FakeCall, buttons
 from test_dispatcher import DP, GROUP, MockedSession, _callback, _message, _raw
 
 from db.database import count_feedback, save_feedback
-from handlers import alerts, common, feedback, heartbeats, mute, settings, site_settings, sites, start
+from handlers import about, alerts, common, feedback, heartbeats, mute, settings, site_settings, sites, start
 from handlers.common import LeanMemoryStorage, with_running_bar
 from monitors.base import AvailabilityResult
 from services import actions, maintenance, runtime, sitestatus
@@ -114,6 +114,41 @@ async def test_the_step_buttons_of_the_phrase_form_keep_it(bot, db):
     await tg.session.close()
 
 
+async def test_a_wizard_opened_from_what_can_be_connected_leads_back_there(bot, db):
+    """«📖 Что можно подключить» → a wizard: its «←» (and «✖️ Отмена» under
+    its steps) returns to «📖», not to «🔌 Подключения»; opened from the
+    checklist — or after any tap outside the wizard — it returns to «🔌»."""
+    tg, session = await _bot()
+    page = (await about.modules_page())[1]
+    yx = next(b for row in page.inline_keyboard for b in row if b.text == "🔎 Вебмастер")
+    assert yx.callback_data == "about:go:setup:yx"
+    await DP.feed_raw_update(tg, _callback(777, yx.callback_data, 820))
+    screen = [m for m in session.calls if isinstance(m, EditMessageText)][-1]
+    assert screen.text.startswith("🔎 Яндекс.Вебмастер")
+    back = screen.reply_markup.inline_keyboard[-1][0]
+    assert (back.text, back.callback_data) == ("← Что можно подключить", "about:modules")
+    session.calls.clear()
+    await DP.feed_raw_update(tg, _callback(777, "setup:yx_token", 821))      # a step inside keeps the door
+    cancel = [m for m in session.calls if isinstance(m, EditMessageText)][-1].reply_markup.inline_keyboard[-1][0]
+    await DP.feed_raw_update(tg, _callback(777, cancel.callback_data, 822))
+    back = [m for m in session.calls if isinstance(m, EditMessageText)][-1].reply_markup.inline_keyboard[-1][0]
+    assert back.callback_data == "about:modules"
+    session.calls.clear()
+    await DP.feed_raw_update(tg, _callback(777, "about:go:setup:sp_on", 823))   # the status page: its own doors
+    publish = [m for m in session.calls if isinstance(m, EditMessageText)][-1]
+    datas = [b.callback_data for row in publish.reply_markup.inline_keyboard for b in row]
+    assert datas == ["sp_pub:secret:about", "sp_pub:open:about", "about:modules"]
+    session.calls.clear()
+    await DP.feed_raw_update(tg, _callback(777, "setup:check", 824))            # the checklist closes the door
+    await DP.feed_raw_update(tg, _callback(777, "setup:yx", 825))
+    back = [m for m in session.calls if isinstance(m, EditMessageText)][-1].reply_markup.inline_keyboard[-1][0]
+    assert (back.text, back.callback_data) == ("← К подключениям", "setup:check")
+    common.set_wizard_door("about")                                             # so does any tap elsewhere
+    await DP.feed_raw_update(tg, _callback(777, "menu_settings", 826))
+    assert common.wizard_door() == ""
+    await tg.session.close()
+
+
 async def test_cancel_returns_to_the_screen_the_step_was_opened_from(bot, db):
     tg, session = await _bot()
     await DP.feed_raw_update(tg, _callback(777, "setup:yx_token", 811))
@@ -136,10 +171,10 @@ async def test_cancel_returns_to_the_screen_the_step_was_opened_from(bot, db):
 async def test_after_mute_the_way_back_and_unmute_are_buttons(bot, db):
     call = FakeCall("mute:8h")
     await mute.cb_mute_pick(call)
-    assert buttons(call.message.reply_markup) == ["🔔 Снять тишину", "← Когда писать"]
+    assert buttons(call.message.reply_markup) == ["🔔 Снять тишину", "← Тишина", "🏠 Главная"]
     call = FakeCall("mute:off")
     await mute.cb_mute_pick(call)
-    assert buttons(call.message.reply_markup) == ["← Когда писать"]
+    assert buttons(call.message.reply_markup) == ["← Тишина", "🏠 Главная"]
 
 
 def test_when_to_write_marks_the_current_values():
@@ -264,7 +299,7 @@ async def test_visitor_messages_can_be_deleted(bot, db):
     done = FakeCall(yes.callback_data)
     await feedback.cb_feedback_delete(done)
     assert await count_feedback() == 2
-    assert done.message.texts[-1].startswith("🗑 Удалил: 5\n\n📩 Обратная связь с сайтов (2)")
+    assert done.message.texts[-1].startswith("🗑 Удалил: 5\n\n📩 Сообщения с сайтов (2)")
 
 
 async def test_a_stranger_gets_one_denial_per_ten_minutes(bot, db):

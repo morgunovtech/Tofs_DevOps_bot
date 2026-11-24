@@ -146,7 +146,11 @@ async def test_the_group_buttons_list_the_sites_and_quiet_them_all(bot, db):
     call = FakeCall(show)
     await alerts.cb_alert_group(call)
     assert call.message.texts[-1].startswith("1. 🔴 127.0.0.1/s")
-    assert buttons(call.message.reply_markup) == ["ℹ️ 1", "ℹ️ 2", "ℹ️ 3", "ℹ️ 4"]
+    # A row per site with the alert's own actions, not «ℹ️» alone.
+    rows = [[b.text for b in row] for row in call.message.reply_markup.inline_keyboard]
+    assert rows[0] == ["ℹ️ 1", "🔄 1", "📸 1", "🔧 1"] and len(rows) == 4 and rows[3][0] == "ℹ️ 4"
+    assert [b.callback_data for b in call.message.reply_markup.inline_keyboard[0]][1:] == [
+        f"act:recheck:{ids[0]}", f"act:shot:{ids[0]}", f"act:fix:{ids[0]}"]
 
     call = FakeCall(fix)
     await alerts.cb_alert_group(call)
@@ -253,3 +257,47 @@ async def test_a_group_follow_up_is_one_edit_for_all_the_sites(bot, db, monkeypa
         await db.activate_or_create_site(url)         # a site removed by then is not re-checked
     await scheduler._group_followup(["https://a.test", "https://b.test"], 7, "🔴 text", None, 2)
     assert sent == [(7, "🔴 text\n\n🔁 Через 2 мин: уже открываются: b.test; всё ещё не открываются: a.test.")]
+
+
+def _helper_copies(bot) -> list[dict]:
+    return [m for m in bot.sent if m["chat_id"] == "555"]
+
+
+async def test_helpers_hear_about_the_sites_that_join_a_group_message(bot, db):
+    """The owner's message is edited when more sites fall; an edit has no
+    copy, so the helpers get the list as it stands — silently, as the edit."""
+    await db.set_state("helpers", json.dumps([{"chat_id": "555", "name": "Аня"}]))
+    async with TestServer(_server({"status": 503})) as server:
+        await _ticks(await _sites(db, server.port, 3), 2)             # one outage: one message, one copy
+        assert len(_helper_copies(bot)) == 1 and "сразу 3 сайта" in _helper_copies(bot)[0]["text"]
+        more = [await db.activate_or_create_site(f"http://127.0.0.1:{server.port}/m{i}") for i in range(2)]
+        await _ticks(more, 2)                                         # two more: the owner's message is edited
+    assert bot.edited[-1]["text"].startswith("🔴 Не открываются сразу 5 сайтов")
+    copies = _helper_copies(bot)
+    assert len(copies) == 2 and "сразу 5 сайтов" in copies[1]["text"] and copies[1]["silent"]
+    assert "копия для помощника" in copies[1]["text"] and copies[1]["reply_markup"] is None
+
+
+async def test_helpers_hear_about_the_sites_that_join_a_recovery_message(bot, db):
+    await db.set_state("helpers", json.dumps([{"chat_id": "555", "name": "Аня"}]))
+    state = {"status": 503}
+    async with TestServer(_server(state)) as server:
+        ids = await _sites(db, server.port, 5)
+        await _ticks(ids, 2)
+        state["status"] = 200
+        await _until_up(db, ids[:4])                                  # four back: one ✅ for them, one copy
+        copies = [m for m in _helper_copies(bot) if m["text"].startswith("✅ Снова открываются")]
+        assert len(copies) == 1 and "4 сайта" in copies[0]["text"]
+        await _until_up(db, ids[4:])                                  # the last one: added by an edit
+    copies = [m for m in _helper_copies(bot) if m["text"].startswith("✅ Снова открываются")]
+    assert len(copies) == 2 and "5 сайтов" in copies[1]["text"] and copies[1]["silent"]
+
+
+async def test_an_error_before_the_handlers_own_ack_still_answers_the_tap(bot, db):
+    """The error screen is drawn, and the button stops spinning: the generic
+    handler answers the callback when the handler died before its own ack."""
+    call = FakeCall("menu_sites")
+    await on_handler_error(SimpleNamespace(update=SimpleNamespace(callback_query=call, message=None),
+                                           exception=RuntimeError("database is locked")))
+    assert call.message.texts[-1].startswith("❌ Не получилось открыть экран")
+    assert call.answers == [None]

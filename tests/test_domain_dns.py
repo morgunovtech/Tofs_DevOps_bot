@@ -7,6 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import aiohttp
 import pytest
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.methods import SendMessage
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 from cryptography import x509
@@ -327,3 +329,30 @@ async def test_fetch_cert_reads_a_real_certificate(tmp_path, monkeypatch):
     async with server:
         info = await ssl_checker._fetch_cert("localhost", port)
     assert info.days_left == 2 and info.common_name == "localhost"
+
+
+async def test_a_move_whose_alert_failed_is_said_again(bot, db, monkeypatch):
+    """The new addresses join the pool through the committed baseline only:
+    a move Telegram refused keeps striking and comes back the next hour,
+    instead of looking like the pool from then on."""
+    zone = FakeZone(monkeypatch)
+    await db.activate_or_create_site("https://ex.test")
+    await scheduler.run_dns_checks()                                 # the baseline
+    zone.answers[("ex.test", "A")] = ["9.9.9.9"]
+    await scheduler.run_dns_checks()                                 # strike one
+    bot.fail_with = [TelegramForbiddenError(method=SendMessage(chat_id=1, text="x"), message="Forbidden")]
+    await scheduler.run_dns_checks()                                 # the move — refused
+    assert bot.sent == [] and await get_dns_state("ex.test", "A") != "9.9.9.9"
+    await scheduler.run_dns_checks()
+    assert len(bot.sent) == 1 and "запись A" in bot.sent[0]["text"]
+    assert await get_dns_state("ex.test", "A") == "9.9.9.9"
+    await scheduler.run_dns_checks()
+    assert len(bot.sent) == 1                                        # in the pool now: quiet
+
+
+async def test_a_timed_out_certificate_check_names_its_error(bot, db, monkeypatch):
+    async def never(hostname, port):
+        raise TimeoutError()
+    monkeypatch.setattr(ssl_checker, "_fetch_cert", never)
+    r = await ssl_checker.check_ssl("https://ex.test", manage=False)
+    assert r.status == "error" and r.transient and r.error == "SSL check failed: TimeoutError"
