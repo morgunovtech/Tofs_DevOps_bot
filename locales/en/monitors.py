@@ -181,6 +181,7 @@ STRINGS: dict[str, str] = {
     "{page}: подтверждение {service} с заглушкой «{value}» — в {service} сайт не подтверждён":
         "{page}: the {service} verification tag holds a placeholder «{value}» — the site is not verified in {service}",
     "{page}: {n} разных кода подтверждения {service}": "{page}: {n} different {service} verification codes",
+    "в Cloudflare включено «Block AI bots» — ИИ-ассистенты получают отказ": "«Block AI bots» is on in Cloudflare — AI assistants are refused",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {
