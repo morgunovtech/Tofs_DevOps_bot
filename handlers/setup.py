@@ -303,7 +303,7 @@ async def build_items(probe: bool = True) -> list[Item]:
         items.append(Item("cloudflare", "ok", "Cloudflare"))
     else:
         items.append(Item("cloudflare", "off", "☁️ Cloudflare",
-                          t("кнопки «пересобрать» и «сбросить кэш» в тревогах, пересборка сама при падении"),
+                          t("кнопки «пересобрать» и «сбросить кэш» в тревогах, пересборка сама при падении, журнал изменений аккаунта и опубликованное без присмотра"),
                           (t("☁️ Подключить Cloudflare"), "setup:cf")))
 
     if github.available():

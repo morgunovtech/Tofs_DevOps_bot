@@ -214,7 +214,7 @@ def _gh_headers() -> dict:
     return {**_GH_HEADERS, "Authorization": f"Bearer {token}"} if token else dict(_GH_HEADERS)
 
 
-async def _gh_json(session: aiohttp.ClientSession, url: str, **params):
+async def gh_json(session: aiohttp.ClientSession, url: str, **params):
     """GitHub REST (public repositories; the token, if any): JSON or None."""
     try:
         async with session.get(url, params=params or None, headers=_gh_headers()) as resp:
@@ -236,7 +236,7 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     if not slug:
         _say_no_repo()
         return []
-    data = await _gh_json(session, GITHUB_PULLS.format(slug=slug), state="open", per_page="50")
+    data = await gh_json(session, GITHUB_PULLS.format(slug=slug), state="open", per_page="50")
     if not isinstance(data, list):
         return None
     now = datetime.now(UTC)
@@ -287,13 +287,13 @@ async def failed_deploy(session: aiohttp.ClientSession) -> dict | None:
         return None
     if not running:
         return None
-    head = await _gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
+    head = await gh_json(session, GITHUB_COMMIT.format(slug=slug, ref="main"))
     if not isinstance(head, dict):
         raise _Unknown
     sha = str(head.get("sha") or "")
     if not sha or sha.startswith(running):
         return None
-    status = await _gh_json(session, GITHUB_STATUS.format(slug=slug, ref=sha))
+    status = await gh_json(session, GITHUB_STATUS.format(slug=slug, ref=sha))
     if not isinstance(status, dict):
         raise _Unknown
     # Only a deploy status counts: a red status from some other integration

@@ -634,6 +634,22 @@ STRINGS: dict[str, str] = {
     "записи DNS в Cloudflare": "the DNS records in Cloudflare",
     "сверка «опубликовано, но не под присмотром» и поиск записей DNS, через которые можно захватить поддомен, не работают":
         "the «published but not watched» check and the search for DNS records a subdomain can be taken over through do not work",
+    # ── services/lag.py ─────────────────────────────────────────────────────
+    "🔗 Релиз {tag}": "🔗 Release {tag}",
+    "🟠 API {label} отстаёт от релиза {tag} уже {days} дн.: отвечает версией {deployed}":
+        "🟠 API {label} has been behind release {tag} for {days} d: it answers with version {deployed}",
+    "Код релиза влит, но не задеплоен: те, кто зовёт API, получают старую версию.":
+        "The release's code is merged but not deployed: whoever calls the API gets the old version.",
+    "Что делать: посмотри последний деплой (Cloudflare → Workers или Pages → Deployments) и запусти его снова, если он упал.":
+        "What to do: look at the last deployment (Cloudflare → Workers or Pages → Deployments) and run it again if it failed.",
+    "API {label}": "API {label}",
+    "🟠 Worker {script} отстаёт от кода: последний коммит в {dir}/ от {committed}, задеплоен {deployed}":
+        "🟠 Worker {script} is behind its code: the last commit in {dir}/ is from {committed}, deployed {deployed}",
+    "Изменения в {dir}/ влиты, но на {host} работает прежняя версия.":
+        "The changes in {dir}/ are merged, but {host} still runs the previous version.",
+    "Что делать: задеплой Worker (wrangler deploy или кнопка в Cloudflare → Workers) или проверь, почему упал автоматический деплой.":
+        "What to do: deploy the Worker (wrangler deploy or the button in Cloudflare → Workers), or find out why the automatic deployment failed.",
+    "✅ {what}: задеплоено то, что влито, — больше не отстаёт.": "✅ {what}: what was merged is deployed — no longer behind.",
 }
 
 # Russian singular → (English singular, English plural).

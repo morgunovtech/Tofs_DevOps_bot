@@ -28,7 +28,7 @@ Made for people who have never heard of DNS or a 502. Three buttons under the in
 
 ### For advanced users
 
-- **API checks** — watch what the site actually does (`POST /api/v1/analyze` must answer with `scoreLabel`): method, headers, body; an API check gets status, phrase and timing only, no SEO noise. TCP ports and ping too.
+- **API checks** — watch what the site actually does (`POST /api/v1/analyze` must answer with `scoreLabel`): method, headers, body; an API check gets status, phrase and timing only, no SEO noise. When its answer carries a `version`, it is compared with the latest release of the GitHub repository whose homepage is that host — «merged but not deployed» is said once. TCP ports and ping too.
 - **Self-healing** — Cloudflare Pages redeploy and cache purge; on your own server — only with docker.sock mounted, see [Security](#security) — container restart and optional disk cleanup (`AUTO_CLEANUP=1`: dangling images and build cache unused for a day), with a report of what was already done.
 - **Scheduled jobs and other bots** — a dead-man switch: one `curl` line at the end of a cron job, and the bot notices when it goes silent.
 - **Google Search Console and Yandex.Webmaster** — whether the site is actually in the index.
