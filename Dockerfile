@@ -1,7 +1,7 @@
-# 3.14, not 3.15: aiogram 3.31 allows Python below 3.15 only, and the
-# pydantic-core of pydantic 2.13 has no 3.15 wheels (the 3.15 bump of
-# 01.11.2026 failed to deploy) — move on once an aiogram release allows both
-# Python 3.15 and pydantic >= 2.14. The OS suffix is explicit: a bare
+# 3.14, not 3.15: the lock holds pydantic 2.13, whose pydantic-core has no
+# 3.15 wheels (the 3.15 bump of 01.11.2026 failed to deploy); aiogram 3.32
+# already allows Python 3.15 and pydantic 2.14 — move on once the lock has
+# pydantic >= 2.14 and CI tests on 3.15. The OS suffix is explicit: a bare
 # «3.14-slim» changes OS with the next Debian stable. The digest pins the
 # exact image CI tested and ran; Dependabot (docker) proposes the next one
 # as a PR.

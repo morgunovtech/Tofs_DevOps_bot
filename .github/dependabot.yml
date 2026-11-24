@@ -30,10 +30,10 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
-    # 3.14, not 3.15: aiogram 3.31 allows Python below 3.15 only, and the
-    # pydantic-core of pydantic 2.13 has no 3.15 wheels (the 3.15 bump of
-    # 01.11.2026 did not build) — drop this once an aiogram release allows
-    # both Python 3.15 and pydantic >= 2.14. The monthly PR moves the digest
+    # 3.14, not 3.15: the lock holds pydantic 2.13, whose pydantic-core has
+    # no 3.15 wheels (the 3.15 bump of 01.11.2026 did not build); aiogram 3.32
+    # already allows both Python 3.15 and pydantic 2.14 — drop this once the
+    # lock moves to pydantic >= 2.14 and CI tests on 3.15. The monthly PR moves the digest
     # in the Dockerfile's FROM; a human merges it: the auto-merge workflow
     # takes only patch/minor bumps of the Python libraries, never the base
     # image, because CI does not run the tests on the new Python.

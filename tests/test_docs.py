@@ -106,7 +106,8 @@ def test_docs_do_not_send_people_to_screens_that_do_not_exist():
 
 
 # Screens #63 renamed: a message that names the old one sends the owner
-# looking for a button that is not there (both languages — locales/ is code).
+# looking for a button that is not there (both languages — locales/ is code;
+# the widget's own header too — it is what a self-hosting owner reads).
 RENAMED = {
     "🤖 Что бот делает сам": "«🤖 Что делаю сам»",
     "What the bot does by itself": "«🤖 What I do by myself»",
@@ -116,7 +117,7 @@ RENAMED = {
 
 
 def test_the_bots_own_texts_do_not_name_renamed_screens():
-    shown = _bot_texts()
+    shown = _bot_texts() + (ROOT / "web" / "feedback-widget.js").read_text("utf-8")
     assert [f"«{old}» — now {new}" for old, new in RENAMED.items() if old in shown] == []
 
 def test_docs_hold_no_token_shaped_strings():

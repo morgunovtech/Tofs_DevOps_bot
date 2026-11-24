@@ -81,10 +81,9 @@ async def test_status_page_and_json_and_badge(bot, db):
         data = await r.json()
         assert data["status"] == "up" and data["sites"][0]["label"] == "example.com"
         assert {"up24", "up7d", "up30d", "up90d"} <= set(data["sites"][0])
-        r = await c.get(f"/status/badge/{sid}.svg")
-        assert r.status == 200 and "100.0%" in await r.text()
-        assert (await c.get("/status/badge/999.svg")).status == 404
-        assert (await c.get("/status/badge/abc.svg")).status == 404
+        # The pre-3.0 badge addresses are gone: the page is on, and they still 404.
+        assert (await c.get(f"/status/badge/{sid}.svg")).status == 404
+        assert (await c.get(f"/status/badge/{sid}")).status == 404
         assert (await c.get("/health")).status == 200
         r = await c.get("/feedback-widget.js")
         assert r.status == 200 and "DevOpsFeedback" in await r.text()

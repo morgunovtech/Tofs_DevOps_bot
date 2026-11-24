@@ -13,7 +13,6 @@ import asyncio
 import hmac
 import ipaddress
 import logging
-import re
 import time
 from collections import defaultdict, deque
 from datetime import UTC, datetime
@@ -434,10 +433,6 @@ async def handle_status_json(request: web.Request) -> web.Response:
     return web.json_response(await status_page.status_json(), headers=_PRIVATE)
 
 
-# ASCII digits only, bounded: an astronomically long id would overflow SQLite.
-_SID_RE = re.compile(r"[0-9]{1,9}")
-
-
 async def handle_badge(request: web.Request) -> web.Response:
     """/badge/<id>-<token>.svg — the address the bot gives for a README: its
     own key, no page slug in it. Served while the status page is on."""
@@ -454,24 +449,6 @@ async def handle_badge(request: web.Request) -> web.Response:
                         headers={"Cache-Control": "public, max-age=300",
                                  "X-Robots-Tag": "noindex, nofollow"})
 
-
-async def handle_status_badge(request: web.Request) -> web.Response:
-    """The old badge addresses (/status/badge/… and /status/<slug>/badge/…):
-    kept for badges already pasted into READMEs until the next major release
-    (3.0.0) — removing them is a breaking change; the bot hands out
-    handle_badge's address now."""
-    if not _status_allowed(request):
-        return web.Response(status=404, text="Not Found")
-    sid = request.match_info.get("sid", "").removesuffix(".svg")
-    if not _SID_RE.fullmatch(sid):
-        return web.Response(status=404, text="Not Found")
-    found, pct = await status_page.badge_pct(int(sid))
-    if not found:
-        return web.Response(status=404, text="Not Found")
-    return web.Response(text=status_page.badge_svg(pct), content_type="image/svg+xml",
-                        charset="utf-8",
-                        headers={"Cache-Control": "public, max-age=300",
-                                 "X-Robots-Tag": "noindex, nofollow"})
 
 
 def _widget(cache: str) -> web.Response:
@@ -537,9 +514,7 @@ def create_app() -> web.Application:
     # Registration order matters: literal segments before the {slug} catch-all.
     app.router.add_get("/status", handle_status_page)
     app.router.add_get("/status.json", handle_status_json)
-    app.router.add_get("/status/badge/{sid}", handle_status_badge)
     app.router.add_get("/status/{slug}.json", handle_status_json)
-    app.router.add_get("/status/{slug}/badge/{sid}", handle_status_badge)
     app.router.add_get("/status/{slug}", handle_status_page)
     return app
 
