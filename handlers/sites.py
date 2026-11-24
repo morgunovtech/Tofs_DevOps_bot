@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 import idna
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import StateFilter
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -1254,8 +1254,28 @@ async def _db_question(info: dict, name: str) -> str:
 async def msg_backup_file(message: Message, state: FSMContext):
     """A file sent to the chat outside any wizard: if it is a copy of the
     bot's database (or an old export), offer to restore from it. The file is
-    downloaded once, checked, and kept on disk until the answer."""
-    doc = message.document
+    downloaded once, checked, and kept on disk until the answer. A caption
+    («/restore» or anything else) changes nothing — the file is recognised
+    by its contents."""
+    await _offer_restore(message, message.document, state)
+
+
+@router.message(Command("restore"), StateFilter(None))
+async def cmd_restore(message: Message, state: FSMContext):
+    """`/restore` as a reply to the message with the copy is the same as
+    sending the file: an alias for people who expect a command. Alone, it
+    says what to send."""
+    reply = message.reply_to_message
+    if reply is not None and getattr(reply, "document", None) is not None:
+        await _offer_restore(message, reply.document, state)
+        return
+    await message.answer(t("Чтобы восстановить бота, пришли мне копию базы (.db), которую я присылаю по "
+                           "воскресеньям, — просто файлом, подпись не нужна. Или ответь /restore на сообщение "
+                           "с этим файлом."))
+
+
+async def _offer_restore(message: Message, doc, state: FSMContext):
+    """Download the document, recognise it, ask before touching anything."""
     if doc.file_size is None:
         await message.answer(t("Не вижу размер файла — пришли его ещё раз как документ (📎 → Файл)."))
         return

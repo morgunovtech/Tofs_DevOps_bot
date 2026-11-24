@@ -955,6 +955,8 @@ STRINGS: dict[str, str] = {
     "секреты ссылок — тоже.": "the link secrets too.",
     "секреты ссылок возьму из копии — старые ссылки задач продолжат работать.": "the link secrets come from the copy — the old job links keep working.",
     " Текущая база сохранится рядом.": " The current database is kept next to it.",
+    "Чтобы восстановить бота, пришли мне копию базы (.db), которую я присылаю по воскресеньям, — просто файлом, подпись не нужна. Или ответь /restore на сообщение с этим файлом.":
+        "To restore the bot, send me the database copy (.db) I send on Sundays — just the file, no caption needed. Or reply /restore to the message with that file.",
     "Не вижу размер файла — пришли его ещё раз как документ (📎 → Файл).": "I can't see the file size — send it again as a document (📎 → File).",
     "Файл слишком большой (лимит 20 МБ — столько отдаёт Telegram).": "The file is too big (the limit is 20 MB — that is what Telegram hands over).",
     "Не смог скачать файл из Telegram ({e}). Пришли его ещё раз.": "Could not download the file from Telegram ({e}). Send it again.",

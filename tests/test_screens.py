@@ -838,6 +838,18 @@ async def test_a_visitors_message_is_one_line_on_the_feedback_screen(bot, db):
     assert "\n🔴" not in text and "‮" not in text
 
 
+
+async def test_a_link_in_a_visitors_message_is_defanged_on_the_feedback_screen(bot, db):
+    """The screen draws a visitor's words by the alert's rule: a link in them
+    is not clickable, a zero-width mark is gone."""
+    await save_feedback("https://ex.test", "https://ex.test/p", "click https://evil.example/login www.bad.test\u200b!",
+                        "", "1.1.1.1")
+    call = FakeCall("menu_feedback:0")
+    await feedback.cb_feedback(call)
+    text = call.message.texts[-1]
+    assert "click hxxps://evil[.]example/login www[.]bad[.]test!" in text
+    assert "https://evil.example" not in text and "\u200b" not in text
+
 async def test_declining_an_old_weekly_tip_survives_a_message_too_old_to_edit(bot, db):
     """The tip's buttons go when they can; a message Telegram no longer lets
     the bot edit must not turn the decline into a traceback."""

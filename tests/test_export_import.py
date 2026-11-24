@@ -281,3 +281,26 @@ async def test_the_restore_question_says_whether_the_copy_holds_the_task_secret(
     info["state"]["secret:heartbeat"] = "x"
     text = await sites._db_question(info, "bot-copy.db")
     assert "секреты ссылок возьму из копии" in text
+
+
+async def test_restore_as_a_reply_to_the_copy_is_the_same_as_sending_it(bot, db, tmp_path):
+    """`/restore` in reply to the message with the copy: an alias, not a
+    requirement — the file alone already works. Alone, it says what to send."""
+    await db.activate_or_create_site("https://kept.test")
+    copy = tmp_path / "copy.db"
+    await database.backup_db(str(copy))
+    data = copy.read_bytes()
+    fake_bot = _fake_bot({"f1": data})
+
+    alone = FakeMessage("/restore")
+    alone.reply_to_message = None
+    await sites.cmd_restore(alone, FakeState())
+    assert "пришли мне копию базы" in alone.texts[-1] and alone.reply_markup is None
+
+    reply = FakeMessage("/restore")
+    reply.bot = fake_bot
+    reply.reply_to_message = _doc_message("f1", data, fake_bot)
+    state = FakeState()
+    await sites.cmd_restore(reply, state)
+    assert reply.texts[-1].startswith("💾 «bot-copy.db» — копия базы бота") and "restore:yes" in str(reply.reply_markup)
+    assert (await state.get_data())["restore"]["kind"] == "db"

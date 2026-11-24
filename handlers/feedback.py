@@ -8,7 +8,7 @@ from handlers.common import STALE_TAP, ack, cb_int, render
 from services import public_urls, secrets
 from utils.clock import fmt_local
 from utils.i18n import t
-from utils.text import esc, one_line
+from utils.text import defang, esc, one_line
 from web import widget
 
 router = Router(name="feedback")
@@ -86,8 +86,9 @@ async def show_feedback(call: CallbackQuery, offset: int, note: str = ""):
         lines.append(t("Пока ни одного сообщения.") if offset == 0 else t("Дальше пусто."))
     for fb in rows:
         # A visitor's words as one line, like the alert draws them: a line
-        # break or a direction override in them must not draw a row of the bot's.
-        message = one_line(fb["message"])
+        # break or a direction override in them must not draw a row of the
+        # bot's, and a link in them is defanged (hxxps://evil[.]example).
+        message = one_line(defang(fb["message"]))
         lines.append(f"#{fb['id']} · {fmt_local(fb['created_at'])} · {one_line(fb['page_url'] or fb['site_url'])}\n"
                      f"   {message[:300]}{'…' if len(message) > 300 else ''}")
     lines.append("\n" + t("Подключить виджет на сайт — «📩 Подключить виджет» на экране «🌍 Для посетителей»."))

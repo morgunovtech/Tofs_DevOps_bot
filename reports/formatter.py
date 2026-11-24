@@ -32,7 +32,7 @@ from services.humanize import (
 )
 from utils.clock import now_local, to_local
 from utils.i18n import fmt_duration, plural, t
-from utils.text import BIDI_CONTROLS, esc, incident_start, one_line, parse_sqlite_utc
+from utils.text import clean, defang, esc, incident_start, one_line, parse_sqlite_utc
 from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
 
 
@@ -518,7 +518,9 @@ def format_feedback(site_url: str, page_url: str, message: str,
     """The visitor's words stay inside a quote; the lines around it are the
     bot's (utils.text.one_line — the «📩» screen uses the same rule)."""
     note = "" if verified else t(" (не подтверждено: так написал отправитель)")
-    text = "\n".join(one_line(line) for line in str(message).translate(BIDI_CONTROLS).splitlines())
+    # The site and page are the owner's own addresses and stay as they are;
+    # a link inside the visitor's words is defanged (hxxps://evil[.]example).
+    text = "\n".join(one_line(defang(line)) for line in clean(message).splitlines())
     return (t("📩 Сообщение с сайта") + "\n"
             + t("Сайт: {site}{note}").format(site=one_line(site_url), note=note) + "\n"
             + t("Страница: {page}").format(page=one_line(page_url)) + "\n"
