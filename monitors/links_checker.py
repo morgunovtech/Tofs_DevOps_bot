@@ -26,6 +26,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import socket
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urldefrag, urljoin, urlparse
@@ -147,6 +148,46 @@ def pick_window(links: list[str], site_url: str, offset: int) -> tuple[list[str]
             hosts.add(host)
         picked.append(u)
     return picked, 0 if next_at is None else start + next_at
+
+
+LLMS_TXT = "/llms.txt"
+LLMS_MAX_BYTES = 256 * 1024
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
+_MD_LINK = re.compile(r"\]\(([^)\s]+)\)")
+
+
+def llms_links(text: str, base_url: str) -> list[str]:
+    """The links of an llms.txt — Markdown «[name](url)», relative ones too,
+    and bare addresses — resolved against the file's address. What AI
+    assistants read first about the site: a dead link there is a dead end
+    for them."""
+    found = set(_URL_IN_TEXT.findall(text))
+    for href in _MD_LINK.findall(text):
+        with contextlib.suppress(ValueError):
+            found.add(urljoin(base_url, href))
+    out = set()
+    for link in found:
+        link = link.rstrip(".,;:")
+        with contextlib.suppress(ValueError):
+            full = urldefrag(link).url
+            if urlparse(full).scheme in ("http", "https"):
+                out.add(full)
+    return sorted(out)
+
+
+async def _fetch_llms(session: aiohttp.ClientSession, page_url: str) -> list[str]:
+    """The links of the site's /llms.txt; [] when there is none — an SPA
+    answering 200 with its index.html for any path has none either."""
+    url = urljoin(page_url, LLMS_TXT)
+    try:
+        async with session.get(url, timeout=TIMEOUT, allow_redirects=True, headers=DEFAULT_HEADERS) as resp:
+            kind = resp.content_type or ""
+            if resp.status != 200 or not kind.startswith("text/") or kind == "text/html":
+                return []
+            return llms_links(decode_body(await read_capped(resp, LLMS_MAX_BYTES), resp.charset), str(resp.url))
+    except Exception as e:
+        logger.debug("Could not fetch %s: %s", url, e)
+        return []
 
 
 async def _fetch_page(session: aiohttp.ClientSession, url: str) -> tuple[str, str] | None:
@@ -294,6 +335,10 @@ async def _crawl(url: str, site_id: int, manage: bool, slots: asyncio.Semaphore,
             await save_check(site_id, "links", "error", details=r.error)
             await sitestatus.update(site_id, "links", status="error", broken=0, pending=0)
             return r
+        # The links of /llms.txt are crawled the same way: an AI assistant
+        # that reads it first meets the same dead end a visitor would.
+        r.from_llms = set(await _fetch_llms(session, final_url)) - set(links)
+        links = sorted(set(links) | r.from_llms)
         on_page = set(links)
         r.total_links = len(links)
         offset = _count(await get_state(f"links_offset:{site_id}"))

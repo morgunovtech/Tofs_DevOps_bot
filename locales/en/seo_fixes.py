@@ -311,6 +311,24 @@ STRINGS: dict[str, str] = {
     "его там; свой генератор (next-sitemap, @astrojs/sitemap) — в его конфиге.":
         "Rebuild the sitemap with the right domain: WordPress (Yoast, Rank Math) and site builders take the site's address from "
         "the settings — fix it there; your own generator (next-sitemap, @astrojs/sitemap) — in its config.",
+    # ── proofs of ownership ───────────────────────────────────
+    "Метатег подтверждения прав с заглушкой": "A verification meta tag with a placeholder",
+    "Сайт не подтверждён в поисковике: нет его статистики, ошибок обхода и запроса индексации, а заглушка в коде выдаёт, что настройку не доделали.":
+        "The site is not verified with the search engine: no statistics, no crawl errors, no indexing requests — and the placeholder in the code shows the setup was never finished.",
+    "Открой кабинет поисковика — Google Search Console, Яндекс.Вебмастер или Bing Webmaster — и добавь сайт, способ подтверждения «HTML-тег» (метатег).":
+        "Open the search engine's console — Google Search Console, Yandex.Webmaster or Bing Webmaster — and add the site with the «HTML tag» (meta tag) verification method.",
+    "Скопируй выданный код и вставь его в content вместо заглушки. Подтверждаешь сайт через DNS — просто удали метатег.":
+        "Copy the code it gives you and put it into content instead of the placeholder. If you verify the site through DNS, just delete the meta tag.",
+    "Нажми «Подтвердить» в кабинете, потом «🔄 Проверить снова» здесь.": "Tap «Verify» in the console, then «🔄 Check again» here.",
+    "Вставить код подтверждения": "Insert the verification code",
+    "Два разных кода подтверждения одного поисковика": "Two different verification codes of one search engine",
+    "Один из кодов почти наверняка старый — от прежнего аккаунта или прежнего владельца, и он по-прежнему даёт права на сайт.":
+        "One of the codes is almost certainly old — from a former account or a former owner — and it still grants rights to the site.",
+    "Открой кабинет поисковика → настройки сайта → «Пользователи и права» (в Вебмастере — «Права доступа») и посмотри, какой код подтверждает тебя.":
+        "Open the search engine's console → site settings → «Users and permissions» (in Webmaster — «Access rights») and see which code verifies you.",
+    "Второй метатег удали из кода, а лишнего владельца — из кабинета, если он там остался.":
+        "Delete the other meta tag from the code, and the extra owner from the console if it is still there.",
+    "Убрать лишний код подтверждения": "Remove the extra verification code",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {}

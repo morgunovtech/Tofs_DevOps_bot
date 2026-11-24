@@ -108,6 +108,33 @@ def _meta(soup: BeautifulSoup, *names: str) -> list:
     return [m for m in soup.find_all("meta") if str(m.get("name") or "").strip().lower() in want]
 
 
+# The search engines' proofs of ownership a page can carry (meta name → whose).
+VERIFY_TAGS = {"google-site-verification": "Google", "yandex-verification": "Яндекс", "msvalidate.01": "Bing"}
+# A value nobody received from a search engine: a template's «YOUR_CODE»,
+# «xxx», «<code>», «…» — or too short to be a code (Yandex's are 16 hex).
+_PLACEHOLDER = re.compile(r"your|code|x{3,}|paste|replace|insert|todo|example|[<>{}]|\.\.\.|…", re.I)
+
+
+def verification_problems(soup: BeautifulSoup, page: str) -> list[SeoProblem]:
+    """A proof-of-ownership meta tag left as a template, or two different
+    codes of one search engine (one of them is a former owner's or stale)."""
+    out = []
+    for name, service in VERIFY_TAGS.items():
+        values = [str(m.get("content") or "").strip() for m in _meta(soup, name)]
+        if not values:
+            continue
+        fake = [v for v in values if len(v) < 8 or _PLACEHOLDER.search(v)]
+        real = sorted({v for v in values if v not in fake})
+        if fake:
+            out.append(_p("verify_placeholder", "warning",
+                          t("{page}: подтверждение {service} с заглушкой «{value}» — в {service} сайт не подтверждён").format(
+                              page=page, service=t(service), value=fake[0][:30] or t("пусто"))))
+        elif len(real) > 1:
+            out.append(_p("verify_conflict", "warning", t("{page}: {n} разных кода подтверждения {service}").format(
+                page=page, n=len(real), service=t(service))))
+    return out
+
+
 def _tokens(value: str) -> set[str]:
     return {t.lower() for t in re.split(r"[\s,]+", value) if t}
 
@@ -275,6 +302,7 @@ def analyze_page(html: str, page_url: str, headers: dict | None = None, *,
         html_tag = soup.find("html")
         if html_tag and not html_tag.get("lang"):
             problems.append(_p("no_lang", "warning", t("не указан язык страницы (lang)")))
+        problems += verification_problems(soup, page)
 
     for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
         try:
