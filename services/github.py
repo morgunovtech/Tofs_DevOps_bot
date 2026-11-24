@@ -266,6 +266,23 @@ async def check() -> dict:
     return report
 
 
+COMMITS = "https://api.github.com/repos/{name}/commits"   # module-level: tests point it at a local server
+
+
+async def last_commit_at(name: str, path: str) -> datetime | None:
+    """When the newest commit that touched path landed on the default
+    branch; None when there is none or GitHub did not answer."""
+    async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as session:
+        data = await updates.gh_json(session, COMMITS.format(name=name), path=path, per_page="1")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    raw = ((data[0].get("commit") or {}).get("committer") or {}).get("date")
+    try:
+        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 _PUBLISHED_FIELDS = "nameWithOwner url homepageUrl isArchived latestRelease { tagName publishedAt }"
 
 

@@ -273,8 +273,9 @@ async def _probe_http(url: str, site: dict, r: AvailabilityResult):
         r.response_time_ms = int((time.monotonic() - start) * 1000)
 
 
-async def phrase_state(site: dict, phrase: str) -> bool | None:
-    """Is the phrase on the page right now, as the monitor would see it?
+async def answer_text(site: dict) -> str | None:
+    """The page or the API answer right now, as the monitor's request gets
+    it (its method, headers, body; the first KEYWORD_BODY_LIMIT bytes).
     None when that cannot be told: HEAD (the monitor never reads a body),
     a status the site's rules reject, a network error."""
     method, headers, body = request_options(site)
@@ -286,10 +287,16 @@ async def phrase_state(site: dict, phrase: str) -> bool | None:
             async with await _request(session, method, url, headers, body, _own_request(site, body)) as resp:
                 if not code_accepted(resp.status, parse_accepted_codes(site.get("accepted_codes"))):
                     return None
-                raw = await read_capped(resp, KEYWORD_BODY_LIMIT)
-                return phrase_found(phrase, decode_body(raw, resp.charset))
-    except Exception:   # a timeout or a refused connection is «cannot tell», not «no phrase»
+                return decode_body(await read_capped(resp, KEYWORD_BODY_LIMIT), resp.charset)
+    except Exception:   # a timeout or a refused connection is «cannot tell»
         return None
+
+
+async def phrase_state(site: dict, phrase: str) -> bool | None:
+    """Is the phrase on the page right now, as the monitor would see it?
+    None when that cannot be told (answer_text)."""
+    text = await answer_text(site)
+    return None if text is None else phrase_found(phrase, text)
 
 
 def _error_text(e: aiohttp.ClientError) -> str:

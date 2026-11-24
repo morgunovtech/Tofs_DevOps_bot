@@ -103,6 +103,7 @@ from services import (
     humanize,
     index_status,
     integrations,
+    lag,
     maintenance,
     notifier,
     published,
@@ -2818,6 +2819,9 @@ def setup_scheduler() -> AsyncIOScheduler:
     # What is published but not watched, and the zone's records anyone could take over.
     job(published.run, lambda: IntervalTrigger(hours=24, start_date=soon + timedelta(minutes=5), timezone=UTC),
         "published", misfire_grace_time=3600)
+    # An API or a Worker whose release is merged but not deployed.
+    job(lag.run, lambda: IntervalTrigger(hours=24, start_date=soon + timedelta(minutes=9), timezone=UTC),
+        "deploy_lag", misfire_grace_time=3600)
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:
