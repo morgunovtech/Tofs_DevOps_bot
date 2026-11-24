@@ -358,6 +358,9 @@ HEALTH = {   # name: (как называть владельцу, что он т
     "checkhost": ("check-host.net — вторая точка проверки",
                   "тревога «сайт лёг» уходит без перепроверки извне, замер из региона не обновляется", None),
     "osv": ("база уязвимостей OSV", "проверка уязвимостей в пакетах бота не работает", None),
+    "cf_audit": ("журнал изменений Cloudflare",
+                 "тревоги об опасных изменениях в аккаунте Cloudflare и строка «Cloudflare за сутки» не работают",
+                 "setup:cf"),
     "rdap": ("RDAP — сроки доменов", "сроки регистрации доменов не обновляются", None),
 }
 SILENT_FAIL = timedelta(days=1)       # a failure nobody refused is said after this long without success

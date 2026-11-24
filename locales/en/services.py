@@ -567,6 +567,43 @@ STRINGS: dict[str, str] = {
     "✅ «{job}» вышел на связь — теперь слежу за ним.": "✅ «{job}» checked in — I am watching it now.",
     "📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 🌍 Для посетителей → 📩 Подключить виджет.":
         "📩 The feedback widget updated together with the bot. On sites with the old snippet it no longer appears — take the new one: ⚙️ Settings → 🌍 For visitors → 📩 Connect the widget.",
+    # ── services/cloudflare.py, cf_audit.py, causes.py ──────────────────────
+    "Cloudflare не ответил": "Cloudflare did not answer",
+    "Cloudflare не назвал аккаунт зоны": "Cloudflare did not name the zone's account",
+    "токену не хватает права {permission}": "the token lacks the {permission} permission",
+    "Cloudflare ответил ошибкой: {why}": "Cloudflare answered with an error: {why}",
+    "удалена запись DNS": "a DNS record was deleted",
+    "изменили DNSSEC": "DNSSEC was changed",
+    "сменили NS-серверы зоны": "the zone's nameservers were changed",
+    "режим SSL переключили на": "the SSL mode was switched to",
+    "удалили правило переадресации": "a redirect rule was deleted",
+    "создан новый API-токен": "a new API token was created",
+    "вход в аккаунт с нового адреса": "a login to the account from a new address",
+    "неизвестно": "unknown",
+    "с адреса {ip}": "from {ip}",
+    "Кто: {who}, {time}.": "Who: {who}, {time}.",
+    "🔴 Cloudflare: {n} {changes} в аккаунте": "🔴 Cloudflare: {n} {changes} in the account",
+    "Если это не ты, у кого-то есть доступ к аккаунту Cloudflare, а через него — к домену и всем сайтам на нём.":
+        "If this was not you, someone has access to the Cloudflare account, and through it to the domain and every site on it.",
+    "1. Это ты — нажми «✅ Это я»: изменения с этого адреса дальше будут только в списке за сутки.":
+        "1. It was you — tap «✅ It was me»: changes from this address will only go to the day's list from now on.",
+    "2. Не ты — смени пароль Cloudflare, включи вход с подтверждением, удали лишние API-токены (кнопка ниже) и верни, что удалили, по журналу.":
+        "2. It was not you — change the Cloudflare password, turn on two-factor login, delete the API tokens you do not know (button below) and restore what was deleted, using the audit log.",
+    "✅ Это я": "✅ It was me",
+    "🔗 Журнал в Cloudflare": "🔗 Audit log in Cloudflare",
+    "🔗 API-токены": "🔗 API tokens",
+    "☁️ Cloudflare за сутки: {n} {changes} — список под кнопкой «📋 Что изменилось»":
+        "☁️ Cloudflare in the last day: {n} {changes} — the list is under «📋 What changed»",
+    "☁️ За сутки в Cloudflare ничего не меняли.": "☁️ Nothing was changed in Cloudflare in the last day.",
+    "☁️ Что изменилось в Cloudflare за сутки ({n}):": "☁️ What changed in Cloudflare in the last day ({n}):",
+    "… и ещё {n} — весь журнал в Cloudflare": "… and {n} more — the whole log is in Cloudflare",
+    "деплой Cloudflare Pages {commit} в {time}": "Cloudflare Pages deployment {commit} at {time}",
+    "в {time} в Cloudflare: {what}{more}": "at {time} in Cloudflare: {what}{more}",
+    "Рядом по времени: {found}.": "Close in time: {found}.",
+    "📋 Что изменилось": "📋 What changed",
+    "журнал изменений Cloudflare": "Cloudflare's audit log",
+    "тревоги об опасных изменениях в аккаунте Cloudflare и строка «Cloudflare за сутки» не работают":
+        "the alerts about dangerous changes in the Cloudflare account and the «Cloudflare in the last day» line do not work",
 }
 
 # Russian singular → (English singular, English plural).
@@ -581,4 +618,6 @@ PLURALS: dict[str, tuple[str, str]] = {
     "старое сообщение": ("old message", "old messages"),
     "критическая проблема": ("critical problem", "critical problems"),
     "серьёзная проблема": ("serious problem", "serious problems"),
+    "изменение": ("change", "changes"),
+    "опасное изменение": ("dangerous change", "dangerous changes"),
 }

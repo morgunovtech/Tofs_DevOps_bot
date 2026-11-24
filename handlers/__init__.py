@@ -13,6 +13,7 @@ from handlers import (
     automation,
     blocks,
     bottom,
+    cloudflare,
     feedback,
     heartbeats,
     incidents,
@@ -56,7 +57,7 @@ admin.callback_query.middleware(DropInputOnNavigation())
 admin.callback_query.middleware(ForgetWizardDoor())
 admin.include_routers(
     bottom.router,   # first: a bottom button aborts any pending input
-    menu.router, about.router, blocks.router, mute.router, alerts.router, incidents.router, sites.router,
+    menu.router, about.router, blocks.router, mute.router, alerts.router, cloudflare.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
     seo.router, links.router, feedback.router, setup.router, mail.router,
     security.router, speed.router, automation.router, tune.router,

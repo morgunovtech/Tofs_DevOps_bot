@@ -6,14 +6,13 @@ the meaningful actions are: re-run the check, trigger a Pages deploy hook
 """
 
 import logging
-import re
 from typing import NamedTuple
 
 import aiohttp
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from services import cloudflare, humanize, integrations, maintenance, seo_fixes
 from services import hosting as hosting_svc
-from services import humanize, integrations, maintenance, seo_fixes
 from services.integrations import Probe
 from utils.i18n import t
 from utils.text import esc
@@ -23,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 _PROBE_TIMEOUT = aiohttp.ClientTimeout(total=10)
-CF_API = "https://api.cloudflare.com/client/v4"   # a constant so tests can point it at a local server
-_ZONE_ID = re.compile(r"[0-9a-f]{32}")
 # The same words as handlers.common.RECHECK (a test keeps them equal): the
 # handlers package cannot be imported from a service without a cycle.
 RECHECK = "🔄 Проверить снова"
@@ -42,12 +39,12 @@ async def cf_token_status(token: str) -> Probe:
     [not verified against the real API] — it is saved unconfirmed and the
     first purge tells."""
     zone_id = integrations.cf_zone_id()
-    by_zone = bool(_ZONE_ID.fullmatch(zone_id))
-    url = f"{CF_API}/zones/{zone_id}" if by_zone else f"{CF_API}/user/tokens/verify"
+    by_zone = bool(cloudflare.ZONE_ID.fullmatch(zone_id))
+    url = f"{cloudflare.API}/zones/{zone_id}" if by_zone else f"{cloudflare.API}/user/tokens/verify"
     try:
         async with aiohttp.ClientSession(timeout=_PROBE_TIMEOUT) as s:
-            async with s.get(url, headers={"Authorization": f"Bearer {token}"}) as resp:
-                body, status = await _cf_json(resp), resp.status
+            async with s.get(url, headers=cloudflare.headers(token)) as resp:
+                body, status = await cloudflare.envelope(resp), resp.status
     except Exception as e:
         logger.warning("Cloudflare token probe failed: %s", type(e).__name__)
         return Probe.UNREACHABLE
@@ -56,7 +53,7 @@ async def cf_token_status(token: str) -> Probe:
             return Probe.OK
         return Probe.REJECTED                       # verify answered: disabled or expired
     if status in (400, 401, 403):
-        logger.warning("Cloudflare token probe: HTTP %s (%s)", status, _cf_error(body, status))
+        logger.warning("Cloudflare token probe: HTTP %s (%s)", status, cloudflare.error_text(body, status))
         return Probe.REJECTED if by_zone else Probe.UNREACHABLE
     return Probe.UNREACHABLE
 
@@ -232,18 +229,18 @@ async def purge_cf_cache(url: str) -> str:
     if not integrations.cf_purge_configured():
         return t("❌ Cloudflare API token / zone id не настроены (⚙️ Настройки → 🔌 Подключения → Cloudflare)")
     zone_id = integrations.cf_zone_id()
-    if not _ZONE_ID.fullmatch(zone_id):
+    if not cloudflare.ZONE_ID.fullmatch(zone_id):
         return t("❌ Zone ID Cloudflare испорчен — задай его заново (⚙️ Настройки → 🔌 Подключения → Cloudflare)")
-    zone = f"{CF_API}/zones/{zone_id}"
-    auth = {"Authorization": f"Bearer {integrations.cf_api_token()}"}
+    zone = f"{cloudflare.API}/zones/{zone_id}"
+    auth = cloudflare.headers()
     host = host_of(url)
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.get(zone, headers=auth) as resp:
-                body, status = await _cf_json(resp), resp.status
+                body, status = await cloudflare.envelope(resp), resp.status
             if not body.get("success"):
                 return t("❌ Cloudflare не дал прочитать зону: {why}. Проверь токен (права на зону) и Zone ID").format(
-                    why=esc(_cf_error(body, status)))
+                    why=esc(cloudflare.error_text(body, status)))
             name = str((body.get("result") or {}).get("name") or "").lower()
             if name and name != integrations.cf_zone_name():
                 await integrations.set_value("cf_zone_name", name)
@@ -252,10 +249,10 @@ async def purge_cf_cache(url: str) -> str:
             if not name or not (host == name or host.endswith("." + name)):
                 return t("❌ {host} не в зоне Cloudflare {zone} — кэш не трогаю").format(host=esc(host), zone=esc(name or "?"))
             async with s.post(zone + "/purge_cache", json={"hosts": [host]}, headers=auth) as resp:
-                body, status = await _cf_json(resp), resp.status
+                body, status = await cloudflare.envelope(resp), resp.status
             if body.get("success"):
                 return t("🧹 Кэш Cloudflare для {host} сброшен — посетители увидят свежую версию сайта").format(host=esc(host))
-            return "❌ Cloudflare: " + esc(_cf_error(body, status))
+            return "❌ Cloudflare: " + esc(cloudflare.error_text(body, status))
     except (TimeoutError, aiohttp.ClientError) as e:
         logger.warning("CF cache purge failed: %s", type(e).__name__)
         return t("❌ Cloudflare не ответил за {sec} с — попробуй через минуту или сбрось кэш "
@@ -263,18 +260,3 @@ async def purge_cf_cache(url: str) -> str:
     except Exception as e:
         logger.warning("CF cache purge failed: %s", type(e).__name__)
         return t("❌ Не удалось сбросить кэш — подробности в логе бота; попробуй через минуту")
-
-
-async def _cf_json(resp: aiohttp.ClientResponse) -> dict:
-    """The v4 envelope, or {} when the answer is not JSON (an HTML error page)."""
-    try:
-        body = await resp.json(content_type=None)
-    except ValueError:
-        return {}
-    return body if isinstance(body, dict) else {}
-
-
-def _cf_error(body: dict, status: int) -> str:
-    errors = body.get("errors") or []
-    first = errors[0] if errors and isinstance(errors[0], dict) else {}
-    return str(first.get("message") or f"HTTP {status}")
