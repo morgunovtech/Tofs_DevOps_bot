@@ -147,13 +147,22 @@ async def collect() -> Read:
             _leftovers(read, records)
     if github.available():
         repos = await _ask(read, "репозитории GitHub", github.published_repos())
+        mine = {registrable_domain(host_of(s["url"])) for s in await get_all_sites() if is_http_url(s["url"])}
         for repo in repos or []:
             # A site is watched by its host (its pages come from the sitemap):
             # a homepage with a path is its host too.
             host = host_of(repo["homepage"])
-            if host and host != "github.com":
+            if host and _owners(host, read.zone or integrations.cf_zone_name(), mine):
                 _add(read, host, f"https://{host}", "GitHub")
     return read
+
+
+def _owners(host: str, zone: str, mine: set[str]) -> bool:
+    """A homepage that is the owner's site: in the zone, on a domain of the
+    watched sites, or the owner's name on a platform (x.pages.dev). Not a
+    page on someone else's site — a Railway template, a store listing."""
+    domain = registrable_domain(host)
+    return bool(zone and (host == zone or host.endswith("." + zone))) or domain in mine or domain in PLATFORM_DOMAINS
 
 
 async def _dangling(read: Read, records: list[dict], projects: list[dict] | None,

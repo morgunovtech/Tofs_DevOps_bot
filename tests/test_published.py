@@ -87,7 +87,10 @@ async def cf(monkeypatch):
 
     async def repos():
         return [{"name": "me/good", "url": "https://github.com/me/good", "homepage": "https://good.ex.test/",
-                 "release": "v1.0.0", "released_at": "2026-11-01T00:00:00Z"}]
+                 "release": "v1.0.0", "released_at": "2026-11-01T00:00:00Z"},
+                # a page on someone else's site is not the owner's site (2026-11-24: Railway templates)
+                {"name": "me/bot", "url": "https://github.com/me/bot", "homepage": "https://railway.com/deploy/abc",
+                 "release": None, "released_at": None}]
 
     monkeypatch.setattr(published, "resolve", resolve)
     monkeypatch.setattr(github, "published_repos", repos)
