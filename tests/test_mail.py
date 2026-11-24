@@ -10,7 +10,8 @@ from handlers.sites import card_lines
 from monitors import dns_checker, mail_checker
 from monitors.mail_checker import PROVIDERS, assess, carriers, merge_spf
 from reports import scheduler
-from reports.formatter import format_dns_change
+from reports.formatter import format_dns_change, incident_line
+from reports.weekly import build_weekly_report
 from services import humanize, integrations, sitestatus
 
 PROTON = next(p for p in PROVIDERS if p.name == "Proton")
@@ -162,6 +163,23 @@ async def test_mail_job_end_to_end(bot, db, monkeypatch):
     assert any(t.startswith("✅ Почта на ex.test снова принимает письма") for t in said)
     assert "✅ Почта на ex.test: настройки в порядке, письмам ничего не мешает." in said
     assert await get_active_incidents() == []
+
+
+async def test_a_mail_problem_is_named_by_its_domain_not_by_the_carrier_site(bot, db, monkeypatch):
+    """Only subdomains are watched: the mail of ex.test lives on the card of
+    shop.ex.test, but every line about it — the problems list, the weekly
+    report — names ex.test (2026-11-24: an SPF problem on morgunov.tech was
+    titled foundyou.morgunov.tech)."""
+    FakeNet(monkeypatch)
+    sid = await db.activate_or_create_site("https://shop.ex.test")
+    await scheduler.run_mail_checks()
+    [inc] = await get_active_incidents()
+    assert (inc["site_id"], inc["check_type"]) == (sid, "mail_auth")
+    assert bot.sent[-1]["text"].startswith("🟠 Почта на ex.test")
+    assert incident_line(inc) == "ex.test: почта — 2 записи SPF вместо одной"
+    assert incident_line(inc, "Сайт магазина") == "ex.test: почта — 2 записи SPF вместо одной"
+    text, _ = await build_weekly_report()
+    assert "🟠 ex.test: почта — 2 записи SPF вместо одной" in text and "shop.ex.test: почта" not in text
 
 
 async def test_no_verdict_is_not_a_dead_mailbox(bot, db, monkeypatch):

@@ -17,6 +17,7 @@ from db.database import (
     get_incidents_since,
     get_uptime_over_days,
 )
+from reports.formatter import incident_line
 from services import (
     github,
     gsc,
@@ -208,8 +209,7 @@ def _day(sqlite_dt: str | None) -> str:
 
 
 def _headline(inc: dict) -> str:
-    return esc(humanize.incident_headline(inc["check_type"], inc.get("message"), site_label(inc["url"]),
-                                          page=is_web_page(inc["url"], inc.get("http_method"))))
+    return esc(incident_line(inc))
 
 
 async def incidents_block() -> list[str]:

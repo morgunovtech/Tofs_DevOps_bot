@@ -15,7 +15,7 @@ from monitors.base import (
     SslResult,
 )
 from monitors.dns_checker import FAILS_TO_SAY
-from monitors.mail_checker import MailResult
+from monitors.mail_checker import MAIL_CHECKS, MailResult
 from monitors.region import region_words
 from monitors.security_checker import SecurityResult
 from monitors.visitor_checker import VisitorsResult
@@ -33,7 +33,7 @@ from services.humanize import (
 from utils.clock import now_local, to_local
 from utils.i18n import fmt_duration, plural, t
 from utils.text import clean, defang, esc, incident_start, one_line, parse_sqlite_utc
-from utils.urls import host_of, is_http_url, is_web_page, registrable_domain, site_label
+from utils.urls import host_of, is_http_url, is_web_page, owned_domain, registrable_domain, site_label
 
 
 def _tech(*parts) -> str:
@@ -508,7 +508,12 @@ def format_compact_status_report(availability: list[AvailabilityResult],
 
 def incident_line(inc: dict, label: str | None = None) -> str:
     """'example.com не открывается: хостинг отвечает ошибкой 502'. label —
-    a name for the site instead of site_label (the helpers' copy)."""
+    a name for the site instead of site_label (the helpers' copy). Mail is
+    the domain's, not a site's: its incident lives on whichever site carries
+    the domain (foundyou.example.com when example.com itself is not watched),
+    and its line is named by the domain — «example.com: почта — 2 записи SPF»."""
+    if inc["check_type"] in MAIL_CHECKS:
+        label = owned_domain(host_of(inc["url"])) or label
     return humanize.incident_headline(inc["check_type"], inc.get("message"), label or site_label(inc["url"]),
                                       page=is_web_page(inc["url"], inc.get("http_method")))
 
