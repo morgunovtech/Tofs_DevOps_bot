@@ -81,7 +81,7 @@ async def cb_auto_pause(call: CallbackQuery):
     await automation.pause(hours or None)
     await ack(call, t("Остановил"))
     if call.data.endswith(":a"):
-        await call.message.answer(t("⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что бот делает сам.").format(words=t("2 часа") if hours else t("до включения")))
+        await call.message.answer(t("⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что делаю сам.").format(words=t("2 часа") if hours else t("до включения")))
         return
     await render(call, *await auto_screen())
 

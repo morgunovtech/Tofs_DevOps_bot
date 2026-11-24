@@ -1070,7 +1070,7 @@ def _cf_state_line() -> str:
 @router.callback_query(F.data == "setup:cf")
 async def cb_guide_cf(call: CallbackQuery):
     await ack(call)
-    await render(call, (t("☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что бот делает сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.").format(cf_state_line=esc(_cf_state_line()))), _cf_kb())
+    await render(call, (t("☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.").format(cf_state_line=esc(_cf_state_line()))), _cf_kb())
 
 
 @router.callback_query(F.data == "setup:cf_hook")

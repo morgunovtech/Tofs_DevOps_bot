@@ -565,8 +565,8 @@ STRINGS: dict[str, str] = {
         "⚠️ «{job}» checks in through the old address shared by every job. It keeps working, but the job's own address is better: then one leaked line does not expose the rest. The address is on the job's card, «🔗 How it is connected».",
     "✅ «{job}» снова на связи — без связи было {away}.": "✅ «{job}» is in touch again — it was out of touch for {away}.",
     "✅ «{job}» вышел на связь — теперь слежу за ним.": "✅ «{job}» checked in — I am watching it now.",
-    "📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь.":
-        "📩 The feedback widget updated together with the bot. On sites with the old snippet it no longer appears — take the new one: ⚙️ Settings → 📩 Feedback.",
+    "📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 🌍 Для посетителей → 📩 Подключить виджет.":
+        "📩 The feedback widget updated together with the bot. On sites with the old snippet it no longer appears — take the new one: ⚙️ Settings → 🌍 For visitors → 📩 Connect the widget.",
 }
 
 # Russian singular → (English singular, English plural).
