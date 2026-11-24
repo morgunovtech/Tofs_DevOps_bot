@@ -458,6 +458,21 @@ STRINGS: dict[str, str] = {
     "Что делать: закрой копию noindex или переадресацией на основной адрес (для *.pages.dev — «🔎 Поиск и ИИ» подскажет как), проверь, что canonical и sitemap ведут на основной адрес, и запроси индексирование главной в Search Console.":
         "What to do: close the copy with noindex or a redirect to the main address (for *.pages.dev «🔎 Поиск и ИИ» shows how), check that canonical and the sitemap lead to the main address, and request indexing of the homepage in Search Console.",
     "✅ Google снова считает главной копией {label} адрес, который называет страница.": "✅ Google again takes the address the page names for the main copy of {label}.",
+    # ── Bing Webmaster ──────────────────────────────────────────────────────
+    "Что делать: Bing Webmaster → сайт → подтвердить (метатег msvalidate.01, файл, DNS или импорт из Search Console).": "What to do: Bing Webmaster → the site → verify (the msvalidate.01 meta tag, a file, DNS, or an import from Search Console).",
+    "Что делать: Bing Webmaster → URL Inspection для главной покажет причину; чаще всего это noindex или запрет в robots.txt — проверь «🔎 Поиск и ИИ».": "What to do: Bing Webmaster → URL Inspection of the homepage shows the cause; most often it is noindex or a robots.txt ban — check «🔎 Search and AI».",
+    "Что делать: Bing Webmaster → Site Explorer или Crawl errors — там каждый адрес с причиной.": "What to do: Bing Webmaster → Site Explorer or Crawl errors — every address is there with its cause.",
+    "Что делать: открой sitemap по ссылке — он должен открываться и быть XML; потом Bing Webmaster → Sitemaps → Resubmit.": "What to do: open the sitemap by its link — it must open and be XML; then Bing Webmaster → Sitemaps → Resubmit.",
+    "✅ Bing Webmaster: {host} снова подтверждён.": "✅ Bing Webmaster: {host} is verified again.",
+    "🟠 Bing Webmaster: {host} не подтверждён — Bing не показывает по нему индекс, ошибки и не даёт отправить sitemap.": "🟠 Bing Webmaster: {host} is not verified — Bing shows no index or errors for it and takes no sitemap.",
+    "✅ Bing снова держит страницы {host} в индексе: {n}.": "✅ Bing keeps {host}'s pages in its index again: {n}.",
+    "✅ Bing больше не видит ошибок обхода на {host}.": "✅ Bing no longer sees crawl issues on {host}.",
+    "✅ Bing снова читает sitemap {host}.": "✅ Bing reads {host}'s sitemap again.",
+    "🟠 Bing больше не держит в индексе ни одной страницы {host} (было {was}) — по нему ищут ChatGPT и Copilot.": "🟠 Bing no longer keeps a single page of {host} in its index (there were {was}) — ChatGPT and Copilot search it.",
+    "🟠 Bing: {n} {urls} {host} с ошибками обхода.": "🟠 Bing: {n} {urls} of {host} with crawl issues.",
+    "🟠 Bing не может прочитать sitemap {host}: {feeds}": "🟠 Bing cannot read {host}'s sitemap: {feeds}",
+    "🔎 Bing (неделя к неделе):": "🔎 Bing (week over week):",
+    "⚠️ Bing Webmaster: не смог получить данные — {why}": "⚠️ Bing Webmaster: could not get the data — {why}",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {

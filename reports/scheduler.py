@@ -92,6 +92,7 @@ from reports.formatter import (
 from reports.weekly import build_weekly_report
 from services import (
     automation,
+    bing,
     causes,
     cf_audit,
     cloudflare,
@@ -1507,6 +1508,17 @@ async def run_index_checks():
     the answers go into the site snapshot for the «🔎 Поиск и ИИ» screen,
     and a change of state becomes a message — nothing else does. Yandex is
     asked once for all sites; «did not answer» stays «did not answer»."""
+    if not gsc.available() and not yandex_webmaster.available() and not bing.available():
+        return
+    sites = await get_all_sites()
+    pages = [s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))]
+    bing_states = await bing.site_states(pages) if bing.available() else None
+    for site in sites:
+        state = (bing_states or {}).get(host_of(site["url"]))
+        if state and is_web_page(site["url"], site.get("http_method")):
+            with _isolated(f"Bing state of {site_label(site['url'])}"):
+                await sitestatus.update(site["id"], "bing", **state)
+                await _bing_change(site, state)
     if not gsc.available() and not yandex_webmaster.available():
         return
     yandex_webmaster.last_hosts.clear()
@@ -1616,6 +1628,72 @@ async def _google_canonical(site: dict, google: dict):
             await set_state(key, None)
 
 
+BING_PANEL = "https://www.bing.com/webmasters"
+
+
+async def _bing_change(site: dict, state: dict):
+    """Bing's view of a site against the previous day: lost verification,
+    pages gone from the index, crawl issues appearing, a sitemap Bing cannot
+    read — each said once, ✅ when it is over. A value Bing did not give
+    (None) changes nothing."""
+    host = host_of(site["url"])
+    key = f"bing:{host}"
+    try:
+        prev = json.loads(await get_state(key) or "{}")
+    except ValueError:
+        prev = {}
+    prev = prev if isinstance(prev, dict) else {}
+    now = dict(prev)
+    kb = _index_keyboard(site["id"], "↗️ Bing Webmaster", BING_PANEL)
+    says: list[tuple[str, str]] = []                       # (what changed, its words)
+    verified = state.get("verified")
+    if verified is False and not prev.get("unverified"):
+        says.append(("unverified", t("🟠 Bing Webmaster: {host} не подтверждён — Bing не показывает по нему индекс, "
+                                     "ошибки и не даёт отправить sitemap.").format(host=esc(host)) + "\n"
+                     + t("Что делать: Bing Webmaster → сайт → подтвердить (метатег msvalidate.01, файл, DNS или импорт "
+                         "из Search Console).")))
+        now["unverified"] = True
+    elif verified and prev.get("unverified"):
+        says.append(("ok", t("✅ Bing Webmaster: {host} снова подтверждён.").format(host=esc(host))))
+        now["unverified"] = False
+    in_index = state.get("in_index")
+    if isinstance(in_index, int):
+        if in_index == 0 and (prev.get("in_index") or 0) > 0:
+            says.append(("index", t("🟠 Bing больше не держит в индексе ни одной страницы {host} (было {was}) — по нему "
+                                    "ищут ChatGPT и Copilot.").format(host=esc(host), was=prev["in_index"]) + "\n"
+                         + t("Что делать: Bing Webmaster → URL Inspection для главной покажет причину; чаще всего это "
+                             "noindex или запрет в robots.txt — проверь «🔎 Поиск и ИИ».")))
+            now["index_told"] = True
+        elif in_index > 0 and prev.get("index_told"):
+            says.append(("ok", t("✅ Bing снова держит страницы {host} в индексе: {n}.").format(host=esc(host), n=in_index)))
+            now["index_told"] = False
+        now["in_index"] = in_index
+    issues = state.get("issues")
+    if isinstance(issues, int):
+        if issues and not prev.get("issues"):
+            says.append(("issues", t("🟠 Bing: {n} {urls} {host} с ошибками обхода.").format(
+                n=issues, urls=plural(issues, "адрес", "адреса", "адресов"), host=esc(host)) + "\n"
+                + t("Что делать: Bing Webmaster → Site Explorer или Crawl errors — там каждый адрес с причиной.")))
+        elif not issues and prev.get("issues"):
+            says.append(("ok", t("✅ Bing больше не видит ошибок обхода на {host}.").format(host=esc(host))))
+        now["issues"] = issues
+    feeds = state.get("bad_feeds")
+    if isinstance(feeds, list):
+        if feeds and not prev.get("bad_feeds"):
+            says.append(("feeds", t("🟠 Bing не может прочитать sitemap {host}: {feeds}").format(
+                host=esc(host), feeds=esc(", ".join(feeds[:3]))) + "\n"
+                + t("Что делать: открой sitemap по ссылке — он должен открываться и быть XML; потом Bing Webmaster → "
+                    "Sitemaps → Resubmit.")))
+        elif not feeds and prev.get("bad_feeds"):
+            says.append(("ok", t("✅ Bing снова читает sitemap {host}.").format(host=esc(host))))
+        now["bad_feeds"] = feeds
+    for kind, text in says:
+        if not await notifier.send(text, Priority.NORMAL, site_id=site["id"], reply_markup=None if kind == "ok" else kb):
+            return                                          # not said: the state stays, tomorrow says it again
+    if now != prev:
+        await set_state(key, json.dumps(now, ensure_ascii=False))
+
+
 async def _yandex_rights(site: dict):
     """A site in Webmaster that Yandex does not confirm as the owner's: once,
     and once more when it is confirmed again. No read of the list — no word."""
@@ -1679,7 +1757,7 @@ async def run_integration_health():
     works again (services.integrations.record_result keeps the record)."""
     used = {"gsc": gsc.available(), "yandex": yandex_webmaster.available(), "crux": crux.available(),
             "github": github.available(), "checkhost": integrations.second_opinion_enabled(),
-            "osv": config.dependency_watch, "rdap": True, "cf_audit": cloudflare.configured(),
+            "osv": config.dependency_watch, "rdap": True, "cf_audit": cloudflare.configured(), "bing": bing.available(),
             "cf_zone": cloudflare.configured()}
     for name, (title, loss, setup) in integrations.HEALTH.items():
         h = await integrations.health(name)
