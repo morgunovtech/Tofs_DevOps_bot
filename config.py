@@ -280,6 +280,7 @@ class Config:
     gsc_service_account_file: str = os.getenv("GSC_SERVICE_ACCOUNT_FILE", "").strip()
     gsc_property: str = os.getenv("GSC_PROPERTY", "").strip()
     yandex_webmaster_token: str = os.getenv("YANDEX_WEBMASTER_TOKEN", "").strip()
+    bing_webmaster_key: str = os.getenv("BING_WEBMASTER_KEY", "").strip()
 
     # ── Real visitors' speed from Chrome (Google CrUX API, optional) ─────────
     crux_api_key: str = os.getenv("CRUX_API_KEY", "").strip()

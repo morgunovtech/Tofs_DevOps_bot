@@ -40,6 +40,7 @@ from handlers.settings import publish_screen
 from reports.scheduler import rerun_visitors_soon
 from services import (
     automation,
+    bing,
     crux,
     docker_api,
     github,
@@ -79,6 +80,7 @@ class SetupForm(StatesGroup):
     gsc_property = State()
     gsc_key = State()
     yx_token = State()
+    bing_key = State()
     cf_hook = State()
     cf_token = State()
     cf_zone = State()
@@ -281,6 +283,19 @@ async def build_items(probe: bool = True) -> list[Item]:
         items.append(Item("yandex", "off", t("🔎 Яндекс.Вебмастер"),
                           t("страницы в поиске, ИКС и фатальные проблемы сайта от Яндекса"),
                           (t("🔎 Подключить Яндекс"), "setup:yx")))
+
+    if bing.available():
+        h = await integrations.health("bing")
+        if integrations.is_broken(h):
+            items.append(Item("bing", "warn", "Bing Webmaster",
+                              t("Bing не отвечает на ключ ({v}): индекс и ошибки обхода не проверяются").format(
+                                  v=esc(t(h.get("reason") or "нет ответа"))), (t("🔎 Bing: проверить"), "setup:bing")))
+        else:
+            items.append(Item("bing", "ok", "Bing Webmaster"))
+    else:
+        items.append(Item("bing", "off", t("🔎 Bing Webmaster"),
+                          t("страницы в индексе Bing, ошибки обхода и sitemap — по этому индексу ищут ChatGPT и Copilot"),
+                          (t("🔎 Подключить Bing"), "setup:bing")))
 
     if crux.available():
         h = await integrations.health("crux")
@@ -658,6 +673,7 @@ async def cb_regen_heartbeat(call: CallbackQuery):
 
 _OFF = {"watchdog": (("self_heartbeat_url",), "ссылку внешнего сторожа"),
         "yx": (("yandex_token",), "токен Яндекса"),
+        "bing": (("bing_key",), "ключ Bing"),
         "crux": (("crux_key",), "ключ Google о скорости"),
         "gsc": (("gsc_key", "gsc_property"), "ключ и ресурс Search Console"),
         "cf": (("deploy_hooks", "cf_api_token", "cf_zone_id"), "хуки, токен и Zone ID Cloudflare"),
@@ -891,6 +907,60 @@ async def msg_yx_token(message: Message, state: FSMContext):
 @router.callback_query(F.data == "setup:yx_off:ok")
 async def cb_yx_off(call: CallbackQuery):
     if await _switch_off(call, "yx", t("Отключено. ") + t(OLD_COPIES_NOTE)):
+        await show_checklist(call)
+
+
+# ── Bing Webmaster wizard ────────────────────────────────────────────────────
+
+def _bing_kb() -> InlineKeyboardMarkup:
+    buttons = [(t("🔑 Ввести ключ"), "setup:bing_key")]
+    if off := _off_button("bing"):
+        buttons.append(off)
+    return _guide_kb(*buttons)
+
+
+@router.callback_query(F.data == "setup:bing")
+async def cb_guide_bing(call: CallbackQuery):
+    await ack(call)
+    src = integrations.source("bing_key")
+    state_line = {"bot": t("Ключ введён в боте."), "env": t("Ключ взят из .env."),
+                  "off": t(OFF_LINE)}.get(src, t("Пока не подключено."))
+    await render(call, t("🔎 Bing Webmaster\n\n{state_line}\n\nДаёт: подтверждён ли сайт в Bing, сколько страниц в его индексе, ошибки обхода и sitemap — и клики с показами в воскресном отчёте. По индексу Bing ищут ChatGPT и Copilot.\n\n1. Открой <a href=\"https://www.bing.com/webmasters\">Bing Webmaster Tools</a> и добавь сайт (можно импортом из Search Console).\n2. Settings (шестерёнка справа вверху) → API Access → прими условия → Generate API Key.\n3. Нажми «🔑 Ввести ключ» и пришли его сюда — я сразу проверю живым запросом.").format(state_line=state_line),
+                 _bing_kb())
+
+
+@router.callback_query(F.data == "setup:bing_key")
+async def cb_bing_key(call: CallbackQuery, state: FSMContext):
+    await ack(call)
+    await state.set_state(SetupForm.bing_key)
+    await render(call, t("🔑 Пришли ключ API Bing Webmaster одним сообщением."), cancel_kb("setup:bing"))
+
+
+@router.message(SetupForm.bing_key)
+async def msg_bing_key(message: Message, state: FSMContext):
+    await forget_secret(message)
+    key = (message.text or "").strip()
+    if not integrations.RULES["bing_key"](key):
+        await message.answer(t("Не похоже на ключ API Bing. Попробуй ещё раз:"), reply_markup=cancel_kb("setup:bing"))
+        return
+    answer, sites = await bing.check_key(key)
+    if answer is Probe.REJECTED:
+        await message.answer(t("❌ Bing не принял ключ: проверь, что он скопирован целиком и не перевыпущен, — и пришли "
+                               "другой, или «✖️ Отмена»."), reply_markup=cancel_kb("setup:bing"))
+        return
+    await state.clear()
+    forget_probes()
+    await integrations.set_value("bing_key", key)
+    if answer is Probe.UNREACHABLE:
+        await message.answer(t(UNCHECKED_NOTE).format(service="Bing"), reply_markup=back_button(*wizard_back()))
+        return
+    await message.answer(t("✅ Bing Webmaster подключён: сайтов в аккаунте {sites}.").format(sites=sites),
+                         reply_markup=back_button(*wizard_back()))
+
+
+@router.callback_query(F.data == "setup:bing_off:ok")
+async def cb_bing_off(call: CallbackQuery):
+    if await _switch_off(call, "bing", t("Отключено. ") + t(OLD_COPIES_NOTE)):
         await show_checklist(call)
 
 

@@ -1538,6 +1538,20 @@ STRINGS: dict[str, str] = {
     "🤖 ИИ-ассистенты: Cloudflare их не пускает — в зоне включено «Block AI bots».":
         "🤖 AI assistants: Cloudflare turns them away — «Block AI bots» is on in the zone.",
     "📇 Google: главной копией считает {google}, а страница называет {user} 🟠": "📇 Google: takes {google} for the main copy, while the page names {user} 🟠",
+    # ── Bing Webmaster ──────────────────────────────────────────────────────
+    "сайт не подтверждён 🟠": "the site is not verified 🟠",
+    "🟠 sitemap не читается": "🟠 the sitemap cannot be read",
+    "🟠 ошибок обхода: {n}": "🟠 crawl issues: {n}",
+    "{n} стр. в индексе": "{n} pages in the index",
+    "🔑 Пришли ключ API Bing Webmaster одним сообщением.": "🔑 Send the Bing Webmaster API key in one message.",
+    "страницы в индексе Bing, ошибки обхода и sitemap — по этому индексу ищут ChatGPT и Copilot": "pages in Bing's index, crawl issues and sitemaps — ChatGPT and Copilot search this index",
+    "Не похоже на ключ API Bing. Попробуй ещё раз:": "That does not look like a Bing API key. Try again:",
+    "❌ Bing не принял ключ: проверь, что он скопирован целиком и не перевыпущен, — и пришли другой, или «✖️ Отмена».": "❌ Bing rejected the key: check that it was copied whole and not regenerated — and send another one, or «✖️ Cancel».",
+    "🔎 Подключить Bing": "🔎 Connect Bing",
+    "🔎 Bing Webmaster\n\n{state_line}\n\nДаёт: подтверждён ли сайт в Bing, сколько страниц в его индексе, ошибки обхода и sitemap — и клики с показами в воскресном отчёте. По индексу Bing ищут ChatGPT и Copilot.\n\n1. Открой <a href=\"https://www.bing.com/webmasters\">Bing Webmaster Tools</a> и добавь сайт (можно импортом из Search Console).\n2. Settings (шестерёнка справа вверху) → API Access → прими условия → Generate API Key.\n3. Нажми «🔑 Ввести ключ» и пришли его сюда — я сразу проверю живым запросом.": "🔎 Bing Webmaster\n\n{state_line}\n\nGives: whether the site is verified in Bing, how many pages are in its index, crawl issues and sitemaps — and clicks and impressions in the Sunday report. ChatGPT and Copilot search Bing's index.\n\n1. Open <a href=\"https://www.bing.com/webmasters\">Bing Webmaster Tools</a> and add the site (an import from Search Console works).\n2. Settings (the gear at the top right) → API Access → accept the terms → Generate API Key.\n3. Tap «🔑 Ввести ключ» and send it here — I will check it with a live request right away.",
+    "✅ Bing Webmaster подключён: сайтов в аккаунте {sites}.": "✅ Bing Webmaster is connected: {sites} sites in the account.",
+    "🔎 Bing: проверить": "🔎 Bing: check",
+    "Bing не отвечает на ключ ({v}): индекс и ошибки обхода не проверяются": "Bing does not answer the key ({v}): the index and crawl issues are not checked",
 }
 
 # Russian singular → (English singular, English plural).

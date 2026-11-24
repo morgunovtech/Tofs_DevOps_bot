@@ -29,6 +29,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Статус индексации Google | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |
+| Bing Webmaster: подтверждение, индекс, ошибки обхода, sitemap, клики | `BING_WEBMASTER_KEY` |
 | Скорость у посетителей Chrome (данные Google) | `CRUX_API_KEY` |
 | Порядок в GitHub в недельном отчёте | `GITHUB_TOKEN`, `GITHUB_OWNER` (необязательно) |
 | Перезапуск контейнеров | `AUTORESTART_CONTAINERS` + монтирование docker.sock (сокет = root на хосте) |

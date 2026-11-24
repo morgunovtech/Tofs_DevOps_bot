@@ -78,6 +78,7 @@ from monitors.security_checker import SECURITY_CHECKS, check_security
 from monitors.ssl_checker import check_ssl
 from reports.scheduler import next_run_words, pause_jobs, reschedule_all, reset_site_schedule, resume_jobs
 from services import (
+    bing,
     gsc,
     humanize,
     integrations,
@@ -538,7 +539,7 @@ def _seo_lines(st: dict, cf_pending: bool = False) -> list[str]:
                "critical": t("🔴 Поиск и ИИ: сайт закрыт от поисковиков")}.get(
         seo.get("status"), t("⚠️ Поиск и ИИ: не смог проверить"))
     lines = [verdict]
-    idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available())
+    idx, _ = seo_screen.index_lines(st, gsc.available(), yandex_webmaster.available(), bing.available())
     lines += [f"    {line}" for line in idx]
     if cf_pending:
         lines.append(t("    Пускает ли Cloudflare ИИ-ассистентов, снаружи не видно: настоящих ботов он узнаёт по адресу. Где посмотреть — кнопка ниже."))
