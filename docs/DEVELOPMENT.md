@@ -25,7 +25,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 |---|---|
 | Виджет, ссылки задач и статус-страница на своём сервере (за reverse proxy с TLS — README, «Публичный адрес на своём сервере») | `PUBLIC_BASE_URL`, `TRUST_PROXY=1` |
 | Кнопка передеплоя + автопередеплой | `DEPLOY_HOOKS`, `AUTO_REDEPLOY` |
-| Кнопка сброса кэша Cloudflare | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` |
+| Кнопка сброса кэша Cloudflare, журнал изменений аккаунта, деплои Pages в причине простоя | `CLOUDFLARE_API_TOKEN` (права — [SETUP.md](SETUP.md)), `CLOUDFLARE_ZONE_ID` |
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Статус индексации Google | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Статус индексации Яндекса | `YANDEX_WEBMASTER_TOKEN` |

@@ -46,13 +46,15 @@ def _tech(*parts) -> str:
 
 def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True, *,
                               threshold: int = 2, interval_min: int = 5,
-                              since: datetime | None = None, label: str | None = None) -> str:
+                              since: datetime | None = None, label: str | None = None,
+                              nearby: str | None = None) -> str:
     """threshold and interval_min — the site's own dials: the text says how
     many checks it took and how often the site is checked, not «дважды» and
     «каждую минуту» for everyone. since — when the problem began (the first
     failed check), so the alert says «не открывается с 14:03». label — how
     to name the site instead of site_label (the helpers' copy: a public name
-    without the path, which may carry a token)."""
+    without the path, which may carry a token). nearby — what happened on
+    Cloudflare right then (services.causes), a line of its own."""
     if r.ok:
         return ""
     label = esc(label or site_label(r.url))
@@ -96,7 +98,7 @@ def format_availability_alert(r: AvailabilityResult, second_opinion: bool = True
     # the owner to the server instead of the page.
     back = ((t("когда в ответе снова будет как надо") if r.api else t("когда на странице снова будет как надо"))
             if r.keyword_failed else t("когда поднимется"))
-    return (f"{header}\n{situation}\n"
+    return (f"{header}\n{situation}\n" + (f"{nearby}\n" if nearby else "")
             + t("Продолжаю проверять {every} и напишу, {back}.").format(every=humanize.every_minutes(interval_min), back=back)
             + _tech(r.error, fmt_seconds(r.response_time_ms) if r.response_time_ms else None))
 
@@ -122,8 +124,9 @@ def incident_duration_line(incident: dict | None) -> str | None:
     return f"{fmt_duration(minutes)} ({span})"
 
 
-def format_recovery_alert(r: AvailabilityResult, *, label: str | None = None) -> str:
-    """label — a name for the site instead of site_label (the helpers' copy)."""
+def format_recovery_alert(r: AvailabilityResult, *, label: str | None = None, nearby: str | None = None) -> str:
+    """label — a name for the site instead of site_label (the helpers' copy).
+    nearby — what happened on Cloudflare when it went down (services.causes)."""
     label = esc(label or site_label(r.url))
     message = (r.resolved_incident or {}).get("message") or ""
     content = message.startswith("Bad content: ")    # the site opened all along; its text was wrong
@@ -137,6 +140,8 @@ def format_recovery_alert(r: AvailabilityResult, *, label: str | None = None) ->
     if duration:
         lines.append((t("Было не так {duration}") if content else t("Лежал {duration}")).format(duration=duration)
                      + (f", {esc(cause)}." if cause and cause != t("неизвестная ошибка") else "."))
+    if nearby:
+        lines.append(nearby)
     lines.append(t("Ничего делать не нужно."))
     return "\n".join(lines) + _tech(f"HTTP {r.status_code}" if r.status_code else None,
                                     fmt_seconds(r.response_time_ms) if r.response_time_ms else None)

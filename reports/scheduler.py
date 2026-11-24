@@ -92,6 +92,9 @@ from reports.formatter import (
 from reports.weekly import build_weekly_report
 from services import (
     automation,
+    causes,
+    cf_audit,
+    cloudflare,
     crux,
     github,
     gsc,
@@ -616,7 +619,8 @@ async def _send_availability_alert(r, site: dict):
     dials = dict(threshold=site.get("fail_threshold") or CONSECUTIVE_FAILURE_THRESHOLD,
                  interval_min=_interval_min(site), since=since)
     second = integrations.second_opinion_enabled() and repeatable(site)
-    msg = format_availability_alert(r, second, **dials)
+    # The owner's text only: what changed on Cloudflare is not the helpers' business.
+    msg = format_availability_alert(r, second, **dials, nearby=await causes.near(r.url, since))
     kb = alert_actions_keyboard(r.url, r.site_id, r.incident_id, hosting=r.hosting, api=r.api)
     # The helpers' copy names the site the public way: no path (a token may
     # live there), no port, no internal address.
@@ -631,7 +635,7 @@ async def _send_availability_alert(r, site: dict):
 async def _send_recovery(r):
     # Rings by default; with «будить только когда сайт лёг» only the fall
     # does; after a flap — silently, it was said in the hourly 🟠.
-    text = format_recovery_alert(r)
+    text = format_recovery_alert(r, nearby=await causes.near(r.url, incident_start(r.resolved_incident)))
     # The helpers' copy: the public name of the site, and nothing about the
     # owner's pause — that silence was his.
     helper_text = format_recovery_alert(r, label=helper_label(r.url, api=r.api))
@@ -1615,7 +1619,7 @@ async def run_integration_health():
     works again (services.integrations.record_result keeps the record)."""
     used = {"gsc": gsc.available(), "yandex": yandex_webmaster.available(), "crux": crux.available(),
             "github": github.available(), "checkhost": integrations.second_opinion_enabled(),
-            "osv": config.dependency_watch, "rdap": True}
+            "osv": config.dependency_watch, "rdap": True, "cf_audit": cloudflare.configured()}
     for name, (title, loss, setup) in integrations.HEALTH.items():
         h = await integrations.health(name)
         if not used.get(name):
@@ -2382,6 +2386,13 @@ async def _morning_extras(domain_results, incidents: list[dict]) -> list[str]:
             await set_state(f"seo_first_audit:{s['id']}", None)      # said once
 
     try:
+        line = await cf_audit.morning_line()
+        if line:
+            extras.append(line)
+    except Exception:
+        logger.exception("Cloudflare line of the morning report failed")
+
+    try:
         disk = await check_disk(auto_cleanup=False)
         icon = "✅" if not disk["over_threshold"] else humanize.level_icon("critical" if disk["pct"] >= DISK_CRITICAL_PCT else "warning")
         extras.append(t("💾 Диск сервера: {icon} занято {pct}%").format(icon=icon, pct=disk["pct"]))
@@ -2489,7 +2500,10 @@ async def send_morning_report(late: bool = False):
     parts = chunks(text)
     for part in parts[:-1]:
         await notifier.send(part, Priority.DIGEST)
-    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(kb, await _problems_row()))
+    rows = await _problems_row()
+    if await cf_audit.recent():
+        rows.append([InlineKeyboardButton(text=t("📋 Что изменилось"), callback_data="cfa:list")])
+    await notifier.send(parts[-1], Priority.DIGEST, reply_markup=_with_rows(kb, rows))
     # The evening compares against this: it comes only for what is new since.
     # The report is out: a mark the disk refuses is a database problem
     # (health says so), not a broken report.
@@ -2789,6 +2803,9 @@ def setup_scheduler() -> AsyncIOScheduler:
     job(updates.run_deploy_watch, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC), "deploy_watch")
     job(run_integration_health, lambda: IntervalTrigger(hours=1, start_date=soon, timezone=UTC),
         "integration_health")
+    # The Cloudflare account's audit log: a dangerous change rings within a quarter hour.
+    job(cf_audit.run, lambda: IntervalTrigger(minutes=15, start_date=soon, timezone=UTC), "cf_audit",
+        misfire_grace_time=300)
     job(notifier.flush_queue, lambda: IntervalTrigger(minutes=10, timezone=UTC), "quiet_flush")
     job(send_feedback_summary, lambda: IntervalTrigger(hours=1, timezone=UTC), "feedback_summary")
     if config.on_railway:

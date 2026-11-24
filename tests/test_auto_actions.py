@@ -20,6 +20,7 @@ from handlers.common import cb_int
 from monitors import host_checker
 from reports import scheduler
 from services import actions, automation, docker_api, integrations, maintenance, settings
+from services import cloudflare as cf_api
 from utils.text import parse_iso_utc
 
 ZONE_ID = "0123456789abcdef0123456789abcdef"
@@ -201,7 +202,7 @@ async def cloudflare(monkeypatch):
     app.router.add_get(f"/client/v4/zones/{ZONE_ID}", zone)
     app.router.add_post(f"/client/v4/zones/{ZONE_ID}/purge_cache", purge)
     async with TestServer(app) as server:
-        monkeypatch.setattr(actions, "CF_API", str(server.make_url("/client/v4")))
+        monkeypatch.setattr(cf_api, "API", str(server.make_url("/client/v4")))
         await integrations.set_value("cf_api_token", "t" * 40)
         await integrations.set_value("cf_zone_id", ZONE_ID)
         yield seen

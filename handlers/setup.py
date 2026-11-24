@@ -294,7 +294,12 @@ async def build_items(probe: bool = True) -> list[Item]:
                           t("сколько реальные посетители ждут твой сайт — данные Google за 28 дней, для сайтов, где посетителей достаточно"),
                           (t("⚡ Подключить данные Google"), "setup:crux")))
 
-    if integrations.deploy_hooks() or integrations.cf_purge_configured():
+    h = await integrations.health("cf_audit")
+    if integrations.cf_purge_configured() and integrations.is_broken(h):
+        items.append(Item("cloudflare", "warn", "Cloudflare",
+                          t("журнал изменений не читается ({v}): об опасных изменениях в аккаунте не узнаю").format(
+                              v=esc(t(h.get("reason") or "нет ответа"))), (t("☁️ Cloudflare"), "setup:cf")))
+    elif integrations.deploy_hooks() or integrations.cf_purge_configured():
         items.append(Item("cloudflare", "ok", "Cloudflare"))
     else:
         items.append(Item("cloudflare", "off", "☁️ Cloudflare",
@@ -1070,7 +1075,7 @@ def _cf_state_line() -> str:
 @router.callback_query(F.data == "setup:cf")
 async def cb_guide_cf(call: CallbackQuery):
     await ack(call)
-    await render(call, (t("☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.").format(cf_state_line=esc(_cf_state_line()))), _cf_kb())
+    await render(call, (t("☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.\n\n<b>Журнал и деплои</b>: добавь тому же токену Account → Account Settings → Read и Account → Cloudflare Pages → Read — тогда я звоню об опасных изменениях в аккаунте (удалили запись DNS или правило переадресации, сменили DNSSEC, NS или режим SSL, создали API-токен, вошли с нового адреса), пишу в утренней сводке, сколько изменилось за сутки, и называю причину короткого простоя («деплой Pages … в 14:02»).").format(cf_state_line=esc(_cf_state_line()))), _cf_kb())
 
 
 @router.callback_query(F.data == "setup:cf_hook")
@@ -1111,7 +1116,7 @@ async def msg_cf_hook(message: Message, state: FSMContext):
 async def cb_cf_token(call: CallbackQuery, state: FSMContext):
     await ack(call)
     await state.set_state(SetupForm.cf_token)
-    await render(call, t("🧹 Пришли API-токен Cloudflare с правом Zone → Cache Purge."), cancel_kb("setup:cf"))
+    await render(call, t("🧹 Пришли API-токен Cloudflare с правами Zone → Zone → Read и Zone → Cache Purge (для журнала и деплоев — ещё Account → Account Settings → Read и Account → Cloudflare Pages → Read)."), cancel_kb("setup:cf"))
 
 
 @router.message(SetupForm.cf_token)

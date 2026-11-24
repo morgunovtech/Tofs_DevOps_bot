@@ -55,6 +55,9 @@ from monitors import availability, dns_checker, links_checker, netcheck, parse_w
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
+    causes,
+    cf_audit,
+    cloudflare,
     gsc,
     health,
     helpers,
@@ -390,6 +393,9 @@ def _fresh_module_state(monkeypatch):
     gsc.reset_token_cache()
     monkeypatch.setattr(integrations, "_gsc_key_problem", None)
     monkeypatch.setattr(updates, "_no_repo_said", False)
+    monkeypatch.setattr(cloudflare, "_account", {})
+    monkeypatch.setattr(causes, "_projects", None)
+    monkeypatch.setattr(cf_audit, "_lock", asyncio.Lock())
 
 
 @pytest.fixture

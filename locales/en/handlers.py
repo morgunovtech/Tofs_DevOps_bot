@@ -1289,8 +1289,8 @@ STRINGS: dict[str, str] = {
     "сброс кэша: нет": "cache purge: none",
     "пересобираю сам: ": "rebuilding by myself: ",
     "да, ": "yes, ",
-    "☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.":
-        "☁️ Cloudflare\n\n{cf_state_line}\n\nA <b>deploy hook</b> gives the «🚀 Rebuild the site» button in alerts. ⚠️ Until rebuilding is switched off, I call the hook myself when the site goes down — at most once an hour per hook and never while paused; to switch off — «🤖 What I do by myself». Where to get it: Cloudflare Pages → project → Settings → Builds → Deploy hooks → Add. Send «host URL» here.\n\n<b>Cache purge</b> gives the «🧹» button: an API token with the Zone → Cache Purge permission (dash.cloudflare.com → My Profile → API Tokens) and the Zone ID from the domain's Overview page.",
+    "☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.\n\n<b>Журнал и деплои</b>: добавь тому же токену Account → Account Settings → Read и Account → Cloudflare Pages → Read — тогда я звоню об опасных изменениях в аккаунте (удалили запись DNS или правило переадресации, сменили DNSSEC, NS или режим SSL, создали API-токен, вошли с нового адреса), пишу в утренней сводке, сколько изменилось за сутки, и называю причину короткого простоя («деплой Pages … в 14:02»).":
+        "☁️ Cloudflare\n\n{cf_state_line}\n\nA <b>deploy hook</b> gives the «🚀 Rebuild the site» button in alerts. ⚠️ Until rebuilding is switched off, I call the hook myself when the site goes down — at most once an hour per hook and never while paused; to switch off — «🤖 What I do by myself». Where to get it: Cloudflare Pages → project → Settings → Builds → Deploy hooks → Add. Send «host URL» here.\n\n<b>Cache purge</b> gives the «🧹» button: an API token with the Zone → Cache Purge permission (dash.cloudflare.com → My Profile → API Tokens) and the Zone ID from the domain's Overview page.\n\n<b>Audit log and deployments</b>: add Account → Account Settings → Read and Account → Cloudflare Pages → Read to the same token — then I ring about dangerous changes in the account (a DNS record or a redirect rule deleted, DNSSEC, the nameservers or the SSL mode changed, an API token created, a login from a new address), say in the morning digest how much changed in a day, and name the cause of a short outage («Pages deployment … at 14:02»).",
     "🚀 Пришли хост и URL deploy hook через пробел:\n<code>example.com https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/…</code>":
         "🚀 Send the host and the deploy hook URL separated by a space:\n<code>example.com https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/…</code>",
     "Формат: <code>example.com https://api.cloudflare.com/…</code>": "The format is <code>example.com https://api.cloudflare.com/…</code>",
@@ -1298,7 +1298,8 @@ STRINGS: dict[str, str] = {
     " Сначала добавь сайт, потом хук.": " Add the site first, then the hook.",
     "Ни один сайт не открывается по {host} — хук не сработал бы.{hint}": "No site opens at {host} — the hook would never fire.{hint}",
     "✅ Deploy hook для {host} сохранён.\n{cf_state_line}": "✅ The deploy hook for {host} is saved.\n{cf_state_line}",
-    "🧹 Пришли API-токен Cloudflare с правом Zone → Cache Purge.": "🧹 Send a Cloudflare API token with the Zone → Cache Purge permission.",
+    "🧹 Пришли API-токен Cloudflare с правами Zone → Zone → Read и Zone → Cache Purge (для журнала и деплоев — ещё Account → Account Settings → Read и Account → Cloudflare Pages → Read).":
+        "🧹 Send a Cloudflare API token with the Zone → Zone → Read and Zone → Cache Purge permissions (for the audit log and deployments, also Account → Account Settings → Read and Account → Cloudflare Pages → Read).",
     "Не похоже на API-токен Cloudflare.": "That does not look like a Cloudflare API token.",
     "❌ Cloudflare не принял токен: нужен API-токен с правами Zone → Zone → Read и Zone → Cache Purge на зону сайта, скопированный целиком. Пришли другой, или «✖️ Отмена».":
         "❌ Cloudflare rejected the token: an API token with Zone → Zone → Read and Zone → Cache Purge on the site's zone is needed, copied whole. Send another, or «✖️ Cancel».",
@@ -1519,6 +1520,13 @@ STRINGS: dict[str, str] = {
     "очистка диска": "disk cleanup",
     "скорость из региона": "speed from the region",
     "копия базы по воскресеньям": "database copy on Sundays",
+    # ── handlers/setup.py: Cloudflare's audit log in «🔌 Подключения» ──────
+    "журнал изменений не читается ({v}): об опасных изменениях в аккаунте не узнаю":
+        "the audit log cannot be read ({v}): I will not learn about dangerous changes in the account",
+    # ── handlers/cloudflare.py ──────────────────────────────────────────────
+    "✅ Понял, это ты: {ips} запомнил — изменения оттуда дальше только в списке за сутки.":
+        "✅ Got it, that was you: I remember {ips} — changes from there now only go to the day's list.",
+    "Эту тревогу уже разобрали — адрес запомнен.": "This alert was already handled — the address is remembered.",
 }
 
 # Russian singular → (English singular, English plural).
