@@ -1504,6 +1504,21 @@ STRINGS: dict[str, str] = {
     "Каждый экран, тревога и отчёт. Язык статус-страницы и виджета для посетителей — отдельно, «🌐 Статус-страница».":
         "Every screen, alert and report. The language of the status page and the widget for visitors is separate — «🌐 Status page».",
     "Язык бота: {lang}. Кнопки под полем ввода обновил.": "Bot language: {lang}. The buttons under the input field are updated.",
+    # ── handlers/behavior.py: «после обновления я работаю иначе» ───────────
+    "ℹ️ После обновления я работаю иначе, хотя в чате и в .env ничего не менялось:":
+        "ℹ️ Since the update I work differently, though nothing changed in the chat or in .env:",
+    "• {what}: {now} (было {was})": "• {what}: {now} (was {was})",
+    "Если прежнее было лучше — верни его кнопкой ниже.": "If the old way was better, set it back with the button below.",
+    "вечерняя сводка": "the evening digest",
+    "воскресный отчёт": "the Sunday report",
+    "часовой пояс": "time zone",
+    "будить только когда сайт лёг": "ring only when a site is down",
+    "язык бота": "the bot's language",
+    "пересборка упавшего сайта": "rebuilding a site that went down",
+    "перезапуск контейнеров": "restarting containers",
+    "очистка диска": "disk cleanup",
+    "скорость из региона": "speed from the region",
+    "копия базы по воскресеньям": "database copy on Sundays",
 }
 
 # Russian singular → (English singular, English plural).

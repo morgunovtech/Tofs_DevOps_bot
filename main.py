@@ -64,7 +64,7 @@ from db.database import (  # noqa: E402
     set_state,
 )
 from db.migrations import StartRefused  # noqa: E402
-from handlers import router  # noqa: E402
+from handlers import behavior, router  # noqa: E402
 from handlers.common import MAX_SITES, LeanMemoryStorage, bottom  # noqa: E402
 from handlers.sites import parse_site_input  # noqa: E402
 from handlers.start import BOTTOM_SHOWN  # noqa: E402
@@ -178,6 +178,7 @@ async def on_startup(bot: Bot):
         logger.warning("The database is not on a persistent disk — it is wiped on every deploy")
         await _step("volume warning", notifier.send(t(runtime.NO_VOLUME)))
     await _step("update report", _report_update())
+    await _step("behaviour shift", behavior.report_shift())
     await _step("schema copy note", _report_schema_copy())
     await _step("catch-up after restart", catch_up_after_restart())
 

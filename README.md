@@ -112,7 +112,7 @@ Prefer your own fork? Railway → **Deploy from GitHub repo** → variables `TEL
 
 ### Rolling back a version
 
-**Updates.** On Railway updates install themselves: the template follows `main`. On your own server run `docker compose pull && docker compose up -d` — the bot does not announce that a new image exists; it says «🔄 Бот обновился» only after the new one has started.
+**Updates.** On Railway updates install themselves: the template follows `main`. On your own server run `docker compose pull && docker compose up -d` — the bot does not announce that a new image exists; it says «🔄 Бот обновился» only after the new one has started. If an update moved the digest hours, a threshold or what is on by default while you changed nothing in the chat or in `.env`, the bot says so once («ℹ️ После обновления я работаю иначе») with a button to that setting.
 
 Every image is also published as `:sha-<7 chars>` — the commit it was built from. Before a version changes the database schema the bot copies the database to `data/backups/schema-v<N>-<date>.db` (N is the schema the copy holds; the last 3 are kept). When there is no room for the copy the bot still migrates and says so in Telegram. An old version refuses to start on a newer database and logs «База от более новой версии бота…».
 
