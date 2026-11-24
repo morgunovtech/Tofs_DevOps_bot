@@ -33,9 +33,13 @@ PERMISSIONS = {
     "zone": "Zone → Zone → Read",
     "audit": "Account → Account Settings → Read",
     "pages": "Account → Cloudflare Pages → Read",
+    "dns": "Zone → DNS → Read",
+    "routes": "Zone → Workers Routes → Read",
+    "scripts": "Account → Workers Scripts → Read",
 }
 
 _account: dict[str, str] = {}   # zone id → account id, learnt once per run
+_zone_name: dict[str, str] = {}  # zone id → its domain
 
 
 class CloudflareError(Exception):
@@ -101,12 +105,20 @@ async def account_id(session: aiohttp.ClientSession) -> str:
         if not acc:
             raise CloudflareError(t("Cloudflare не назвал аккаунт зоны"))
         _account[zone] = acc
+        _zone_name[zone] = str(result.get("name") or "").lower()
     return _account[zone]
+
+
+async def zone_name(session: aiohttp.ClientSession) -> str:
+    """The configured zone's domain («morgunov.tech»)."""
+    await account_id(session)
+    return _zone_name.get(integrations.cf_zone_id(), "")
 
 
 def forget():
     """Another zone or token: the account is learnt again."""
     _account.clear()
+    _zone_name.clear()
 
 
 def parse_time(raw) -> datetime | None:
@@ -117,21 +129,52 @@ def parse_time(raw) -> datetime | None:
         return None
 
 
+async def _all_pages(session: aiohttp.ClientSession, path: str, need: str, per_page: int, max_pages: int) -> list[dict]:
+    out: list[dict] = []
+    for page in range(1, max_pages + 1):
+        result, info = await get(session, path, need, page=page, per_page=per_page)
+        items = [x for x in result or [] if isinstance(x, dict)]
+        out += items
+        total = info.get("total_pages")
+        if not items or not isinstance(total, int) or page >= total:
+            break
+    return out
+
+
+async def dns_records(session: aiohttp.ClientSession) -> list[dict]:
+    """Every record of the zone: type, name, content, proxied."""
+    return await _all_pages(session, f"/zones/{integrations.cf_zone_id()}/dns_records", "dns", 100, 50)
+
+
+async def worker_routes(session: aiohttp.ClientSession) -> list[dict]:
+    """The zone's Worker routes: pattern («fprint.example.com/api/*»), script."""
+    result, _ = await get(session, f"/zones/{integrations.cf_zone_id()}/workers/routes", "routes")
+    return [r for r in result or [] if isinstance(r, dict)]
+
+
+async def worker_scripts(session: aiohttp.ClientSession) -> list[dict]:
+    """The account's Workers: id (the script's name), modified_on."""
+    acc = await account_id(session)
+    result, _ = await get(session, f"/accounts/{acc}/workers/scripts", "scripts")
+    return [r for r in result or [] if isinstance(r, dict)]
+
+
+async def workers_subdomain(session: aiohttp.ClientSession) -> str | None:
+    """The account's *.workers.dev subdomain («name» of name.workers.dev)
+    [endpoint not verified against the reference]; None when not told."""
+    acc = await account_id(session)
+    result, _ = await get(session, f"/accounts/{acc}/workers/subdomain", "scripts")
+    sub = result.get("subdomain") if isinstance(result, dict) else None
+    return sub.lower() if isinstance(sub, str) and sub else None
+
+
 # ── Pages ────────────────────────────────────────────────────────────────────
 
 async def pages_projects(session: aiohttp.ClientSession) -> list[dict]:
     """The account's Pages projects: name, the *.pages.dev subdomain and the
     custom domains (fields as in the API reference: name, subdomain, domains)."""
     acc = await account_id(session)
-    out: list[dict] = []
-    for page in range(1, 6):
-        result, info = await get(session, f"/accounts/{acc}/pages/projects", "pages", page=page, per_page=10)
-        items = [p for p in result or [] if isinstance(p, dict) and p.get("name")]
-        out += items
-        total = int(info.get("total_pages") or 1) if str(info.get("total_pages") or "1").isdigit() else 1
-        if not items or page >= total:
-            break
-    return out
+    return [p for p in await _all_pages(session, f"/accounts/{acc}/pages/projects", "pages", 10, 5) if p.get("name")]
 
 
 def project_hosts(project: dict) -> set[str]:

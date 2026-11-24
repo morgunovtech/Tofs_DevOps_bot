@@ -604,6 +604,36 @@ STRINGS: dict[str, str] = {
     "журнал изменений Cloudflare": "Cloudflare's audit log",
     "тревоги об опасных изменениях в аккаунте Cloudflare и строка «Cloudflare за сутки» не работают":
         "the alerts about dangerous changes in the Cloudflare account and the «Cloudflare in the last day» line do not work",
+    # ── services/published.py ───────────────────────────────────────────────
+    "записи DNS": "the DNS records",
+    "проекты Pages": "the Pages projects",
+    "маршруты Worker-ов": "the Worker routes",
+    "Worker-ы аккаунта": "the account's Workers",
+    "репозитории GitHub": "the GitHub repositories",
+    "⚠️ Не прочитал {what}.": "⚠️ Could not read {what}.",
+    "🟠 {n} {addresses} без присмотра: {listing} — опубликованы, но я за ними не слежу.":
+        "🟠 {n} {addresses} not watched: {listing} — published, but I do not watch them.",
+    "➕ Следить: {key}": "➕ Watch: {key}",
+    "🟠 Записи DNS ведут в никуда: {listing} — можно удалить.": "🟠 DNS records lead nowhere: {listing} — they can be deleted.",
+    "🟠 В DNS остались записи почтовых сервисов, которых нет в MX и SPF: {listing} — можно удалить.":
+        "🟠 The DNS still has records of mail services that are no longer in MX and SPF: {listing} — they can be deleted.",
+    "🔴 {name} можно захватить: запись CNAME ведёт на {target}, а {why}": "🔴 {name} can be taken over: its CNAME leads to {target}, and {why}",
+    "такого проекта Cloudflare Pages в аккаунте нет": "the account has no such Cloudflare Pages project",
+    "такого Worker-а в аккаунте нет": "the account has no such Worker",
+    "такого имени на этой платформе больше нет": "that name no longer exists on the platform",
+    "домена, на который она ведёт, не существует — его может купить кто угодно":
+        "the domain it leads to does not exist — anyone can buy it",
+    "Кто создаст это имя у себя, будет показывать свои страницы на твоём адресе — с твоим доменом и сертификатом.":
+        "Whoever creates that name on their side will show their pages at your address — with your domain and certificate.",
+    "1. Не нужна — удали запись {name} в DNS у Cloudflare (кнопка ниже).":
+        "1. Not needed — delete the {name} record in Cloudflare's DNS (button below).",
+    "2. Нужна — создай проект или имя, на которое она ведёт, у себя.":
+        "2. Needed — create the project or the name it leads to on your side.",
+    "🔗 DNS в Cloudflare": "🔗 DNS in Cloudflare",
+    "✅ {name}: запись, которая вела на {target}, больше не опасна.": "✅ {name}: the record that led to {target} is no longer a risk.",
+    "записи DNS в Cloudflare": "the DNS records in Cloudflare",
+    "сверка «опубликовано, но не под присмотром» и поиск записей DNS, через которые можно захватить поддомен, не работают":
+        "the «published but not watched» check and the search for DNS records a subdomain can be taken over through do not work",
 }
 
 # Russian singular → (English singular, English plural).
@@ -620,4 +650,5 @@ PLURALS: dict[str, tuple[str, str]] = {
     "серьёзная проблема": ("serious problem", "serious problems"),
     "изменение": ("change", "changes"),
     "опасное изменение": ("dangerous change", "dangerous changes"),
+    "адрес": ("address", "addresses"),
 }

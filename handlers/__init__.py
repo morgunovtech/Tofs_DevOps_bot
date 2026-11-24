@@ -22,6 +22,7 @@ from handlers import (
     maintenance,
     menu,
     mute,
+    published,
     security,
     seo,
     settings,
@@ -59,7 +60,7 @@ admin.include_routers(
     bottom.router,   # first: a bottom button aborts any pending input
     menu.router, about.router, blocks.router, mute.router, alerts.router, cloudflare.router, incidents.router, sites.router,
     site_settings.router, settings.router, maintenance.router, heartbeats.router,
-    seo.router, links.router, feedback.router, setup.router, mail.router,
+    seo.router, links.router, feedback.router, setup.router, mail.router, published.router,
     security.router, speed.router, automation.router, tune.router,
     stale_router,   # last: catches only what nothing above handled
 )

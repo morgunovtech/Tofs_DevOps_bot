@@ -266,6 +266,26 @@ async def check() -> dict:
     return report
 
 
+_PUBLISHED_FIELDS = "nameWithOwner url homepageUrl isArchived latestRelease { tagName publishedAt }"
+
+
+async def published_repos() -> list[dict]:
+    """The owner's repositories that say where they live (the «homepage»
+    field), with their latest release: {name, url, homepage, release,
+    released_at}. Archived ones are left out. Raises GitHubError."""
+    async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+        _, nodes, _, _ = await _repositories(session, _PUBLISHED_FIELDS, integrations.github_owner())
+    out = []
+    for n in nodes:
+        home = str(n.get("homepageUrl") or "").strip()
+        if n.get("isArchived") or not home.startswith(("https://", "http://")):
+            continue
+        release = n.get("latestRelease") if isinstance(n.get("latestRelease"), dict) else {}
+        out.append({"name": n["nameWithOwner"], "url": n.get("url") or f"https://github.com/{n['nameWithOwner']}",
+                    "homepage": home, "release": release.get("tagName"), "released_at": release.get("publishedAt")})
+    return out
+
+
 async def run_watch():
     """Weekly job, right before the Sunday report is built: the result is
     stored for summary_lines(); nothing is sent from here."""
