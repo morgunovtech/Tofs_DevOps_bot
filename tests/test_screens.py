@@ -422,7 +422,7 @@ def test_seo_headline_asserts_only_what_was_measured():
     gone = dict(fresh, verdict="FAIL", coverage="Crawled - currently not indexed")
     text = seo.seo_text(url, _snap(google=gone), google_on=True)
     assert "🔴 <b>В Google сайта нет</b>. С моей стороны помех нет" in text
-    assert "📇 Google: главной нет в индексе 🔴 (Crawled - currently not indexed)" in text
+    assert "📇 Google: главной нет в индексе 🔴 (просканирована, но не проиндексирована — Google обошёл" in text
 
     old = dict(gone, at=(datetime.now(UTC) - timedelta(days=4)).isoformat(timespec="seconds"))
     text = seo.seo_text(url, _snap(google=old), google_on=True)

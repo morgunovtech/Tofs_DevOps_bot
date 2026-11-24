@@ -337,6 +337,28 @@ async def _fetch(session: aiohttp.ClientSession, url: str,
         return None, "", {}, url
 
 
+async def _twin_open(session: aiohttp.ClientSession, twin: str, pages: list[str]) -> SeoProblem | None:
+    """The first of the pages (the homepage and one inner page, read on the
+    technical address) a search engine may index there: it answers 200 on
+    the twin itself — no redirect to the real domain — and carries no
+    noindex (header or meta). A page that does not answer says nothing."""
+    for page in pages:
+        path = urlparse(page).path or "/"
+        status, html, headers, final = await _fetch(session, f"https://{twin}{path}")
+        if status != 200 or urlparse(final).hostname != twin or not html:
+            continue
+        try:
+            found, _ = await parse_worker.seo_page(html, final, headers, is_home=path == "/")
+        except parse_worker.ParseError:
+            continue
+        if {p.code for p in found} & {"noindex_meta", "noindex_header"}:
+            continue
+        return _p("pages_twin", "warning", t("технический адрес {twin}{path} открыт поисковикам: та же страница без noindex "
+                                             "и без переадресации на основной адрес").format(
+            twin=twin, path="" if path == "/" else path))
+    return None
+
+
 async def _status(session: aiohttp.ClientSession, url: str, ua: str = USER_AGENT) -> int | None:
     """Only the status code: the body is not read (the AI and soft-404
     probes need nothing else). None on a network error."""
@@ -444,6 +466,14 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         if blocked_bots:
             problems.append(_p("ai_blocked", "warning", t("обычный запрос сайт пропустил, а запрос с подписью ")
                                + ", ".join(blocked_bots) + t(" — нет")))
+        # The project's technical address (x.pages.dev) serves the same site:
+        # without noindex or a redirect it competes with the real address.
+        twin = await cloudflare.pages_twin(host_of(url))
+        if twin:
+            problem = await _twin_open(session, twin, [base + "/"] + [p for p in sample[1:2]])
+            if problem:
+                problems.append(problem)
+
         # The block by address is Cloudflare's setting: read it, not guessed.
         cf_ai = await cloudflare.ai_bots(host_of(url))
         if cf_ai == "block":

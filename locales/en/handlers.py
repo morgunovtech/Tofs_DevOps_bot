@@ -1537,6 +1537,7 @@ STRINGS: dict[str, str] = {
     # ── handlers/seo.py: Cloudflare's AI-bot setting ────────────────────────
     "🤖 ИИ-ассистенты: Cloudflare их не пускает — в зоне включено «Block AI bots».":
         "🤖 AI assistants: Cloudflare turns them away — «Block AI bots» is on in the zone.",
+    "📇 Google: главной копией считает {google}, а страница называет {user} 🟠": "📇 Google: takes {google} for the main copy, while the page names {user} 🟠",
 }
 
 # Russian singular → (English singular, English plural).

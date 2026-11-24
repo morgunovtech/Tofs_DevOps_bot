@@ -650,6 +650,21 @@ STRINGS: dict[str, str] = {
     "Что делать: задеплой Worker (wrangler deploy или кнопка в Cloudflare → Workers) или проверь, почему упал автоматический деплой.":
         "What to do: deploy the Worker (wrangler deploy or the button in Cloudflare → Workers), or find out why the automatic deployment failed.",
     "✅ {what}: задеплоено то, что влито, — больше не отстаёт.": "✅ {what}: what was merged is deployed — no longer behind.",
+    # ── services/index_status.py: coverage in words ─────────────────────────
+    "просканирована, но не проиндексирована — Google обошёл страницу и пока не показывает её: помогают уникальный текст, ссылки на неё с других страниц и «Запросить индексирование»":
+        "crawled, not indexed — Google visited the page and does not show it yet: unique text, links to it from other pages and «Request indexing» help",
+    "обнаружена, но не проиндексирована — Google знает адрес, но ещё не обходил: помогают ссылки на неё и «Запросить индексирование»":
+        "discovered, not indexed — Google knows the address but has not crawled it: links to it and «Request indexing» help",
+    "Google не знает этот адрес — добавь sitemap в Search Console и запроси индексирование":
+        "Google does not know this address — add the sitemap in Search Console and request indexing",
+    "Google выбрал главной копией другой адрес": "Google chose another address as the main copy",
+    "дубль без canonical — главную копию Google выбрал сам": "a duplicate without canonical — Google chose the main copy itself",
+    "закрыта noindex": "closed with noindex",
+    "закрыта в robots.txt": "closed in robots.txt",
+    "Google считает её пустой страницей («soft 404»)": "Google takes it for an empty page («soft 404»)",
+    "страница не найдена (404)": "page not found (404)",
+    "при обходе сервер ответил ошибкой": "the server answered with an error during the crawl",
+    "страница с переадресацией — в индексе адрес, на который она ведёт": "a page with a redirect — the address it leads to is what gets indexed",
 }
 
 # Russian singular → (English singular, English plural).

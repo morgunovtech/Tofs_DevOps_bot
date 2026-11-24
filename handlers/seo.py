@@ -67,12 +67,17 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str]
             if index_status.is_stale(g):
                 on = index_status.fmt_day(g.get("at"))
                 lines.append(t("📇 Google: по данным на {on} главная {words} в индексе").format(on=on, words=t("была") if indexed else t("не была"))
-                             + ("" if indexed else f" 🔴 ({esc(g.get('coverage') or '?')})") + t(" — свежих нет"))
+                             + ("" if indexed else f" 🔴 ({esc(index_status.coverage_words(g.get('coverage')))})")
+                             + t(" — свежих нет"))
             elif indexed:
                 lines.append(t("📇 Google: главная в индексе") + (t(" (обход {crawl})").format(crawl=crawl) if crawl else ""))
             else:
-                lines.append(t("📇 Google: главной нет в индексе 🔴 ({v})").format(v=esc(g.get('coverage') or '?')))
+                lines.append(t("📇 Google: главной нет в индексе 🔴 ({v})").format(
+                    v=esc(index_status.coverage_words(g.get('coverage')))))
                 absent.append("Google")
+            if not index_status.is_stale(g) and index_status.canonical_differs(g):
+                lines.append(t("📇 Google: главной копией считает {google}, а страница называет {user} 🟠").format(
+                    google=esc(g["google_canonical"]), user=esc(g["user_canonical"])))
     y = snap.get("yandex") if yandex_on else None
     if yandex_on:
         if not y:

@@ -217,6 +217,9 @@ async def inspect_url(page_url: str) -> dict | None:
             "verdict": verdict,
             "coverage": idx.get("coverageState", "?"),
             "last_crawl": idx.get("lastCrawlTime"),
+            # The page the owner names as the main copy, and the one Google chose.
+            "user_canonical": idx.get("userCanonical"),
+            "google_canonical": idx.get("googleCanonical"),
         }
     except Exception as e:
         logger.warning("GSC inspect failed: %s", err_text(e))

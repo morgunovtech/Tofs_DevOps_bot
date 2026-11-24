@@ -55,7 +55,6 @@ from monitors import availability, dns_checker, links_checker, netcheck, parse_w
 from reports import scheduler  # noqa: E402
 from services import (  # noqa: E402
     automation,
-    causes,
     cf_audit,
     cloudflare,
     gsc,
@@ -396,7 +395,7 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(cloudflare, "_account", {})
     monkeypatch.setattr(cloudflare, "_zone_name", {})
     monkeypatch.setattr(cloudflare, "_ai", {})
-    monkeypatch.setattr(causes, "_projects", None)
+    monkeypatch.setattr(cloudflare, "_projects", {})
     monkeypatch.setattr(cf_audit, "_lock", asyncio.Lock())
 
 

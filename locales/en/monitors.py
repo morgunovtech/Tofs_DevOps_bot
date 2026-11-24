@@ -182,6 +182,8 @@ STRINGS: dict[str, str] = {
         "{page}: the {service} verification tag holds a placeholder «{value}» — the site is not verified in {service}",
     "{page}: {n} разных кода подтверждения {service}": "{page}: {n} different {service} verification codes",
     "в Cloudflare включено «Block AI bots» — ИИ-ассистенты получают отказ": "«Block AI bots» is on in Cloudflare — AI assistants are refused",
+    "технический адрес {twin}{path} открыт поисковикам: та же страница без noindex и без переадресации на основной адрес":
+        "the technical address {twin}{path} is open to search engines: the same page with no noindex and no redirect to the main address",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {
