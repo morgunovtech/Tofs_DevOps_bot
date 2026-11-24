@@ -1,0 +1,54 @@
+# Dependabot for the design system. The copy of the morgunov.tech design
+# system in web/s.morgunov.tech (listed in web/ds.json with the origin's hash of every
+# file) is synced from https://s.morgunov.tech once a week: when a file changed
+# there, scripts/ds_sync.py --write brings the new bytes and this opens a PR
+# with them, pushed to the branch ds-sync (the bot's own branch: a later run
+# replaces a stale unmerged sync). A human merges it — the status page changes its look.
+#
+# Prerequisite, one of: the repository setting «Allow GitHub Actions to create
+# and approve pull requests» (Settings → Actions → General → Workflow
+# permissions), or a fine-grained personal access token with contents and
+# pull-requests write in the DS_SYNC_TOKEN secret — with the token GitHub also
+# starts CI on the push by itself. With GITHUB_TOKEN a push starts no
+# workflow, so the last step dispatches ci.yml on the branch.
+name: DS sync
+
+on:
+  schedule:
+    - cron: "40 6 * * 1"   # Mondays 06:40 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - id: sync
+        run: |
+          python3 scripts/ds_sync.py web/ds.json --write | tee "$RUNNER_TEMP/sync.log"
+          echo "summary=$(tail -n 1 "$RUNNER_TEMP/sync.log" | sed 's/^summary: //')" >> "$GITHUB_OUTPUT"
+      - if: steps.sync.outputs.summary != 'no change'
+        env:
+          GH_TOKEN: ${{ secrets.DS_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+          SUMMARY: ${{ steps.sync.outputs.summary }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B ds-sync
+          git add -A
+          git commit -m "DS sync: $SUMMARY"
+          git push --force origin ds-sync
+          if [ -z "$(gh pr list --head ds-sync --state open --json number --jq '.[0].number')" ]; then
+            gh pr create --base main --head ds-sync --title "DS sync: $SUMMARY" \
+              --body "The copy of the morgunov.tech design system in web/s.morgunov.tech, synced from https://s.morgunov.tech by .github/workflows/ds-sync.yml: $SUMMARY. A human merges it — the status page changes its look."
+          fi
+          gh workflow run ci.yml --ref ds-sync

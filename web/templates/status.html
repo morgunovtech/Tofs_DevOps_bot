@@ -1,82 +1,101 @@
 <!doctype html>
-<html lang="$lang">
+<html lang="$lang" data-theme="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta http-equiv="refresh" content="60">
+<meta name="theme-color" content="#edeae5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14130f" media="(prefers-color-scheme: dark)">
 <title>$title</title>
 <style>
-  :root {
-    --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #70757d;
-    --up: #1a7f44; --down: #c02a30; --maint: #2a64b8; --warn: #a85a00;
-    --border: #e4e6ea;
-  }
+  /* morgunov.tech design system v1: tokens.css and fonts.css from the vendored
+     copy in web/s.morgunov.tech (web/status_page.py inlines them — the status
+     page of a self-hosted bot depends on nothing outside for its colours and
+     type; the woff2 files load from the origin with swap, the system stack
+     stands in until they arrive, or for good). The status colours below are the
+     page's own: the DS has no semantic palette; the same values Fingerprint uses. */
+$ds_css
+  :root { --ok: #27703f; --warn: #8a5a00; --bad: #b3261e; }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a; --card: #1d2026; --text: #e8eaed; --muted: #9aa0a8;
-      --border: #2a2e35;
-      --up: #22a55b; --down: #ff6b70; --warn: #d9822b;
-    }
+    [data-theme="auto"] { --ok: #6cc08a; --warn: #e2a93b; --bad: #ff7a6e; }
   }
-  * { box-sizing: border-box; margin: 0; }
+
+  *, *::before, *::after { box-sizing: border-box; }
   body {
-    background: var(--bg); color: var(--text);
-    font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-    max-width: 640px; margin: 0 auto; padding: 24px 16px 48px;
+    margin: 0; background: var(--v4-bg); color: var(--v4-fg);
+    font-family: var(--v4-sans); font-size: 14px; line-height: 1.55; letter-spacing: -0.005em;
   }
-  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 14px; }
-  .banner { border-radius: 12px; padding: 16px 20px; font-weight: 600; font-size: 18px;
-            color: #fff; margin-bottom: 20px; }
-  .banner-up { background: #1a7f44; }
-  .banner-down { background: #c02a30; }
-  .banner-maint { background: #2a64b8; }
-  .banner-warn { background: #a85a00; }
-  .banner-stale { background: #5f6670; }
-  .site { background: var(--card); border: 1px solid var(--border);
-          border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 36px 24px 56px; }
+  :focus-visible { outline: 2px solid var(--v4-orange); outline-offset: 2px; }
+  /* Uppercase tracked labels: the DS micro-label scale (mono = numbers and meta). */
+  .page-title, .uptime, .incidents th, footer {
+    font-family: var(--v4-mono); font-weight: var(--v4-label-weight); text-transform: uppercase;
+    color: var(--v4-muted);
+  }
+  .page-title { font-size: var(--v4-label-size); letter-spacing: var(--v4-label-tracking); margin: 0 0 12px; }
+  /* The verdict: a paper block under the page rule, a square status mark before the words.
+     No coloured fills — the DS keeps colour for text, lines and marks. */
+  .banner {
+    display: flex; align-items: center; gap: 14px; margin: 0 0 24px; padding: 16px 18px;
+    border: 1px solid var(--v4-fg); background: var(--v4-paper);
+    font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  .banner::before { content: ""; width: 10px; height: 10px; flex: none; background: var(--v4-dim); }
+  .banner-up::before { background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
+  .banner-down::before { background: var(--bad); }
+  .banner-warn::before { background: var(--warn); }
+  .banner-down { border-color: var(--bad); }
+  .banner-warn { border-color: var(--warn); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .site { background: var(--v4-paper); border: 1px solid var(--v4-line); padding: 14px 16px; margin-bottom: 8px; }
   .site-head { display: flex; align-items: center; gap: 10px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-  .dot-up { background: var(--up); }
-  .dot-down { background: var(--down); }
-  .dot-maint { background: var(--maint); }
-  .dot-pending { background: var(--muted); }
+  .dot { width: 8px; height: 8px; flex: none; background: var(--v4-dim); }
+  .dot-up { background: var(--ok); }
+  .dot-down { background: var(--bad); }
   .dot-warn { background: var(--warn); }
-  .problems { margin-top: 4px; color: var(--warn); font-size: 14px; }
+  .problems { margin-top: 4px; color: var(--warn); font-size: 13px; }
   .site-name { font-weight: 600; overflow-wrap: anywhere; }
-  .site-state { margin-left: auto; color: var(--muted); font-size: 14px;
-                white-space: nowrap; }
-  .uptime { margin-top: 6px; display: flex; gap: 14px; font-size: 14px;
-            flex-wrap: wrap; }
-  .good { color: var(--up); } .warn { color: var(--warn); } .bad { color: var(--down); }
-  .na { color: var(--muted); }
-  h2 { font-size: 16px; margin: 28px 0 10px; }
-  .incidents { width: 100%; border-collapse: collapse; font-size: 14px;
-               background: var(--card); border: 1px solid var(--border);
-               border-radius: 12px; overflow: hidden; }
-  .incidents th, .incidents td { text-align: left; padding: 8px 12px;
-                                 border-bottom: 1px solid var(--border); }
+  .site-state { margin-left: auto; color: var(--v4-muted); font-family: var(--v4-mono); font-size: 12px; white-space: nowrap; }
+  .uptime { margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--v4-label-size); letter-spacing: 0.04em; }
+  .good { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .na { color: var(--v4-dim); }
+  h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 32px 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--v4-fg); }
+  .incidents { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--v4-paper); border: 1px solid var(--v4-line); }
+  .incidents th, .incidents td { text-align: left; padding: 8px 12px; vertical-align: top; border-bottom: 1px solid var(--v4-line-soft); }
   .incidents tr:last-child td { border-bottom: none; }
-  .incidents th { color: var(--muted); font-weight: 500; }
-  .inc-open { color: var(--down); font-weight: 600; }
-  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  .incidents th { font-size: var(--v4-label-xs-size); letter-spacing: var(--v4-label-xs-tracking); border-bottom-color: var(--v4-line); }
+  .inc-open { color: var(--bad); font-weight: 600; }
+  footer {
+    margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--v4-line);
+    display: flex; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap;
+    font-size: var(--v4-label-xs-size); letter-spacing: var(--v4-label-xs-tracking);
+  }
   /* A phone: incidents as a list, the duration column first — no sideways scroll;
      a long state (degraded · 120 ms) goes under the name, not beside it. */
   @media (max-width: 560px) {
+    .wrap { padding: 20px 16px 32px; }
+    .banner { font-size: 16px; padding: 14px; }
     .site-head { flex-wrap: wrap; }
-    .site-state { margin-left: 20px; white-space: normal; width: 100%; }
+    .site-state { margin-left: 18px; white-space: normal; width: 100%; }
     .incidents, .incidents tbody, .incidents tr, .incidents td { display: block; width: auto; }
     .incidents thead { display: none; }
     .incidents td { border: none; padding: 2px 12px; overflow-wrap: anywhere; }
-    .incidents tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .incidents tr { padding: 8px 0; border-bottom: 1px solid var(--v4-line-soft); }
+    .incidents tr:last-child { border-bottom: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   }
 </style>
 </head>
 <body>
+<main class="wrap">
   $heading
   <h1 class="banner $banner_cls">$banner</h1>
   $sites_html
   $incidents_html
-  <footer>$checked · $built · TofsDevOps 🐕</footer>
+  <footer><span>$checked · $built</span><span>TofsDevOps</span></footer>
+</main>
 </body>
 </html>

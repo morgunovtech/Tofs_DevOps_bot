@@ -494,8 +494,11 @@ async def _harden(request: web.Request, response: web.StreamResponse) -> None:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     if response.content_type == "text/html":
+        # font-src: the status page takes IBM Plex from the design-system origin
+        # (web/templates/status.html); everything else on the page is inline.
         response.headers.setdefault("Content-Security-Policy",
-                                    "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'")
+                                    "default-src 'none'; style-src 'unsafe-inline'; "
+                                    "font-src https://s.morgunov.tech; frame-ancestors 'none'")
 
 
 def create_app() -> web.Application:

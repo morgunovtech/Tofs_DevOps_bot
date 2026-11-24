@@ -188,6 +188,7 @@ CI гоняет то же самое на Python 3.12, 3.13 и 3.14, собир�
 | Внешний сторож (`SELF_HEARTBEAT_URL`) | healthchecks.io или heartbeat-задача другого бота | удалить check или задачу |
 | Токены интеграций: Google Search Console, Яндекс.Вебмастер, ключ API Bing Webmaster (`BING_WEBMASTER_KEY`), Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
 | Deploy-хуки (`DEPLOY_HOOKS`) и виджет обратной связи на твоих страницах | Cloudflare Pages, твой сайт | удалить хук; убрать сниппет виджета |
+| Необязательный секрет `DS_SYNC_TOKEN` (fine-grained PAT: contents и pull requests write) для еженедельного PR с обновлением дизайн-системы | GitHub → Settings → Secrets | удалить секрет; без него workflow требует «Allow GitHub Actions to create and approve pull requests» |
 
 ## Что почитать
 

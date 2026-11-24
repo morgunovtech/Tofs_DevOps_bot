@@ -2,7 +2,10 @@
 behaves under a burst of hits, and how it gets published at all."""
 
 import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 from conftest import FakeCall, buttons
@@ -88,6 +91,26 @@ async def test_no_data_is_not_zero_percent(bot, db):
     assert '<span class="na">24ч: —</span>' in html and "Идёт первая проверка" in html
     assert '<h1 class="banner' in html and "@media (max-width: 560px)" in html
     assert ".site-head { flex-wrap: wrap; }" in html
+
+
+async def test_the_page_wears_the_morgunov_tech_design_system(bot, db):
+    """The tokens of ds/v1 are inlined from the vendored copy (a self-hosted bot
+    does not depend on the DS origin for its colours), IBM Plex comes from that
+    origin with the system stack as the fallback, and the DS rules hold: square
+    corners, no shadows."""
+    sid = await db.activate_or_create_site("https://shop.example.com")
+    await db.save_check(sid, "availability", "ok", response_time_ms=100)
+    html = status_page.render(await _fresh_page())
+    assert '<html lang="ru" data-theme="auto">' in html
+    assert "--v4-bg: #edeae5" in html and '[data-theme="auto"]' in html
+    assert 'src: url("https://s.morgunov.tech/fonts/plex-sans-cyr-400.woff2")' in html
+    assert 'url("/fonts/' not in html                        # every woff2 path made absolute
+    assert "border-radius" not in html and "box-shadow" not in html
+    async with TestClient(TestServer(create_app())) as c:
+        await settings.set_status_page(True)
+        r = await c.get("/status")
+        assert r.status == 200 and "font-src https://s.morgunov.tech" in r.headers["Content-Security-Policy"]
+        await settings.set_status_page(False)
 
 
 async def test_a_burst_of_hits_builds_the_page_once(bot, db, monkeypatch):
@@ -176,3 +199,17 @@ async def test_an_open_page_drops_the_old_slug_and_the_wizard_door_leads_back(bo
     assert "Включена: https://bot.example.test/status" in call.message.texts[-1]
     assert "← К подключениям" in buttons(call.message.reply_markup)
     await settings.set_status_page(False)
+
+
+def test_the_vendored_design_system_is_the_origins_bytes():
+    """web/ds.json pins every vendored file to the origin's hash — sha1[:8], the
+    value s.morgunov.tech uses as its ?v= — so a copy edited by hand fails here,
+    offline; scripts/ds_sync.py --write (the weekly workflow) is the only way
+    the copy changes."""
+    manifest_path = Path(__file__).parent.parent / "web" / "ds.json"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    root = manifest_path.parent / manifest["root"]
+    assert manifest["origin"] == "https://s.morgunov.tech"
+    assert set(manifest["files"]) == {"ds/v1/tokens.css", "ds/v1/fonts.css"}
+    for rel, expected in manifest["files"].items():
+        assert hashlib.sha1((root / rel).read_bytes()).hexdigest()[:8] == expected, rel

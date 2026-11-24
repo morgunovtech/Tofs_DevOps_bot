@@ -165,6 +165,10 @@ pytest -q             # без сети и без Telegram
 pip-audit -r requirements.txt --strict
 ```
 
+### Дизайн-система
+
+Статус-страница оформлена в дизайн-системе morgunov.tech: `web/s.morgunov.tech/ds/v1/{tokens,fonts}.css` — копия с s.morgunov.tech байт в байт, `web/ds.json` держит хеш каждого файла (`sha1[:8]`, он же `?v=` у origin). Копию не правят руками: `python3 scripts/ds_sync.py web/ds.json --check` (его же гоняет `tests/test_status_page.py`) падает на любой правке, `--write` забирает новые байты с origin, и это делает `.github/workflows/ds-sync.yml` по понедельникам PR-ом в ветке `ds-sync`. Цвета статусов (`--ok`, `--warn`, `--bad`) — свои, в самом шаблоне `web/templates/status.html`.
+
 ### Зависимости
 
 Прямые версии живут в `requirements.in` (10 пинов `==`). `requirements.txt` —
