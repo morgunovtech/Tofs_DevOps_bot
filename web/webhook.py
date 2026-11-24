@@ -457,8 +457,9 @@ async def handle_badge(request: web.Request) -> web.Response:
 
 async def handle_status_badge(request: web.Request) -> web.Response:
     """The old badge addresses (/status/badge/… and /status/<slug>/badge/…):
-    kept for badges already pasted into READMEs, to be removed in a later
-    release — the bot hands out handle_badge's address now."""
+    kept for badges already pasted into READMEs until the next major release
+    (3.0.0) — removing them is a breaking change; the bot hands out
+    handle_badge's address now."""
     if not _status_allowed(request):
         return web.Response(status=404, text="Not Found")
     sid = request.match_info.get("sid", "").removesuffix(".svg")
@@ -503,7 +504,7 @@ async def widget_changed_notice() -> None:
     served = await get_state(WIDGET_SERVED)
     if served and served != widget.VERSION:
         await set_state(WIDGET_SERVED, None)
-        await notifier.send(t("📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 📩 Обратная связь."),
+        await notifier.send(t("📩 Виджет обратной связи обновился вместе с ботом. На сайтах со старым сниппетом он больше не появляется — возьми новый: ⚙️ Настройки → 🌍 Для посетителей → 📩 Подключить виджет."),
                             Priority.NORMAL)
 
 

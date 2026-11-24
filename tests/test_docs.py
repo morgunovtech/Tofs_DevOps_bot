@@ -104,6 +104,21 @@ def test_docs_do_not_send_people_to_screens_that_do_not_exist():
     assert found == [], "\n".join(found)
 
 
+
+# Screens #63 renamed: a message that names the old one sends the owner
+# looking for a button that is not there (both languages — locales/ is code).
+RENAMED = {
+    "🤖 Что бот делает сам": "«🤖 Что делаю сам»",
+    "What the bot does by itself": "«🤖 What I do by myself»",
+    "⚙️ Настройки → 📩 Обратная связь": "«⚙️ Настройки → 🌍 Для посетителей → 📩 Подключить виджет»",
+    "⚙️ Settings → 📩 Feedback": "«⚙️ Settings → 🌍 For visitors → 📩 Connect the widget»",
+}
+
+
+def test_the_bots_own_texts_do_not_name_renamed_screens():
+    shown = _bot_texts()
+    assert [f"«{old}» — now {new}" for old, new in RENAMED.items() if old in shown] == []
+
 def test_docs_hold_no_token_shaped_strings():
     """A realistic example token trips every secret scanner of every fork."""
     shaped = re.compile(r"[0-9]{8,10}:[A-Za-z0-9_-]{35}")

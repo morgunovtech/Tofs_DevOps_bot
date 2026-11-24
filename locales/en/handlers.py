@@ -376,8 +376,8 @@ STRINGS: dict[str, str] = {
     "← К подключениям": "← Connections",
     "← Что можно подключить": "← What can be connected",
     "Остановил": "Paused",
-    "⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что бот делает сам.":
-        "⏸ Doing nothing by myself {words}: no rebuilds, no restarts, no cleanup. To turn on: ⚙️ Settings → 🔌 Connections → 🤖 What the bot does by itself.",
+    "⏸ Ничего не делаю сам {words}: не пересобираю, не перезапускаю, не чищу. Включить: ⚙️ Настройки → 🔌 Подключения → 🤖 Что делаю сам.":
+        "⏸ Doing nothing by myself {words}: no rebuilds, no restarts, no cleanup. To turn on: ⚙️ Settings → 🔌 Connections → 🤖 What I do by myself.",
     "2 часа": "for 2 hours",
     "Включил": "Turned on",
     "Готово": "Done",
@@ -999,13 +999,9 @@ STRINGS: dict[str, str] = {
     "выключена": "off",
     "включена": "on",
     "сторож": "watchdog",
-    "⚙️ Настройки\n\n🔔 Когда писать — {write}\n👥 Помощники — {helpers_now}\n🔌 Подключения — {connections}\n🌍 Для посетителей — {visitors}\n🕐 Часовой пояс — {timezone}, сейчас {time}":
-        "⚙️ Settings\n\n🔔 When to write — {write}\n👥 Helpers — {helpers_now}\n🔌 Connections — {connections}\n🌍 For visitors — {visitors}\n🕐 Time zone — {timezone}, now {time}",
     "«Сайт лёг» и «снова работает» приходят тебе и:": "«Site is down» and «up again» reach you and:",
     "«Сайт лёг» и «снова работает» сейчас приходят только тебе. Если ты в отпуске или сел телефон, о лежащем сайте никто не узнает.":
         "«Site is down» and «up again» reach only you right now. If you are on holiday or your phone dies, nobody learns about a down site.",
-    "🔔 Когда писать\n\n🌅 Утренняя сводка: {morning_hour}:00 — {words}.\n🌙 Вечерняя: {words2}.\n📊 Недельная: воскресенье {weekly_hour}:00 — простой за неделю и месяц, строки скорости только для сайтов, где она менялась, одна идея.\n🗄 Копия базы: {words3}.\n🔕 Тихие часы: {words4} — некритичное ждёт до утра, «сайт лежит» приходит всегда.\n🔔 Будить: {words5}.\n\nТапни, чтобы изменить:":
-        "🔔 When to write\n\n🌅 Morning digest: {morning_hour}:00 — {words}.\n🌙 Evening: {words2}.\n📊 Weekly: Sunday {weekly_hour}:00 — downtime for the week and the month, speed lines only for sites where it moved, one idea.\n🗄 Database copy: {words3}.\n🔕 Quiet hours: {words4} — non-critical waits until morning, «site is down» always comes.\n🔔 Wake me: {words5}.\n\nTap to change:",
     "🕐 Часовой пояс: <b>{timezone}</b>, сейчас у тебя {time}.\nОт него зависят время сводок, тихие часы и все времена в сообщениях.{where}\n\nВыбери город или нажми «✏️ Другой» и пришли ключ вида <code>Europe/Prague</code>:":
         "🕐 Time zone: <b>{timezone}</b>, it is {time} for you now.\nThe digest times, quiet hours and every time in messages depend on it.{where}\n\nPick a city, or tap «✏️ Other» and send a key like <code>Europe/Prague</code>:",
     "Пришли ключ часового пояса из базы IANA, например <code>Europe/Prague</code> или <code>Asia/Tashkent</code>.":
@@ -1073,8 +1069,6 @@ STRINGS: dict[str, str] = {
     "🔔 Только «сайт лёг»": "🔔 «Site is down» only",
     "🌅 Коротко": "🌅 Short",
     "🌅 Каждый сайт": "🌅 Every site",
-    "🗄 Копия базы по воскресеньям: вкл": "🗄 Database copy on Sundays: on",
-    "🗄 Копия базы по воскресеньям: выкл": "🗄 Database copy on Sundays: off",
     "🔄 Новая ссылка (прежняя перестанет работать)": "🔄 New link (the old one stops working)",
     "← Помощники": "← Helpers",
     "Отмена": "Cancel",
@@ -1295,8 +1289,8 @@ STRINGS: dict[str, str] = {
     "сброс кэша: нет": "cache purge: none",
     "пересобираю сам: ": "rebuilding by myself: ",
     "да, ": "yes, ",
-    "☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что бот делает сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.":
-        "☁️ Cloudflare\n\n{cf_state_line}\n\nA <b>deploy hook</b> gives the «🚀 Rebuild the site» button in alerts. ⚠️ Until rebuilding is switched off, I call the hook myself when the site goes down — at most once an hour per hook and never while paused; to switch off — «🤖 What the bot does by itself». Where to get it: Cloudflare Pages → project → Settings → Builds → Deploy hooks → Add. Send «host URL» here.\n\n<b>Cache purge</b> gives the «🧹» button: an API token with the Zone → Cache Purge permission (dash.cloudflare.com → My Profile → API Tokens) and the Zone ID from the domain's Overview page.",
+    "☁️ Cloudflare\n\n{cf_state_line}\n\n<b>Deploy hook</b> даёт кнопку «🚀 Пересобрать сайт» в тревогах. ⚠️ Пока пересборка не выключена, я и сам вызываю хук, когда сайт падает, — не чаще раза в час на хук и никогда на паузе; выключить — «🤖 Что делаю сам». Где взять: Cloudflare Pages → проект → Settings → Builds → Deploy hooks → Add. Пришли сюда «хост URL».\n\n<b>Сброс кэша</b> даёт кнопку «🧹»: API-токен с правом Zone → Cache Purge (dash.cloudflare.com → My Profile → API Tokens) и Zone ID со страницы Overview домена.":
+        "☁️ Cloudflare\n\n{cf_state_line}\n\nA <b>deploy hook</b> gives the «🚀 Rebuild the site» button in alerts. ⚠️ Until rebuilding is switched off, I call the hook myself when the site goes down — at most once an hour per hook and never while paused; to switch off — «🤖 What I do by myself». Where to get it: Cloudflare Pages → project → Settings → Builds → Deploy hooks → Add. Send «host URL» here.\n\n<b>Cache purge</b> gives the «🧹» button: an API token with the Zone → Cache Purge permission (dash.cloudflare.com → My Profile → API Tokens) and the Zone ID from the domain's Overview page.",
     "🚀 Пришли хост и URL deploy hook через пробел:\n<code>example.com https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/…</code>":
         "🚀 Send the host and the deploy hook URL separated by a space:\n<code>example.com https://api.cloudflare.com/client/v4/pages/webhooks/deploy_hooks/…</code>",
     "Формат: <code>example.com https://api.cloudflare.com/…</code>": "The format is <code>example.com https://api.cloudflare.com/…</code>",
