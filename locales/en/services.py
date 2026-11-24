@@ -665,6 +665,11 @@ STRINGS: dict[str, str] = {
     "страница не найдена (404)": "page not found (404)",
     "при обходе сервер ответил ошибкой": "the server answered with an error during the crawl",
     "страница с переадресацией — в индексе адрес, на который она ведёт": "a page with a redirect — the address it leads to is what gets indexed",
+    # ── Bing Webmaster ──────────────────────────────────────────────────────
+    "ключ не принят ({why})": "the key was rejected ({why})",
+    "Bing не ответил": "Bing did not answer",
+    "Bing не ответил ({why})": "Bing did not answer ({why})",
+    "проверка индекса Bing, ошибок обхода и sitemap не работает": "the check of Bing's index, crawl issues and sitemaps does not work",
 }
 
 # Russian singular → (English singular, English plural).

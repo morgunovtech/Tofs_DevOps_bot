@@ -30,7 +30,8 @@ def secret_values() -> list[str]:
     proxy_password = urlsplit(config.telegram_proxy).password if config.telegram_proxy else None
     return [config.bot_token, proxy_password or "", secrets.webhook_secret(), secrets.heartbeat_secret(),
             integrations.self_heartbeat_url(), integrations.crux_key(), integrations.github_token(),
-            integrations.cf_api_token(), integrations.yandex_token(), *integrations.deploy_hooks().values(),
+            integrations.cf_api_token(), integrations.yandex_token(), integrations.bing_key(),
+            *integrations.deploy_hooks().values(),
             *_template_secrets(config.screenshot_template)]
 
 

@@ -41,7 +41,7 @@ from utils.i18n import t
 
 logger = logging.getLogger(__name__)
 
-KEYS = ("yandex_token", "gsc_property", "gsc_key", "deploy_hooks",
+KEYS = ("yandex_token", "bing_key", "gsc_property", "gsc_key", "deploy_hooks",
         "cf_api_token", "cf_zone_id", "cf_zone_name", "second_opinion", "self_heartbeat_url",
         "status_page_slug", "github_token", "github_owner", "crux_key",
         "auto_redeploy", "auto_restart", "auto_cleanup", "region_speed")
@@ -105,6 +105,7 @@ def env_value(key: str):
     """What .env says for the key ('' or {} when nothing)."""
     return {
         "yandex_token": config.yandex_webmaster_token,
+        "bing_key": config.bing_webmaster_key,
         "gsc_property": config.gsc_property,
         "gsc_key": config.gsc_service_account_file,
         "deploy_hooks": config.deploy_hooks,
@@ -141,6 +142,10 @@ def yandex_token() -> str:
 
 
 # ── Google Search Console ────────────────────────────────────────────────────
+
+def bing_key() -> str:
+    return _get("bing_key", config.bing_webmaster_key)
+
 
 def gsc_property() -> str:
     return _get("gsc_property", config.gsc_property)
@@ -327,6 +332,7 @@ def _hooks_ok(value: object) -> bool:
 # stores a key only through its rule; a key without a rule is not imported.
 RULES: dict[str, Callable[[object], bool]] = {
     "yandex_token": _like(r"[A-Za-z0-9_\-.]{20,200}"),
+    "bing_key": _like(r"[A-Za-z0-9_\-]{16,128}"),
     "crux_key": _like(r"[A-Za-z0-9_\-]{30,60}"),
     "gsc_property": _like(r"(sc-domain:[a-z0-9.-]+|https?://[^\s]+)", re.I),
     "gsc_key": lambda v: isinstance(v, str) and valid_gsc_key(v) is not None,
@@ -353,6 +359,7 @@ HEALTH = {   # name: (как называть владельцу, что он т
             "setup:gsc"),
     "yandex": ("Яндекс.Вебмастер", "тревоги о проблемах в Вебмастере и строки Яндекса в отчёте не работают",
                "setup:yx"),
+    "bing": ("Bing Webmaster", "проверка индекса Bing, ошибок обхода и sitemap не работает", "setup:bing"),
     "crux": ("данные Google о скорости у посетителей", "строка «у посетителей» и её 🟠 не обновляются", "setup:crux"),
     "github": ("GitHub", "воскресная проверка репозиториев не работает", "setup:gh"),
     "checkhost": ("check-host.net — вторая точка проверки",

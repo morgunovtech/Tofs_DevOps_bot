@@ -14,7 +14,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from db.database import get_state, resolve_incident, set_state
 from handlers.common import ack, render, site_by_cb, with_running_bar
 from monitors.seo_checker import check_all_seo
-from services import gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
+from services import bing, gsc, index_status, seo_fixes, sitestatus, yandex_webmaster
 from services import hosting as hosting_svc
 from services.actions import seo_fix_keyboard
 from services.humanize import level_icon
@@ -53,7 +53,7 @@ def _hindrances(n: int) -> str:
     return f"{n} {plural(n, "помеха", "помехи", "помех")}"
 
 
-def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str], list[str]]:
+def index_lines(snap: dict, google_on: bool, yandex_on: bool, bing_on: bool = False) -> tuple[list[str], list[str]]:
     """(lines about the index, engines that say the site is NOT there).
     Says only what a fresh answer says; old data is dated, not asserted."""
     lines, absent = [], []
@@ -102,6 +102,21 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool) -> tuple[list[str]
             if chunk:
                 prefix = t("по данным на {fmt_day}: ").format(fmt_day=index_status.fmt_day(y.get('at'))) if stale else ""
                 lines.append(t("📇 Яндекс: ") + prefix + ", ".join(chunk))
+    b = snap.get("bing") if bing_on else None
+    if b:
+        prefix = t("по данным на {fmt_day}: ").format(fmt_day=index_status.fmt_day(b.get("at"))) if index_status.is_stale(b) else ""
+        if b.get("verified") is False:
+            lines.append(t("📇 Bing: ") + prefix + t("сайт не подтверждён 🟠"))
+        else:
+            chunk = []
+            if isinstance(b.get("in_index"), int):
+                chunk.append(t("{n} стр. в индексе").format(n=b["in_index"]) + (" 🟠" if b["in_index"] == 0 else ""))
+            if b.get("issues"):
+                chunk.append(t("🟠 ошибок обхода: {n}").format(n=b["issues"]))
+            if b.get("bad_feeds"):
+                chunk.append(t("🟠 sitemap не читается"))
+            if chunk:
+                lines.append(t("📇 Bing: ") + prefix + ", ".join(chunk))
     return lines, absent
 
 
@@ -162,7 +177,7 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     seo = snap.get("seo") or {}
     problems = seo.get("problems") or []
     groups = grouped(problems)
-    idx_lines, absent = index_lines(snap, google_on, yandex_on)
+    idx_lines, absent = index_lines(snap, google_on, yandex_on, bing.available())
     codes = {g[0] for g in groups}
     unseen = ai_unseen(seo, codes, snap.get("hosting"))
     lines = [t("🔎 {label} в поиске и у ИИ").format(label=label), "", headline(seo, groups, absent, ai_checked=not unseen)]

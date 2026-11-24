@@ -19,6 +19,7 @@ from db.database import (
 )
 from reports.formatter import incident_line
 from services import (
+    bing,
     github,
     gsc,
     humanize,
@@ -32,7 +33,7 @@ from services import (
 from utils.clock import to_local
 from utils.i18n import plural, t
 from utils.text import esc, parse_iso_utc, parse_sqlite_utc, sparkline
-from utils.urls import is_http_url, is_web_page, short_host, site_label
+from utils.urls import host_of, is_http_url, is_web_page, short_host, site_label
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,28 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
                 y_lines.append(f"  {esc(host)}: " + ", ".join(chunks))
         if y_lines:
             lines += [t("🔎 Яндекс:"), *y_lines]
+    if bing.available():
+        lines += await _bing_lines(site_urls)
     return lines
+
+
+async def _bing_lines(site_urls: list[str]) -> list[str]:
+    """Bing's clicks and impressions of the week against the week before —
+    a breakage signal next to Google's, for the watched sites verified there."""
+    sites = await bing.user_sites()
+    if sites is None:
+        return [t("⚠️ Bing Webmaster: не смог получить данные — {why}").format(why=esc(await _reason("bing")))]
+    out = []
+    for host in sorted({host_of(u) for u in site_urls} & set(sites)):
+        weeks = await bing.traffic(sites[host])
+        if weeks is None:
+            continue
+        cur, prev = weeks
+        clicks = f"{cur['clicks']} {plural(cur['clicks'], 'клик', 'клика', 'кликов')}"
+        shows = f"{cur['impressions']} {plural(cur['impressions'], 'показ', 'показа', 'показов')}"
+        out.append(f"  {esc(host)}: {clicks} ({_pct_change(cur['clicks'], prev['clicks'])}), "
+                   f"{shows} ({_pct_change(cur['impressions'], prev['impressions'])})")
+    return [t("🔎 Bing (неделя к неделе):"), *out] if out else []
 
 
 async def _reason(name: str) -> str:
