@@ -188,6 +188,7 @@ The project cannot be removed completely without this list.
 | The external watchdog check (`SELF_HEARTBEAT_URL`) | healthchecks.io, or a heartbeat job of another bot | delete the check or the job |
 | Integration tokens: Google Search Console, Yandex.Webmaster, Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), the CrUX key, a GitHub token | the consoles of those services | revoke each token; «🔌 Подключения» disconnects them in the bot |
 | Deploy hooks (`DEPLOY_HOOKS`) and the feedback widget on your pages | Cloudflare Pages, your site | delete the hook; remove the widget snippet |
+| The optional secret `DS_SYNC_TOKEN` (a fine-grained PAT: contents and pull requests write) for the weekly design-system sync PR | GitHub → Settings → Secrets | delete the secret; without it the workflow needs «Allow GitHub Actions to create and approve pull requests» |
 
 ## Further reading
 

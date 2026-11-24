@@ -44,6 +44,16 @@ _CACHE_TTL_SEC = 30
 _cache: tuple[float, dict] | None = None
 _lock = asyncio.Lock()
 _TEMPLATE = Template((Path(__file__).parent / "templates" / "status.html").read_text("utf-8"))
+# The morgunov.tech design system, vendored verbatim under web/s.morgunov.tech
+# (web/ds.json lists the files and their origin hashes; scripts/ds_sync.py
+# keeps them in step, .github/workflows/ds-sync.yml opens the PR). tokens.css
+# goes into the page as is; fonts.css names its woff2 files by site-absolute
+# paths, so inlined here they must point at the origin — the one request a
+# visitor's browser makes outside the bot.
+_DS_ORIGIN = "https://s.morgunov.tech"
+_DS_DIR = Path(__file__).parent / "s.morgunov.tech" / "ds" / "v1"
+_DS_CSS = ((_DS_DIR / "tokens.css").read_text("utf-8") + "\n"
+           + (_DS_DIR / "fonts.css").read_text("utf-8").replace('url("/fonts/', f'url("{_DS_ORIGIN}/fonts/'))
 
 # Everything a visitor reads, per STATUS_PAGE_LANG (read on every call, not
 # at import: the owner's .env decides, a test may switch it). Incident
@@ -336,7 +346,7 @@ def render(p: dict) -> str:
     # The owner's name for the page goes in as text, above the banner — not a second <h1>.
     page_title = settings.status_page_title()
     heading = f'<p class="page-title">{html.escape(page_title)}</p>' if page_title else ""
-    return _TEMPLATE.substitute(lang=t["html_lang"], title=html.escape(page_title or t["title"]),
+    return _TEMPLATE.substitute(ds_css=_DS_CSS, lang=t["html_lang"], title=html.escape(page_title or t["title"]),
                                 heading=heading, banner_cls=banner_cls, banner=banner,
                                 sites_html="".join(rows), incidents_html=incidents_html,
                                 checked=html.escape(checked),

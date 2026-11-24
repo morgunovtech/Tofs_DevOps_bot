@@ -1,0 +1,106 @@
+/* ============================================================
+   morgunov.tech design system — v1 — tokens.css
+   THE single source of truth for the brand: colours + type families,
+   across 4 themes (light default, dark, high-contrast; "auto" follows the
+   light/dark tokens via the data-theme set by each site's inline script).
+   Reusable across all morgunov.tech services. Change a value here once and
+   every service that links this file updates.
+   ============================================================ */
+
+:root {
+  /* Light theme defaults */
+  --v4-bg: #edeae5;
+  --v4-paper: #f5f2ed;
+  --v4-fg: #14110d;
+  --v4-muted: #5a554c;
+  --v4-dim: #6c6759;
+  --v4-line: #c9c5bd;
+  --v4-line-soft: #d8d4cc;
+  --v4-orange: #d9531e;
+  /* Foreground-only orange. Brand orange #d9531e on light bg fails AA at 11px (3.36:1).
+     This token is darkened to 4.86:1 for use as text/link colour. Brand orange stays
+     for backgrounds/borders/badges where contrast rules don't apply the same way. */
+  --v4-orange-text: #b03e10;
+  --v4-on-accent: #14110d;
+  --v4-on-fg: #f5f2ed;
+  --v4-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --v4-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  /* Micro-label scale: every uppercase tracked label on the site is one of
+     two sizes. `label` — section numbers, eyebrows, nav, menus, sub-heads;
+     `label-xs` — stat units, card heads, tags, footer, spec terms. Mono vs
+     sans stays a per-role choice (mono = numbers/meta, sans = UI labels). */
+  --v4-label-size: 11px;
+  --v4-label-tracking: 0.1em;
+  --v4-label-xs-size: 10px;
+  --v4-label-xs-tracking: 0.12em;
+  --v4-label-weight: 500;
+  color-scheme: light dark;
+}
+
+/* "auto" resolved by CSS alone, for consumers without the inline theme script.
+   s.morgunov.tech never stamps "auto" (its script resolves it to light/dark). */
+@media (prefers-color-scheme: dark) {
+  [data-theme="auto"] {
+    --v4-bg: #14130f;
+    --v4-paper: #1c1a16;
+    --v4-fg: #ece7dd;
+    --v4-muted: #b8b0a2;
+    --v4-dim: #8a8378;
+    --v4-line: #3a3530;
+    --v4-line-soft: #2a2620;
+    --v4-orange: #ff6a2e;
+    --v4-orange-text: #ff6a2e;
+    --v4-on-accent: #14130f;
+    --v4-on-fg: #14130f;
+    color-scheme: dark;
+  }
+}
+
+[data-theme="dark"] {
+  --v4-bg: #14130f;
+  --v4-paper: #1c1a16;
+  --v4-fg: #ece7dd;
+  --v4-muted: #b8b0a2;
+  --v4-dim: #8a8378;
+  --v4-line: #3a3530;
+  --v4-line-soft: #2a2620;
+  --v4-orange: #ff6a2e;
+  --v4-orange-text: #ff6a2e;
+  --v4-on-accent: #14130f;
+  --v4-on-fg: #14130f;
+  color-scheme: dark;
+}
+
+[data-theme="high-contrast"] {
+  --v4-bg: #000000;
+  --v4-paper: #0a0a0a;
+  --v4-fg: #ffffff;
+  --v4-muted: #f1eee7;
+  --v4-dim: #d6d0c8;
+  --v4-line: #ffffff;
+  --v4-line-soft: #c8c8c8;
+  --v4-orange: #ffd166;
+  --v4-orange-text: #ffd166;
+  --v4-on-accent: #000000;
+  --v4-on-fg: #000000;
+  color-scheme: dark;
+}
+
+/* Print: readable on paper regardless of the active theme. Dark/HC orange
+   (#ff6a2e / #ffd166) is unreadable on white — pin the light accent. */
+@media print {
+  :root,
+  [data-theme="dark"],
+  [data-theme="high-contrast"] {
+    --v4-bg: #fff;
+    --v4-paper: #fff;
+    --v4-fg: #000;
+    --v4-muted: #333;
+    --v4-dim: #555;
+    --v4-line: #bbb;
+    --v4-line-soft: #ddd;
+    --v4-orange: #d9531e;
+    --v4-orange-text: #b03e10;
+    --v4-on-accent: #14110d;
+  }
+}
