@@ -37,7 +37,7 @@ async def test_status_page_speaks_english_when_asked(bot, db, cfg, monkeypatch):
             badge = await (await c.get(public_urls.badge_url(sid).removeprefix(public_urls.base_url()))).text()
     finally:
         await settings.set_status_page(False)
-    assert '<html lang="en">' in page and "<title>Acme status</title>" in page
+    assert '<html lang="en" data-theme="auto">' in page and "<title>Acme status</title>" in page
     assert '<p class="page-title">Acme status</p>' in page and page.count("<h1") == 1
     assert "Incidents in the last 14 days" in page and "ongoing" in page and "1 min" in page
     assert "last check" in page                              # the freshness mark stays
@@ -56,7 +56,7 @@ async def test_status_page_stays_russian_by_default(bot, db, monkeypatch):
             page = await (await c.get("/status")).text()
     finally:
         await settings.set_status_page(False)
-    assert '<html lang="ru">' in page and "<title>Статус сервисов</title>" in page
+    assert '<html lang="ru" data-theme="auto">' in page and "<title>Статус сервисов</title>" in page
     assert '<p class="page-title">' not in page and "MSK" in page   # no STATUS_PAGE_TITLE — no heading
 
 

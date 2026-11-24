@@ -90,6 +90,24 @@ async def test_no_data_is_not_zero_percent(bot, db):
     assert ".site-head { flex-wrap: wrap; }" in html
 
 
+async def test_the_page_wears_the_morgunov_tech_design_system(bot, db):
+    """The tokens of ds/v1 are inlined (a self-hosted bot does not depend on the
+    DS origin for its colours), IBM Plex comes from that origin with the system
+    stack as the fallback, and the DS rules hold: square corners, no shadows."""
+    sid = await db.activate_or_create_site("https://shop.example.com")
+    await db.save_check(sid, "availability", "ok", response_time_ms=100)
+    html = status_page.render(await _fresh_page())
+    assert '<html lang="ru" data-theme="auto">' in html
+    assert "--v4-bg: #edeae5" in html and '[data-theme="auto"]' in html
+    assert 'src: url("https://s.morgunov.tech/fonts/plex-sans-cyr-400.woff2")' in html
+    assert "border-radius" not in html and "box-shadow" not in html
+    async with TestClient(TestServer(create_app())) as c:
+        await settings.set_status_page(True)
+        r = await c.get("/status")
+        assert r.status == 200 and "font-src https://s.morgunov.tech" in r.headers["Content-Security-Policy"]
+        await settings.set_status_page(False)
+
+
 async def test_a_burst_of_hits_builds_the_page_once(bot, db, monkeypatch):
     builds = []
     real = status_page.build_payload

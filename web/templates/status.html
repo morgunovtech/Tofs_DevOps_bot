@@ -1,82 +1,127 @@
 <!doctype html>
-<html lang="$lang">
+<html lang="$lang" data-theme="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta http-equiv="refresh" content="60">
+<meta name="theme-color" content="#edeae5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14130f" media="(prefers-color-scheme: dark)">
 <title>$title</title>
 <style>
+  /* morgunov.tech design system v1 (about-me-page/ds/v1/tokens.css), inlined: a
+     self-hosted bot needs nothing from the DS origin for its colours and type.
+     The only outside request is the IBM Plex woff2 files, loaded with swap, so
+     the system stack stands in while they arrive — or for good when the origin
+     is unreachable. The tokens are copied verbatim; the status colours are the
+     page's own (the DS has no semantic palette), the same values Fingerprint uses. */
   :root {
-    --bg: #f6f7f9; --card: #ffffff; --text: #1a1d21; --muted: #70757d;
-    --up: #1a7f44; --down: #c02a30; --maint: #2a64b8; --warn: #a85a00;
-    --border: #e4e6ea;
+    --v4-bg: #edeae5; --v4-paper: #f5f2ed; --v4-fg: #14110d; --v4-muted: #5a554c; --v4-dim: #6c6759;
+    --v4-line: #c9c5bd; --v4-line-soft: #d8d4cc; --v4-orange: #d9531e; --v4-orange-text: #b03e10;
+    --v4-on-accent: #14110d; --v4-on-fg: #f5f2ed;
+    --v4-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --v4-sans: "IBM Plex Sans", ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+    --v4-label-size: 11px; --v4-label-tracking: 0.1em; --v4-label-xs-size: 10px; --v4-label-xs-tracking: 0.12em;
+    --v4-label-weight: 500;
+    --ok: #27703f; --warn: #8a5a00; --bad: #b3261e;
+    color-scheme: light dark;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #14161a; --card: #1d2026; --text: #e8eaed; --muted: #9aa0a8;
-      --border: #2a2e35;
-      --up: #22a55b; --down: #ff6b70; --warn: #d9822b;
+    [data-theme="auto"] {
+      --v4-bg: #14130f; --v4-paper: #1c1a16; --v4-fg: #ece7dd; --v4-muted: #b8b0a2; --v4-dim: #8a8378;
+      --v4-line: #3a3530; --v4-line-soft: #2a2620; --v4-orange: #ff6a2e; --v4-orange-text: #ff6a2e;
+      --v4-on-accent: #14130f; --v4-on-fg: #14130f;
+      --ok: #6cc08a; --warn: #e2a93b; --bad: #ff7a6e;
+      color-scheme: dark;
     }
   }
-  * { box-sizing: border-box; margin: 0; }
+  /* ds/v1/fonts.css with absolute URLs (the DS origin sends Access-Control-Allow-Origin: *). */
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-latin-400.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-latin-500.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-latin-600.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-cyr-400.woff2") format("woff2"); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-cyr-500.woff2") format("woff2"); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-sans-cyr-600.woff2") format("woff2"); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-mono-latin-400.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-mono-latin-500.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+  @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-mono-cyr-400.woff2") format("woff2"); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+  @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("https://s.morgunov.tech/fonts/plex-mono-cyr-500.woff2") format("woff2"); unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+
+  *, *::before, *::after { box-sizing: border-box; }
   body {
-    background: var(--bg); color: var(--text);
-    font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-    max-width: 640px; margin: 0 auto; padding: 24px 16px 48px;
+    margin: 0; background: var(--v4-bg); color: var(--v4-fg);
+    font-family: var(--v4-sans); font-size: 14px; line-height: 1.55; letter-spacing: -0.005em;
   }
-  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 14px; }
-  .banner { border-radius: 12px; padding: 16px 20px; font-weight: 600; font-size: 18px;
-            color: #fff; margin-bottom: 20px; }
-  .banner-up { background: #1a7f44; }
-  .banner-down { background: #c02a30; }
-  .banner-maint { background: #2a64b8; }
-  .banner-warn { background: #a85a00; }
-  .banner-stale { background: #5f6670; }
-  .site { background: var(--card); border: 1px solid var(--border);
-          border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 36px 24px 56px; }
+  :focus-visible { outline: 2px solid var(--v4-orange); outline-offset: 2px; }
+  /* Uppercase tracked labels: the DS micro-label scale (mono = numbers and meta). */
+  .page-title, .uptime, .incidents th, footer {
+    font-family: var(--v4-mono); font-weight: var(--v4-label-weight); text-transform: uppercase;
+    color: var(--v4-muted);
+  }
+  .page-title { font-size: var(--v4-label-size); letter-spacing: var(--v4-label-tracking); margin: 0 0 12px; }
+  /* The verdict: a paper block under the page rule, a square status mark before the words.
+     No coloured fills — the DS keeps colour for text, lines and marks. */
+  .banner {
+    display: flex; align-items: center; gap: 14px; margin: 0 0 24px; padding: 16px 18px;
+    border: 1px solid var(--v4-fg); background: var(--v4-paper);
+    font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  .banner::before { content: ""; width: 10px; height: 10px; flex: none; background: var(--v4-dim); }
+  .banner-up::before { background: var(--ok); animation: pulse 2.4s ease-in-out infinite; }
+  .banner-down::before { background: var(--bad); }
+  .banner-warn::before { background: var(--warn); }
+  .banner-down { border-color: var(--bad); }
+  .banner-warn { border-color: var(--warn); }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .site { background: var(--v4-paper); border: 1px solid var(--v4-line); padding: 14px 16px; margin-bottom: 8px; }
   .site-head { display: flex; align-items: center; gap: 10px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-  .dot-up { background: var(--up); }
-  .dot-down { background: var(--down); }
-  .dot-maint { background: var(--maint); }
-  .dot-pending { background: var(--muted); }
+  .dot { width: 8px; height: 8px; flex: none; background: var(--v4-dim); }
+  .dot-up { background: var(--ok); }
+  .dot-down { background: var(--bad); }
   .dot-warn { background: var(--warn); }
-  .problems { margin-top: 4px; color: var(--warn); font-size: 14px; }
+  .problems { margin-top: 4px; color: var(--warn); font-size: 13px; }
   .site-name { font-weight: 600; overflow-wrap: anywhere; }
-  .site-state { margin-left: auto; color: var(--muted); font-size: 14px;
-                white-space: nowrap; }
-  .uptime { margin-top: 6px; display: flex; gap: 14px; font-size: 14px;
-            flex-wrap: wrap; }
-  .good { color: var(--up); } .warn { color: var(--warn); } .bad { color: var(--down); }
-  .na { color: var(--muted); }
-  h2 { font-size: 16px; margin: 28px 0 10px; }
-  .incidents { width: 100%; border-collapse: collapse; font-size: 14px;
-               background: var(--card); border: 1px solid var(--border);
-               border-radius: 12px; overflow: hidden; }
-  .incidents th, .incidents td { text-align: left; padding: 8px 12px;
-                                 border-bottom: 1px solid var(--border); }
+  .site-state { margin-left: auto; color: var(--v4-muted); font-family: var(--v4-mono); font-size: 12px; white-space: nowrap; }
+  .uptime { margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--v4-label-size); letter-spacing: 0.04em; }
+  .good { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .na { color: var(--v4-dim); }
+  h2 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 32px 0 12px; padding-bottom: 10px; border-bottom: 1px solid var(--v4-fg); }
+  .incidents { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--v4-paper); border: 1px solid var(--v4-line); }
+  .incidents th, .incidents td { text-align: left; padding: 8px 12px; vertical-align: top; border-bottom: 1px solid var(--v4-line-soft); }
   .incidents tr:last-child td { border-bottom: none; }
-  .incidents th { color: var(--muted); font-weight: 500; }
-  .inc-open { color: var(--down); font-weight: 600; }
-  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  .incidents th { font-size: var(--v4-label-xs-size); letter-spacing: var(--v4-label-xs-tracking); border-bottom-color: var(--v4-line); }
+  .inc-open { color: var(--bad); font-weight: 600; }
+  footer {
+    margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--v4-line);
+    display: flex; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap;
+    font-size: var(--v4-label-xs-size); letter-spacing: var(--v4-label-xs-tracking);
+  }
   /* A phone: incidents as a list, the duration column first — no sideways scroll;
      a long state (degraded · 120 ms) goes under the name, not beside it. */
   @media (max-width: 560px) {
+    .wrap { padding: 20px 16px 32px; }
+    .banner { font-size: 16px; padding: 14px; }
     .site-head { flex-wrap: wrap; }
-    .site-state { margin-left: 20px; white-space: normal; width: 100%; }
+    .site-state { margin-left: 18px; white-space: normal; width: 100%; }
     .incidents, .incidents tbody, .incidents tr, .incidents td { display: block; width: auto; }
     .incidents thead { display: none; }
     .incidents td { border: none; padding: 2px 12px; overflow-wrap: anywhere; }
-    .incidents tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .incidents tr { padding: 8px 0; border-bottom: 1px solid var(--v4-line-soft); }
+    .incidents tr:last-child { border-bottom: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   }
 </style>
 </head>
 <body>
+<main class="wrap">
   $heading
   <h1 class="banner $banner_cls">$banner</h1>
   $sites_html
   $incidents_html
-  <footer>$checked · $built · TofsDevOps 🐕</footer>
+  <footer><span>$checked · $built</span><span>TofsDevOps</span></footer>
+</main>
 </body>
 </html>
