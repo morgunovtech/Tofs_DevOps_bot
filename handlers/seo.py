@@ -26,7 +26,7 @@ router = Router(name="seo")
 
 FRESH_MINUTES = 24 * 60
 MAX_ITEMS = 6
-AI_CODES = {"robots_ai", "ai_blocked", "no_js"}
+AI_CODES = {"robots_ai", "ai_blocked", "ai_cf_blocked", "no_js"}
 CF_SEEN = "ai_cf_seen:{}"   # the owner opened the Cloudflare check for this site
 
 
@@ -105,9 +105,12 @@ def ai_unseen(seo: dict, codes: set[str], hosting: str | None) -> bool:
     in and a request with their signature passed. Cloudflare recognises the
     real crawlers by address (and blocks them by default on domains added
     since July 2025), which no request from here can show — so the screen
-    does not say «open to AI assistants» and offers the check in the panel."""
+    does not say «open to AI assistants» and offers the check in the panel.
+    With the token's Zone → Bot Management → Read the audit reads the zone's
+    «Block AI bots» itself (cf_ai) — then it is seen, not guessed."""
     return (hosting == "cloudflare" and seo.get("status") not in (None, "error")
-            and not codes & {"robots_ai", "ai_blocked"})
+            and seo.get("cf_ai") not in ("open", "block")
+            and not codes & {"robots_ai", "ai_blocked", "ai_cf_blocked"})
 
 
 async def cloudflare_check_pending(site_id: int, snap: dict) -> bool:
@@ -161,6 +164,8 @@ def seo_text(url: str, snap: dict, *, google_on: bool = False, yandex_on: bool =
     chars = seo.get("no_js_chars")
     if "robots_ai" in codes:
         lines.append(t("🤖 ИИ-ассистенты: сайт для них закрыт."))
+    elif "ai_cf_blocked" in codes:
+        lines.append(t("🤖 ИИ-ассистенты: Cloudflare их не пускает — в зоне включено «Block AI bots»."))
     elif "ai_blocked" in codes:
         lines.append(t("🤖 ИИ-ассистенты: запрос с их подписью получает отказ — скорее всего, сайт для них закрыт."))
     elif "no_js" in codes:

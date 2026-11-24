@@ -329,6 +329,16 @@ STRINGS: dict[str, str] = {
     "Второй метатег удали из кода, а лишнего владельца — из кабинета, если он там остался.":
         "Delete the other meta tag from the code, and the extra owner from the console if it is still there.",
     "Убрать лишний код подтверждения": "Remove the extra verification code",
+    # ── Cloudflare's AI-bot setting ───────────────────────────
+    "Cloudflare не пускает ИИ-ассистентов": "Cloudflare turns AI assistants away",
+    "В зоне включено «Block AI bots»: ChatGPT, Claude, Perplexity и другие ассистенты получают отказ — сайт не попадает в их ответы и ссылки.":
+        "«Block AI bots» is on in the zone: ChatGPT, Claude, Perplexity and other assistants are refused — the site does not make it into their answers and links.",
+    "Открой Cloudflare → свой домен → AI Crawl Control (или Security → Bots) и выключи «Block AI bots».":
+        "Open Cloudflare → your domain → AI Crawl Control (or Security → Bots) and switch «Block AI bots» off.",
+    "Если хочешь закрыть только обучение моделей, оставь блок для обучающих краулеров (GPTBot, ClaudeBot), а ассистентам, которые ищут ответ по запросу человека (ChatGPT-User, Claude-User, PerplexityBot), поставь «Allow».":
+        "To keep only model training out, leave the block on the training crawlers (GPTBot, ClaudeBot) and set «Allow» for the assistants that look up an answer for a person (ChatGPT-User, Claude-User, PerplexityBot).",
+    "Нажми «🔄 Проверить снова» — я перечитаю настройку.": "Tap «🔄 Check again» — I will read the setting again.",
+    "Пустить ИИ-ассистентов в Cloudflare": "Let AI assistants in through Cloudflare",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {}

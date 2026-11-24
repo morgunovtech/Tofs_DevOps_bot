@@ -41,11 +41,11 @@ from monitors import parse_worker
 from monitors.base import SeoProblem, SeoResult, decode_body, gather_checks, read_capped
 from monitors.security_checker import plain_http_opens
 from monitors.sitemap import pick_sample, scan_sitemap
-from services import seo_fixes, settings, sitestatus
+from services import cloudflare, seo_fixes, settings, sitestatus
 from utils import text as _text
 from utils.i18n import plural, t
 from utils.net import owner_connector
-from utils.urls import USER_AGENT, bare_host
+from utils.urls import USER_AGENT, bare_host, host_of
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +444,11 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
         if blocked_bots:
             problems.append(_p("ai_blocked", "warning", t("обычный запрос сайт пропустил, а запрос с подписью ")
                                + ", ".join(blocked_bots) + t(" — нет")))
+        # The block by address is Cloudflare's setting: read it, not guessed.
+        cf_ai = await cloudflare.ai_bots(host_of(url))
+        if cf_ai == "block":
+            problems.append(_p("ai_cf_blocked", "warning",
+                               t("в Cloudflare включено «Block AI bots» — ИИ-ассистенты получают отказ")))
 
         status = await _status(session, f"{base}/__devopsbot-404-probe")
         if status == 200:
@@ -487,7 +492,8 @@ async def check_seo(url: str, manage: bool = True) -> SeoResult:
                             critical=sum(p.severity == "critical" for p in problems),
                             improve=sum(p.severity != "critical" for p in problems),
                             problems=[p.as_dict() for p in problems[:12]],
-                            pages=r.pages_checked, no_js_chars=r.no_js_chars, incomplete=not complete)
+                            pages=r.pages_checked, no_js_chars=r.no_js_chars, incomplete=not complete,
+                            cf_ai=cf_ai)
     if not manage:
         return r
     # An incomplete audit may open or raise an incident, never lower it:

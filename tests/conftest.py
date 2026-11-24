@@ -394,6 +394,8 @@ def _fresh_module_state(monkeypatch):
     monkeypatch.setattr(integrations, "_gsc_key_problem", None)
     monkeypatch.setattr(updates, "_no_repo_said", False)
     monkeypatch.setattr(cloudflare, "_account", {})
+    monkeypatch.setattr(cloudflare, "_zone_name", {})
+    monkeypatch.setattr(cloudflare, "_ai", {})
     monkeypatch.setattr(causes, "_projects", None)
     monkeypatch.setattr(cf_audit, "_lock", asyncio.Lock())
 

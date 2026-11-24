@@ -13,6 +13,7 @@ read-only apart from the purge.
 
 import logging
 import re
+import time
 from datetime import datetime
 
 import aiohttp
@@ -36,6 +37,7 @@ PERMISSIONS = {
     "dns": "Zone → DNS → Read",
     "routes": "Zone → Workers Routes → Read",
     "scripts": "Account → Workers Scripts → Read",
+    "bots": "Zone → Bot Management → Read",
 }
 
 _account: dict[str, str] = {}   # zone id → account id, learnt once per run
@@ -119,6 +121,7 @@ def forget():
     """Another zone or token: the account is learnt again."""
     _account.clear()
     _zone_name.clear()
+    _ai.clear()
 
 
 def parse_time(raw) -> datetime | None:
@@ -166,6 +169,40 @@ async def workers_subdomain(session: aiohttp.ClientSession) -> str | None:
     result, _ = await get(session, f"/accounts/{acc}/workers/subdomain", "scripts")
     sub = result.get("subdomain") if isinstance(result, dict) else None
     return sub.lower() if isinstance(sub, str) and sub else None
+
+
+# ── AI crawlers ──────────────────────────────────────────────────────────────
+
+AI_SETTING_TTL = 600
+_ai: dict[str, tuple[float, str | None, str]] = {}   # zone id → (when read, verdict, the zone's domain)
+
+
+async def ai_bots(host: str) -> str | None:
+    """Does the zone's «Block AI bots» (bot_management.ai_bots_protection)
+    turn the AI crawlers away from host: «block», «open» (disabled, or only
+    on pages with ads), None — not this zone, not readable (the token lacks
+    Zone → Bot Management → Read, or the plan does not give it). One read
+    per zone every AI_SETTING_TTL: the audit asks per site."""
+    if not configured():
+        return None
+    known = integrations.cf_zone_name()
+    if known and not (host == known or host.endswith("." + known)):
+        return None
+    zone = integrations.cf_zone_id()
+    cached = _ai.get(zone)
+    if not cached or time.monotonic() - cached[0] >= AI_SETTING_TTL:
+        verdict, name = None, ""
+        try:
+            async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+                name = await zone_name(session)
+                result, _ = await get(session, f"/zones/{zone}/bot_management", "bots")
+            value = str((result or {}).get("ai_bots_protection") or "") if isinstance(result, dict) else ""
+            verdict = {"block": "block", "disabled": "open", "only_on_ad_pages": "open"}.get(value)
+        except CloudflareError as e:
+            logger.info("Cloudflare AI bots setting not read: %s", e)
+        cached = _ai[zone] = (time.monotonic(), verdict, name)
+    _, verdict, name = cached
+    return verdict if name and (host == name or host.endswith("." + name)) else None
 
 
 # ── Pages ────────────────────────────────────────────────────────────────────

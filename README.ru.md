@@ -186,7 +186,7 @@ CI гоняет то же самое на Python 3.12, 3.13 и 3.14, собир�
 | Сервис Railway с томом `/app/data` (шаблон `lVRuwW`) | railway.com | Settings → Delete service; том удаляется вместе с ним |
 | Образ `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | удалить пакет |
 | Внешний сторож (`SELF_HEARTBEAT_URL`) | healthchecks.io или heartbeat-задача другого бота | удалить check или задачу |
-| Токены интеграций: Google Search Console, Яндекс.Вебмастер, Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
+| Токены интеграций: Google Search Console, Яндекс.Вебмастер, Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
 | Deploy-хуки (`DEPLOY_HOOKS`) и виджет обратной связи на твоих страницах | Cloudflare Pages, твой сайт | удалить хук; убрать сниппет виджета |
 
 ## Что почитать
