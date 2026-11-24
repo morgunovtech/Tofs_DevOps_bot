@@ -339,6 +339,16 @@ STRINGS: dict[str, str] = {
         "To keep only model training out, leave the block on the training crawlers (GPTBot, ClaudeBot) and set «Allow» for the assistants that look up an answer for a person (ChatGPT-User, Claude-User, PerplexityBot).",
     "Нажми «🔄 Проверить снова» — я перечитаю настройку.": "Tap «🔄 Check again» — I will read the setting again.",
     "Пустить ИИ-ассистентов в Cloudflare": "Let AI assistants in through Cloudflare",
+    # ── the Pages technical address ───────────────────────────
+    "Технический адрес *.pages.dev открыт поисковикам": "The *.pages.dev technical address is open to search engines",
+    "Google видит две копии сайта и сам выбирает, какую показывать, — бывает, что технический адрес, а основной остаётся «просканирован, не проиндексирован».":
+        "Google sees two copies of the site and picks which one to show by itself — sometimes the technical address, while the main one stays «crawled, not indexed».",
+    "Добавь в файл _headers в корне проекта блок «https://:project.pages.dev/*» со строкой «X-Robots-Tag: noindex» (с отступом) — Cloudflare Pages отдаст этот заголовок только на техническом адресе.":
+        "Add to the _headers file at the project's root a «https://:project.pages.dev/*» block with the line «X-Robots-Tag: noindex» (indented) — Cloudflare Pages sends that header on the technical address only.",
+    "Страницы, которые отдают Functions (заметки, sitemap, llms.txt), _headers не трогает: в функции добавь тот же заголовок, когда запрос пришёл на *.pages.dev, — или переадресуй такой запрос на основной адрес.":
+        "_headers does not touch the pages Functions serve (notes, sitemap, llms.txt): in the function add the same header when the request came to *.pages.dev — or redirect such a request to the main address.",
+    "Задеплой и нажми «🔄 Проверить снова».": "Deploy and tap «🔄 Check again».",
+    "Закрыть технический адрес": "Close the technical address",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {}

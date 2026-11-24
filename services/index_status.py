@@ -30,7 +30,8 @@ async def refresh(site_id: int, url: str, yx_summaries=_UNSET) -> tuple[dict | N
         info = await gsc.inspect_url(url.rstrip("/") + "/")
         if info:
             google = {"verdict": info["verdict"], "coverage": info["coverage"],
-                      "last_crawl": info.get("last_crawl")}
+                      "last_crawl": info.get("last_crawl"), "user_canonical": info.get("user_canonical"),
+                      "google_canonical": info.get("google_canonical")}
             await sitestatus.update(site_id, "google", **google)
     if yandex_webmaster.available():
         if yx_summaries is _UNSET:
@@ -41,6 +42,44 @@ async def refresh(site_id: int, url: str, yx_summaries=_UNSET) -> tuple[dict | N
                       "alert_problems": s.get("alert_problems") or {}}
             await sitestatus.update(site_id, "yandex", **yandex)
     return google, yandex
+
+
+# Search Console's coverage states (URL Inspection «coverageState»), in the
+# owner's words with what helps. Matched by a lowercase fragment: the API
+# spells them in English and varies the punctuation.
+COVERAGE = (
+    ("crawled - currently not indexed", "просканирована, но не проиндексирована — Google обошёл страницу и пока не "
+     "показывает её: помогают уникальный текст, ссылки на неё с других страниц и «Запросить индексирование»"),
+    ("discovered - currently not indexed", "обнаружена, но не проиндексирована — Google знает адрес, но ещё не обходил: "
+     "помогают ссылки на неё и «Запросить индексирование»"),
+    ("unknown to google", "Google не знает этот адрес — добавь sitemap в Search Console и запроси индексирование"),
+    ("chose different canonical", "Google выбрал главной копией другой адрес"),
+    ("without user-selected canonical", "дубль без canonical — главную копию Google выбрал сам"),
+    ("noindex", "закрыта noindex"),
+    ("robots.txt", "закрыта в robots.txt"),
+    ("soft 404", "Google считает её пустой страницей («soft 404»)"),
+    ("not found (404)", "страница не найдена (404)"),
+    ("server error", "при обходе сервер ответил ошибкой"),
+    ("redirect", "страница с переадресацией — в индексе адрес, на который она ведёт"),
+)
+
+
+def coverage_words(state: str | None) -> str:
+    """«Discovered - currently not indexed» → words with what to do; an
+    unknown state stays as Google wrote it."""
+    low = (state or "").lower()
+    return next((t(words) for key, words in COVERAGE if key in low), state or "?")
+
+
+def canonical_differs(google: dict | None) -> bool:
+    """Google chose another main copy than the page names: both known and
+    not the same address (scheme, case and a trailing slash aside)."""
+    g = google or {}
+    a, b = g.get("google_canonical"), g.get("user_canonical")
+    if not a or not b:
+        return False
+    norm = lambda u: str(u).lower().split("://", 1)[-1].rstrip("/")  # noqa: E731
+    return norm(a) != norm(b)
 
 
 def is_stale(section: dict | None) -> bool:

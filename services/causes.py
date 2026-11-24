@@ -13,7 +13,6 @@ waits longer than that and never guesses.
 
 import asyncio
 import logging
-import time
 from datetime import datetime, timedelta
 
 import aiohttp
@@ -32,15 +31,9 @@ WINDOW = timedelta(minutes=10)
 # the fix (the bot's own redeploy, the owner's rollback).
 AFTER = timedelta(minutes=1)
 BUDGET = 8                        # seconds: the alert waits no longer
-PROJECTS_TTL = 3600               # the list of Pages projects changes rarely
-_projects: tuple[float, list[dict]] | None = None
-
-
 async def _project_for(session: aiohttp.ClientSession, host: str) -> str | None:
-    global _projects
-    if _projects is None or time.monotonic() - _projects[0] > PROJECTS_TTL:
-        _projects = (time.monotonic(), await cloudflare.pages_projects(session))
-    return next((p["name"] for p in _projects[1] if host in cloudflare.project_hosts(p)), None)
+    return next((p["name"] for p in await cloudflare.projects_cached(session) if host in cloudflare.project_hosts(p)),
+                None)
 
 
 def _commit(d: dict) -> str:

@@ -1522,6 +1522,7 @@ async def run_index_checks():
             google, yandex = await index_status.refresh(site["id"], url, yx)
             if google:
                 await _google_change(site, google)
+                await _google_canonical(site, google)
             if yandex:
                 await _yandex_change(site, yandex)
 
@@ -1585,6 +1586,34 @@ async def _google_change(site: dict, google: dict):
         state["told"] = True
     if sent and state != prev:
         await set_state(key, json.dumps(state, ensure_ascii=False))
+
+
+async def _google_canonical(site: dict, google: dict):
+    """Google chose another page as the main copy of the homepage than the
+    page names (googleCanonical ≠ userCanonical): once per chosen address,
+    ✅ when they agree again. Both unknown — no word."""
+    key = f"gsc_canon:{site['id']}"
+    told = await get_state(key)
+    label = esc(site_label(site["url"]))
+    if index_status.canonical_differs(google):
+        chosen = str(google["google_canonical"])
+        if told == chosen:
+            return
+        sent = await notifier.send(
+            t("🟠 Google считает главной копией {label} другой адрес: {chosen}").format(label=label, chosen=esc(chosen))
+            + "\n" + t("Страница называет главной {user}. В поиске Google показывает свой выбор — бывает, что "
+                        "технический адрес или старый домен.").format(user=esc(str(google["user_canonical"])))
+            + "\n\n" + t("Что делать: закрой копию noindex или переадресацией на основной адрес (для *.pages.dev — "
+                         "«🔎 Поиск и ИИ» подскажет как), проверь, что canonical и sitemap ведут на основной адрес, и "
+                         "запроси индексирование главной в Search Console."),
+            Priority.NORMAL, site_id=site["id"],
+            reply_markup=_index_keyboard(site["id"], "↗️ Search Console", "https://search.google.com/search-console"))
+        if sent:
+            await set_state(key, chosen)
+    elif told and google.get("google_canonical") and google.get("user_canonical"):
+        if await notifier.send(t("✅ Google снова считает главной копией {label} адрес, который называет страница.").format(
+                label=label), Priority.NORMAL, site_id=site["id"]):
+            await set_state(key, None)
 
 
 async def _yandex_rights(site: dict):

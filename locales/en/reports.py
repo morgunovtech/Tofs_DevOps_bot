@@ -451,6 +451,13 @@ STRINGS: dict[str, str] = {
         "What to do: Webmaster → the site → «Access rights» → verify with a meta tag, a file or a DNS record. If the meta tag was there and disappeared in a redesign, put it back into the homepage code.",
     "✅ Яндекс.Вебмастер: {host} снова подтверждён.": "✅ Yandex.Webmaster: {host} is verified again.",
     " (в llms.txt)": " (in llms.txt)",
+    # ── reports/scheduler.py: Google's chosen main copy ────────────────────
+    "🟠 Google считает главной копией {label} другой адрес: {chosen}": "🟠 Google takes another address for the main copy of {label}: {chosen}",
+    "Страница называет главной {user}. В поиске Google показывает свой выбор — бывает, что технический адрес или старый домен.":
+        "The page names {user} as the main one. Google shows its own choice in search — sometimes a technical address or an old domain.",
+    "Что делать: закрой копию noindex или переадресацией на основной адрес (для *.pages.dev — «🔎 Поиск и ИИ» подскажет как), проверь, что canonical и sitemap ведут на основной адрес, и запроси индексирование главной в Search Console.":
+        "What to do: close the copy with noindex or a redirect to the main address (for *.pages.dev «🔎 Поиск и ИИ» shows how), check that canonical and the sitemap lead to the main address, and request indexing of the homepage in Search Console.",
+    "✅ Google снова считает главной копией {label} адрес, который называет страница.": "✅ Google again takes the address the page names for the main copy of {label}.",
 }
 
 PLURALS: dict[str, tuple[str, str]] = {

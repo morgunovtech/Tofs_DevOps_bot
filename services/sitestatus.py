@@ -10,7 +10,7 @@ not, because an observation is an observation.
      "links": {"status", "broken", "pending", "total", "at"},
      "seo": {"status", "critical", "improve", "problems": [{"code", "severity", "message"}],
              "pages", "no_js_chars", "at"},
-     "google": {"verdict", "coverage", "last_crawl", "at"},     # Search Console: is the homepage indexed
+     "google": {"verdict", "coverage", "last_crawl", "user_canonical", "google_canonical", "at"},     # Search Console: is the homepage indexed
      "yandex": {"searchable_pages", "sqi", "alert_problems", "at"},
      "region": {"ms", "name", "at"},          # response time from the audience's region
      "hosting": "cloudflare"}

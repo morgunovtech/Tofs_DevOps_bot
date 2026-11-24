@@ -122,6 +122,7 @@ def forget():
     _account.clear()
     _zone_name.clear()
     _ai.clear()
+    _projects.clear()
 
 
 def parse_time(raw) -> datetime | None:
@@ -212,6 +213,39 @@ async def pages_projects(session: aiohttp.ClientSession) -> list[dict]:
     custom domains (fields as in the API reference: name, subdomain, domains)."""
     acc = await account_id(session)
     return [p for p in await _all_pages(session, f"/accounts/{acc}/pages/projects", "pages", 10, 5) if p.get("name")]
+
+
+PROJECTS_TTL = 3600               # the list of Pages projects changes rarely
+_projects: dict[str, tuple[float, list[dict]]] = {}   # account → (when read, projects)
+
+
+async def projects_cached(session: aiohttp.ClientSession) -> list[dict]:
+    """pages_projects, read at most once an hour (the outage cause and the
+    search audit ask per site)."""
+    acc = await account_id(session)
+    cached = _projects.get(acc)
+    if not cached or time.monotonic() - cached[0] > PROJECTS_TTL:
+        cached = _projects[acc] = (time.monotonic(), await pages_projects(session))
+    return cached[1]
+
+
+async def pages_twin(host: str) -> str | None:
+    """The technical address of the Pages project that serves host as its
+    custom domain («shop-1x.pages.dev»); None when host is not a project's
+    domain or the projects cannot be read (Account → Cloudflare Pages → Read)."""
+    if not configured() or host.endswith(".pages.dev"):
+        return None
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT) as session:
+            projects = await projects_cached(session)
+    except CloudflareError as e:
+        logger.info("Pages projects not read: %s", e)
+        return None
+    for p in projects:
+        sub = str(p.get("subdomain") or "").lower()
+        if sub and host in {str(d).lower() for d in p.get("domains") or [] if isinstance(d, str)}:
+            return sub
+    return None
 
 
 def project_hosts(project: dict) -> set[str]:
