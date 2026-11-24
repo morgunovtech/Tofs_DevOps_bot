@@ -19,11 +19,11 @@ pytest -q             # no network, no Telegram
 pip-audit -r requirements.txt --strict
 ```
 
-Python 3.12–3.14 (the upper bound comes from the pinned aiogram). The tests never touch the network: `tests/conftest.py` closes sockets, Telegram is a fake bot, every external API is a local server. CI runs the same on all three Python versions, plus `pip-audit` for the lock and the dev tools, a build and a run of the production image, and an arm64 build in PRs. Dependencies: direct pins live in `requirements.in`, the hashed lock in `requirements.txt` — how to regenerate it is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Python 3.12–3.14 (the upper bound comes from the locked pydantic-core, which has no Python 3.15 wheels yet, see `pyproject.toml`). The tests never touch the network: `tests/conftest.py` closes sockets, Telegram is a fake bot, every external API is a local server. CI runs the same on all three Python versions, plus `pip-audit` for the lock and the dev tools, a build and a run of the production image, and an arm64 build in PRs. Dependencies: direct pins live in `requirements.in`, the hashed lock in `requirements.txt` — how to regenerate it is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 Where things live:
 
-- `monitors/` — one checker per thing checked; `services/` — Cloudflare, Docker, Search Console, Yandex, screenshots; `reports/` — the scheduler and the digests; `web/` — webhooks, the status page, the widget; `handlers/` — the chat; `db/` — SQLite.
+- `monitors/` — one checker per thing checked; `services/` — the notifier and humanize, Cloudflare (actions, the account's audit log, what is published but unwatched), Docker, screenshots, Search Console, Yandex, Bing, CrUX (visitor speed), GitHub (weekly hygiene, updates and the dependency watch, «merged but not deployed»), the causes of a short outage, hosting, index status, Railway, recommendations, SEO fixes; `reports/` — the scheduler and the digests; `web/` — webhooks, the status page, the widget; `handlers/` — the chat; `db/` — SQLite.
 - Every proactive message goes through `services/notifier.py` (priorities, mute, quiet hours); nobody else decides whether to ring.
 - The words of an alert come from `services/humanize.py`: headline → what it means → what to do → the technical line last. Numbers, not adjectives.
 - Screens and buttons are named in the docs exactly as the bot names them; `tests/test_docs.py` checks links, screen names and that `cp .env.example .env` changes nothing but the token.

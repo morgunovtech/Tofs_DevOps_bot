@@ -111,10 +111,14 @@ main.py                 точка входа: БД → сервисы → ве�
 │                       monitors.parse_child (parse_worker: старт по требованию,
 │                       выход после 60 с простоя), карта сайта — в потоке
 ├── services/           notifier (все проактивные сообщения идут через него:
-│                       приоритеты, mute, тихие часы, паузы), settings, maintenance, secrets,
-│                       runtime (админ), updates (контроль зависимостей),
-│                       действия Cloudflare, Docker API, скриншоты, GSC, Яндекс,
-│                       порядок в GitHub
+│                       приоритеты, mute, тихие часы, паузы), humanize (слова тревог),
+│                       settings, maintenance, secrets, runtime (админ);
+│                       Cloudflare: actions, cf_audit (журнал аудита аккаунта),
+│                       published (опубликовано, но без присмотра); Docker API, скриншоты;
+│                       поисковики: GSC, Яндекс, Bing, CrUX (скорость у посетителей);
+│                       GitHub: порядок в репозиториях, updates (обновления и
+│                       зависимости), lag (влито, но не задеплоено); causes (почему
+│                       короткое падение), hosting, index_status, railway, recommend, seo_fixes
 ├── reports/            планировщик (задачи — setup_scheduler), форматтеры, недельный отчёт
 ├── handlers/           по роутеру на экран за одним AdminFilter
 ├── web/                aiohttp: API фидбека (CORS только для сайтов из бота,
@@ -127,6 +131,8 @@ main.py                 точка входа: БД → сервисы → ве�
 └── tests/              pytest: чистые функции, БД, мониторы против локального
                         HTTP-сервера, правила notifier, веб-эндпоинты, экраны бота
 ```
+
+Картинки README лежат в `docs/images/` (`home.png`, `alert.png`, `morning.png`); там же `social-preview.png` — исходник социального превью репозитория, которое загружено на GitHub вручную (Settings → Social preview): код на этот файл не ссылается, поменял его — перезалей и там.
 
 Стек: Python 3.12–3.14 (верхнюю границу задаёт pydantic-core из lock: под Python 3.15 у него пока нет колёс, см. `pyproject.toml`), [aiogram 3](https://github.com/aiogram/aiogram), aiohttp, APScheduler, SQLite (WAL), `zoneinfo` из stdlib. SaaS-мониторинга, в котором надо регистрироваться, нет — бот и *есть* мониторинг; он пользуется бесплатными публичными проверялками, см. README, «Что уходит с вашего сервера». Графических библиотек тоже нет: графики — моноширинный текст.
 
