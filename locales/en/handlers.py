@@ -304,8 +304,8 @@ STRINGS: dict[str, str] = {
         "if the site has noticeable traffic: Google collects no data on small sites",
     "⚡ Скорость": "⚡ Speed",
     "☁️ Cloudflare и хостинг": "☁️ Cloudflare and hosting",
-    "кнопки «передеплой» и «сброс кэша» прямо в тревоге, упавший сайт перезапущу сам":
-        "«redeploy» and «purge cache» buttons right in the alert; a down site I redeploy myself",
+    "кнопки «передеплой» и «сброс кэша» прямо в тревоге, упавший сайт перезапущу сам; позвоню, если в аккаунте удалили запись DNS, сменили SSL или вошли с нового адреса, и найду опубликованное без присмотра":
+        "«redeploy» and «purge cache» buttons right in the alert; a down site I redeploy myself; I ring when a DNS record is deleted, the SSL mode changes or someone logs in from a new address, and I find what is published but not watched",
     "если сайт на Cloudflare или у хостинга есть deploy hook": "if the site is on Cloudflare or the hosting has a deploy hook",
     "☁️ Cloudflare": "☁️ Cloudflare",
     "🐙 GitHub": "🐙 GitHub",
@@ -1134,7 +1134,8 @@ STRINGS: dict[str, str] = {
     "⚡ Скорость у посетителей Chrome": "⚡ Speed for Chrome visitors",
     "сколько реальные посетители ждут твой сайт — данные Google за 28 дней, для сайтов, где посетителей достаточно":
         "how long real visitors wait for your site — Google's data over 28 days, for sites with enough visitors",
-    "кнопки «пересобрать» и «сбросить кэш» в тревогах, пересборка сама при падении": "the «rebuild» and «purge cache» buttons in alerts, a rebuild by itself when the site goes down",
+    "кнопки «пересобрать» и «сбросить кэш» в тревогах, пересборка сама при падении, журнал изменений аккаунта и опубликованное без присмотра":
+        "the «rebuild» and «purge cache» buttons in alerts, a rebuild by itself when the site goes down, the account's audit log and what is published but not watched",
     "токен есть, но GitHub его не принимает: истёк, отозван или скопирован не целиком": "there is a token, but GitHub rejects it: expired, revoked or not copied whole",
     "🐙 GitHub: проверить": "🐙 GitHub: check",
     "по воскресеньям — что прибрать в репозиториях: старые PR, лишние ветки, красный CI, пропавшие репозитории": "on Sundays — what to tidy in the repositories: old PRs, stray branches, red CI, vanished repositories",
