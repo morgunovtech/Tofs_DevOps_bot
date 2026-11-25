@@ -328,6 +328,7 @@ async def test_jobs_watchdog_and_small_services(db, monkeypatch):
     english_only(index_status.rich_count_words(rich))
     for issues in (rich, rich[1:]):
         english_only(scheduler.format_rich_alert("ex.test", issues))
+    english_only(t("🟠 Google, замечания к разметке страниц:"))
     english_only("\n".join(seo_screen.index_lines({"google": {"verdict": "PASS", "rich_issues": rich,
                                                        "at": sitestatus.now_iso()}}, True, False)[0]))
     for reason in (screenshots.QUOTA_REASON, screenshots.OFF_REASON, screenshots.PRIVATE_REASON):
