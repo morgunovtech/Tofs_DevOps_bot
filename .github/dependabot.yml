@@ -1,4 +1,7 @@
-# Dependabot opens one grouped PR per week with every Python update, plus
+# Dependabot opens one grouped PR per week with every Python update — both
+# pip-compile pairs in the root: requirements.in → requirements.txt (the bot)
+# and requirements-dev.in → requirements-dev.txt (the CI tools); it finds
+# them by itself and recompiles each lock with its hashes — plus
 # monthly PRs for the base image and the Actions. CI tests them; the
 # auto-merge workflow merges only patch/minor bumps of the Python libraries
 # once CI is green, and the hosting platform redeploys from main. The bot

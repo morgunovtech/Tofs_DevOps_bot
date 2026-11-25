@@ -12,14 +12,14 @@ Thanks for looking. This is a personal bot shared as-is; issues and pull request
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # the dev tools, a hashed lock too
 pip install --require-hashes --no-deps -r requirements.txt   # exactly what the image gets
 ruff check .          # lint + import order
 pytest -q             # no network, no Telegram
 pip-audit -r requirements.txt --strict
 ```
 
-Python 3.12–3.14 (the upper bound comes from the locked pydantic-core, which has no Python 3.15 wheels yet, see `pyproject.toml`). The tests never touch the network: `tests/conftest.py` closes sockets, Telegram is a fake bot, every external API is a local server. CI runs the same on all three Python versions, plus `pip-audit` for the lock and the dev tools, a build and a run of the production image, and an arm64 build in PRs. Dependencies: direct pins live in `requirements.in`, the hashed lock in `requirements.txt` — how to regenerate it is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Python 3.12–3.14 (the upper bound comes from the locked pydantic-core, which has no Python 3.15 wheels yet, see `pyproject.toml`). The tests never touch the network: `tests/conftest.py` closes sockets, Telegram is a fake bot, every external API is a local server. CI runs the same on all three Python versions, plus `pip-audit` for the lock and the dev tools, a build and a run of the production image, and an arm64 build in PRs. Dependencies: direct pins live in `requirements.in`, the hashed lock in `requirements.txt`; the dev tools have the same pair, `requirements-dev.in` and `requirements-dev.txt` — how to regenerate either is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 Where things live:
 

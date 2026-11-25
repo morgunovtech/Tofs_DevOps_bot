@@ -10,14 +10,14 @@ A Telegram bot that watches the owner's sites (uptime, SSL, DNS, mail, links, SE
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # the dev tools, a hashed lock too
 pip install --require-hashes --no-deps -r requirements.txt   # exactly what the image gets
 ruff check .
 pytest -q                                   # no network: tests/conftest.py closes sockets
 pip-audit -r requirements.txt --strict
 ```
 
-Changing a pin: edit `requirements.in`, regenerate the hashed lock (`docs/DEVELOPMENT.md`, «Зависимости»); `test_the_lock_is_compiled_from_requirements_in` fails otherwise.
+Changing a pin: edit `requirements.in` (the bot) or `requirements-dev.in` (the dev tools), regenerate its hashed lock (`docs/DEVELOPMENT.md`, «Зависимости»); `test_the_lock_is_compiled_from_requirements_in` and `test_the_dev_tools_lock_is_compiled_from_requirements_dev_in` fail otherwise.
 
 ## Deploy
 
