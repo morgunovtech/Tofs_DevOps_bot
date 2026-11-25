@@ -13,6 +13,9 @@ from aiohttp.test_utils import TestServer
 from db.database import get_state, set_state
 from services import updates
 
+# What GitHub returns as the author of a Dependabot PR (pulls API, user.login and user.type).
+BOT = {"login": "dependabot[bot]", "type": "Bot"}
+
 GROUP_BODY = ("Bumps the python-deps group with 2 updates: [aiogram](https://github.com/aiogram/aiogram) "
               "and [aiohttp](https://github.com/aio-libs/aiohttp).\n\n"
               "Updates `aiogram` from 3.31.0 to 4.0.0\n- [Release notes](https://github.com/aiogram/aiogram/releases)\n\n"
@@ -101,14 +104,14 @@ async def test_a_group_pr_with_a_major_update_inside_waits_for_a_human(monkeypat
     async def pulls(_):
         return web.json_response([
             {"number": 22, "title": "Bump the python-deps group with 2 updates", "body": GROUP_BODY,
-             "html_url": "u22", "created_at": fresh, "user": {"login": "dependabot[bot]"},
+             "html_url": "u22", "created_at": fresh, "user": BOT,
              "head": {"ref": "dependabot/pip/python-deps-0a1b2c"}},
             {"number": 23, "title": "Bump python from 3.14-slim to 3.14.7-slim", "body": "",
-             "html_url": "u23", "created_at": fresh, "user": {"login": "dependabot[bot]"},
+             "html_url": "u23", "created_at": fresh, "user": BOT,
              "head": {"ref": "dependabot/docker/python-3.14.7-slim"}},
             {"number": 24, "title": "Bump the python-deps group with 2 updates",
              "body": GROUP_BODY.replace("4.0.0", "3.32.0"), "html_url": "u24", "created_at": fresh,
-             "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/python-deps-3c4d5e"}},
+             "user": BOT, "head": {"ref": "dependabot/pip/python-deps-3c4d5e"}},
         ])
 
     app = web.Application()
