@@ -37,4 +37,4 @@ Changing a pin: edit `requirements.in`, regenerate the hashed lock (`docs/DEVELO
 
 ## Outside the repo
 
-The README table «What it creates outside the repo» lists the bot at @BotFather, the Railway service and volume, the ghcr.io package, the external watchdog and the integration tokens. Keep it current whenever a new bot, key, server or hosted project appears.
+The README table «What it creates outside the repo» lists the bot at @BotFather, the Railway service and volume with the published template `tofsdevops`, the ghcr.io package, the external watchdog, the integration tokens, the SonarQube Cloud project with its GitHub App and the GitHub Sponsors listing. Keep it current whenever a new bot, key, server or hosted project appears.

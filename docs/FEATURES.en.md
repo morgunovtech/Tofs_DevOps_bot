@@ -201,10 +201,11 @@ the optional integrations below (documented in [.env.example](../.env.example)):
 |---|---|
 | The widget, task links and the status page on your own server (behind a reverse proxy with TLS — README, «Public address on your own server») | `PUBLIC_BASE_URL`, `TRUST_PROXY=1` |
 | Redeploy button + auto-redeploy | `DEPLOY_HOOKS`, `AUTO_REDEPLOY` |
-| Cloudflare cache purge button | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` |
+| Cloudflare cache purge button, the account's audit log, Pages deployments as the cause of an outage, «published but unwatched» and dangling DNS records | `CLOUDFLARE_API_TOKEN` (permissions — the README's «What it creates outside the repo»), `CLOUDFLARE_ZONE_ID` |
 | Dead-man switch | `HEARTBEAT_JOBS` |
 | Google index status | `GSC_SERVICE_ACCOUNT_FILE`, `GSC_PROPERTY` |
 | Yandex index status | `YANDEX_WEBMASTER_TOKEN` |
+| Bing Webmaster: verification, index, crawl errors, sitemap, clicks | `BING_WEBMASTER_KEY` |
 | Real Chrome visitors' speed (Google data) | `CRUX_API_KEY` |
 | GitHub hygiene in the weekly report | `GITHUB_TOKEN`, `GITHUB_OWNER` (optional) |
 | Container restart | `AUTORESTART_CONTAINERS` + docker.sock mount (the socket is root on the host) |
@@ -213,7 +214,7 @@ the optional integrations below (documented in [.env.example](../.env.example)):
 | Telegram through a proxy (a server in Russia) | `TELEGRAM_PROXY` |
 | Your own Bot API server instead of api.telegram.org | `TELEGRAM_API_URL` |
 
-Behaviour that changes only in `.env` (defaults from `config.py`):
+Behaviour set in `.env` (defaults from `config.py`). Rows marked 🛠 can also be changed in the chat — «⚙️ Настройки → 🛠 Тонкие настройки», and the chat wins:
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -224,10 +225,10 @@ Behaviour that changes only in `.env` (defaults from `config.py`):
 | `SCREENSHOT_TEMPLATE` | microlink.io | where page URLs go for pictures; `off` — none |
 | `AUTO_REDEPLOY` | `1` | fire the deploy hook when a site goes down (the chat switch wins) |
 | `AUTO_CLEANUP` | `0` | with docker.sock: remove dangling images and build cache older than a day when the disk is full (the chat switch wins) |
-| `DISK_ALERT_PCT` | `85` | disk-usage alert threshold |
-| `ESCALATION_REPEAT_MIN` | `30` | the first reminder about a site still down; then 2×, 4× … up to 4 h; `0` off |
-| `SSL_RENEW_WARN_DAYS` | `10` | «auto-renewal looks broken» when the serial has not changed this close to expiry |
-| `LINKS_CHECK_INTERVAL_HOURS` | `6` | hours between link crawls; `0` — no crawl |
+| 🛠 `DISK_ALERT_PCT` | `85` | disk-usage alert threshold |
+| 🛠 `ESCALATION_REPEAT_MIN` | `30` | the first reminder about a site still down; then 2×, 4× … up to 4 h; `0` off |
+| 🛠 `SSL_RENEW_WARN_DAYS` | `10` | «auto-renewal looks broken» when the serial has not changed this close to expiry |
+| 🛠 `LINKS_CHECK_INTERVAL_HOURS` | `6` | hours between link crawls; `0` — no crawl |
 | `RETENTION_DAYS`, `DB_BACKUP_KEEP` | `30`, `7` | raw check rows kept before the nightly rollup; nightly copies kept in `data/backups/` |
 | `DEPENDENCY_WATCH` | `1` | the weekly OSV check and the hourly deploy check |
 | `QUIET_HOURS` | empty | no quiet hours until set here or in «🔕 Тишина» |
@@ -236,13 +237,26 @@ Behaviour that changes only in `.env` (defaults from `config.py`):
 
 ```
 main.py                 entry point: DB → services → web server → scheduler → polling
-├── monitors/           availability, ssl, domain (rdap), dns, links, deep 5xx,
-│                       seo/geo, host — typed results, shared alert ladder
+├── monitors/           availability (with netcheck — is the bot's own network up —
+│                       and second_opinion from check-host.net), ssl, domain (rdap),
+│                       dns, mail, security, links, deep 5xx, seo/geo, visitor
+│                       (real visitors' speed, CrUX), region (timing from the
+│                       audience's region), host — typed results, shared alert
+│                       ladder; HTML parsing (BeautifulSoup) in a child process
+│                       (parse_child, started on demand by parse_worker), the
+│                       sitemap in a thread, pagemeta (a look at a new site)
 ├── services/           notifier (every proactive message goes through it:
-│                       priorities, mute, quiet hours, pauses), settings, maintenance,
-│                       secrets, runtime (admin), updates (dependency watch),
-│                       cloudflare actions, docker API, screenshots, GSC, Yandex,
-│                       GitHub hygiene
+│                       priorities, mute, quiet hours, pauses), humanize (the words
+│                       of an alert), settings, integrations (keys entered in the
+│                       chat), maintenance, secrets, runtime (admin), automation
+│                       (everything the bot does by itself), heartbeats, helpers,
+│                       health, sitestatus (the last results per site), public_urls;
+│                       Cloudflare: actions, cf_audit (the account's audit log),
+│                       published (published but unwatched); docker API, screenshots;
+│                       search: GSC, Yandex, Bing, CrUX (visitor speed),
+│                       index_status, seo_fixes; GitHub: hygiene, updates (updates
+│                       and the dependency watch), lag (merged but not deployed);
+│                       causes (why a short outage), hosting, railway, recommend
 ├── reports/            scheduler (the jobs: setup_scheduler), formatters, weekly report
 ├── handlers/           one router per screen behind a single AdminFilter
 ├── web/                aiohttp: feedback API, heartbeats, status page + JSON

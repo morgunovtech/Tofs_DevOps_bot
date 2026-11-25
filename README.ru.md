@@ -31,7 +31,7 @@
 - **API-проверки** — следит за тем, что сайт делает (`POST /api/v1/analyze` должен ответить `scoreLabel`): метод, заголовки, тело запроса; у API только код, фраза и время ответа, без шума SEO. Если в ответе есть `version`, бот сравнивает его с последним релизом репозитория на GitHub, у которого `homepage` — этот адрес, и один раз скажет «код влит, но не задеплоен». Плюс TCP-порты и ping.
 - **Самолечение** — пересборка и сброс кэша Cloudflare Pages; на своём сервере — только со смонтированным docker.sock, см. [Безопасность](#безопасность) — перезапуск контейнеров и (по желанию) очистка диска (`AUTO_CLEANUP=1`: висячие образы и кэш сборки, не использованный сутки), с отчётом, что уже сделано.
 - **Задачи по расписанию и другие боты** — dead-man switch: одна строка `curl` в конце крона, и бот заметит, что задача замолчала.
-- **Google Search Console, Яндекс.Вебмастер и Bing Webmaster** — в индексе ли сайт на самом деле; по индексу Bing ищут ChatGPT и Copilot.
+- **Google Search Console, Яндекс.Вебмастер и Bing Webmaster** — в индексе ли сайт на самом деле; по индексу Bing ищут ChatGPT и Copilot; с Search Console замечания Google к разметке страницы приходят тихим 🟠 и в воскресном отчёте.
 - **Скорость у настоящих посетителей** — по данным Google (Chrome UX Report; один бесплатный ключ, на сайт ничего ставить не нужно): за сколько появляется страница и как быстро откликается у реальных посетителей Chrome за 28 дней, 75-й перцентиль; медленно по меркам Google — тихое 🟠. У небольших сайтов Google данных часто не собирает — бот так и говорит.
 - **Порядок в GitHub** в воскресном отчёте (read-only токен): старые PR, лишние ветки, красный CI, пропавшие репозитории.
 - **Помощники, статус-страница, виджет обратной связи**, копия базы (по воскресеньям в личку, без токенов) и восстановление прямо из чата.
@@ -83,6 +83,8 @@ volumes:
 Хочешь собрать из исходников — свои правки или форк: `git clone`, `cp .env.example .env`, впиши в `.env` свой `TELEGRAM_BOT_TOKEN`, `APP_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build` — в репозитории лежит `docker-compose.yml` со сборкой (коммит — это номер сборки в «⚙️ Настройки → 🔌 Подключения» и то, с чем проверка «новая версия не запустилась» сверяет `main`).
 
 **Сервер в России.** Оттуда api.telegram.org часто недоступен напрямую — бот не достучится до Telegram. Укажи в `.env` прокси: `TELEGRAM_PROXY=socks5://логин:пароль@host:1080` (подойдут и `socks4://`, и `http://host:3128`). Через прокси идёт только общение с Telegram, сайты бот проверяет напрямую.
+
+**Свой сервер Bot API.** `TELEGRAM_API_URL=http://host:8081` — всё общение, включая токен, идёт на свой сервер Bot API вместо api.telegram.org; бот пишет об этом в логе при каждом старте и в «🛠 Тонкие настройки».
 
 Все интеграции из `.env`, архитектура и разработка — [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
@@ -160,8 +162,10 @@ Railway: деплой откатывается в панели Railway (Deployme
 | api.github.com (с токеном бота, если он есть) | slug репозитория: последний коммит `main` и его статусы, открытые PR | ежечасно и по воскресеньям, только при `GITHUB_REPOSITORY` (Railway и GitHub Actions задают его сами) | `DEPENDENCY_WATCH=0` или пустой `GITHUB_REPOSITORY` на своём сервере |
 | GitHub GraphQL, Google Search Console, Яндекс.Вебмастер, Bing Webmaster, Cloudflare | твои репозитории (два постраничных запроса, по воскресеньям); сайты ресурса; deploy hook и сброс кэша, журнал аудита аккаунта (каждые 15 мин), проекты и деплои Pages (когда сайт лёг), записи DNS зоны, маршруты и скрипты Worker-ов, `homepage` и последний релиз репозиториев, последний коммит в папке Worker-а (раз в сутки — «влито, но не задеплоено») | только если подключены | отключить в «🔌 Подключениях» |
 | внешний сторож (`SELF_HEARTBEAT_URL`, например healthchecks.io) | пустой GET | каждые 5 мин, пока проверки идут и Telegram отвечает | убрать ссылку |
-| Telegram | все сообщения; сообщения посетителей из виджета с их IP; картинки; воскресная копия базы | | копия — «💾 Копия базы» |
+| Telegram (или твой сервер из `TELEGRAM_API_URL`) | все сообщения; сообщения посетителей из виджета с их IP; картинки; воскресная копия базы | | копия — «💾 Копия базы» |
 | сами сайты и все ссылки с их главных | адрес бота и User-Agent (`… TofsDevOps/3.0`); главная, запрошенная ещё раз с подписями GPTBot, ClaudeBot и PerplexityBot; пробы `/.git/HEAD`, `/.env` и `/__devopsbot-404-probe` | каждая проверка; подписи и проба 404 — раз в сутки; `.git`/`.env` — раз в 6 ч; ссылки — раз в 6 ч | `LINKS_CHECK_INTERVAL_HOURS=0` останавливает обход |
+| s.morgunov.tech (шрифты статус-страницы) | от бота — ничего: файлы шрифтов оттуда забирает браузер посетителя статус-страницы, так что этот хост видит IP и User-Agent посетителя | когда кто-то открывает `/status` | не включать статус-страницу (`STATUS_PAGE=0`, так по умолчанию) |
+| 1.1.1.1, 8.8.8.8, 9.9.9.9 и IPv6-адреса первых двух (Cloudflare, Google, Quad9) | о твоих сайтах — ничего: TCP-соединение на :443 и запрос имён `one.one.one.one`, `dns.google` и `dns.quad9.net` у резолвера хоста | когда сайт не ответил совсем и за последние 2 мин не ответил ни один другой; дальше каждую минуту, пока сеть не вернётся; один раз через 2 мин после старта | `NET_CANARIES=` (пусто) или свой список в ней |
 | DNS-резолвер хоста | имена твоих хостов, NS и MX твоих доменов, `_dmarc` и DKIM-селекторы известных почтовых сервисов | ежечасно | — |
 
 ## Где хранить базу
@@ -193,11 +197,13 @@ CI гоняет то же самое на Python 3.12, 3.13 и 3.14, собир�
 | Ресурс | Где | Как удалить |
 |---|---|---|
 | Бот | [@BotFather](https://t.me/BotFather) | `/deletebot` |
-| Сервис Railway с томом `/app/data` (шаблон `tofsdevops`) | railway.com | Settings → Delete service; том удаляется вместе с ним |
+| Сервис Railway с томом `/app/data`; шаблон `tofsdevops`, опубликованный в маркетплейсе Railway (в кнопке Deploy — реферальный код) | railway.com | Settings → Delete service; том удаляется вместе с ним. Шаблон: Workspace → Templates → TofsDevOps |
 | Образ `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | удалить пакет |
 | Внешний сторож (`SELF_HEARTBEAT_URL`) | healthchecks.io или heartbeat-задача другого бота | удалить check или задачу |
 | Токены интеграций: Google Search Console, Яндекс.Вебмастер, ключ API Bing Webmaster (`BING_WEBMASTER_KEY`), Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
 | Deploy-хуки (`DEPLOY_HOOKS`) и виджет обратной связи на твоих страницах | Cloudflare Pages, твой сайт | удалить хук; убрать сниппет виджета |
+| Проект SonarQube Cloud `morgunovtech_Tofs_DevOps_bot` и его GitHub App, установленный на репозиторий (проверка «SonarCloud Code Analysis» в пул-реквестах) | sonarcloud.io; GitHub → Settings → Applications | удалить проект; удалить приложение |
+| Страница GitHub Sponsors за кнопкой «Sponsor» (`.github/FUNDING.yml`) | github.com/sponsors/morgunovtech | снять страницу с публикации; удалить файл |
 | Необязательный секрет `DS_SYNC_TOKEN` (fine-grained PAT: contents и pull requests write) для еженедельного PR с обновлением дизайн-системы | GitHub → Settings → Secrets | удалить секрет; без него workflow требует «Allow GitHub Actions to create and approve pull requests» |
 
 ## Что почитать

@@ -81,7 +81,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 
 Порт: бот слушает `WEBHOOK_PORT`, без неё — `PORT`, без обеих — `8080`. Целевой порт домена и `PORT` в Railway — разные настройки: Railway не выставляет `PORT` по целевому порту, а проверку здоровья при деплое шлёт на `PORT` (с заголовком `Host: healthcheck.railway.app`; `/health` отвечает на любой Host). Поэтому в шаблоне `PORT=8080` задан явно — одно число для бота, проверки и домена. Если в своём сервисе они разойдутся, домен ответит «Application failed to respond» — задай сервису `PORT=8080` или `WEBHOOK_PORT=8080` (или поменяй целевой порт домена).
 
-Поменялись переменные или порт в коде — поправь и шаблон (Workspace → Templates → TofsDevOps → Apply). В маркетплейс Railway шаблон не опубликован: кнопка работает и так.
+Поменялись переменные или порт в коде — поправь и шаблон (Workspace → Templates → TofsDevOps → Apply). Шаблон опубликован в маркетплейсе Railway (адрес — `railway.com/deploy/tofsdevops`); текст карточки — `docs/RAILWAY_TEMPLATE.md`, после правки вставь его в Workspace → Templates → TofsDevOps → Marketplace → Overview.
 
 ## Статус от другого бота
 
@@ -111,14 +111,21 @@ Content-Type: application/json
 
 ```
 main.py                 точка входа: БД → сервисы → веб-сервер → планировщик → polling
-├── monitors/           доступность, ssl, домены (rdap), dns, ссылки, 5xx,
-│                       seo/geo, хост — типизированные результаты, общая лестница алертов;
-│                       разбор HTML (BeautifulSoup) — в дочернем процессе
-│                       monitors.parse_child (parse_worker: старт по требованию,
-│                       выход после 60 с простоя), карта сайта — в потоке
+├── monitors/           доступность (с netcheck — есть ли сеть у самого бота — и
+│                       second_opinion, второй точкой check-host.net), ssl, домены
+│                       (rdap), dns, почта, безопасность, ссылки, 5xx, seo/geo,
+│                       visitor (скорость у посетителей, CrUX), region (замер из
+│                       региона аудитории), хост — типизированные результаты,
+│                       общая лестница алертов; разбор HTML (BeautifulSoup) — в
+│                       дочернем процессе monitors.parse_child (parse_worker: старт
+│                       по требованию, выход после 60 с простоя), карта сайта — в
+│                       потоке, pagemeta (взгляд на новый сайт)
 ├── services/           notifier (все проактивные сообщения идут через него:
 │                       приоритеты, mute, тихие часы, паузы), humanize (слова тревог),
-│                       settings, maintenance, secrets, runtime (админ);
+│                       settings, integrations (ключи, введённые в чате), maintenance,
+│                       secrets, runtime (админ), automation (всё, что бот делает
+│                       сам), heartbeats, helpers, health, sitestatus (последние
+│                       результаты по сайту), public_urls;
 │                       Cloudflare: actions, cf_audit (журнал аудита аккаунта),
 │                       published (опубликовано, но без присмотра); Docker API, скриншоты;
 │                       поисковики: GSC, Яндекс, Bing, CrUX (скорость у посетителей);

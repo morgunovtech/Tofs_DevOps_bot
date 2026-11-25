@@ -31,7 +31,7 @@ Made for people who have never heard of DNS or a 502. Three buttons under the in
 - **API checks** — watch what the site actually does (`POST /api/v1/analyze` must answer with `scoreLabel`): method, headers, body; an API check gets status, phrase and timing only, no SEO noise. When its answer carries a `version`, it is compared with the latest release of the GitHub repository whose homepage is that host — «merged but not deployed» is said once. TCP ports and ping too.
 - **Self-healing** — Cloudflare Pages redeploy and cache purge; on your own server — only with docker.sock mounted, see [Security](#security) — container restart and optional disk cleanup (`AUTO_CLEANUP=1`: dangling images and build cache unused for a day), with a report of what was already done.
 - **Scheduled jobs and other bots** — a dead-man switch: one `curl` line at the end of a cron job, and the bot notices when it goes silent.
-- **Google Search Console, Yandex.Webmaster and Bing Webmaster** — whether the site is actually in the index; Bing's index is what ChatGPT and Copilot search.
+- **Google Search Console, Yandex.Webmaster and Bing Webmaster** — whether the site is actually in the index; Bing's index is what ChatGPT and Copilot search; with Search Console, Google's remarks on a page's structured data come as a quiet 🟠 and in the Sunday report.
 - **Real visitors' speed** — from Google's Chrome UX Report (one free key, nothing installed on the site): how fast the page appears and how quickly it responds for real Chrome visitors over 28 days, at the 75th percentile; slow by Google's yardstick is a quiet 🟠. Small sites often have no data at Google — the bot says so.
 - **GitHub hygiene** in the Sunday digest (read-only token): stale PRs, extra branches, red CI, repositories that vanished.
 - **Helpers, status page, feedback widget**, a copy of the database (on Sundays to your private chat, without tokens) and restore right from the chat.
@@ -83,6 +83,8 @@ Run `docker compose up -d` and send `/start` in a private chat with the bot — 
 Building from source — your own changes or a fork: `git clone`, `cp .env.example .env`, put your `TELEGRAM_BOT_TOKEN` into `.env`, `APP_COMMIT=$(git rev-parse --short HEAD) docker compose up -d --build`; the repository's `docker-compose.yml` builds the image (the commit is what «⚙️ Настройки → 🔌 Подключения» shows as the build and what the «new version did not start» check compares with `main`).
 
 **A server in Russia.** api.telegram.org is often unreachable from there directly, and the bot cannot talk to Telegram. Set a proxy in `.env`: `TELEGRAM_PROXY=socks5://user:password@host:1080` (`socks4://` and `http://host:3128` work too). Only the traffic to Telegram goes through it; the sites are checked directly.
+
+**Your own Bot API server.** `TELEGRAM_API_URL=http://host:8081` sends every call — the token included — to a self-hosted Bot API server instead of api.telegram.org; the bot says so in the log at every start and in «🛠 Тонкие настройки».
 
 Every `.env` integration, the architecture and the development loop: [docs/FEATURES.en.md](docs/FEATURES.en.md#quick-start).
 
@@ -160,8 +162,10 @@ Addresses of your sites go to a few free public services; each line can be switc
 | api.github.com (the bot's token when there is one) | the repository slug: the newest `main` commit and its statuses, the open PRs | hourly and on Sundays, only with `GITHUB_REPOSITORY` (Railway and GitHub Actions set it) | `DEPENDENCY_WATCH=0`, or leave `GITHUB_REPOSITORY` empty on your own server |
 | GitHub GraphQL, Google Search Console, Yandex.Webmaster, Bing Webmaster, Cloudflare | your repositories (two paginated queries, Sundays); the sites of the property; the deploy hook and the cache purge, the account's audit log (every 15 min), the Pages projects and deployments (when a site goes down), the zone's DNS records, the Worker routes and scripts, the repositories' `homepage` and latest release, the newest commit in the Worker's folder (daily — «merged but not deployed») | only when connected | disconnect in «🔌 Подключения» |
 | the external watchdog (`SELF_HEARTBEAT_URL`, e.g. healthchecks.io) | an empty GET | every 5 min, while the checks run and Telegram answers | remove the link |
-| Telegram | every message; visitors' widget messages with their IP; the pictures; the Sunday copy of the database | | the copy: «💾 Копия базы» |
+| Telegram (or your `TELEGRAM_API_URL` server) | every message; visitors' widget messages with their IP; the pictures; the Sunday copy of the database | | the copy: «💾 Копия базы» |
 | your sites, and every link on their home pages | the bot's address and User-Agent (`… TofsDevOps/3.0`); the home page asked again with the GPTBot, ClaudeBot and PerplexityBot signatures; probes of `/.git/HEAD`, `/.env` and `/__devopsbot-404-probe` | every check; the signatures and the 404 probe daily; `.git`/`.env` every 6 h; the links every 6 h | `LINKS_CHECK_INTERVAL_HOURS=0` stops the crawl |
+| s.morgunov.tech (the fonts of the status page) | nothing from the bot: the browser of a status-page visitor fetches the font files there, so the visitor's IP and User-Agent reach that host | when someone opens `/status` | keep the status page off (`STATUS_PAGE=0`, the default) |
+| 1.1.1.1, 8.8.8.8, 9.9.9.9 and the IPv6 addresses of the first two (Cloudflare, Google, Quad9) | nothing about your sites: a TCP connect on :443, plus a DNS lookup of `one.one.one.one`, `dns.google` and `dns.quad9.net` at the host's resolver | when a site gives no answer at all and no other site has answered in the last 2 min; then every minute until the network is back; once 2 min after a start | `NET_CANARIES=` (empty), or your own list there |
 | the host's DNS resolver | the names of your hosts, NS and MX of your domains, `_dmarc` and the DKIM selectors of known mail providers | hourly | — |
 
 ## Where to keep the database
@@ -193,11 +197,13 @@ The project cannot be removed completely without this list.
 | Resource | Where | How to remove |
 |---|---|---|
 | The bot | [@BotFather](https://t.me/BotFather) | `/deletebot` |
-| The Railway service with its `/app/data` volume (template `tofsdevops`) | railway.com | Settings → Delete service; the volume goes with it |
+| The Railway service with its `/app/data` volume; the template `tofsdevops`, published in Railway's marketplace (the Deploy button carries the referral code) | railway.com | Settings → Delete service; the volume goes with it. The template: Workspace → Templates → TofsDevOps |
 | The image `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | delete the package |
 | The external watchdog check (`SELF_HEARTBEAT_URL`) | healthchecks.io, or a heartbeat job of another bot | delete the check or the job |
 | Integration tokens: Google Search Console, Yandex.Webmaster, the Bing Webmaster API key (`BING_WEBMASTER_KEY`), Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), the CrUX key, a GitHub token | the consoles of those services | revoke each token; «🔌 Подключения» disconnects them in the bot |
 | Deploy hooks (`DEPLOY_HOOKS`) and the feedback widget on your pages | Cloudflare Pages, your site | delete the hook; remove the widget snippet |
+| The SonarQube Cloud project `morgunovtech_Tofs_DevOps_bot` and its GitHub App installed on the repository (the «SonarCloud Code Analysis» check in pull requests) | sonarcloud.io; GitHub → Settings → Applications | delete the project; uninstall the app |
+| The GitHub Sponsors listing behind the «Sponsor» button (`.github/FUNDING.yml`) | github.com/sponsors/morgunovtech | unpublish the listing; delete the file |
 | The optional secret `DS_SYNC_TOKEN` (a fine-grained PAT: contents and pull requests write) for the weekly design-system sync PR | GitHub → Settings → Secrets | delete the secret; without it the workflow needs «Allow GitHub Actions to create and approve pull requests» |
 
 ## Further reading
