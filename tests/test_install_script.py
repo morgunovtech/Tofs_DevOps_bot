@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+ENV_NAME = "TELEGRAM_BOT_TOKEN"
 SCRIPT = ROOT / "scripts" / "install.sh"
 
 
@@ -44,14 +45,17 @@ def _run(tmp_path: Path, *, docker: str | None):
         fake = bin_dir / "docker"
         fake.write_text(docker, "utf-8")
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "TOFS_DIR": str(tmp_path / "bot")}
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "INSTALL_CHECK_WAIT": "0",
+           "TOFS_DIR": str(tmp_path / "bot")}
     if docker is None:   # /usr/bin may hold a real docker on a dev machine
         env["PATH"] = f"{bin_dir}:/bin"
     return subprocess.run(["/bin/sh", str(SCRIPT)], env=env, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=30, start_new_session=True)
 
 
-_FAKE_DOCKER = '#!/bin/sh\necho "$@" >> "$HOME/calls"\n'
+_FAKE_DOCKER = ('#!/bin/sh\necho "$@" >> "$HOME/calls"\n'
+                'case "$*" in "compose ps"*) echo abc123;;\n'
+                ' inspect*) cat "$HOME/state" 2>/dev/null || echo "running after 0 restarts";; esac\n')
 
 
 def test_a_second_run_keeps_the_token_and_updates(tmp_path):
@@ -63,7 +67,8 @@ def test_a_second_run_keeps_the_token_and_updates(tmp_path):
     assert (bot / ".env").read_text("utf-8") == "TELEGRAM_BOT_TOKEN=0:kept\nTIMEZONE=Europe/Berlin\n"
     assert "ghcr.io/morgunovtech/tofs_devops_bot:latest" in (bot / "docker-compose.yml").read_text("utf-8")
     calls = (tmp_path / "calls").read_text("utf-8").splitlines()
-    assert calls[-2:] == ["compose pull", "compose up -d"]
+    assert calls[-4:-2] == ["compose pull", "compose up -d"] and calls[-1].startswith("inspect")
+    assert "The bot is running" in done.stdout
     assert "0:kept" not in done.stdout + done.stderr
 
 
@@ -91,3 +96,14 @@ def test_without_a_terminal_it_asks_for_the_env_file_instead_of_hanging(tmp_path
     assert "TELEGRAM_BOT_TOKEN=" in done.stderr
     assert not (tmp_path / "bot" / ".env").exists()
     assert not (tmp_path / "calls").exists() or "up -d" not in (tmp_path / "calls").read_text("utf-8")
+
+
+def test_a_bot_that_stopped_right_after_the_start_is_not_called_running(tmp_path):
+    """A refused token: the container exits and Docker keeps restarting it."""
+    bot = tmp_path / "bot"
+    bot.mkdir()
+    (bot / ".env").write_text(f"{ENV_NAME}=0:kept\n", "utf-8")
+    (tmp_path / "state").write_text("running after 2 restarts\n", "utf-8")
+    done = _run(tmp_path, docker=_FAKE_DOCKER)
+    assert done.returncode == 1
+    assert "started and stopped (state: running after 2 restarts)" in done.stderr and "The bot is running" not in done.stdout
