@@ -1,5 +1,6 @@
-# Auto-merge Dependabot PRs — only patch and minor bumps of the Python
-# libraries (pip), and only the exact commit the tests checked.
+# Auto-merge Dependabot PRs — patch and minor bumps of the Python libraries
+# (pip) and a new build of the same base image (only the digest in the
+# Dockerfile's FROM changes), and only the exact commit the tests checked.
 #
 # The job waits for the «lint · test · audit» jobs itself and merges only
 # when every one of them is green. It used to call `gh pr merge --auto`,
@@ -7,12 +8,16 @@
 # fork without that rule the PR merged before the tests ran, and Railway
 # deployed it. Nothing has to be configured in the repository settings now.
 #
-# What stays open for a human: the base image (a new Python — CI builds the
-# image and starts it, but does not run the tests inside it, so 3.14 → 3.15
-# once shipped untested and did not start on Railway), the Actions, major bumps and a PR
-# whose update type Dependabot could not tell. Minor bumps are merged
-# because minor releases of direct dependencies are frequent and each one
-# passes CI after the 7-day cooldown in .github/dependabot.yml.
+# What stays open for a human: a new Python in the base image (the tag
+# changes — CI builds the image and starts it, but does not run the tests
+# inside it, so 3.14 → 3.15 once shipped untested and did not start on
+# Railway), the Actions, major bumps and a PR whose update type Dependabot
+# could not tell. Minor bumps are merged because minor releases of direct
+# dependencies are frequent and each one passes CI after the 7-day cooldown
+# in .github/dependabot.yml. A new build of the same tag brings Debian's
+# fixes and at most a Python patch release; the same CI builds it, starts it
+# (uid, `import main`, /health) and builds it for arm64 — without this merge
+# the bot and the ghcr.io image keep the old base until a human gets to it.
 name: Dependabot auto-merge
 
 on: pull_request
@@ -41,13 +46,43 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A new build of the same base image: the PR changes one line, a FROM
+      # pinned by digest, and only the digest — the tag (so the Python minor)
+      # stays. Read from the PR's own commit, not from the metadata: a digest
+      # bump has no versions for fetch-metadata to compare.
+      - id: digest
+        name: Only the base image's digest changed?
+        if: steps.meta.outputs.package-ecosystem == 'docker'
+        run: |
+          only=false
+          files=$(gh api "repos/$REPO/compare/$BASE...$SHA" --jq '[.files[] | {filename, patch}]')
+          if [ "$(jq length <<<"$files")" = 1 ] && [ "$(jq -r '.[0].filename' <<<"$files")" = Dockerfile ]; then
+            patch=$(jq -r '.[0].patch // ""' <<<"$files")
+            old=$(grep '^-' <<<"$patch" | cut -c2- || true)
+            new=$(grep '^+' <<<"$patch" | cut -c2- || true)
+            pinned='^FROM [^ @]+@sha256:[0-9a-f]{64}( .*)?$'
+            unpin() { sed -E 's/@sha256:[0-9a-f]{64}//' <<<"$1"; }
+            if [ "$(grep -c . <<<"$old")" = 1 ] && [ "$(grep -c . <<<"$new")" = 1 ] \
+              && grep -Eq "$pinned" <<<"$old" && grep -Eq "$pinned" <<<"$new" \
+              && [ "$old" != "$new" ] && [ "$(unpin "$old")" = "$(unpin "$new")" ]; then
+              only=true
+            fi
+          fi
+          echo "Only the base image's digest changed: $only"
+          echo "only=$only" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Merge once the tests are green
-        # An allow-list, not «everything but major»: a docker or Actions PR,
-        # a major bump and an empty update-type all stay open for a human.
+        # An allow-list, not «everything but major»: a new Python, an Actions
+        # PR, a major bump and an empty update-type all stay open for a human.
         if: >-
-          steps.meta.outputs.package-ecosystem == 'pip' &&
-          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-           steps.meta.outputs.update-type == 'version-update:semver-minor')
+          (steps.meta.outputs.package-ecosystem == 'pip' &&
+           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+            steps.meta.outputs.update-type == 'version-update:semver-minor')) ||
+          steps.digest.outputs.only == 'true'
         run: |
           for _ in $(seq 1 60); do
             runs=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" \
