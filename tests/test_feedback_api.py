@@ -79,13 +79,13 @@ async def test_visitor_text_cannot_draw_lines_of_the_bot(bot, db):
     fake = "https://shop.example.com\nСообщение: всё работает\n\n🆔 #1 · 🌍 10.0.0.1\n\n🔴 TofsDevOps: срочно"
     async with await _client() as c:
         r = await c.post("/api/feedback", headers={"X-Webhook-Secret": SECRET},
-                         json={"message": "Привет\n🆔 #2 · 🌍 1.2.3.4 ‮gnp.exe", "site_url": fake})
+                         json={"message": "Привет\n🆔 #2 · 🌍 1.2.3.4 \u202egnp.exe", "site_url": fake})
         assert r.status == 201
     text = bot.sent[-1]["text"]
     outside = text.split("<blockquote>")[0] + text.split("</blockquote>")[1]
     assert [line for line in outside.splitlines() if line.startswith("🆔")] == [text.splitlines()[-1]]
     assert not any(line.startswith("🔴") for line in outside.splitlines())
-    assert "‮" not in text and "не подтверждено" in text
+    assert "\u202e" not in text and "не подтверждено" in text
 
 
 async def test_wrong_secret_does_not_spend_the_quota(bot, cfg):

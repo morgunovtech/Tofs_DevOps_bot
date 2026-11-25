@@ -1,4 +1,5 @@
 import json
+import time
 
 import aiohttp
 from aiohttp import web
@@ -6,7 +7,7 @@ from aiohttp.test_utils import TestServer
 
 from db.database import get_state, set_state
 from services import updates
-from services.updates import installed_versions, summary_lines
+from services.updates import installed_versions, is_major_bump, short_bump, summary_lines
 
 
 def test_installed_versions_and_summary():
@@ -121,3 +122,19 @@ async def test_a_failed_deploy_is_said_once(bot, db, cfg, monkeypatch):
         deploy["state"] = "failure"
         await updates.run_deploy_watch()
         assert await updates.deploy_problem() is None
+
+
+def test_a_long_run_of_digits_in_a_pr_text_does_not_stall_the_parser():
+    """The body of a pull request is a stranger's text of up to 65 536
+    characters: «from 111…» with no « to » after it must be given up on at
+    once, not after trying every split of the digits (seconds of a blocked
+    event loop)."""
+    digits = "1" * 60_000
+    started = time.perf_counter()
+    assert not is_major_bump("Bump x from " + digits, "Updates `x` from " + digits)
+    assert time.perf_counter() - started < 2
+    # …and what it reads from a real title and text is what it always was.
+    assert is_major_bump("Bump aiogram from 3.31.0 to 4.0.0")
+    assert short_bump("Bump the python-deps group with 2 updates",
+                      "Updates `aiohttp` from 3.13.5 to 3.13.6\nUpdates `aiogram` from 3.31.0 to 4.0.0-rc1") \
+        == "aiogram 3.31.0→4.0.0-rc1, aiohttp 3.13.5→3.13.6"
