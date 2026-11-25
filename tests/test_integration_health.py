@@ -343,6 +343,22 @@ async def test_weekly_says_what_it_could_not_get(bot, db, monkeypatch):
     assert lines == ["⚠️ Google Search Console: не смог получить данные — Search Console ответил HTTP 403"]
 
 
+async def test_weekly_lists_googles_open_remarks_from_the_snapshot(bot, db, monkeypatch):
+    sid = await db.activate_or_create_site("https://ex.test")
+    clean = await db.activate_or_create_site("https://ok.test")
+    issues = [{"type": "Profile page", "message": DATE_CREATED, "severity": "warning"},
+              {"type": "Profile page", "message": DATE_MODIFIED, "severity": "error"}]
+    await sitestatus.update(sid, "google", verdict="PASS", rich_issues=issues)
+    await sitestatus.update(clean, "google", verdict="PASS", rich_issues=[])
+    sites = [{"id": sid, "url": "https://ex.test"}, {"id": clean, "url": "https://ok.test"}]
+    assert await weekly.rich_lines(sites) == []                      # Search Console is off: no word
+    monkeypatch.setattr(gsc, "available", lambda: True)
+    assert await weekly.rich_lines(sites) == ["🟠 Google, замечания к разметке страниц:",
+                                              "  ex.test: 1 ошибка и 1 предупреждение (Profile page)"]
+    monkeypatch.setattr(index_status, "is_stale", lambda section: True)
+    assert await weekly.rich_lines(sites) == []                      # old data is not asserted
+
+
 async def test_osv_silence_is_not_no_vulnerabilities(bot, db, cfg, monkeypatch):
     cfg(dependency_watch=True)
 

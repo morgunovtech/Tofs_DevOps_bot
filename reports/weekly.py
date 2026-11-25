@@ -131,6 +131,22 @@ async def search_metrics_lines(site_urls: list[str]) -> list[str]:
     return lines
 
 
+async def rich_lines(sites: list[dict]) -> list[str]:
+    """Google's open remarks on structured data, from the site snapshot the
+    daily index check writes — no request of its own. Old data says nothing:
+    the remark may be gone since."""
+    if not gsc.available():
+        return []
+    out = []
+    for s in sites:
+        google = (await sitestatus.get(s["id"])).get("google") or {}
+        issues = google.get("rich_issues") or []
+        if issues and not index_status.is_stale(google):
+            out.append(f"  {esc(site_label(s['url']))}: {index_status.rich_count_words(issues)} "
+                       f"({esc(index_status.rich_types(issues))})")
+    return [t("🟠 Google, замечания к разметке страниц:"), *out] if out else []
+
+
 async def _bing_lines(site_urls: list[str]) -> list[str]:
     """Bing's clicks and impressions of the week against the week before —
     a breakage signal next to Google's, for the watched sites verified there."""
@@ -196,7 +212,8 @@ async def build_weekly_report() -> tuple[str, list[str]]:
     chart = speed_lines(series, slow)
 
     async def search() -> list[str]:
-        found = await search_metrics_lines([s["url"] for s in sites if is_web_page(s["url"], s.get("http_method"))])
+        pages = [s for s in sites if is_web_page(s["url"], s.get("http_method"))]
+        found = await search_metrics_lines([s["url"] for s in pages]) + await rich_lines(pages)
         return ["", *found] if found else []
 
     async def deps() -> list[str]:

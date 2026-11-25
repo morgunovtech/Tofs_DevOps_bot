@@ -465,6 +465,7 @@ STRINGS: dict[str, str] = {
     "ошибка": "error",
     "предупреждение": "warning",
     "и ещё {n}": "and {n} more",
+    "🟠 Google, замечания к разметке страниц:": "🟠 Google, remarks on the pages' structured data:",
     " Замечания висели {duration} (с {day}).": " The remarks stayed for {duration} (since {day}).",
     "✅ Google больше не видит замечаний к разметке {label}.": "✅ Google no longer has remarks on the structured data of {label}.",
     # ── reports/scheduler.py: Google's chosen main copy ────────────────────
