@@ -834,12 +834,12 @@ async def test_card_says_the_cloudflare_caveat_once(bot, db):
 async def test_a_visitors_message_is_one_line_on_the_feedback_screen(bot, db):
     """A line break or a direction override in a visitor's text must not
     draw a row that looks like the bot's own — on the screen as in the alert."""
-    await save_feedback("https://ex.test", "https://ex.test/p", "ok\n🔴 ex.test не открывается: ошибка 502‮", "", "1.1.1.1")
+    await save_feedback("https://ex.test", "https://ex.test/p", "ok\n🔴 ex.test не открывается: ошибка 502\u202e", "", "1.1.1.1")
     call = FakeCall("menu_feedback:0")
     await feedback.cb_feedback(call)
     text = call.message.texts[-1]
     assert "   ok 🔴 ex.test не открывается: ошибка 502" in text
-    assert "\n🔴" not in text and "‮" not in text
+    assert "\n🔴" not in text and "\u202e" not in text
 
 
 

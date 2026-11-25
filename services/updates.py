@@ -161,10 +161,13 @@ def repo_slug() -> str | None:
     return slug or None
 
 
-_BUMP = re.compile(r"bump (\S+) from (\d+)(\S*) to (\d+)(\S*)", re.I)
+# The first number is possessive (\d++): the tail after it is \S*, which takes
+# digits too, so a plain \d+ retried every split of a long run of digits — a
+# second per 20 000 of them, on text anyone can put into a pull request.
+_BUMP = re.compile(r"bump (\S+) from (\d++)(\S*) to (\d+)(\S*)", re.I)
 # A group PR («Bump the python-deps group with 2 updates») names each update
 # in its text: «Updates `aiogram` from 3.31.0 to 4.0.0».
-_UPDATES = re.compile(r"Updates `([^`]+)` from (\d+)(\S*) to (\d+)(\S*)")
+_UPDATES = re.compile(r"Updates `([^`]+)` from (\d++)(\S*) to (\d+)(\S*)")
 _MAJOR_MARK = re.compile(r"update-type:\s*version-update:semver-major")
 
 
