@@ -113,6 +113,8 @@ Without TLS the widget does not load on https sites (browsers block mixed conten
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops?referralCode=7hTMqE)
 
+The button carries my Railway referral code: Railway shares with me a part of what it bills an account created through it; your price stays the same. The same template without the code: <https://railway.com/deploy/tofsdevops>.
+
 1. Press **Deploy on Railway**, then **Configure** — the Deploy button stays grey until you do — and paste the token, the only field. The volume for the database, the public domain and the rest are already in the template.
 2. Send `/start` in a private chat with the bot — the first `/start` becomes the owner and adds the first site right in the chat. The bot then offers a test alert and the external watchdog; «⚙️ Настройки → 🔌 Подключения» covers the rest.
 
