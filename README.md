@@ -44,7 +44,15 @@ Either way, first create a bot at [@BotFather](https://t.me/BotFather) and copy 
 
 Any machine that runs around the clock will do: a VPS, a home server, a NAS, a Raspberry Pi. A ready image for amd64 and arm64 is published by itself after every change that passed the tests — nothing to clone or build.
 
-Make a folder with two files. `.env` — one line:
+**One command**, when Docker is already installed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/morgunovtech/Tofs_DevOps_bot/main/scripts/install.sh | sh
+```
+
+It asks for the token, writes the two files below into `~/tofs-devops` and starts the bot; run it again to update. Read it first if you like: [scripts/install.sh](scripts/install.sh).
+
+**Or by hand.** Make a folder with two files. `.env` — one line:
 
 ```
 TELEGRAM_BOT_TOKEN=token-from-BotFather
@@ -105,7 +113,7 @@ Without TLS the widget does not load on https sites (browsers block mixed conten
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)
 
-1. Press **Deploy on Railway** and paste the token — the only field. The volume for the database, the public domain and the rest are already in the template.
+1. Press **Deploy on Railway**, then **Configure** — the Deploy button stays grey until you do — and paste the token, the only field. The volume for the database, the public domain and the rest are already in the template.
 2. Send `/start` in a private chat with the bot — the first `/start` becomes the owner and adds the first site right in the chat. The bot then offers a test alert and the external watchdog; «⚙️ Настройки → 🔌 Подключения» covers the rest.
 
 **What it costs.** For the first 30 days Railway gives $5 and asks for no card. After that the account drops to the Free plan with $1 a month, and the bot needs about $2: without the Hobby plan it stops and nobody is told, and 30 days later Railway deletes the database volume. Hobby is $5 a month and includes $5 of usage — enough for the bot. Paying needs a card; Russian cards are not accepted abroad. The bot reminds you itself: after the first site and around day 25. Railway's terms: [its docs](https://docs.railway.com/pricing/free-trial).
@@ -114,7 +122,7 @@ Prefer your own fork? Railway → **Deploy from GitHub repo** → variables `TEL
 
 ### Rolling back a version
 
-**Updates.** On Railway updates install themselves: the template follows `main`. On your own server run `docker compose pull && docker compose up -d` — the bot does not announce that a new image exists; it says «🔄 Бот обновился» only after the new one has started. If an update moved the digest hours, a threshold or what is on by default while you changed nothing in the chat or in `.env`, the bot says so once («ℹ️ После обновления я работаю иначе») with a button to that setting.
+**Updates.** Deployed with the button: Railway notices a new version of the template and offers the update inside your project — accept it and the bot redeploys. Deployed from your own fork: **Sync fork** on GitHub, and Railway redeploys by itself. On your own server run `docker compose pull && docker compose up -d` (or the install command again) — the bot does not announce that a new image exists; it says «🔄 Бот обновился» only after the new one has started. If an update moved the digest hours, a threshold or what is on by default while you changed nothing in the chat or in `.env`, the bot says so once («ℹ️ После обновления я работаю иначе») with a button to that setting.
 
 Every image is also published as `:sha-<7 chars>` — the commit it was built from. Before a version changes the database schema the bot copies the database to `data/backups/schema-v<N>-<date>.db` (N is the schema the copy holds; the last 3 are kept). When there is no room for the copy the bot still migrates and says so in Telegram. An old version refuses to start on a newer database and logs «База от более новой версии бота…».
 
