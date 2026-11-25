@@ -68,6 +68,19 @@ fi
 docker compose pull
 docker compose up -d
 
+# A token Telegram refuses stops the bot a second after it starts, and Docker
+# keeps restarting it: say so here instead of «running».
+sleep "${INSTALL_CHECK_WAIT:-15}"
+# «running» alone is not enough: between two restarts the container is running too.
+STATE=$(docker inspect --format '{{.State.Status}} after {{.RestartCount}} restarts' "$(docker compose ps -a -q | head -n 1)" 2>/dev/null || true)
+if [ "$STATE" != "running after 0 restarts" ]; then
+  say ""
+  say "✗ The bot started and stopped (state: ${STATE:-unknown}). Its last lines:" >&2
+  docker compose logs --tail 5 2>&1 | sed 's/[0-9]\{8,\}:[A-Za-z0-9_-]\{30,\}/[token]/g' >&2
+  say "  Most often the token is wrong: fix it in $DIR/.env and run this again." >&2
+  exit 1
+fi
+
 say ""
 say "✓ The bot is running. Open it in Telegram and send /start — the first /start becomes the owner."
 say "  Folder: $DIR    Logs: docker compose logs -f    Update: run this command again."
