@@ -891,3 +891,54 @@ def test_the_guards_refusal_and_the_crux_reasons_are_translated():
     english_only(humanize.technical("адрес во внутренней сети — туда не хожу"))
     english_only(t("Google ответил HTTP {status}").format(status=403))
     english_only(t("Google не ответил ({err_text})").format(err_text="TimeoutError"))
+
+
+async def test_the_first_owner_gets_the_language_of_their_telegram(bot, db, cfg, monkeypatch):
+    """BOT_LANG empty: a non-Russian Telegram makes the bot English at the
+    claim — greeting included — and says once how to get Russian back."""
+    cfg(lang_from_env=False)
+    monkeypatch.setattr(start.runtime, "_chat_id", None)
+    monkeypatch.setattr(start.runtime, "_user_id", None)
+    monkeypatch.setattr(start, "CLAIM_CLOCK_SLACK_SEC", 10**12)
+    try:
+        msg = FakeMessage("/start")
+        msg.from_user = SimpleNamespace(id=777, is_bot=False, language_code="de")
+        msg.chat = SimpleNamespace(id=777, type="private")
+        await start.cmd_start(msg, FakeState())
+        assert settings_service.lang() == "en", msg.texts
+        assert not CYRILLIC.search(" ".join(msg.texts))
+        said = msg.texts.index("🗣 I speak English, as your Telegram does. For Russian, use the button below.")
+        assert msg.markups[said].inline_keyboard[0][0].callback_data == "tune:lang"
+        assert settings_service.timezone() == "Europe/Moscow"      # TIMEZONE is set in the test env: it wins
+        await settings_service.load()                               # a restart keeps the choice
+        assert i18n.language() == "en"
+        assert not settings_service.text_from_env("lang")
+    finally:
+        await settings_service.set_lang(None)
+        i18n.set_language("ru")
+
+
+@pytest.mark.parametrize(("code", "from_env", "expected"), [
+    ("ru", False, "ru"), ("ru-RU", False, "ru"), (None, False, "ru"), ("en", False, "en"), ("pt-br", False, "en"),
+    ("en", True, "ru"),                                   # BOT_LANG=ru was written on purpose
+])
+async def test_which_telegram_language_switches_the_bot(db, cfg, code, from_env, expected):
+    cfg(lang_from_env=from_env)
+    try:
+        assert await start.adopt_owner_language(code) == (expected == "en")
+        assert settings_service.lang() == expected
+    finally:
+        await settings_service.set_lang(None)
+        i18n.set_language("ru")
+
+
+async def test_an_english_owner_without_timezone_gets_utc(db, cfg, monkeypatch):
+    cfg(timezone_from_env=False)
+    monkeypatch.setattr(start, "reschedule_all", lambda: None)
+    try:
+        assert await start.adopt_owner_language("en")
+        assert settings_service.timezone() == "UTC"
+    finally:
+        await settings_service.set_timezone(None)
+        await settings_service.set_lang(None)
+        i18n.set_language("ru")

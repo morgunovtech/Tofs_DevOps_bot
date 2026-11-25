@@ -4,7 +4,7 @@
 
 🇷🇺 [По-русски](README.ru.md) · [Everything it does](docs/FEATURES.en.md) · [Why (RU)](docs/WHY.md) · [Setup click by click (RU)](docs/SETUP.md)
 
-**Speaks Russian or English.** `BOT_LANG=ru` (the default) or `BOT_LANG=en` sets the language of every screen, alert and report — one variable, nothing else to translate. What your visitors see — the status page, its badges and the feedback widget — has its own switch (`STATUS_PAGE_LANG=en`; the widget follows the language of the page). With `BOT_LANG=en` the default time zone is UTC instead of Moscow. The screenshots below show the Russian bot; the English one says the same with **🏠 Home**, **📖 What I do**, **❓ Icons**.
+**Speaks Russian or English.** The bot takes the language from your Telegram at the first `/start`: Russian stays Russian, any other becomes English — every screen, alert and report. `BOT_LANG=ru` or `BOT_LANG=en` fixes it beforehand, and «⚙️ Настройки → 🛠 Тонкие настройки» changes it at any time. What your visitors see — the status page, its badges and the feedback widget — has its own switch (`STATUS_PAGE_LANG=en`; the widget follows the language of the page). An English bot starts on UTC instead of Moscow time unless `TIMEZONE` says otherwise. The screenshots below show the Russian bot; the English one says the same with **🏠 Home**, **📖 What I do**, **❓ Icons**.
 
 Made for people who have never heard of DNS or a 502. Three buttons under the input field: **🏠 Главная** (the main screen answers «is everything OK?»), **📖 Что я умею**, **❓ Значки**; every site has its own card. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
 

@@ -1461,6 +1461,7 @@ STRINGS: dict[str, str] = {
     ", без своего названия": ", no title of its own",
     "🗣 Язык бота: {lang} — {where}": "🗣 Bot language: {lang} — {where}",
     "🗣 Язык бота": "🗣 Bot language",
+    "🗣 Говорю по-английски, как твой Telegram. Русский — кнопка ниже.": "🗣 I speak English, as your Telegram does. For Russian, use the button below.",
     "🗣 Русский": "🗣 Russian",
     "🗣 Язык бота: <b>{lang}</b> — {src}.": "🗣 Bot language: <b>{lang}</b> — {src}.",
     "Проверка сайтов": "Site checks",

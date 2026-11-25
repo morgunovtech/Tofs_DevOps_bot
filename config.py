@@ -246,7 +246,12 @@ class Config:
     evening_report_hour: int = _int("EVENING_REPORT_HOUR", 21, *HOURS)
     weekly_report_hour: int = _int("WEEKLY_REPORT_HOUR", 11, *HOURS)
     lang: str = _LANG
+    # BOT_LANG left empty: the owner's Telegram language decides at the first
+    # /start (handlers.start.adopt_owner_language) — Russian stays, any other
+    # becomes English, and the default time zone follows unless TIMEZONE is set.
+    lang_from_env: bool = os.getenv("BOT_LANG", "").strip().lower() in i18n.LANGUAGES
     timezone: str = _timezone("TIMEZONE", DEFAULT_TIMEZONE[_LANG])
+    timezone_from_env: bool = bool(os.getenv("TIMEZONE", "").strip())
     webhook_port: int = _port("WEBHOOK_PORT", 8080)
     # Raw env values; services.secrets replaces empty/placeholder values
     # with generated ones persisted in the DB.

@@ -12,7 +12,7 @@ TofsDevOps is a self-hosted Telegram bot that watches your websites: uptime, SSL
 
 ## About Hosting TofsDevOps
 
-The template deploys one service built from the open-source repository, with a volume at `/app/data` for its SQLite database and a public domain for the status page, heartbeats and the feedback widget. You fill in one field: the bot token from @BotFather. Then you send the bot `/start` in Telegram — the first person to do so becomes its owner — and add your first site right in the chat. Every other connection (Cloudflare, GitHub, Search Console, Bing, Yandex, an external watchdog) is optional and is set up in the chat, not in Railway variables. The bot speaks Russian by default; add the variable `BOT_LANG=en` for English. It uses about $2 of resources a month, which the Hobby plan covers.
+The template deploys one service built from the open-source repository, with a volume at `/app/data` for its SQLite database and a public domain for the status page, heartbeats and the feedback widget. You fill in one field: the bot token from @BotFather. Then you send the bot `/start` in Telegram — the first person to do so becomes its owner — and add your first site right in the chat. Every other connection (Cloudflare, GitHub, Search Console, Bing, Yandex, an external watchdog) is optional and is set up in the chat, not in Railway variables. The bot speaks English or Russian and picks the language from your Telegram at the first `/start`. It uses about $2 of resources a month, which the Hobby plan covers.
 
 ## Common Use Cases
 
