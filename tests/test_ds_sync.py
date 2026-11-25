@@ -50,12 +50,12 @@ def test_check_and_write_do_what_they_did(repo, monkeypatch, capsys):
     fetched = []
     new = CSS + b"/* v2 */\n"
 
-    def fetch(url):
-        fetched.append(url)
+    def fetch(host, rel):
+        fetched.append((host, rel))
         return new
     monkeypatch.setattr(ds_sync, "fetch", fetch)
     assert _run(path, "--write") == 0
-    assert fetched == ["https://s.morgunov.tech/ds/v1/tokens.css"]
+    assert fetched == [("s.morgunov.tech", "ds/v1/tokens.css")]
     assert (repo / "web" / "copy" / "ds" / "v1" / "tokens.css").read_bytes() == new
     assert json.loads((repo / "web" / "ds.json").read_text("utf-8"))["files"] == {
         "ds/v1/tokens.css": ds_sync.short_hash(new)}
@@ -78,7 +78,7 @@ def test_the_manifest_must_be_a_json_file_inside_the_repository(repo, tmp_path):
 @pytest.mark.parametrize("rel", ["../../../outside.css", "/etc/cron.d/x", "ds/../../x.css", "ds//x.css", "",
                                  "ds/./x.css", "..", "ds\\x.css", "ds/x.css?v=1", "ds/x.css#a", ".hidden/x.css"])
 def test_a_listed_file_cannot_leave_the_root(repo, tmp_path, monkeypatch, rel):
-    monkeypatch.setattr(ds_sync, "fetch", lambda url: pytest.fail(f"fetched {url}"))
+    monkeypatch.setattr(ds_sync, "fetch", lambda *a: pytest.fail(f"fetched {a}"))
     path = _manifest(repo, files={"ds/v1/tokens.css": "00000000", rel: "00000000"})
     for mode in ("--check", "--write"):
         with pytest.raises(SystemExit, match="plain names"):
@@ -90,7 +90,7 @@ def test_a_listed_file_cannot_leave_the_root(repo, tmp_path, monkeypatch, rel):
 def test_a_symlink_inside_the_root_does_not_lead_out(repo, tmp_path, monkeypatch):
     (tmp_path / "elsewhere").mkdir()
     (repo / "web" / "copy" / "out").symlink_to(tmp_path / "elsewhere")
-    monkeypatch.setattr(ds_sync, "fetch", lambda url: CSS)
+    monkeypatch.setattr(ds_sync, "fetch", lambda host, rel: CSS)
     with pytest.raises(SystemExit, match="leaves"):
         _run(_manifest(repo, files={"out/x.css": "00000000"}), "--write")
     assert not (tmp_path / "elsewhere" / "x.css").exists()
@@ -106,15 +106,18 @@ def test_the_root_stays_inside_the_manifests_directory(repo, root):
                                     "https://s.morgunov.tech@example.com", "https://s.morgunov.tech.example.com",
                                     "file:///etc", "https://169.254.169.254", "https://s.morgunov.tech/ds/..", ""])
 def test_only_the_allowed_origin_is_fetched(repo, monkeypatch, origin):
-    monkeypatch.setattr(ds_sync, "fetch", lambda url: pytest.fail(f"fetched {url}"))
+    monkeypatch.setattr(ds_sync, "fetch", lambda *a: pytest.fail(f"fetched {a}"))
     with pytest.raises(SystemExit, match="origin"):
         _run(_manifest(repo, origin=origin), "--write")
 
 
 def test_fetch_itself_refuses_other_addresses_and_redirects_to_them():
-    for url in ("http://s.morgunov.tech/ds/v1/tokens.css", "https://example.com/x", "file:///etc/passwd"):
+    for host in ("example.com", "169.254.169.254", "s.morgunov.tech@example.com", "s.morgunov.tech:8443", ""):
         with pytest.raises(SystemExit, match="only https://"):
-            ds_sync.fetch(url)
+            ds_sync.fetch(host, "ds/v1/tokens.css")
+    for rel in ("../x.css", "ds/v1/tokens.css?x=1", "//example.com/x", "ds/../../x"):
+        with pytest.raises(SystemExit, match="plain names"):
+            ds_sync.fetch("s.morgunov.tech", rel)
     handler = ds_sync.SameOriginRedirects()
     request = urllib.request.Request("https://s.morgunov.tech/ds/v1/tokens.css")
     for target in ("http://169.254.169.254/latest/meta-data/", "https://example.com/tokens.css",

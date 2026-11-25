@@ -35,7 +35,7 @@ import re
 import sys
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 TIMEOUT_SEC = 30
 # The repository this copy of the script lives in (scripts/ds_sync.py): the
@@ -77,13 +77,18 @@ def file_path(root: Path, rel: str) -> Path:
     return inside(root, rel, "file")
 
 
-def origin_of(manifest: dict) -> str:
-    """https://<allowed host> and nothing else: no port, login, path or query."""
+def origin_host(manifest: dict) -> str:
+    """The manifest's origin must be https://<allowed host> and nothing else
+    (no port, login, path or query). What is returned is the allow-list's own
+    entry, not the manifest's text: the address fetched is built from
+    constants."""
     origin = str(manifest.get("origin", "")).rstrip("/")
     parts = urlsplit(origin)
-    if parts.scheme != "https" or parts.netloc not in ALLOWED_ORIGINS or parts.path or parts.query or parts.fragment:
-        raise SystemExit(f"origin {origin!r}: expected https:// on one of {sorted(ALLOWED_ORIGINS)}")
-    return origin
+    if parts.scheme == "https" and not (parts.path or parts.query or parts.fragment):
+        for host in ALLOWED_ORIGINS:
+            if host == parts.netloc:
+                return host
+    raise SystemExit(f"origin {origin!r}: expected https:// on one of {sorted(ALLOWED_ORIGINS)}")
 
 
 def load(manifest_path: Path) -> tuple[dict, Path]:
@@ -127,9 +132,16 @@ class SameOriginRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, allowed_url(newurl))
 
 
-def fetch(url: str) -> bytes:
-    request = urllib.request.Request(allowed_url(url),
-                                     headers={"User-Agent": "ds-sync (+https://s.morgunov.tech/ds/v1/USAGE.md)"})
+def fetch(host: str, rel: str) -> bytes:
+    """https://<host>/<rel>: the host from the allow-list, the path made of
+    checked plain names, each percent-encoded."""
+    if host not in ALLOWED_ORIGINS:
+        raise SystemExit(f"{host}: only https:// on {sorted(ALLOWED_ORIGINS)} is fetched")
+    names = rel.split("/")
+    if not all(SEGMENT.fullmatch(name) for name in names):
+        raise SystemExit(f"file {rel!r}: a relative path of plain names is expected (ds/v1/tokens.css)")
+    url = f"https://{host}/" + "/".join(quote(name, safe="") for name in names)
+    request = urllib.request.Request(url, headers={"User-Agent": "ds-sync (+https://s.morgunov.tech/ds/v1/USAGE.md)"})
     with urllib.request.build_opener(SameOriginRedirects).open(request, timeout=TIMEOUT_SEC) as response:
         if response.status != 200:
             raise SystemExit(f"{url}: HTTP {response.status}")
@@ -138,12 +150,12 @@ def fetch(url: str) -> bytes:
 
 def write(manifest_path: Path) -> int:
     manifest, root = load(manifest_path)
-    origin = origin_of(manifest)
+    host = origin_host(manifest)
     # Every path is checked before the first request: a bad entry writes nothing.
     paths = {rel: file_path(root, rel) for rel in manifest["files"]}
     changes = []
     for rel, old in manifest["files"].items():
-        data = fetch(f"{origin}/{rel}")
+        data = fetch(host, rel)
         new = short_hash(data)
         path = paths[rel]
         if path.is_file() and path.read_bytes() == data and old == new:
