@@ -171,7 +171,7 @@ main.py                 точка входа: БД → сервисы → ве�
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # дев-инструменты, тоже lock с хешами
 pip install --require-hashes --no-deps -r requirements.txt   # ровно то, что в образе
 ruff check .          # линтер + порядок импортов
 pytest -q             # без сети и без Telegram
@@ -196,7 +196,22 @@ python3.12 -m venv /tmp/piptools && /tmp/piptools/bin/pip install pip-tools
 /tmp/piptools/bin/pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in
 ```
 
-Еженедельный PR Dependabot делает это сам; если он обновил только `requirements.in`,
+Дев-инструменты (pytest, pytest-asyncio, ruff, pip-audit) устроены так же: 4 пина
+в `requirements-dev.in`, а `requirements-dev.txt` — такой же lock с хешами (33 пакета),
+собранный под Python 3.12. Один lock служит всем трём версиям матрицы: у этих пакетов
+нет зависимостей, которые нужны только на 3.13 или 3.14, а `pip check` в CI на каждой
+версии скажет, если такая появится. В образ дев-инструменты не попадают. Команда та же:
+
+```bash
+/tmp/piptools/bin/pip-compile --generate-hashes --strip-extras --output-file=requirements-dev.txt requirements-dev.in
+```
+
+В конце lock pip-compile предупреждает, что `pip` не закреплён (его тянет pip-audit):
+оба lock ставятся с `--no-deps`, поэтому pip остаётся тот, что уже стоит в окружении.
+Два lock собираются независимо: общий пакет (certifi, idna) может разойтись версией —
+вторым ставится `requirements.txt`, и тесты идут на версиях образа.
+
+Еженедельный PR Dependabot делает это сам для обоих lock; если он обновил только `.in`,
 CI покраснеет и PR подождёт человека — перегенерируй lock в его ветке той же командой.
 
 Аварийный путь: на aiohttp или pydantic вышла уязвимость, а свежую версию не
@@ -207,4 +222,4 @@ CI покраснеет и PR подождёт человека — переге
 `pip-audit … --ignore-vuln <ID>` с датой пересмотра в комментарии. Цена —
 комбинация, которую aiogram не тестировал.
 
-CI (ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict` для lock и для дев-инструментов; на ноге 3.13 — сборка образа и его запуск: `id -u` = 10001, `import main` и настоящий старт с заглушкой вместо Telegram до `GET /health` → 200 (`tests/smoke/start_image.sh`) внутри контейнера, в PR ещё и сборка под arm64) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io, причём `:latest` получает только прогон самого нового коммита `main` — повторный запуск старого прогона его не откатит. Actions закреплены по SHA коммита, базовый образ — по digest; Dependabot двигает и то и другое. Отдельный шаг «versions aiogram keeps out» предупреждает (не роняя сборку), когда свежий aiohttp или pydantic отрезан верхней границей aiogram. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.
+CI (оба lock ставятся с `--require-hashes --no-deps --only-binary :all:`; ruff, pytest на Python 3.12, 3.13 и 3.14, `pip-audit --strict` для lock и для дев-инструментов; на ноге 3.13 — сборка образа и его запуск: `id -u` = 10001, `import main` и настоящий старт с заглушкой вместо Telegram до `GET /health` → 200 (`tests/smoke/start_image.sh`) внутри контейнера, в PR ещё и сборка под arm64) запускается на каждый PR и на push в `main`; зелёный `main` публикует образ в ghcr.io, причём `:latest` получает только прогон самого нового коммита `main` — повторный запуск старого прогона его не откатит. Actions закреплены по SHA коммита, базовый образ — по digest; Dependabot двигает и то и другое. Отдельный шаг «versions aiogram keeps out» предупреждает (не роняя сборку), когда свежий aiohttp или pydantic отрезан верхней границей aiogram. Dependabot по субботам в 13:00 (Europe/Moscow) открывает один сгруппированный PR для библиотек Python, раз в месяц — для базового образа и Actions; версия попадает в PR не раньше чем через 7 дней после выхода (мажорная — через 30). Автомерж сам ждёт все проверки «lint · test · audit» и вливает только патчи и минорные обновления библиотек Python — ровно тот коммит, который проверили тесты; базовый образ, Actions и мажорные версии ждут человека. Настраивать репозиторий не нужно; если нужно правило ветки — требуй «lint · test · audit (3.12)», «(3.13)» и «(3.14)». Контейнер работает от непривилегированного пользователя; `entrypoint.sh` сначала чинит владельца data-тома.

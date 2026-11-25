@@ -42,6 +42,15 @@ def test_the_lock_is_compiled_from_requirements_in():
     assert len(lock) > len(direct) and "--hash=sha256:" in (ROOT / "requirements.txt").read_text()
 
 
-def test_the_dev_tools_are_pinned():
-    lines = [line.split("#")[0].strip() for line in (ROOT / "requirements-dev.txt").read_text().splitlines()]
+def test_the_dev_tools_lock_is_compiled_from_requirements_dev_in():
+    """The same pair for the tools CI runs: exact pins in requirements-dev.in,
+    every package pinned and hashed in requirements-dev.txt — pip refuses a
+    --require-hashes install otherwise, but only in CI."""
+    lines = [line.split("#")[0].strip() for line in (ROOT / "requirements-dev.in").read_text().splitlines()]
     assert all("==" in line for line in lines if line), lines
+    direct, text = _pins(ROOT / "requirements-dev.in"), (ROOT / "requirements-dev.txt").read_text()
+    lock = _pins(ROOT / "requirements-dev.txt")
+    assert direct and {name: lock.get(name) for name in direct} == direct
+    assert len(lock) > len(direct)
+    # Every pinned package carries a hash: an entry is «name==x \» + hash lines.
+    assert all(entry.count("--hash=sha256:") for entry in re.split(r"(?m)^(?=[A-Za-z0-9])", text)[1:])

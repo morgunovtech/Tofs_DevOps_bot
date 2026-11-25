@@ -276,7 +276,7 @@ A note on the feedback widget's security model: the widget's "secret" ships to e
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # the dev tools, a hashed lock too
 pip install --require-hashes --no-deps -r requirements.txt   # exactly what the image gets
 ruff check .          # lint + import order
 pytest -q             # no network, no Telegram
@@ -287,6 +287,10 @@ Direct versions live in `requirements.in`; `requirements.txt` is the lock
 generated from it (every package, transitive ones included, with hashes;
 compiled under Python 3.12). After changing a pin, regenerate it with
 `pip-compile --generate-hashes --strip-extras --output-file=requirements.txt requirements.in`
-(pip-tools) — the weekly Dependabot PR does this itself.
+(pip-tools) — the weekly Dependabot PR does this itself. The dev tools (pytest,
+pytest-asyncio, ruff, pip-audit) work the same way: pins in `requirements-dev.in`,
+the hashed lock in `requirements-dev.txt`, the same command with those two names.
+One lock compiled under 3.12 serves 3.13 and 3.14 as well; `pip check` in CI says
+on each version if that stops being true.
 
-CI (ruff, pytest on Python 3.12, 3.13 and 3.14, `pip-audit --strict` for the lock and for the dev tools; on the 3.13 leg the image is built and run — `id -u` = 10001, `import main` inside the container and a real start against a stand-in for Telegram until `GET /health` answers 200 (`tests/smoke/start_image.sh`) — and, in a PR, built for arm64 too) runs on every PR and on every push to `main`; a green `main` publishes the image to ghcr.io, and `:latest` goes only to the run of the newest `main` commit — re-running an older run cannot move it back. The Actions are pinned by commit SHA and the base image by digest; Dependabot moves both. A separate step, «versions aiogram keeps out», warns (without failing the build) when a fresh aiohttp or pydantic is kept out by aiogram's upper bound. Dependabot files one grouped PR for the Python libraries every Saturday at 13:00 (Europe/Moscow) and monthly PRs for the base image and the Actions; a version reaches a PR no sooner than 7 days after its release (a major one — 30). The auto-merge waits for every «lint · test · audit» check itself and merges only patch and minor updates of the Python libraries — exactly the commit the tests checked; the base image, the Actions and major versions wait for a human. Nothing has to be configured in the repository; if you want a branch rule, require «lint · test · audit (3.12)», «(3.13)» and «(3.14)». The container runs as an unprivileged user; `entrypoint.sh` fixes the data volume's ownership first.
+CI (both locks installed with `--require-hashes --no-deps --only-binary :all:`; ruff, pytest on Python 3.12, 3.13 and 3.14, `pip-audit --strict` for the lock and for the dev tools; on the 3.13 leg the image is built and run — `id -u` = 10001, `import main` inside the container and a real start against a stand-in for Telegram until `GET /health` answers 200 (`tests/smoke/start_image.sh`) — and, in a PR, built for arm64 too) runs on every PR and on every push to `main`; a green `main` publishes the image to ghcr.io, and `:latest` goes only to the run of the newest `main` commit — re-running an older run cannot move it back. The Actions are pinned by commit SHA and the base image by digest; Dependabot moves both. A separate step, «versions aiogram keeps out», warns (without failing the build) when a fresh aiohttp or pydantic is kept out by aiogram's upper bound. Dependabot files one grouped PR for the Python libraries every Saturday at 13:00 (Europe/Moscow) and monthly PRs for the base image and the Actions; a version reaches a PR no sooner than 7 days after its release (a major one — 30). The auto-merge waits for every «lint · test · audit» check itself and merges only patch and minor updates of the Python libraries — exactly the commit the tests checked; the base image, the Actions and major versions wait for a human. Nothing has to be configured in the repository; if you want a branch rule, require «lint · test · audit (3.12)», «(3.13)» and «(3.14)». The container runs as an unprivileged user; `entrypoint.sh` fixes the data volume's ownership first.

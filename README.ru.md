@@ -181,7 +181,7 @@ Railway: деплой откатывается в панели Railway (Deployme
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # дев-инструменты, тоже lock с хешами
 pip install --require-hashes --no-deps -r requirements.txt   # ровно то, что в образе
 ruff check .
 pytest -q             # без сети и без Telegram

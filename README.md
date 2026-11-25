@@ -181,7 +181,7 @@ Addresses of your sites go to a few free public services; each line can be switc
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install --require-hashes --no-deps -r requirements-dev.txt   # the dev tools, a hashed lock too
 pip install --require-hashes --no-deps -r requirements.txt   # exactly what the image gets
 ruff check .
 pytest -q             # no network, no Telegram
