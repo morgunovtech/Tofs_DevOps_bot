@@ -757,7 +757,7 @@ def _guide_kb(*buttons: tuple[str, str], recheck: bool = False) -> InlineKeyboar
 async def cb_guide_url(call: CallbackQuery):
     await ack(call)
     if config.on_railway:
-        text = (t("🌍 Публичный адрес на Railway\n\n1. Открой сервис → <b>Settings → Networking → Generate Domain</b>, порт <b>8080</b>.\n2. Railway передеплоит бота, и адрес подхватится сам — переменная PUBLIC_BASE_URL не нужна.\n3. Нажми «🔄 Проверить снова»."))
+        text = (t("🌍 Публичный адрес на Railway\n\n1. Открой сервис → <b>Settings → Networking → Generate Domain</b>, порт <b>{webhook_port}</b>.\n2. Railway передеплоит бота, и адрес подхватится сам — переменная PUBLIC_BASE_URL не нужна.\n3. Нажми «🔄 Проверить снова».").format(webhook_port=config.webhook_port))
     else:
         text = (t("🌍 Публичный адрес\n\n1. Поставь перед ботом reverse proxy с TLS (Caddy, nginx или Cloudflare Tunnel) на 127.0.0.1:{webhook_port}. Голый проброс порта не подходит: секрет heartbeat пойдёт открытым текстом, а виджет на https-сайте браузер заблокирует.\n2. Пропиши в .env: <code>PUBLIC_BASE_URL=https://bot.example.com</code> и <code>TRUST_PROXY=1</code>.\n3. Перезапусти бота и нажми «🔄 Проверить снова».\n\nПошагово — README.ru.md, раздел «Публичный адрес на своём сервере».").format(webhook_port=config.webhook_port))
     await render(call, text, _guide_kb(recheck=True))

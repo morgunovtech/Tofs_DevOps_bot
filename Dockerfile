@@ -21,9 +21,11 @@ WORKDIR /app
 
 # Install Python deps first (better layer caching).
 COPY requirements.txt .
-# Exactly the locked versions, each checked against its hash; -B keeps pip's
-# own bytecode out of the layer.
-RUN python -B -m pip install --no-cache-dir --require-hashes --no-deps -r requirements.txt
+# Exactly the locked versions, each checked against its hash, wheels only: a
+# source archive would run its build script as root here (and there is no
+# compiler) — a dependency without a wheel for this Python fails the build
+# instead. -B keeps pip's own bytecode out of the layer.
+RUN python -B -m pip install --no-cache-dir --only-binary :all: --require-hashes --no-deps -r requirements.txt
 
 COPY . .
 # The code stays root's: the bot (uid 10001) must not be able to rewrite what

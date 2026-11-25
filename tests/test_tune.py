@@ -83,10 +83,19 @@ async def test_the_screen_lists_every_dial_and_its_source(db):
     assert "🌐 Статус-страница: по-русски, без своего названия — из .env" in text
     assert "🗣 Язык бота: русский — из .env" in text
     assert "Только на сервере (.env):" in text and "ALLOW_PRIVATE_TARGETS" in text and "TELEGRAM_PROXY" in text
+    assert "TELEGRAM_API_URL" not in text                       # api.telegram.org: nothing to say
     labels = buttons(call.message.reply_markup)
     assert labels[0] == "⏱ Проверка сайтов" and labels[-3:] == ["🌐 Статус-страница", "🗣 Язык бота", "← Настройки"]
     # The hub says at a glance whether anything differs from the server.
     assert "всё из .env" in await settings_screen.hub_text()
+
+
+async def test_the_screen_names_an_own_bot_api_server(db, cfg):
+    cfg(telegram_api_url="http://bot-api.internal:8081")
+    call = FakeCall("menu_tune")
+    await tune.cb_tune(call)
+    assert ("• сервер Bot API: http://bot-api.internal:8081 вместо api.telegram.org — TELEGRAM_API_URL"
+            in call.message.texts[-1])
 
 
 async def test_a_dial_screen_offers_values_marks_the_current_and_refuses_the_rest(db):

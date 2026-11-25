@@ -121,6 +121,8 @@ def _server_only() -> list[str]:
             v=t("вкл") if config.dependency_watch else t("выкл")),
         t("• прокси для Telegram: {v} — TELEGRAM_PROXY").format(
             v=esc(proxy_label(config.telegram_proxy)) if config.telegram_proxy else t("нет")),
+        *([t("• сервер Bot API: {v} вместо api.telegram.org — TELEGRAM_API_URL").format(
+            v=esc(config.telegram_api_url))] if config.telegram_api_url else []),
     ]
 
 

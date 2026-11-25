@@ -173,7 +173,9 @@ _RULES: list[tuple[re.Pattern, Callable[[re.Match], Phrase]]] = [
     (re.compile(r"no route to host|network is unreachable|host is unreachable", re.I),
      _plain("сервер недоступен: до него нет маршрута")),
     (re.compile(r"connect call failed|cannot connect to host", re.I), _plain("не удалось соединиться с сервером")),
-    (re.compile(r"^server disconnected|connection reset by peer", re.I), _plain("сервер оборвал соединение")),
+    # The anchor is for the first alternative only: aiohttp's whole message is
+    # «Server disconnected», the errno's words come after «[Errno 104] ».
+    (re.compile(r"(?:^server disconnected)|connection reset by peer", re.I), _plain("сервер оборвал соединение")),
     (re.compile(r"response payload is not completed", re.I), _plain("ответ оборвался на середине")),
     (re.compile(r"too many redirects", re.I), _plain("адрес перенаправляет по кругу")),
     # aiohttp ClientResponseError / TooManyRedirects: «0, message='', url='…?token=…'»

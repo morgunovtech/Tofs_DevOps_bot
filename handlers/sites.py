@@ -1206,6 +1206,13 @@ async def _restore_db(path: str) -> str:
     return (t("✅ Восстановил из копии: активных сайтов {n}. Прежняя база сохранена рядом: {basename}. Проверки продолжаются.").format(n=n, basename=esc(os.path.basename(bak))))
 
 
+def _read_file(path: str, limit: int = -1) -> bytes:
+    """Blocking; the handlers call it through asyncio.to_thread — an upload
+    is up to 20 MB, and the disk under a volume may be slow."""
+    with open(path, "rb") as f:
+        return f.read(limit)
+
+
 def _drop_upload(pending: dict | None):
     if pending and pending.get("path"):
         with contextlib.suppress(FileNotFoundError):
@@ -1301,8 +1308,7 @@ async def _offer_restore(message: Message, doc, state: FSMContext):
         _drop_upload({"path": path})
         await message.answer(t("Не смог скачать файл из Telegram ({e}). Пришли его ещё раз.").format(e=esc(e)))
         return
-    with open(path, "rb") as f:
-        head = f.read(16)
+    head = await asyncio.to_thread(_read_file, path, 16)
     name = doc.file_name or t("файл")
     if head.startswith(b"SQLite format 3"):
         try:
@@ -1344,8 +1350,7 @@ async def cb_restore(call: CallbackQuery, state: FSMContext):
         if pending["kind"] == "db":
             text = await _restore_db(pending["path"])
         else:
-            with open(pending["path"], "rb") as f:
-                text = await _restore_bytes(f.read())
+            text = await _restore_bytes(await asyncio.to_thread(_read_file, pending["path"]))
         await render(call, text, back_button())
     finally:
         _drop_upload(pending)

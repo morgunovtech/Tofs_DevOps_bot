@@ -232,6 +232,22 @@ def proxy_problem(url: str) -> str | None:
     return None
 
 
+def api_url_problem(url: str) -> str | None:
+    """None when TELEGRAM_API_URL can be used (http(s)://host[:port], nothing
+    else), otherwise what is wrong. A login, a path or a query would end up in
+    every request line next to the token."""
+    try:
+        p = urlparse(url)
+        _ = p.port                              # raises on «:abc»
+    except ValueError:
+        return "адрес записан с ошибкой — нужен вид http://host:8081"
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return "нужен адрес вида http://host:8081 или https://host"
+    if p.username or p.password or p.path.strip("/") or p.query or p.fragment:
+        return "только схема, сервер и порт (http://host:8081) — без логина, пути и параметров"
+    return None
+
+
 def proxy_label(url: str) -> str:
     """scheme://host:port — for logs and screens, never the login or password."""
     p = urlparse(url)
