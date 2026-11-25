@@ -170,6 +170,15 @@ _BUMP = re.compile(r"bump (\S+) from (\d++)(\S*) to (\d+)(\S*)", re.I)
 # in its text: «Updates `aiogram` from 3.31.0 to 4.0.0».
 _UPDATES = re.compile(r"Updates `([^`]+)` from (\d++)(\S*) to (\d+)(\S*)")
 _MAJOR_MARK = re.compile(r"update-type:\s*version-update:semver-major")
+# A new build of the same base image: the tag stays, the digest moves, and
+# Dependabot names the short digests — «Bump python from `9aaa474` to
+# `22eafb3`». The auto-merge workflow takes such a PR once CI is green.
+_DIGEST_BUMP = re.compile(r"bump (\S+) from `([0-9a-f]{7,64})` to `([0-9a-f]{7,64})`", re.I)
+
+
+def is_digest_bump(title: str) -> bool:
+    """Only the base image's digest changed (same tag, same Python minor)."""
+    return bool(_DIGEST_BUMP.fullmatch(title.strip()))
 
 
 def _bumps(title: str, body: str = "") -> list[tuple[str, str, str, bool]]:
@@ -188,6 +197,8 @@ def is_major_bump(title: str, body: str = "") -> bool:
 def short_bump(title: str, body: str = "") -> str:
     """«aiogram 3.31.0→4.0.0»; a group PR lists its updates, majors first."""
     bumps = sorted(_bumps(title, body), key=lambda b: not b[3])   # majors first
+    if not bumps and (m := _DIGEST_BUMP.fullmatch(title.strip())):
+        return f"{m.group(1)} {m.group(2)[:7]}→{m.group(3)[:7]}"
     if not bumps:
         return title[:60]
     return ", ".join(f"{name} {old}→{new}" for name, old, new, _ in bumps[:2]) + ("…" if len(bumps) > 2 else "")
@@ -242,8 +253,9 @@ def _is_dependabot(author) -> bool:
 
 
 async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
-    """Dependabot PRs that wait for a human: major bumps and base-image bumps
-    (never auto-merged) and pip ones still open after STUCK_AFTER (auto-merge
+    """Dependabot PRs that wait for a human: major bumps, a new Python in the
+    base image and the Actions (never auto-merged), and pip bumps or a new
+    build of the same base image still open after STUCK_AFTER (auto-merge
     waits for a green CI, so the tests failed). None when GitHub did not
     answer — «unknown» is not «none waiting»."""
     slug = repo_slug()
@@ -261,11 +273,13 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
         body = str((pr or {}).get("body") or "")
         if not _is_dependabot(author):
             continue
-        # The base image (a new Python) and the Actions are merged by a human,
-        # whatever their CI says (.github/workflows/dependabot-automerge.yml);
-        # a major bump too — alone or inside the weekly group PR.
+        # A new Python in the base image and the Actions are merged by a
+        # human, whatever their CI says (.github/workflows/dependabot-automerge.yml);
+        # a major bump too — alone or inside the weekly group PR. A new build
+        # of the same base image merges itself, like a pip patch.
         branch = str(((pr or {}).get("head") or {}).get("ref") or "")
-        manual = is_major_bump(title, body) or branch.startswith(("dependabot/docker/", "dependabot/github_actions/"))
+        new_python = branch.startswith("dependabot/docker/") and not is_digest_bump(title)
+        manual = is_major_bump(title, body) or new_python or branch.startswith("dependabot/github_actions/")
         try:
             opened = datetime.fromisoformat(str(pr.get("created_at")).replace("Z", "+00:00"))
         except ValueError:
