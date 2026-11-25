@@ -25,7 +25,7 @@ from urllib.parse import quote
 import aiohttp
 
 from services import integrations
-from utils.i18n import t
+from utils.i18n import language, t
 from utils.text import err_text
 from utils.urls import host_of
 
@@ -42,6 +42,12 @@ _TIMEOUT = aiohttp.ClientTimeout(total=30, sock_connect=10)
 FAIL_PAUSE = 300
 # What URL Inspection may say about the index; anything else is «no verdict».
 VERDICTS = ("PASS", "FAIL", "NEUTRAL")
+# Severity of a structured-data remark (RichResultsIssue.severity); anything
+# else Google may send (SEVERITY_UNSPECIFIED) is kept as the milder one.
+SEVERITIES = {"ERROR": "error", "WARNING": "warning"}
+# Google translates issueMessage into the language asked for (languageCode,
+# BCP-47; en-US when not given).
+LANGUAGE_CODES = {"ru": "ru-RU"}
 # who: the key the token was issued for — a new key gets a new token.
 _token_cache: dict = {"token": None, "exp": 0.0, "who": None, "fail_until": 0.0}
 
@@ -184,11 +190,36 @@ async def search_totals(start: str, end: str,
         return None
 
 
+def rich_issues(inspection: dict | None) -> list[dict]:
+    """Google's remarks on the page's structured data, from the same URL
+    Inspection answer: inspectionResult.richResultsResult.detectedItems[]
+    {richResultType, items[] {name, issues[] {issueMessage, severity}}}.
+    → [{type, message, severity: «error» | «warning»}], one per remark
+    however many items carry it, errors first. The section is absent when
+    Google found no rich results on the page — that is «no remarks»."""
+    rich = (inspection or {}).get("richResultsResult")
+    found: dict[tuple, dict] = {}
+    for group in (rich.get("detectedItems") if isinstance(rich, dict) else None) or []:
+        if not isinstance(group, dict):
+            continue
+        kind = str(group.get("richResultType") or "?")
+        for item in group.get("items") or []:
+            for issue in (item.get("issues") if isinstance(item, dict) else None) or []:
+                message = str(issue.get("issueMessage") or "").strip() if isinstance(issue, dict) else ""
+                if not message:
+                    continue
+                severity = SEVERITIES.get(str(issue.get("severity")), "warning")
+                found.setdefault((severity, kind, message), {"type": kind, "message": message, "severity": severity})
+    return [found[k] for k in sorted(found)]
+
+
 async def inspect_url(page_url: str) -> dict | None:
     """URL Inspection: is the page actually in Google's index?
-    Returns {verdict, coverage, last_crawl} — verdict PASS means
-    indexed/indexable; None when there is no verdict (an answer without
-    one is not «removed from the index»)."""
+    Returns {verdict, coverage, last_crawl, …, rich_issues} — verdict PASS
+    means indexed/indexable; None when there is no verdict (an answer
+    without one is not «removed from the index»). rich_issues: what Google
+    says about the page's structured data (see rich_issues()) — the same
+    call, no second request."""
     if not available():
         return None
     try:
@@ -198,7 +229,8 @@ async def inspect_url(page_url: str) -> dict | None:
                 return None
             async with session.post(
                 INSPECT_URL,
-                json={"inspectionUrl": page_url, "siteUrl": integrations.gsc_property()},
+                json={"inspectionUrl": page_url, "siteUrl": integrations.gsc_property(),
+                      "languageCode": LANGUAGE_CODES.get(language(), "en-US")},
                 headers={"Authorization": f"Bearer {token}"},
             ) as resp:
                 data = await resp.json(content_type=None)
@@ -208,7 +240,8 @@ async def inspect_url(page_url: str) -> dict | None:
                                                      refused=resp.status in (401, 403))
                     return None
         await integrations.record_result("gsc", True)
-        idx = ((data.get("inspectionResult") if isinstance(data, dict) else None) or {}).get("indexStatusResult") or {}
+        result = (data.get("inspectionResult") if isinstance(data, dict) else None) or {}
+        idx = result.get("indexStatusResult") or {}
         verdict = idx.get("verdict")
         if verdict not in VERDICTS:
             logger.warning("GSC inspect of %s: no verdict (%s)", page_url, verdict)
@@ -220,6 +253,7 @@ async def inspect_url(page_url: str) -> dict | None:
             # The page the owner names as the main copy, and the one Google chose.
             "user_canonical": idx.get("userCanonical"),
             "google_canonical": idx.get("googleCanonical"),
+            "rich_issues": rich_issues(result),
         }
     except Exception as e:
         logger.warning("GSC inspect failed: %s", err_text(e))

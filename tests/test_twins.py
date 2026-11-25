@@ -95,6 +95,10 @@ def test_the_search_screen_says_it_in_words():
     assert lines[1] == ("📇 Google: главной копией считает https://shop-1x.pages.dev/, а страница называет "
                         "https://shop.ex.test/ 🟠")
     assert absent == ["Google"]
+    snap["google"]["rich_issues"] = [{"type": "Profile page", "message": "x", "severity": "warning"},
+                                     {"type": "Profile page", "message": "y", "severity": "error"}]
+    assert seo_screen.index_lines(snap, google_on=True, yandex_on=False)[0][2] == (
+        "📇 Google: в разметке страницы 1 ошибка и 1 предупреждение (Profile page) 🟠")
 
 
 async def test_google_choosing_another_main_copy_is_said_once(bot, db):

@@ -687,4 +687,6 @@ PLURALS: dict[str, tuple[str, str]] = {
     "изменение": ("change", "changes"),
     "опасное изменение": ("dangerous change", "dangerous changes"),
     "адрес": ("address", "addresses"),
+    "ошибка": ("error", "errors"),
+    "предупреждение": ("warning", "warnings"),
 }

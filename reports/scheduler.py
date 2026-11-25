@@ -1535,6 +1535,7 @@ async def run_index_checks():
             if google:
                 await _google_change(site, google)
                 await _google_canonical(site, google)
+                await _google_rich(site, google)
             if yandex:
                 await _yandex_change(site, yandex)
 
@@ -1626,6 +1627,87 @@ async def _google_canonical(site: dict, google: dict):
         if await notifier.send(t("✅ Google снова считает главной копией {label} адрес, который называет страница.").format(
                 label=label), Priority.NORMAL, site_id=site["id"]):
             await set_state(key, None)
+
+
+RICH_TEST = "https://search.google.com/test/rich-results"
+RICH_SHOWN = 5          # remarks quoted in one message; the rest is a count
+
+
+def _rich_state(raw: str | None) -> dict:
+    """{told: [«severity|type|message»], since: ISO} — what was said and when."""
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        data = {}
+    return data if isinstance(data, dict) and isinstance(data.get("told"), list) else {"told": []}
+
+
+def format_rich_alert(label: str, issues: list[dict]) -> str:
+    """Google's remarks on the page's structured data, by the alert anatomy:
+    headline → what it means → what it usually is → what to do → Google's
+    own words last. An ERROR stops the rich result, a WARNING trims it —
+    neither touches the index, so both are 🟠."""
+    error = index_status.rich_level(issues) == "error"
+    types = esc(index_status.rich_types(issues))
+    head = (t("🟠 Google нашёл ошибку в разметке {label}: {types}") if error
+            else t("🟠 Google нашёл недочёт в разметке {label}: {types}")).format(label=label, types=types)
+    meaning = (t("Это структурированные данные страницы (JSON-LD). Пока ошибка есть, Google не покажет страницу в "
+                 "поиске расширенным результатом этого типа. На индексацию и обычную выдачу это не влияет.") if error
+               else t("Это структурированные данные страницы (JSON-LD). Расширенный результат Google показать может, "
+                      "но без этих данных. На индексацию и обычную выдачу это не влияет."))
+    usual = t("Обычно это поле с неверным форматом (дата, адрес, число) или пропавшее после правки шаблона.")
+    steps = t("Что делать:\n• Исправь поле в разметке страницы — какое, сказано в строке ниже.\n"
+              "• Проверь страницу в Rich Results Test, потом в Search Console нажми «Проверить исправление».\n"
+              "Google обновит данные после переобхода — я скажу, когда замечаний не станет.")
+    words = {"error": t("ошибка"), "warning": t("предупреждение")}
+    tech = [f"{esc(i['type'])} · {words.get(i['severity'], words['warning'])}: {esc(i['message'])}"
+            for i in issues[:RICH_SHOWN]]
+    if len(issues) > RICH_SHOWN:
+        tech.append(t("и ещё {n}").format(n=len(issues) - RICH_SHOWN))
+    return f"{head}\n{meaning}\n{usual}\n\n{steps}\n\n<i>" + "\n".join(tech) + "</i>"
+
+
+async def _google_rich(site: dict, google: dict):
+    """Google's remarks on the structured data of the page (rich results),
+    from the same URL Inspection answer as the index verdict. One quiet 🟠
+    when a remark appears that was not said yet — the first look included;
+    nothing while the set only shrinks; one ✅ with how long it lasted when
+    Google has none left."""
+    site_id = site["id"]
+    key = f"gsc_rich:{site_id}"
+    prev = _rich_state(await get_state(key))
+    issues = [i for i in google.get("rich_issues") or [] if isinstance(i, dict) and i.get("message")]
+    current = sorted(f"{i['severity']}|{i['type']}|{i['message']}" for i in issues)
+    label = esc(site_label(site["url"]))
+    if not current:
+        if not prev["told"]:
+            return
+        since = _parse_iso(prev.get("since"))
+        lasted = (t(" Замечания висели {duration} (с {day}).").format(
+            duration=fmt_duration((datetime.now(UTC) - since).total_seconds() / 60),
+            day=index_status.fmt_day(prev.get("since"))) if since else "")
+        if await notifier.send(t("✅ Google больше не видит замечаний к разметке {label}.").format(label=label) + lasted
+                               + " " + t("Ничего делать не нужно."), Priority.NORMAL, site_id=site_id):
+            await set_state(key, None)
+        return
+    if set(current) <= set(prev["told"]):
+        if current != prev["told"]:                         # some are gone: one that returns is news again
+            await set_state(key, json.dumps({**prev, "told": current}, ensure_ascii=False))
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("🔎 Поиск и ИИ"), callback_data=f"seo_site:{site_id}"),
+         InlineKeyboardButton(text="↗️ Search Console", url="https://search.google.com/search-console")],
+        [InlineKeyboardButton(text="↗️ Rich Results Test", url=RICH_TEST)]])
+    if await notifier.send(format_rich_alert(label, issues), Priority.NORMAL, site_id=site_id, reply_markup=kb):
+        await set_state(key, json.dumps({"told": current, "since": prev.get("since") if prev["told"] else
+                                         datetime.now(UTC).isoformat(timespec="seconds")}, ensure_ascii=False))
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
 
 
 BING_PANEL = "https://www.bing.com/webmasters"

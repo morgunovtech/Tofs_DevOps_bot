@@ -78,6 +78,10 @@ def index_lines(snap: dict, google_on: bool, yandex_on: bool, bing_on: bool = Fa
             if not index_status.is_stale(g) and index_status.canonical_differs(g):
                 lines.append(t("📇 Google: главной копией считает {google}, а страница называет {user} 🟠").format(
                     google=esc(g["google_canonical"]), user=esc(g["user_canonical"])))
+            rich = g.get("rich_issues") or []
+            if rich and not index_status.is_stale(g):
+                lines.append(t("📇 Google: в разметке страницы {words} ({types}) 🟠").format(
+                    words=index_status.rich_count_words(rich), types=esc(index_status.rich_types(rich))))
     y = snap.get("yandex") if yandex_on else None
     if yandex_on:
         if not y:
