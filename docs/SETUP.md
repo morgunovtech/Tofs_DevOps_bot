@@ -30,6 +30,8 @@
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops?referralCode=7hTMqE)
 
+В кнопке мой реферальный код Railway: Railway отдаёт мне часть того, что берёт с аккаунта, созданного по ней; для тебя цена та же. Тот же шаблон без кода: <https://railway.com/deploy/tofsdevops>.
+
 1. Нажми кнопку выше и войди в Railway (через Google, GitHub или почту).
 2. Нажми **Configure** — до этого кнопка Deploy серая. Railway покажет одно поле — **TELEGRAM_BOT_TOKEN**. Вставь туда токен из Шага 1.
 3. Нажми **Deploy**. Всё остальное уже настроено в шаблоне: диск для базы (`/app/data`), адрес в интернете, нужные переменные. Сборка займёт пару минут — дождись у сервиса статуса **Online**.
