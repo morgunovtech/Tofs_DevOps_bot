@@ -55,16 +55,19 @@ def _int(name: str, default: int, lo: int | None = None, hi: int | None = None) 
     return value
 
 
-def _port(name: str, default: int) -> int:
-    """A wrong port stops the start with a sentence: a silent default would
-    make the server listen where neither HEALTHCHECK nor the owner looks."""
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    if not (raw.isascii() and raw.isdigit() and 1 <= int(raw) <= 65535):
-        logger.error("%s=%r is not a port (1..65535) — fix it in .env; the default is %s", name, raw, default)
-        raise SystemExit(2)
-    return int(raw)
+def _port(names: tuple[str, ...], default: int) -> int:
+    """The first of `names` that is set wins. A wrong port stops the start
+    with a sentence: a silent default would make the server listen where
+    neither HEALTHCHECK nor the owner looks."""
+    for name in names:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            continue
+        if not (raw.isascii() and raw.isdigit() and 1 <= int(raw) <= 65535):
+            logger.error("%s=%r is not a port (1..65535) — fix it in .env; the default is %s", name, raw, default)
+            raise SystemExit(2)
+        return int(raw)
+    return default
 
 
 def _csv(name: str) -> list[str]:
@@ -233,6 +236,10 @@ class Config:
     # api.telegram.org is not reachable directly — a Russian VPS, for one.
     # Checks of the sites themselves never use it.
     telegram_proxy: str = os.getenv("TELEGRAM_PROXY", "").strip()
+    # A self-hosted Bot API server (github.com/tdlib/telegram-bot-api) instead
+    # of api.telegram.org. The token is checked against it the same way; the
+    # start says in the log where it talks to (main.telegram_session).
+    telegram_api_url: str = os.getenv("TELEGRAM_API_URL", "").strip().rstrip("/")
     # First-run seed only; afterwards the DB is the source of truth.
     sites: tuple[str, ...] = field(default_factory=lambda: tuple(_csv("SITES")))
     # The .env defaults of the dials «🛠 Тонкие настройки» overrides (check
@@ -252,7 +259,10 @@ class Config:
     lang_from_env: bool = os.getenv("BOT_LANG", "").strip().lower() in i18n.LANGUAGES
     timezone: str = _timezone("TIMEZONE", DEFAULT_TIMEZONE[_LANG])
     timezone_from_env: bool = bool(os.getenv("TIMEZONE", "").strip())
-    webhook_port: int = _port("WEBHOOK_PORT", 8080)
+    # WEBHOOK_PORT when set; otherwise the PORT a platform injects (Railway,
+    # Render, Fly, Heroku: «listen where I tell you»); otherwise 8080.
+    # web/healthcheck.py reads the same two names in the same order.
+    webhook_port: int = _port(("WEBHOOK_PORT", "PORT"), 8080)
     # Raw env values; services.secrets replaces empty/placeholder values
     # with generated ones persisted in the DB.
     webhook_secret_env: str = os.getenv("WEBHOOK_SECRET", "").strip()

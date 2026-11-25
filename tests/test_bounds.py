@@ -65,6 +65,27 @@ def test_a_port_that_is_not_one_stops_the_start_with_a_sentence():
     assert "Traceback" not in proc.stderr
 
 
+def test_the_port_is_webhook_port_then_the_platforms_port_then_8080():
+    """Railway, Render, Fly and Heroku say where to listen with PORT; an
+    explicit WEBHOOK_PORT still wins, and nothing set is 8080 as before."""
+    def port(**env: str) -> int:
+        proc = _python("from config import config; print(config.webhook_port)",
+                       **{"WEBHOOK_PORT": "", "PORT": "", **env})
+        assert proc.returncode == 0, proc.stderr
+        return int(proc.stdout.strip().splitlines()[-1])
+    assert port() == 8080
+    assert port(PORT="3000") == 3000
+    assert port(WEBHOOK_PORT="9000", PORT="3000") == 9000
+    assert port(WEBHOOK_PORT="9000", PORT="junk") == 9000          # not read at all
+
+
+def test_a_platform_port_that_is_not_one_stops_the_start_too():
+    for bad in ("0", "70000", "http", "80 80", "٨٠٨٠"):
+        proc = _python("from config import config", WEBHOOK_PORT="", PORT=bad)
+        assert proc.returncode == 2 and f"PORT={bad!r} is not a port" in proc.stderr, bad
+        assert "WEBHOOK_PORT=" not in proc.stderr and "Traceback" not in proc.stderr
+
+
 def test_posix_tz_does_not_stop_the_scheduler(tmp_path):
     """TZ=MSK-3 is valid for glibc and `date`; the bot has its own TIMEZONE."""
     proc = _python("from reports import scheduler; s = scheduler.setup_scheduler(); print(len(s.get_jobs()))",

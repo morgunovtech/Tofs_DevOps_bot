@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 from aiogram import Bot, Dispatcher  # noqa: E402
 from aiogram.client.default import DefaultBotProperties  # noqa: E402
 from aiogram.client.session.aiohttp import AiohttpSession  # noqa: E402
+from aiogram.client.telegram import TelegramAPIServer  # noqa: E402
 from aiogram.enums import ParseMode  # noqa: E402
 from aiogram.exceptions import TelegramUnauthorizedError  # noqa: E402
 from aiogram.types import MenuButtonDefault  # noqa: E402
@@ -89,7 +90,7 @@ from services import (  # noqa: E402
     updates,
 )
 from utils.i18n import t  # noqa: E402
-from utils.urls import proxy_label, proxy_problem, site_label  # noqa: E402
+from utils.urls import api_url_problem, proxy_label, proxy_problem, site_label  # noqa: E402
 from web.webhook import start_web_server  # noqa: E402
 
 # What a stop may take: in-flight checks and alerts finish within this, the
@@ -214,15 +215,28 @@ async def _show_bottom_buttons(bot: Bot):
 def telegram_session() -> AiohttpSession | None:
     """With TELEGRAM_PROXY every call to Telegram — messages, alerts, files —
     goes through it; aiogram resolves api.telegram.org on the proxy side too.
-    A malformed value stops the start with a sentence, not a traceback: a bot
-    that cannot reach Telegram has no other way to say anything."""
-    if not config.telegram_proxy:
-        return None
-    problem = proxy_problem(config.telegram_proxy)
-    if problem:
-        raise ConfigError(f"TELEGRAM_PROXY: {problem}")
-    logger.info("Telegram через прокси %s", proxy_label(config.telegram_proxy))
-    return AiohttpSession(proxy=config.telegram_proxy)
+    With TELEGRAM_API_URL the calls go to a self-hosted Bot API server instead
+    of api.telegram.org (getMe at the start checks the token there). A
+    malformed value of either stops the start with a sentence, not a
+    traceback: a bot that cannot reach Telegram has no other way to say
+    anything."""
+    options = {}
+    if config.telegram_api_url:
+        problem = api_url_problem(config.telegram_api_url)
+        if problem:
+            raise ConfigError(f"TELEGRAM_API_URL: {problem}")
+        # Never quiet: the token and every message go to this server, and it
+        # — not Telegram — is who accepts the token at the start.
+        logger.warning("Telegram Bot API server: %s (TELEGRAM_API_URL) instead of api.telegram.org — "
+                       "the bot token and every message go there", config.telegram_api_url)
+        options["api"] = TelegramAPIServer.from_base(config.telegram_api_url)
+    if config.telegram_proxy:
+        problem = proxy_problem(config.telegram_proxy)
+        if problem:
+            raise ConfigError(f"TELEGRAM_PROXY: {problem}")
+        logger.info("Telegram через прокси %s", proxy_label(config.telegram_proxy))
+        options["proxy"] = config.telegram_proxy
+    return AiohttpSession(**options) if options else None
 
 
 async def main():

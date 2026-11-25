@@ -31,10 +31,11 @@ jobs:
           cache: pip
       # The dev tools first, then exactly what the image gets (hashes checked,
       # nothing else resolved): the tests run on the image's versions, and
-      # pip check says if a dev tool disagrees with them.
+      # pip check says if a dev tool disagrees with them. Wheels only, as in
+      # the Dockerfile: no package's build script runs on the runner.
       - run: |
-          pip install -r requirements-dev.txt
-          pip install --require-hashes --no-deps -r requirements.txt
+          pip install --only-binary :all: -r requirements-dev.txt
+          pip install --only-binary :all: --require-hashes --no-deps -r requirements.txt
           pip check
       - run: ruff check .
       - run: pytest -q
@@ -69,6 +70,14 @@ jobs:
           docker build --quiet --tag devops-bot-ci .
           test "$(docker run --rm devops-bot-ci id -u)" = 10001
           docker run --rm devops-bot-ci python -c "import main"
+      # And started for real: database, web server, getMe, polling — against a
+      # stand-in for Telegram on a network with no way out (no token, no
+      # secrets). GET /health must answer 200 within 90 s; otherwise the step
+      # prints the containers' logs and fails. tests/smoke/start_image.sh
+      # says what exactly is checked.
+      - if: matrix.python == '3.13'
+        name: the image starts and answers /health
+        run: tests/smoke/start_image.sh devops-bot-ci 90
       - if: matrix.python == '3.13' && github.event_name == 'pull_request'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:

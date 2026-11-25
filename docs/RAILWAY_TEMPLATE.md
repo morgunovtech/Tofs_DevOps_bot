@@ -2,7 +2,20 @@
      Railway keeps its own copy: after editing this file, paste the part below
      the line into Workspace → Templates → TofsDevOps → Marketplace → Overview.
      Category: Bots. Description (25–75 characters):
-     Site monitoring in Telegram: speaks only when something breaks. -->
+     Site monitoring in Telegram: speaks only when something breaks.
+
+     The template's service settings (set on railway.com, recorded here):
+     - Variables: TELEGRAM_BOT_TOKEN (required, empty), DB_PATH=/app/data/bot.db,
+       TRUST_PROXY=1, PORT=8080. PORT is pre-configured on purpose: the bot
+       listens on WEBHOOK_PORT, else PORT, else 8080; Railway sends its deploy
+       healthcheck to PORT, and the public domain targets 8080 — one number
+       for all three.
+     - Volume: /app/data. Public domain: HTTP, target port 8080.
+     - Healthcheck Path: /health (asked once per deploy, with the Host header
+       healthcheck.railway.app; the bot answers it like any other Host).
+     - Service icon (transparent, for Railway's dark UI):
+       https://raw.githubusercontent.com/morgunovtech/Tofs_DevOps_bot/main/docs/images/template-icon-transparent.svg
+       (docs/images/template-icon.png is the same mark on a background). -->
 
 ---
 

@@ -8,7 +8,8 @@ import urllib.request
 
 
 def main() -> int:
-    raw = os.environ.get("WEBHOOK_PORT", "").strip()
+    # WEBHOOK_PORT, then the platform's PORT, then 8080 — as config._port does.
+    raw = os.environ.get("WEBHOOK_PORT", "").strip() or os.environ.get("PORT", "").strip()
     port = raw if raw.isascii() and raw.isdigit() else "8080"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:

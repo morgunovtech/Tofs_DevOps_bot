@@ -44,6 +44,8 @@ async def test_health_is_503_when_checks_stall_and_says_why_only_in_the_log(db, 
         assert "checks stalled" in caplog.text
         health.tick_done()
         assert (await c.get("/health")).status == 200
+        # Railway asks at deploy time under its own name, not the service's domain.
+        assert (await c.get("/health", headers={"Host": "healthcheck.railway.app"})).status == 200
 
 
 async def test_a_finished_tick_is_marked_even_with_nothing_due(db):
@@ -168,14 +170,19 @@ async def test_container_healthcheck_reads_the_bot_not_the_proxy(unused_tcp_port
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", unused_tcp_port).start()
-    env = {**os.environ, "WEBHOOK_PORT": str(unused_tcp_port), "http_proxy": "http://127.0.0.1:9",
+    env = {**os.environ, "WEBHOOK_PORT": str(unused_tcp_port), "PORT": "", "http_proxy": "http://127.0.0.1:9",
            "HTTP_PROXY": "http://127.0.0.1:9", "PYTHONDONTWRITEBYTECODE": "1"}
 
-    async def check() -> int:
-        proc = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "web.healthcheck", cwd=ROOT, env=env)
+    async def check(**ports: str) -> int:
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-B", "-m", "web.healthcheck", cwd=ROOT,
+                                                    env={**env, **ports})
         return await proc.wait()
     try:
         assert await check() == 0                            # a proxy in the environment is not followed
+        # The port is found the way config.py finds it: WEBHOOK_PORT, then the platform's PORT.
+        assert await check(WEBHOOK_PORT="", PORT=str(unused_tcp_port)) == 0
+        assert await check(PORT="9") == 0                    # WEBHOOK_PORT wins
+        assert await check(WEBHOOK_PORT="", PORT="9") == 1   # nobody listens there
         status[0] = 503
         assert await check() == 1                            # «stale» is unhealthy
     finally:

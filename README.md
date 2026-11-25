@@ -88,7 +88,7 @@ Every `.env` integration, the architecture and the development loop: [docs/FEATU
 
 #### Public address on your own server
 
-The feedback widget, the links for your cron jobs and the status page need the bot's web server to be reachable from the internet over **HTTPS**. The bot itself speaks plain HTTP on port 8080, so put a reverse proxy with TLS in front of it and keep the port closed to everyone else:
+The feedback widget, the links for your cron jobs and the status page need the bot's web server to be reachable from the internet over **HTTPS**. The bot itself speaks plain HTTP on port 8080 (`WEBHOOK_PORT`; when it is not set, the `PORT` a hosting platform injects), so put a reverse proxy with TLS in front of it and keep the port closed to everyone else:
 
 1. In `docker-compose.yml` publish the port on this machine only:
    ```yaml
@@ -120,7 +120,7 @@ The button carries my Railway referral code: Railway shares with me a part of wh
 
 **What it costs.** For the first 30 days Railway gives $5 and asks for no card. After that the account drops to the Free plan with $1 a month, and the bot needs about $2: without the Hobby plan it stops and nobody is told, and 30 days later Railway deletes the database volume. Hobby is $5 a month and includes $5 of usage — enough for the bot. Paying needs a card; Russian cards are not accepted abroad. The bot reminds you itself: after the first site and around day 25. Railway's terms: [its docs](https://docs.railway.com/pricing/free-trial).
 
-Prefer your own fork? Railway → **Deploy from GitHub repo** → variables `TELEGRAM_BOT_TOKEN`, `DB_PATH=/app/data/bot.db`, `TRUST_PROXY=1` (Railway is a proxy in front of the bot), a volume at `/app/data`, Generate Domain on port 8080 — the bot picks the address up itself.
+Prefer your own fork? Railway → **Deploy from GitHub repo** → variables `TELEGRAM_BOT_TOKEN`, `DB_PATH=/app/data/bot.db`, `TRUST_PROXY=1` (Railway is a proxy in front of the bot), a volume at `/app/data`, Generate Domain on port 8080 — the bot picks the address up itself. The bot listens on `WEBHOOK_PORT`, without it on the `PORT` Railway injects, without both on 8080: if Railway's port list offers another number, take that one.
 
 ### Rolling back a version
 
