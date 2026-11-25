@@ -64,7 +64,7 @@ heartbeat-джобы управляются из чата; `.env` нужен т�
 
 ## Шаблон Railway (кнопка «Deploy on Railway»)
 
-Кнопка в README и SETUP ведёт на шаблон https://railway.com/deploy/lVRuwW — он живёт в Railway-воркспейсе владельца (Workspace → Templates → TofsDevOps) и собран с нуля, не из боевого проекта: иначе в шаблон попали бы значения переменных, включая токен. Что в нём:
+Кнопка в README и SETUP ведёт на шаблон https://railway.com/deploy/tofsdevops — он живёт в Railway-воркспейсе владельца (Workspace → Templates → TofsDevOps) и собран с нуля, не из боевого проекта: иначе в шаблон попали бы значения переменных, включая токен. Что в нём:
 
 | Что | Значение |
 |---|---|

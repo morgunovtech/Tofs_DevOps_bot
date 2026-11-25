@@ -1,4 +1,4 @@
-<!-- The listing of the Railway template lVRuwW (railway.com/deploy/lVRuwW).
+<!-- The listing of the Railway template tofsdevops (railway.com/deploy/tofsdevops).
      Railway keeps its own copy: after editing this file, paste the part below
      the line into Workspace → Templates → TofsDevOps → Marketplace → Overview.
      Category: Bots. Description (25–75 characters):

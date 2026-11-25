@@ -21,7 +21,7 @@ Changing a pin: edit `requirements.in`, regenerate the hashed lock (`docs/DEVELO
 
 ## Deploy
 
-- `main` is production: Railway redeploys from it (template `lVRuwW`, volume at `/app/data`, one required variable `TELEGRAM_BOT_TOKEN`); a green `main` also publishes `ghcr.io/morgunovtech/tofs_devops_bot` (`:latest`, `:sha-…`, amd64 + arm64).
+- `main` is production: Railway redeploys from it (template `tofsdevops`, volume at `/app/data`, one required variable `TELEGRAM_BOT_TOKEN`); a green `main` also publishes `ghcr.io/morgunovtech/tofs_devops_bot` (`:latest`, `:sha-…`, amd64 + arm64).
 - Dependabot's weekly PR auto-merges only patch and minor Python updates after every «lint · test · audit» check; the base image, Actions and majors wait for the owner.
 - Live check: `https://devops-bot-production.up.railway.app/health` → `{"status": "ok"}`.
 - Releases: `CHANGELOG.md` entry `## x.y.z — YYYY-MM-DD` + `version` in `pyproject.toml` (+ the `TofsDevOps/x.y` User-Agent in `utils/urls.py` for a major) in the PR; the annotated tag `vX.Y.Z` on the squash commit and the GitHub Release with English notes after the merge.

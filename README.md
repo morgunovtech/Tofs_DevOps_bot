@@ -111,7 +111,7 @@ Without TLS the widget does not load on https sites (browsers block mixed conten
 
 ### Easier: Railway in one click — 5 minutes
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops)
 
 1. Press **Deploy on Railway**, then **Configure** — the Deploy button stays grey until you do — and paste the token, the only field. The volume for the database, the public domain and the rest are already in the template.
 2. Send `/start` in a private chat with the bot — the first `/start` becomes the owner and adds the first site right in the chat. The bot then offers a test alert and the external watchdog; «⚙️ Настройки → 🔌 Подключения» covers the rest.
@@ -191,7 +191,7 @@ The project cannot be removed completely without this list.
 | Resource | Where | How to remove |
 |---|---|---|
 | The bot | [@BotFather](https://t.me/BotFather) | `/deletebot` |
-| The Railway service with its `/app/data` volume (template `lVRuwW`) | railway.com | Settings → Delete service; the volume goes with it |
+| The Railway service with its `/app/data` volume (template `tofsdevops`) | railway.com | Settings → Delete service; the volume goes with it |
 | The image `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | delete the package |
 | The external watchdog check (`SELF_HEARTBEAT_URL`) | healthchecks.io, or a heartbeat job of another bot | delete the check or the job |
 | Integration tokens: Google Search Console, Yandex.Webmaster, the Bing Webmaster API key (`BING_WEBMASTER_KEY`), Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), the CrUX key, a GitHub token | the consoles of those services | revoke each token; «🔌 Подключения» disconnects them in the bot |
