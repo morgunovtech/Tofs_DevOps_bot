@@ -111,7 +111,7 @@ volumes:
 
 ### Проще: Railway в один клик — 5 минут
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops?referralCode=7hTMqE)
 
 1. Нажми **Deploy on Railway**, затем **Configure** — до этого кнопка Deploy серая — и вставь токен, это единственное поле. Диск для базы, адрес в интернете и остальное уже в шаблоне.
 2. Отправь боту `/start` в личном чате — первый `/start` занимает место владельца и добавляет первый сайт прямо в чате. Потом бот предложит пробную тревогу и внешнего сторожа, а остальное подскажет «⚙️ Настройки → 🔌 Подключения».

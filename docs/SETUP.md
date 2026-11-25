@@ -28,7 +28,7 @@
 
 ## Шаг 2. Развернуть бота в одну кнопку (3 минуты)
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops?referralCode=7hTMqE)
 
 1. Нажми кнопку выше и войди в Railway (через Google, GitHub или почту).
 2. Нажми **Configure** — до этого кнопка Deploy серая. Railway покажет одно поле — **TELEGRAM_BOT_TOKEN**. Вставь туда токен из Шага 1.
