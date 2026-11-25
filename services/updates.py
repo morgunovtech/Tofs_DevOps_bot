@@ -51,6 +51,7 @@ _NOT_THE_BOTS = {"pip", "setuptools", "wheel"}   # the installer, not the bot
 GITHUB_PULLS = "https://api.github.com/repos/{slug}/pulls"
 GITHUB_COMMIT = "https://api.github.com/repos/{slug}/commits/{ref}"
 GITHUB_STATUS = "https://api.github.com/repos/{slug}/commits/{ref}/status"
+DEPENDABOT_LOGIN = "dependabot[bot]"
 _GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "TofsDevOps"}
 # A minor/patch PR still open after this long did not auto-merge: CI is red.
 STUCK_AFTER = timedelta(days=2)
@@ -230,6 +231,16 @@ async def gh_json(session: aiohttp.ClientSession, url: str, **params):
         return None
 
 
+def _is_dependabot(author) -> bool:
+    """The PR was opened by GitHub's Dependabot app itself. The login is exact:
+    «dependabot[bot]» cannot be registered by a person (no brackets in a
+    login), while «dependabot-preview» or «dependabotx» can — and on a public
+    repository anyone may open a PR whose title and text this module then
+    reads and shows in the chat. GitHub marks the app's account as «Bot»."""
+    return (isinstance(author, dict) and author.get("login") == DEPENDABOT_LOGIN
+            and author.get("type") == "Bot")
+
+
 async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     """Dependabot PRs that wait for a human: major bumps and base-image bumps
     (never auto-merged) and pip ones still open after STUCK_AFTER (auto-merge
@@ -245,10 +256,10 @@ async def waiting_prs(session: aiohttp.ClientSession) -> list[dict] | None:
     now = datetime.now(UTC)
     out = []
     for pr in data:
-        login = str(((pr or {}).get("user") or {}).get("login") or "")
+        author = (pr or {}).get("user") or {}
         title = str((pr or {}).get("title") or "")
         body = str((pr or {}).get("body") or "")
-        if not login.startswith("dependabot"):
+        if not _is_dependabot(author):
             continue
         # The base image (a new Python) and the Actions are merged by a human,
         # whatever their CI says (.github/workflows/dependabot-automerge.yml);

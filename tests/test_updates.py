@@ -9,6 +9,9 @@ from db.database import get_state, set_state
 from services import updates
 from services.updates import installed_versions, is_major_bump, short_bump, summary_lines
 
+# What GitHub returns as the author of a Dependabot PR (pulls API, user.login and user.type).
+BOT = {"login": "dependabot[bot]", "type": "Bot"}
+
 
 def test_installed_versions_and_summary():
     """A newer version on PyPI is not news — Dependabot installs it on
@@ -62,14 +65,14 @@ async def test_waiting_prs_are_majors_and_stuck_minors(monkeypatch):
     async def pulls(_):
         return web.json_response([
             {"number": 1, "title": "Bump aiogram from 3.31.0 to 4.0.0", "html_url": "u1", "created_at": fresh,
-             "user": {"login": "dependabot[bot]"}},
+             "user": BOT},
             {"number": 2, "title": "Bump aiohttp from 3.14.2 to 3.14.3", "html_url": "u2", "created_at": fresh,
-             "user": {"login": "dependabot[bot]"}},
+             "user": BOT},
             {"number": 4, "title": "Bump python from 3.14-slim to 3.15-slim", "html_url": "u4", "created_at": fresh,
-             "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/docker/python-3.15-slim"}},
+             "user": BOT, "head": {"ref": "dependabot/docker/python-3.15-slim"}},
             {"number": 3, "title": "Bump y from 1.0 to 2.0", "html_url": "u3", "created_at": old, "user": {"login": "human"}},
             {"number": 5, "title": "Bump the python-deps group with 2 updates", "html_url": "u5", "created_at": old,
-             "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/pip/python-deps-1a2b3c"}},
+             "user": BOT, "head": {"ref": "dependabot/pip/python-deps-1a2b3c"}},
         ])
     app = web.Application()
     app.router.add_get("/repos/me/bot/pulls", pulls)
@@ -84,6 +87,45 @@ async def test_waiting_prs_are_majors_and_stuck_minors(monkeypatch):
     monkeypatch.delenv("GITHUB_REPOSITORY")
     async with aiohttp.ClientSession() as session:
         assert await updates.waiting_prs(session) == []
+
+
+async def test_a_lookalike_account_is_not_dependabot(monkeypatch):
+    """The repository is public: anyone can open a PR from an account named
+    «dependabot-preview» or «dependabotx» with a title that looks like a major
+    bump. Only GitHub's own app — login «dependabot[bot]», type «Bot» — is
+    read; the rest never reach the chat or the title parser."""
+    old = "2020-01-01T00:00:00Z"
+    bump = "Bump aiogram from 3.31.0 to 4.0.0"
+
+    def pr(number, user):
+        return {"number": number, "title": bump, "body": "from " + "1" * 60_000, "html_url": f"u{number}",
+                "created_at": old, "user": user, "head": {"ref": "dependabot/docker/python-3.15-slim"}}
+
+    async def pulls(_):
+        return web.json_response([
+            pr(1, {"login": "dependabotx", "type": "User"}),
+            pr(2, {"login": "dependabot-preview", "type": "User"}),
+            pr(3, {"login": "dependabot", "type": "User"}),
+            pr(4, {"login": "dependabot-preview[bot]", "type": "Bot"}),
+            pr(5, {"login": "Dependabot[bot]", "type": "Bot"}),
+            pr(6, {"login": "dependabot[bot]", "type": "User"}),
+            pr(7, {"login": "dependabot[bot]"}),
+            pr(8, None),
+            pr(9, "dependabot[bot]"),
+            pr(10, BOT),
+        ])
+    app = web.Application()
+    app.router.add_get("/repos/me/bot/pulls", pulls)
+    async with TestServer(app) as server:
+        monkeypatch.setenv("GITHUB_REPOSITORY", "me/bot")
+        monkeypatch.setattr(updates, "GITHUB_PULLS", f"http://127.0.0.1:{server.port}/repos/{{slug}}/pulls")
+        parsed = []
+        real = updates.is_major_bump
+        monkeypatch.setattr(updates, "is_major_bump", lambda title, body="": parsed.append(body) or real(title, body))
+        async with aiohttp.ClientSession() as session:
+            prs = await updates.waiting_prs(session)
+    assert [p["number"] for p in prs] == [10]
+    assert len(parsed) == 1          # a stranger's text is not even parsed
 
 
 async def test_a_failed_deploy_is_said_once(bot, db, cfg, monkeypatch):
