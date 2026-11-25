@@ -1,14 +1,16 @@
 # Dependabot opens one grouped PR per week with every Python update — both
 # pip-compile pairs in the root: requirements.in → requirements.txt (the bot)
 # and requirements-dev.in → requirements-dev.txt (the CI tools); it finds
-# them by itself and recompiles each lock with its hashes — plus
-# monthly PRs for the base image and the Actions. CI tests them; the
-# auto-merge workflow merges only patch/minor bumps of the Python libraries
-# once CI is green, and the hosting platform redeploys from main. The bot
-# then reports «🔄 Бот обновился» on its next start. The base image (a new
-# Python), the Actions and major bumps wait for a human. A version reaches
-# a PR no sooner than 7 days after its release (cooldown; security updates
-# are not delayed).
+# them by itself and recompiles each lock with its hashes — a weekly PR for
+# the base image and a monthly one for the Actions. CI tests them; the
+# auto-merge workflow merges patch/minor bumps of the Python libraries and a
+# new build of the same base image (only the digest in FROM changes) once CI
+# is green, and the hosting platform redeploys from main; the CI run on main
+# publishes the new :latest. The bot then reports «🔄 Бот обновился» on its
+# next start when Python or a package changed. A new Python (the image tag
+# changes), the Actions and major bumps wait for a human. A version reaches
+# a PR no sooner than 7 days after its release, a base image build 3 days
+# (cooldown; security updates are not delayed).
 version: 2
 updates:
   - package-ecosystem: pip
@@ -27,19 +29,28 @@ updates:
       python-deps:
         patterns: ["*"]
     labels: ["dependencies"]
+  # The base image: python:3.14-slim-trixie is rebuilt every few days (Debian
+  # security fixes, a Python patch release). The digest in FROM pins one
+  # build, so without this PR the bot and the ghcr.io image keep an old base
+  # for good — rebuilding on a schedule would rebuild the same thing.
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+      day: saturday
+      time: "13:00"   # the pip window: the redeploy after the merge restarts the bot
+      timezone: Europe/Moscow
+    # 3 days, not 7: the tag is re-pushed every 1–7 days, and a cooldown
+    # longer than that gap can hold every new build back for weeks.
     cooldown:
-      default-days: 7
+      default-days: 3
     # 3.14, not 3.15: the lock holds pydantic 2.13, whose pydantic-core has
     # no 3.15 wheels (the 3.15 bump of 01.11.2026 did not build); aiogram 3.32
     # already allows both Python 3.15 and pydantic 2.14 — drop this once the
-    # lock moves to pydantic >= 2.14 and CI tests on 3.15. The monthly PR moves the digest
-    # in the Dockerfile's FROM; a human merges it: the auto-merge workflow
-    # takes only patch/minor bumps of the Python libraries, never the base
-    # image, because CI does not run the tests on the new Python.
+    # lock moves to pydantic >= 2.14 and CI tests on 3.15. A PR that moves
+    # only the digest (same tag) merges itself after CI — the image is built,
+    # started and built for arm64 there; a PR that changes the tag (a new
+    # Python) waits for a human: CI does not run the tests on the new Python.
     ignore:
       - dependency-name: python
         versions: [">=3.15"]
