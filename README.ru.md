@@ -111,7 +111,7 @@ volumes:
 
 ### Проще: Railway в один клик — 5 минут
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/lVRuwW)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/tofsdevops)
 
 1. Нажми **Deploy on Railway**, затем **Configure** — до этого кнопка Deploy серая — и вставь токен, это единственное поле. Диск для базы, адрес в интернете и остальное уже в шаблоне.
 2. Отправь боту `/start` в личном чате — первый `/start` занимает место владельца и добавляет первый сайт прямо в чате. Потом бот предложит пробную тревогу и внешнего сторожа, а остальное подскажет «⚙️ Настройки → 🔌 Подключения».
@@ -191,7 +191,7 @@ CI гоняет то же самое на Python 3.12, 3.13 и 3.14, собир�
 | Ресурс | Где | Как удалить |
 |---|---|---|
 | Бот | [@BotFather](https://t.me/BotFather) | `/deletebot` |
-| Сервис Railway с томом `/app/data` (шаблон `lVRuwW`) | railway.com | Settings → Delete service; том удаляется вместе с ним |
+| Сервис Railway с томом `/app/data` (шаблон `tofsdevops`) | railway.com | Settings → Delete service; том удаляется вместе с ним |
 | Образ `ghcr.io/morgunovtech/tofs_devops_bot` | GitHub → Packages | удалить пакет |
 | Внешний сторож (`SELF_HEARTBEAT_URL`) | healthchecks.io или heartbeat-задача другого бота | удалить check или задачу |
 | Токены интеграций: Google Search Console, Яндекс.Вебмастер, ключ API Bing Webmaster (`BING_WEBMASTER_KEY`), Cloudflare (`CLOUDFLARE_API_TOKEN`: Zone → Zone → Read, Zone → Cache Purge, Account → Account Settings → Read, Account → Cloudflare Pages → Read, Zone → DNS → Read, Zone → Workers Routes → Read, Account → Workers Scripts → Read, Zone → Bot Management → Read), ключ CrUX, токен GitHub | кабинеты этих сервисов | отозвать каждый токен; «🔌 Подключения» отключают их в боте |
