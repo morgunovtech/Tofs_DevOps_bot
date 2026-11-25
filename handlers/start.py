@@ -8,11 +8,13 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from config import DEFAULT_TIMEZONE, config
 from db.database import get_all_sites, get_state, set_state
 from handlers.common import HELPER_NOTE, back_button, bottom, deny, deny_due, refusal
 from handlers.filters import in_admin_chat
 from handlers.menu import send_main_menu
 from handlers.setup import last_steps
+from reports.scheduler import reschedule_all
 from services import helpers, notifier, railway, runtime, settings
 from utils.clock import now_local
 from utils.i18n import t
@@ -166,6 +168,27 @@ def _claim_refusal(message: Message) -> str | None:
     return None
 
 
+async def adopt_owner_language(code: str | None) -> bool:
+    """The seat was just taken and nobody chose a language — neither BOT_LANG
+    nor the chat: the owner's Telegram decides. Russian stays Russian, any
+    other language becomes English, and the default time zone follows it
+    (UTC) unless TIMEZONE or the chat set one. True when the bot switched."""
+    if config.lang_from_env or not settings.text_from_env("lang"):
+        return False
+    if not code or code.lower().split("-")[0] == "ru":
+        return False
+    await settings.set_lang("en")
+    if not config.timezone_from_env and settings.timezone() == config.timezone:
+        await settings.set_timezone(DEFAULT_TIMEZONE["en"])
+        reschedule_all()
+    return True
+
+
+def lang_button() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗣 Русский / English", callback_data="tune:lang")]])
+
+
 async def offer_last_steps(message: Message):
     """«Ещё два шага…» (the test alert, the watchdog) once, as soon as
     something is under watch — whichever way it got there: typed in, seeded
@@ -184,7 +207,7 @@ async def cmd_start(message: Message, state: FSMContext):
     работаю»; every later /start is the main screen (and the bottom
     buttons, once) — not the welcome speech again."""
     await state.clear()  # /start always aborts any pending input flow
-    claimed = False
+    claimed = adopted = False
     if not runtime.has_admin() and message.from_user:
         refusal_text = _claim_refusal(message)
         if refusal_text:
@@ -192,6 +215,7 @@ async def cmd_start(message: Message, state: FSMContext):
             return
         claimed = await runtime.claim(message.chat.id, message.from_user.id)
         if claimed:
+            adopted = await adopt_owner_language(getattr(message.from_user, "language_code", None))
             await railway.note_claim()   # the trial clock: the day-25 reminder counts from here
             await message.answer(t("🔑 Ты стал администратором этого бота — все отчёты "
                                    "и тревоги будут приходить сюда."))
@@ -210,6 +234,9 @@ async def cmd_start(message: Message, state: FSMContext):
         await set_state(BOTTOM_SHOWN, "1")   # nothing left for main.py to announce
         await message.answer(rules_of_the_game(), reply_markup=tz_button())
         await set_state(RULES_SHOWN, "1")
+        if adopted:
+            await message.answer(t("🗣 Говорю по-английски, как твой Telegram. Русский — кнопка ниже."),
+                                 reply_markup=lang_button())
     elif not await get_state(BOTTOM_SHOWN):
         await message.answer(t(BOTTOM_NOTE), reply_markup=bottom())
         await set_state(BOTTOM_SHOWN, "1")
