@@ -35,6 +35,7 @@ class FakeGoogle:
 
     def __init__(self):
         self.token_status, self.inspect_body, self.tokens = 200, None, 0
+        self.asked: list[dict] = []                 # bodies of the URL Inspection requests
         app = web.Application()
         app.router.add_post("/token", self.token)
         app.router.add_post("/sites/{prop}/searchAnalytics/query", self.query)
@@ -51,6 +52,7 @@ class FakeGoogle:
         return web.json_response({"rows": [{"clicks": 120, "impressions": 3400, "position": 4.2}]})
 
     async def inspect(self, request):
+        self.asked.append(await request.json())
         return web.json_response(self.inspect_body or {"inspectionResult": {"indexStatusResult": {
             "verdict": "PASS", "coverageState": "Submitted and indexed"}}})
 
@@ -175,6 +177,102 @@ async def test_a_first_look_at_an_error_is_said_without_history(bot, db, monkeyp
     monkeypatch.setattr(gsc, "inspect_url", inspect)
     await scheduler.run_index_checks()
     assert bot.sent[-1]["text"].startswith("🔴 Google не показывает ex.test в поиске")
+
+
+# ── Google: remarks on structured data (rich results) ───────────────────────
+
+def _rich(*issues, kind="Profile page"):
+    """richResultsResult as URL Inspection sends it: types → items → issues."""
+    return {"verdict": "FAIL", "detectedItems": [{"richResultType": kind, "items": [
+        {"name": "Semyon", "issues": [{"issueMessage": m, "severity": s} for m, s in issues]}]}]}
+
+
+DATE_CREATED = 'Недопустимое значение даты/времени в поле "dateCreated"'
+DATE_MODIFIED = 'Недопустимое значение даты/времени в поле "dateModified"'
+
+
+async def test_inspection_returns_googles_remarks_from_the_same_call(bot, db):
+    await _connect_gsc()
+    async with FakeGoogle() as google:
+        index = {"verdict": "PASS", "coverageState": "Submitted and indexed"}
+        google.inspect_body = {"inspectionResult": {"indexStatusResult": index, "richResultsResult": {
+            "verdict": "FAIL", "detectedItems": [
+                {"richResultType": "Profile page", "items": [
+                    {"name": "a", "issues": [{"issueMessage": DATE_CREATED, "severity": "WARNING"},
+                                             {"issueMessage": "Missing field \"name\"", "severity": "ERROR"}]},
+                    {"name": "b", "issues": [{"issueMessage": DATE_CREATED, "severity": "WARNING"}]}]},
+                {"richResultType": "Breadcrumbs", "items": [{"name": "ok"}, {"name": "odd", "issues": [
+                    {"issueMessage": "Odd", "severity": "SEVERITY_UNSPECIFIED"}, {"severity": "ERROR"}]}]}]}}}
+        info = await gsc.inspect_url("https://ex.test/")
+        assert info["verdict"] == "PASS"                             # the index verdict is still there
+        assert info["rich_issues"] == [                              # errors first; one remark on two items is one
+            {"type": "Profile page", "message": 'Missing field "name"', "severity": "error"},
+            {"type": "Breadcrumbs", "message": "Odd", "severity": "warning"},
+            {"type": "Profile page", "message": DATE_CREATED, "severity": "warning"}]
+        google.inspect_body = {"inspectionResult": {"indexStatusResult": index}}
+        assert (await gsc.inspect_url("https://ex.test/"))["rich_issues"] == []   # no section: no rich results, no remarks
+        google.inspect_body = {"inspectionResult": {"indexStatusResult": index, "richResultsResult": {"detectedItems": "?"}}}
+        assert (await gsc.inspect_url("https://ex.test/"))["rich_issues"] == []
+    assert len(google.asked) == 3                                    # one request per look, not two
+    assert google.asked[0]["languageCode"] == "ru-RU" and google.asked[0]["inspectionUrl"] == "https://ex.test/"
+
+
+async def test_a_remark_on_structured_data_is_said_once_and_closed_with_its_length(bot, db):
+    sid = await db.activate_or_create_site("https://ex.test")
+    await _connect_gsc()
+    index = {"verdict": "PASS", "coverageState": "Submitted and indexed"}
+
+    def answer(*issues):
+        result = {"indexStatusResult": index}
+        if issues:
+            result["richResultsResult"] = _rich(*issues)
+        return {"inspectionResult": result}
+    async with FakeGoogle() as google:
+        google.inspect_body = answer((DATE_CREATED, "WARNING"))
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 1                                    # the first look says it
+        msg = bot.sent[0]
+        assert msg["silent"] is True
+        assert msg["text"] == (
+            "🟠 Google нашёл недочёт в разметке ex.test: Profile page\n"
+            "Это структурированные данные страницы (JSON-LD). Расширенный результат Google показать может, но без "
+            "этих данных. На индексацию и обычную выдачу это не влияет.\n"
+            "Обычно это поле с неверным форматом (дата, адрес, число) или пропавшее после правки шаблона.\n\n"
+            "Что делать:\n• Исправь поле в разметке страницы — какое, сказано в строке ниже.\n"
+            "• Проверь страницу в Rich Results Test, потом в Search Console нажми «Проверить исправление».\n"
+            "Google обновит данные после переобхода — я скажу, когда замечаний не станет.\n\n"
+            f"<i>Profile page · предупреждение: {DATE_CREATED}</i>")
+        assert buttons(msg["reply_markup"]) == ["🔎 Поиск и ИИ", "↗️ Search Console", "↗️ Rich Results Test"]
+        assert (await sitestatus.get(sid))["google"]["rich_issues"][0]["severity"] == "warning"
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 1                                    # the same remark: silence
+        google.inspect_body = answer((DATE_CREATED, "WARNING"), (DATE_MODIFIED, "ERROR"))
+        await scheduler.run_index_checks()
+        text = bot.sent[-1]["text"]
+        assert len(bot.sent) == 2 and text.startswith("🟠 Google нашёл ошибку в разметке ex.test: Profile page\n")
+        assert "не покажет страницу в поиске расширенным результатом" in text
+        assert text.index("ошибка: ") < text.index("предупреждение: ")
+        google.inspect_body = answer((DATE_MODIFIED, "ERROR"))
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 2                                    # one of two is gone: not news
+        google.inspect_body = answer((DATE_CREATED, "WARNING"), (DATE_MODIFIED, "ERROR"))
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 3                                    # it came back: news again
+        google.inspect_body = answer()
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 4 and bot.sent[-1]["silent"] is True
+        assert bot.sent[-1]["text"].startswith("✅ Google больше не видит замечаний к разметке ex.test. Замечания висели ")
+        assert bot.sent[-1]["text"].endswith(" Ничего делать не нужно.")
+        await scheduler.run_index_checks()
+        assert len(bot.sent) == 4                                    # nothing left, nothing said
+
+
+async def test_many_remarks_are_counted_not_listed(bot, db):
+    issues = [{"type": "FAQ", "message": f"m{i}", "severity": "warning"} for i in range(7)]
+    text = scheduler.format_rich_alert("ex.test", issues)
+    assert "FAQ · предупреждение: m4\nи ещё 2</i>" in text and "m5" not in text
+    assert index_status.rich_count_words(issues + [{"type": "x", "message": "e", "severity": "error"}]) == \
+        "1 ошибка и 7 предупреждений"
 
 
 # ── Yandex ───────────────────────────────────────────────────────────────────

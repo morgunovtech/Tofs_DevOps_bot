@@ -451,6 +451,22 @@ STRINGS: dict[str, str] = {
         "What to do: Webmaster → the site → «Access rights» → verify with a meta tag, a file or a DNS record. If the meta tag was there and disappeared in a redesign, put it back into the homepage code.",
     "✅ Яндекс.Вебмастер: {host} снова подтверждён.": "✅ Yandex.Webmaster: {host} is verified again.",
     " (в llms.txt)": " (in llms.txt)",
+    # ── reports/scheduler.py: Google's remarks on structured data ─────────
+    "🟠 Google нашёл ошибку в разметке {label}: {types}": "🟠 Google found an error in the structured data of {label}: {types}",
+    "🟠 Google нашёл недочёт в разметке {label}: {types}": "🟠 Google found a flaw in the structured data of {label}: {types}",
+    "Это структурированные данные страницы (JSON-LD). Пока ошибка есть, Google не покажет страницу в поиске расширенным результатом этого типа. На индексацию и обычную выдачу это не влияет.":
+        "This is the page's structured data (JSON-LD). While the error is there, Google will not show the page as a rich result of this type. Indexing and the plain search result are not affected.",
+    "Это структурированные данные страницы (JSON-LD). Расширенный результат Google показать может, но без этих данных. На индексацию и обычную выдачу это не влияет.":
+        "This is the page's structured data (JSON-LD). Google can still show the rich result, but without this data. Indexing and the plain search result are not affected.",
+    "Обычно это поле с неверным форматом (дата, адрес, число) или пропавшее после правки шаблона.":
+        "Usually it is a field in the wrong format (a date, an address, a number) or one that got lost in a template edit.",
+    "Что делать:\n• Исправь поле в разметке страницы — какое, сказано в строке ниже.\n• Проверь страницу в Rich Results Test, потом в Search Console нажми «Проверить исправление».\nGoogle обновит данные после переобхода — я скажу, когда замечаний не станет.":
+        "What to do:\n• Fix the field in the page's markup — the line below names it.\n• Check the page in the Rich Results Test, then press «Validate fix» in Search Console.\nGoogle updates its data after the next crawl — I will say when no remarks are left.",
+    "ошибка": "error",
+    "предупреждение": "warning",
+    "и ещё {n}": "and {n} more",
+    " Замечания висели {duration} (с {day}).": " The remarks stayed for {duration} (since {day}).",
+    "✅ Google больше не видит замечаний к разметке {label}.": "✅ Google no longer has remarks on the structured data of {label}.",
     # ── reports/scheduler.py: Google's chosen main copy ────────────────────
     "🟠 Google считает главной копией {label} другой адрес: {chosen}": "🟠 Google takes another address for the main copy of {label}: {chosen}",
     "Страница называет главной {user}. В поиске Google показывает свой выбор — бывает, что технический адрес или старый домен.":

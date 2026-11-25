@@ -3,7 +3,8 @@ and Webmaster know — the audit itself only proves that nothing blocks the
 robots. Their answers are kept in the site snapshot (services.sitestatus,
 sections «google» and «yandex») so the «🔎 Поиск и ИИ» screen opens
 instantly and can say how old the data is. Refreshed by the daily index
-job and by «🔄 Проверить снова»; nothing here alerts."""
+job and by «🔄 Проверить снова»; nothing here alerts. The Google section
+also keeps Google's remarks on the page's structured data (rich results)."""
 
 from datetime import datetime
 
@@ -31,7 +32,8 @@ async def refresh(site_id: int, url: str, yx_summaries=_UNSET) -> tuple[dict | N
         if info:
             google = {"verdict": info["verdict"], "coverage": info["coverage"],
                       "last_crawl": info.get("last_crawl"), "user_canonical": info.get("user_canonical"),
-                      "google_canonical": info.get("google_canonical")}
+                      "google_canonical": info.get("google_canonical"),
+                      "rich_issues": info.get("rich_issues") or []}
             await sitestatus.update(site_id, "google", **google)
     if yandex_webmaster.available():
         if yx_summaries is _UNSET:
@@ -80,6 +82,29 @@ def canonical_differs(google: dict | None) -> bool:
         return False
     norm = lambda u: str(u).lower().split("://", 1)[-1].rstrip("/")  # noqa: E731
     return norm(a) != norm(b)
+
+
+def rich_level(issues: list | None) -> str | None:
+    """«error» when any remark stops the rich result, «warning» when all of
+    them only trim it, None when Google has no remarks."""
+    levels = {i.get("severity") for i in issues or [] if isinstance(i, dict)}
+    return "error" if "error" in levels else "warning" if levels else None
+
+
+def rich_types(issues: list | None) -> str:
+    """«ProfilePage, FAQ» — the rich result types the remarks are about."""
+    return ", ".join(dict.fromkeys(str(i.get("type") or "?") for i in issues or [] if isinstance(i, dict)))
+
+
+def rich_count_words(issues: list | None) -> str:
+    """«1 ошибка и 2 предупреждения» — one wording for the alert and the screen."""
+    parts = []
+    for level, forms in (("error", ("ошибка", "ошибки", "ошибок")),
+                         ("warning", ("предупреждение", "предупреждения", "предупреждений"))):
+        n = sum(1 for i in issues or [] if isinstance(i, dict) and i.get("severity") == level)
+        if n:
+            parts.append(f"{n} {plural(n, *forms)}")
+    return t(" и ").join(parts)
 
 
 def is_stale(section: dict | None) -> bool:

@@ -323,6 +323,13 @@ async def test_jobs_watchdog_and_small_services(db, monkeypatch):
                    {"days": [5, 6], "start_min": 0, "end_min": 60}, {"days": [1, 3], "start_min": 0, "end_min": 60}):
         english_only(maintenance.fmt_window(window))
     english_only(index_status.yandex_problems_words({"FATAL": 1, "CRITICAL": 2}))
+    rich = [{"type": "Profile page", "message": "Invalid datetime value", "severity": "error"}] + [
+        {"type": "FAQ", "message": f"m{i}", "severity": "warning"} for i in range(6)]
+    english_only(index_status.rich_count_words(rich))
+    for issues in (rich, rich[1:]):
+        english_only(scheduler.format_rich_alert("ex.test", issues))
+    english_only("\n".join(seo_screen.index_lines({"google": {"verdict": "PASS", "rich_issues": rich,
+                                                       "at": sitestatus.now_iso()}}, True, False)[0]))
     for reason in (screenshots.QUOTA_REASON, screenshots.OFF_REASON, screenshots.PRIVATE_REASON):
         english_only(t(reason))
     monkeypatch.setattr(recommend.public_urls, "is_public", lambda: True)
