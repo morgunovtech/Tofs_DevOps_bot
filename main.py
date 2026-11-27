@@ -1,5 +1,5 @@
 """
-TofsDevOps — personal DevOps in Telegram.
+TofsDevOps — website monitoring in Telegram for people who have never heard of DNS or a 502.
 Entry point: запускает бота, планировщик и веб-сервер.
 """
 

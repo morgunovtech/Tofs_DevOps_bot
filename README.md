@@ -1,4 +1,4 @@
-# TofsDevOps — your personal DevOps in Telegram
+# TofsDevOps — website monitoring for people who have never heard of DNS or a 502
 
 > If your site goes down, its certificate is about to expire or search engines **and AI assistants** stop seeing it, the bot tells you first and explains in plain words what to do. It fixes what it can and stays quiet while all is well.
 
@@ -6,7 +6,7 @@
 
 **Speaks Russian or English.** The bot takes the language from your Telegram at the first `/start`: Russian stays Russian, any other becomes English — every screen, alert and report. `BOT_LANG=ru` or `BOT_LANG=en` fixes it beforehand, and «⚙️ Настройки → 🛠 Тонкие настройки» changes it at any time. What your visitors see — the status page, its badges and the feedback widget — has its own switch (`STATUS_PAGE_LANG=en`; the widget follows the language of the page). An English bot starts on UTC instead of Moscow time unless `TIMEZONE` says otherwise. The screenshots below show the Russian bot; the English one says the same with **🏠 Home**, **📖 What I do**, **❓ Icons**.
 
-Made for people who have never heard of DNS or a 502. Three buttons under the input field: **🏠 Главная** (the main screen answers «is everything OK?»), **📖 Что я умею**, **❓ Значки**; every site has its own card. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
+Three buttons under the input field: **🏠 Главная** (the main screen answers «is everything OK?»), **📖 Что я умею**, **❓ Значки**; every site has its own card. Every alert says what happened, what it means for visitors and what to do — with a button per step, written for your hosting (Cloudflare, Vercel, Netlify, GitHub Pages or a plain server).
 
 <p align="center">
   <img src="docs/images/home.png" width="31%" alt="Main screen: sites, mail, social networks, bots — one status line and one number each">
