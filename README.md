@@ -1,6 +1,6 @@
 # TofsDevOps — your personal DevOps in Telegram
 
-> Watches your sites, fixes what it can, checks that search engines **and AI assistants** can see you — and stays quiet while everything is fine.
+> If your site goes down, its certificate is about to expire or search engines **and AI assistants** stop seeing it, the bot tells you first and explains in plain words what to do. It fixes what it can and stays quiet while all is well.
 
 🇷🇺 [По-русски](README.ru.md) · [Everything it does](docs/FEATURES.en.md) · [Why (RU)](docs/WHY.md) · [Setup click by click (RU)](docs/SETUP.md)
 
